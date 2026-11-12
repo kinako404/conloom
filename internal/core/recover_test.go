@@ -1,0 +1,89 @@
+package core
+
+import (
+	"context"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/kinako404/conloom/internal/ids"
+	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/pkg/conloomapi"
+)
+
+// seedTask stores a group message from user and a task triggered by it, as
+// left behind by a process that stopped before finishing the task.
+func (e *testEnv) seedTask(t *testing.T, user, text, command, status string, occurred time.Time) (taskID, msgID string) {
+	t.Helper()
+	pmid := strconv.FormatInt(1000+e.seq.Add(1), 10)
+	msgID = "msg_" + pmid
+	taskID = ids.New("task")
+	_, err := e.st.Ingest(context.Background(), store.Ingest{
+		Event: store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "seed:" + pmid, EventID: "evt_" + pmid},
+		Conversation: &store.ConversationRecord{
+			BotInstanceID: testBot, ID: testConvID, Key: testConvKey, Type: conloomapi.ConvGroup,
+			Platform: "qq", PlatformConversationID: "10001",
+		},
+		Message: &store.MessageRecord{
+			ID: msgID, BotInstanceID: testBot, ConversationKey: testConvKey, Platform: "qq",
+			PlatformMessageID: pmid, ActorID: "user_" + user, PlatformUserID: user, DisplayName: "用户" + user,
+			Text: text, OccurredAt: occurred,
+		},
+		NewTask: &store.TaskRecord{
+			ID: taskID, BotInstanceID: testBot, ConversationKey: testConvKey, Status: status,
+			ActorPlatformUserID: user, Command: command, TriggerMessageIDs: []string{msgID}, EventOccurredAt: occurred,
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	return taskID, msgID
+}
+
+func TestRecover_RequeuesFreshAndFailsStale(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	now := time.Now().UTC()
+	fresh, freshMsg := env.seedTask(t, "20001", "还在吗", "", conloomapi.TaskRunning, now.Add(-10*time.Second))
+	stale, _ := env.seedTask(t, "20002", "早就过时了", "", conloomapi.TaskQueued, now.Add(-5*time.Minute))
+	help, _ := env.seedTask(t, "20002", "/help", "help", conloomapi.TaskQueued, now.Add(-5*time.Second))
+
+	if err := env.o.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+
+	task := env.waitTask(t, fresh)
+	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 || task.Actions[0].ReplyToMessageID != freshMsg {
+		t.Fatalf("fresh task = %+v", task)
+	}
+	st := env.getTask(t, stale)
+	if st.Status != conloomapi.TaskFailed || st.Error == nil || st.Error.Code != "STALE" || len(st.Actions) != 0 {
+		t.Fatalf("stale task = %+v", st)
+	}
+	ht := env.waitTask(t, help)
+	if ht.Status != conloomapi.TaskSucceeded || len(ht.Actions) != 1 || ht.Actions[0].Content.Text != CopyHelp("织语") {
+		t.Fatalf("command task = %+v", ht)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := env.short.Calls(); n != 1 {
+		t.Fatalf("model calls = %d, want 1", n)
+	}
+}
+
+func TestClose_LeavesRunningTaskForRecovery(t *testing.T) {
+	release := make(chan struct{})
+	env := newTestOrchestrator(t, testOpts{short: func(map[string]any) (int, string) { <-release; return 200, fakeReply }})
+	t.Cleanup(func() { close(release) })
+	resp := env.submit(t, env.groupEvent("20001", "你好", mentionBot))
+	waitUntil(t, "model called", func() bool { return env.short.Calls() == 1 })
+	env.o.Close()
+	rec, err := env.st.GetTask(context.Background(), testBot, resp.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Status != conloomapi.TaskRunning {
+		t.Fatalf("status after Close = %q, want running", rec.Status)
+	}
+	if _, _, err := env.submitRaw(t, "after-close", env.groupEvent("20001", "还在吗", mentionBot)); err == nil {
+		t.Fatal("Submit after Close succeeded")
+	}
+}
