@@ -9,7 +9,8 @@ ConLoom 是一个用 Go 编写的聊天机器人核心：平台适配器（Adapt
 - 标准 Bot Interaction API（REST）：事件提交、任务查询与取消、Outbox 长轮询拉取与 ACK、能力协商、人格与群策略读写。
 - 两个 Adapter，都只通过公开 API 与核心交互：NapCat（OneBot 11 正向 WebSocket，真实 QQ 平台）与 Mock（终端里本地对话）。
 - 可靠投递：幂等事件、持久化 Outbox、至少一次投递 + Adapter 端按 `action_id` 本地去重；重启后恢复未完成任务，过时的回复不再发送。
-- 回复策略：私聊、@Bot、回复 Bot、命令触发；同一发送者连续短消息合并为一次回复；每用户限流、每会话最短回复间隔；核心与 Adapter 两层自回复防护。
+- 回复策略：私聊、@Bot、回复 Bot、命令触发，以及 Bot 回复后的连续对话窗口；同一发送者连续短消息合并为一次回复；每用户限流、每会话最短回复间隔；核心与 Adapter 两层自回复防护。
+- 氛围聊天：连续对话中对方转头和别人聊时**识趣退出**；对 @ 过 Bot 的群友，在聊到他常和 Bot 聊的话题时**主动搭话**，频率由每人用 `/主动` 自己调，管理员有群总开关（见[识趣退出与主动搭话](#识趣退出与主动搭话)）。
 - 人格：内置不可变核心人格 + 可配置的群人格模板，人格与群策略都有版本，可修改、可回滚。
 - 模型：任意 OpenAI 兼容接口，按 `short_context`／`long_context` 角色路由，换模型只改配置；熔断与降级。
 - 并发准入：模型全局并发、群并发（0／1／2）、token 预留预算、优先级队列与队列上限。
@@ -34,7 +35,7 @@ QQ 群 ⇄ NapCat ⇄(OneBot 11 正向 WS)⇄ conloom adapter napcat ⇄(REST /a
 
 1. Adapter 把平台消息转为标准 Event，`POST /api/v1/events`，带 `Idempotency-Key`。
 2. Gateway 校验 token 权限、Schema 与幂等键，丢弃 Bot 自身的消息。
-3. 消息先落库，再由回复策略判定 `reply`／`observe`／`ignore`。
+3. 消息先落库，再由回复策略判定 `reply`／`observe`／`ignore`。`observe` 的群消息还要经过主动搭话的候选筛选，全部通过才会建一个主动搭话任务，否则不调用模型。
 4. `reply`：进入该会话的串行执行单元，在合并窗口内收集同一发送者的连续短消息。
 5. 加载人格版本、群策略与近期消息，组装上下文并估算 token；他人的每条历史消息最多保留 300 字（超出部分截断并标注，附件占位符保持完整），Bot 自己的历史回复不截断。
 6. 角色路由选出模型 Profile，准入控制放行后调用模型。
@@ -135,13 +136,53 @@ conloom version                                                    显示版本�
 | `/help` | 所有人 | 简短说明 |
 | `/stop` | 发起者或管理员 | 取消本会话正在进行或排队的生成 |
 | `/persona` | 所有人 | 显示当前人格名称与版本 |
-| `/pause`、`/resume` | 管理员 | 暂停本群回复（群并发设为 0），并静默取消本群正在生成或排队的回复／恢复 |
+| `/pause`、`/resume` | 管理员 | 暂停本群回复（群并发设为 0），并静默取消本群正在生成或排队的回复／恢复；暂停期间也不会主动搭话 |
+| `/主动`、`/proactive` | 所有人 | 查看自己的主动搭话档位、是否有资格、今天已被主动搭话的次数 |
+| `/主动 关`／`低`／`中`／`高`，`/proactive off`／`low`／`mid`／`high` | 有资格的人 | 设置自己的主动搭话档位（中英文档位等价） |
+| `/主动 全群 开`／`关`，`/proactive group on`／`off` | 管理员 | 本群主动搭话总开关（生成新的群策略版本） |
 
 命令前缀默认为 `/`（群策略 `reply.command_prefix`）。管理员只认配置中 `bots[].admins` 列出的平台用户 ID。
 
 - 非管理员的命令与普通回复共用每用户限流（`reply.user_rate_limit_per_minute`），超出后命令只落库不回应（`suppressed_reason` 为 `rate_limited`）；群暂停期间非管理员的命令同样不回应（`paused`）。管理员的命令（包括 `/pause`、`/resume`、`/stop`）不受限流和暂停影响。
 - 通过 `/pause` 或 `PUT /api/v1/conversations/{id}/policy` 把群并发设为 0 时，该会话正在生成和排队的回复都会被静默取消（不发“已停止”提示），`/resume` 之后不会补发暂停前积压的回复。
 - 发生时间（事件的 `occurred_at`）早于 `runtime.stale_task_after`（默认 2 分钟）的 @Bot、回复 Bot 或命令消息只落库、不回复，`suppressed_reason` 为 `stale`。例如核心停机期间 NapCat Adapter 缓存的消息，在核心恢复后才提交时就是这样处理的，不会在恢复后集中回复一批旧消息。消息时间来自平台（NapCat 所在机器的时钟），所以 NapCat 与核心所在机器的时钟要保持同步（如启用 NTP）；若 NapCat 的时钟比核心慢超过这个阈值，所有消息都会被当作过时而不回复。
+- `/主动` 系列命令只在群聊中使用，私聊中回复“主动搭话只在群聊里使用。”。还没有资格的人设置档位时回复“先 @ 我聊几句，才能开启主动搭话。”；非管理员使用 `全群`／`group` 子命令不会生效。
+
+## 识趣退出与主动搭话
+
+两项行为都只在群聊中生效，且都遵循“规则先筛、模型兜底”：便宜的规则判定在前，只有通过筛选的消息才会调用模型，模型仍可以拒绝接话。
+
+**模型拒答与跳过标记**：连续对话和主动搭话任务会在当前消息末尾附加一段固定提示，告诉模型这条消息没有 @ 它，不合适就只输出内部跳过标记 `[[SKIP]]`。模型输出（去掉思考段后）只要在任何位置含有这个标记，整条输出都会被丢弃：不产生任何动作，也不进入 Outbox，标记永远不会出现在群里。这类任务的状态仍是 `succeeded`，`meta.review_result` 为 `skipped`。
+
+### 识趣退出
+
+群策略 `reply.continuation_window`（0 表示关闭，最长 60s；示例配置为 `0s`，实际部署常设为 `60s`）是连续对话窗口：Bot 回复某人后，此人在窗口内不 @Bot 的后续消息也会触发回复（任务 `trigger` 为 `continuation`）。识趣退出只作用于这类消息；窗口为 0 时没有连续对话，也就没有识趣退出。
+
+- **规则退出（不调用模型）**：窗口内的非 @ 消息如果 @ 了 Bot 以外的人（包括 @全体成员），或回复的是另一位群友的消息，就不回复、只落库，并立即结束此人的连续对话。
+- **模型退出**：其余窗口内的消息照常交给模型，模型判断消息不是对它说的、或话题已经转向别人时输出跳过标记，此时同样不回复，并结束此人的连续对话。
+
+连续对话结束后，此人之后不 @Bot 的消息按普通群消息处理（只落库，或成为下面的主动搭话候选）；要等他再 @Bot 或回复 Bot 的消息并得到回复（或 Bot 主动搭话发给他）后，窗口才会重新打开。
+
+### 主动搭话
+
+- **资格**：在本群 @ 过 Bot 或回复过 Bot 的消息（只发命令不算；连续对话中的消息也会刷新资格）。超过 `eligibility_ttl`（默认 30 天）没有再这样做，资格失效。从没 @ 过 Bot 的人永远不会被主动搭话；档位为“关”的人也不会。
+- **档位**：`关`／`低`／`中`／`高`（`off`／`low`／`mid`／`high`）。首次获得资格时为 `default_level`（默认“低”）；用 `/主动` 自己设过的档位之后一直保留，不会被默认值覆盖。
+- **兴趣话题**：核心从每人 @Bot、回复 Bot 以及连续对话中的消息里提取关键词（英文单词与连续汉字的二字词组，去掉常见虚词与口头禅），形成带衰减的兴趣画像，每人最多保留 50 个词。群友平时没 @Bot 的发言与他的画像足够重合时才算“聊到了常聊的话题”：低档需与前 20 个词至少重合 2 个，中档与前 30 个词至少重合 1 个，高档与前 50 个词至少重合 1 个。
+- **候选条件**（全部满足才调用模型）：本群主动搭话总开关打开、群未暂停、消息不过时；发言者有资格且档位不是“关”；消息至少 4 个字、不是命令、没有 @ 任何人、没有回复其他群友；此人在本会话没有排队或运行中的任务；话题匹配；且未超出下面的上限。
+- **发言上限**：每人每天最多被主动搭话 低 2 次、中 4 次、高 8 次（`daily_limits`）；对同一人两次主动搭话至少间隔 `user_cooldown`（默认 30 分钟）；全群每小时最多主动发言 `group_hourly_limit` 次（默认 4）。
+- **模型调用上限**：每人每天的评估（即调用模型判断要不要接话）次数不超过其档位每日上限的 3 倍，全群每小时的评估次数不超过 `group_hourly_limit` 的 3 倍。所以有人刷屏时，模型调用次数也不会随消息数增长。
+- **发出**：通过筛选后建一个 `trigger` 为 `proactive` 的任务，和普通回复一样经过合并窗口与最短回复间隔。模型决定接话时，以引用回复对方那条消息的形式发出，随后对方进入连续对话窗口，按识趣退出处理；模型输出跳过标记则不发送。
+- **计数持久化**：评估与发出的记录存在数据库里，按时间窗口计数，重启后依然有效；7 天前的记录会被定期清理。
+- **总开关**：管理员用 `/主动 全群 开`／`关` 或通过群策略 API 修改 `proactive.enabled`；`/pause` 期间同样不会主动搭话。
+
+### 指标
+
+| 指标 | 标签 | 说明 |
+|---|---|---|
+| `conloom_continuation_exits_total` | `reason`：`rule`、`model` | 识趣退出次数：`rule` 为规则退出，`model` 为模型输出跳过标记 |
+| `conloom_proactive_total` | `result`：`evaluated`、`sent`、`skipped` | 主动搭话：`evaluated` 为通过筛选、交给模型评估，`sent` 为实际发出，`skipped` 为模型放弃 |
+
+日志不记录兴趣词与消息正文。
 
 ## 配置
 
@@ -155,13 +196,28 @@ conloom version                                                    显示版本�
 | `bots` | Bot 实例：`id`、`platform`、`name`（显示名，默认“织语”）、`platform_self_id`（Bot 自身的平台 ID，必填，用于自回复防护）、`admins`、`enabled_conversations`（只在这些会话工作）、`private_chat`（`admins`／`all`／`off`，默认 `admins`）、`persona_template` |
 | `model_profiles` | 按角色配置模型，`short_context` 必需、`long_context` 可选：`provider`（`openai_compatible`）、`endpoint`、`model`、`api_key`、`modalities`、`context`（窗口与预算，须满足 `soft_input_budget <= configured_window <= native_window`）、`runtime`（并发、超时、重试）、`privacy`、`extra_body`（原样合并进请求体）、`token_estimate_factor` |
 | `persona_templates` | 群人格模板：`style` 各项 0~1，`behavior` 为枚举；省略 `default` 时使用内置默认人格 |
-| `default_group_policy` | 新会话的初始群策略：`concurrency`、`reply`（命令前缀、连续对话窗口、合并窗口 `debounce`、最短回复间隔、每用户限流）、`context`、`review`。通过 API 或命令修改后存库并版本化，库内版本优先 |
+| `default_group_policy` | 新会话的初始群策略：`concurrency`、`reply`（命令前缀、连续对话窗口 `continuation_window`、合并窗口 `debounce`、最短回复间隔、每用户限流）、`context`、`review`、`proactive`（主动搭话，见下）。通过 API 或命令修改后存库并版本化，库内版本优先 |
 | `runtime` | `action_ttl`、`outbox_lease`、`stale_task_after`、`idempotency_retention`、`max_merge_window`、`session_idle` |
 | `adapters.napcat` | `ws_url`、`access_token`、`core_url`、`core_token`、`bot_instance_id`、`state_dir`（去重记录目录，默认同 `data_dir`） |
 | `adapters.mock` | `core_url`、`core_token`、`bot_instance_id` |
 | `observability` | `log_level`、`log_format`（`json`／`text`）、`log_message_content`（默认 `false`） |
 
 配置中的群号、QQ 号一律写平台原始 ID。
+
+群策略的 `proactive` 段（主动搭话）及其默认值：
+
+```yaml
+default_group_policy:
+  proactive:
+    enabled: true            # 群总开关
+    default_level: low       # 获得资格时的默认档位：off | low | mid | high
+    eligibility_ttl: 720h    # 多久没 @Bot 就失去资格（30 天），1h~8760h
+    user_cooldown: 30m       # 对同一人两次主动搭话的最短间隔，0~24h
+    group_hourly_limit: 4    # 全群每小时主动发言上限，0~60
+    daily_limits: {low: 2, mid: 4, high: 8}   # 每人每天主动发言上限，各 0~100，且 low ≤ mid ≤ high
+```
+
+省略整个 `proactive` 段时使用上面的默认值；升级前已存库的群策略版本没有这一段，读取时同样按默认值补齐，即主动搭话默认开启、档位默认为低。识趣退出没有单独的开关，由 `reply.continuation_window` 决定是否有连续对话。
 
 ## API
 
@@ -181,6 +237,8 @@ conloom version                                                    显示版本�
 | `PUT /api/v1/conversations/{id}/policy` | `policy:write` | 写入新群策略版本：`{"policy":{…},"reason":"…"}` |
 | `GET /healthz` | 无 | 健康检查 |
 | `GET /metrics` | 无 | Prometheus 指标（`server.metrics_enabled: false` 可关闭） |
+
+群策略包含 `proactive` 段（字段同上文配置）。`PUT …/policy` 的请求体里没有 `proactive` 段（或该段为空）时按默认值补齐；要修改时请写出完整的 `proactive` 段，否则会因缺少 `default_level` 等字段校验失败。管理员的 `/主动 全群 开`／`关` 也是以当前版本为基础写入一个新的群策略版本，可用 `GET …/policy` 查看。任务的 `trigger` 除 `private`、`mention`、`reply`、`command` 等外，还可能是 `continuation`（连续对话）与 `proactive`（主动搭话）。
 
 会话 `{id}` 为标准会话 ID，如 `group_<群号>`、`private_<QQ号>`。同一幂等键重放返回首次响应并带 `Idempotent-Replayed: true`，同键不同内容返回 409。错误响应统一为：
 
@@ -310,6 +368,7 @@ ok  	github.com/kinako404/conloom/internal/app	6.692s
 ## 隐私
 
 - 日志默认**不记录**消息正文，只记 ID、长度、会话、路由与耗时；本地调试时可设 `observability.log_message_content: true`。
+- 主动搭话的兴趣画像（每位 @ 过 Bot 的群友最多 50 个关键词及权重）、档位与最近一次 @Bot 的时间保存在 `conloom.db` 中，不写入日志，也不会出现在群消息里；主动搭话时只把前 5 个兴趣词放进发给模型的提示。
 - 只有 `enabled_conversations` 中的会话（以及按 `private_chat` 开放的私聊）的消息会被保存；其他会话的消息既不转发也不落库。
 - 消息保存在本机 `<data_dir>/conloom.db` 中，用作对话上下文；请像对待聊天记录一样保护数据目录和备份文件。
 - 组装好的上下文会发送到你配置的模型 endpoint；`privacy.data_location: remote` 表示数据会离开本机。
