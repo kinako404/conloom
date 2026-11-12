@@ -797,7 +797,7 @@ func TestEngagement_ContinuationKeepsEligibilityTime(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{configure: withContinuation})
 	engaged := time.Now().Add(-100 * time.Hour).UTC()
 	env.seedMember(t, "20001", conloomapi.ProactiveLow, engaged)
-	env.o.sched.MarkReplied(testConvKey, "20001", time.Now())
+	env.o.directReplied(testConvKey, "20001", time.Now())
 	resp := env.submit(t, env.groupEvent("20001", "我们聊聊拿铁"))
 	if task := env.waitTask(t, resp.TaskID); task.Meta.Trigger != conloomapi.TriggerContinuation {
 		t.Fatalf("task = %+v, want a continuation task", task)

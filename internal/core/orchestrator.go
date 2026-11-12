@@ -33,9 +33,9 @@ var ErrDuplicateEvent = errors.New("core: idempotency key reused with a differen
 
 const (
 	defaultSessionIdle = 5 * time.Minute
-	// minSessionIdle keeps scheduler sessions (and their continuation marks
-	// and pacing) alive at least as long as the largest continuation window
-	// and minimum reply interval policy validation allows.
+	// minSessionIdle keeps scheduler sessions (and their pacing) alive at
+	// least as long as the largest minimum reply interval policy validation
+	// allows.
 	minSessionIdle   = time.Minute
 	defaultActionTTL = 10 * time.Minute
 	defaultTimezone  = "Asia/Shanghai"
@@ -104,6 +104,8 @@ type Orchestrator struct {
 	// contacts holds each member's last contact with the bot, which delays
 	// proactive replies by the contact cooldown.
 	contacts contactTimes
+	// sessions holds the groups' ongoing conversations with the bot.
+	sessions chatSessions
 }
 
 // taskOwner is the one party in this process allowed to execute and complete
@@ -204,13 +206,14 @@ func maxTokenFactor(profiles map[string]config.ModelProfile) float64 {
 }
 
 // PolicyChanged makes the conversation's scheduler re-read its policy. A
-// policy that pauses the conversation (concurrency 0) also cancels its active
-// tasks.
+// policy that pauses the conversation (concurrency 0) also ends its session
+// and cancels its active tasks.
 func (o *Orchestrator) PolicyChanged(convKey string) {
 	ctx := context.Background()
 	if pv, err := o.policies.Current(ctx, convKey); err != nil {
 		o.log.Error("load changed policy failed", "conversation", convKey, "error", err)
 	} else if pv.Policy.Concurrency.MaxInteractiveRequests == 0 {
+		o.endSession(convKey, "")
 		o.cancelActive(ctx, convKey)
 	}
 	o.sched.Kick(convKey)
@@ -231,9 +234,10 @@ func (o *Orchestrator) cancelActive(ctx context.Context, convKey string) {
 	}
 }
 
-// Close stops background maintenance and the scheduler. Running tasks are
-// cancelled but keep their stored status, so Recover resumes them after a
-// restart; tasks a user already cancelled are still recorded as cancelled.
+// Close stops background maintenance and the scheduler and ends every
+// session. Running tasks are cancelled but keep their stored status, so
+// Recover resumes them after a restart; tasks a user already cancelled are
+// still recorded as cancelled.
 func (o *Orchestrator) Close() {
 	o.closeOnce.Do(func() {
 		o.mu.Lock()
@@ -242,6 +246,7 @@ func (o *Orchestrator) Close() {
 		o.bgCancel()
 		o.bgWG.Wait()
 		o.sched.Close()
+		o.clearSessions()
 	})
 }
 
@@ -374,6 +379,8 @@ func (o *Orchestrator) dispatch(ctx context.Context, s *submission, d Decision, 
 			}
 		}
 		return o.submitCommand(ctx, s, d.Command)
+	case d.Disposition == conloomapi.DispositionReply && d.Trigger == TriggerContinuation:
+		return o.submitTurn(ctx, s, pol)
 	case d.Disposition == conloomapi.DispositionReply:
 		if reason := o.withheld(s, pol); reason != "" {
 			return o.observeOnly(ctx, s, reason)
@@ -385,10 +392,12 @@ func (o *Orchestrator) dispatch(ctx context.Context, s *submission, d Decision, 
 		return resp, err
 	case d.EndContinuation:
 		// The message is addressed to someone else: it is only observed, never
-		// merged into a pending task of the sender.
+		// merged into a pending task of the sender, who leaves the session.
 		resp, err := o.observeOnly(ctx, s, "")
 		if err == nil {
-			o.endContinuation(s.convKey, s.ev.Actor.PlatformUserID, continuationExitRule)
+			user := s.ev.Actor.PlatformUserID
+			o.leaveSession(s.convKey, user, sessionExitRule)
+			o.contacts.set(memberKey(s.convKey, user), o.now())
 		}
 		return resp, err
 	case o.proactiveCandidate(s, pol):
@@ -401,17 +410,31 @@ func (o *Orchestrator) dispatch(ctx context.Context, s *submission, d Decision, 
 	}
 }
 
-const (
-	continuationExitRule  = "rule"
-	continuationExitModel = "model"
-)
+// errRateLimited stops a new turn of a sender over the per-user rate limit.
+var errRateLimited = errors.New("core: sender is rate limited")
 
-// endContinuation ends actorID's continuation window, counts the exit and
-// records it as the bot's last contact with actorID.
-func (o *Orchestrator) endContinuation(convKey, actorID, reason string) {
-	o.sched.EndContinuation(convKey, actorID)
-	o.contacts.set(memberKey(convKey, actorID), o.now())
-	o.metrics.ContinuationExits.WithLabelValues(reason).Inc()
+// submitTurn admits a session participant's message into their turn: their
+// pending task absorbs it, or else a continuation task starts whose merge
+// window is the policy's turn gap, capped at its turn maximum wait. Only a
+// new turn spends one of the sender's rate-limit hits.
+func (o *Orchestrator) submitTurn(ctx context.Context, s *submission, pol conloomapi.GroupPolicy) (conloomapi.EventAccepted, error) {
+	if pol.Concurrency.MaxInteractiveRequests == 0 {
+		return o.observeOnly(ctx, s, conloomapi.SuppressedPaused)
+	}
+	opts := MergeOptions{Debounce: pol.Reply.TurnGap.Duration, MaxMergeWindow: pol.Reply.TurnMaxWait.Duration}
+	resp, err := o.admitWith(ctx, s, AdmitNew, TriggerContinuation, opts, func() bool {
+		return o.limiter.Allow(s.convKey+":"+s.ev.Actor.PlatformUserID, pol.Reply.UserRateLimitPerMinute, s.now)
+	})
+	switch {
+	case errors.Is(err, errRateLimited):
+		return o.observeOnly(ctx, s, conloomapi.SuppressedRateLimited)
+	case errors.Is(err, ErrQueueFull):
+		return o.observeOnly(ctx, s, conloomapi.SuppressedQueueFull)
+	case err != nil:
+		return conloomapi.EventAccepted{}, err
+	}
+	o.touchSession(s.convKey, s.now)
+	return resp, nil
 }
 
 // withheld returns why a reply trigger is not answered: the conversation is
@@ -469,7 +492,7 @@ func (o *Orchestrator) decide(ctx context.Context, s *submission) (Decision, con
 		}
 	}
 	if w := pol.Reply.ContinuationWindow.Duration; w > 0 {
-		in.InContinuation = o.sched.InContinuation(s.convKey, ev.Actor.PlatformUserID, w, s.now)
+		in.InContinuation = o.inSession(s.convKey, ev.Actor.PlatformUserID, s.now, w)
 	}
 	return Decide(in), pol, nil
 }
@@ -515,8 +538,18 @@ func (o *Orchestrator) observeOnly(ctx context.Context, s *submission, reason st
 // observation, storing the event with the matching response in persist. A new
 // task records trigger in its meta.
 func (o *Orchestrator) admit(ctx context.Context, s *submission, mode AdmitMode, trigger string) (conloomapi.EventAccepted, error) {
+	return o.admitWith(ctx, s, mode, trigger, MergeOptions{}, nil)
+}
+
+// admitWith is admit with the merge window opts for a new task. A non-nil
+// allowNew is asked before a new task is stored; if it refuses, nothing is
+// stored and admitWith returns errRateLimited.
+func (o *Orchestrator) admitWith(ctx context.Context, s *submission, mode AdmitMode, trigger string, opts MergeOptions, allowNew func() bool) (conloomapi.EventAccepted, error) {
 	var resp conloomapi.EventAccepted
-	_, err := o.sched.Admit(s.convKey, s.ev.Actor.PlatformUserID, s.ev.Message.ID, mode, func(plan AdmitPlan) error {
+	_, err := o.sched.AdmitWith(s.convKey, s.ev.Actor.PlatformUserID, s.ev.Message.ID, mode, opts, func(plan AdmitPlan) error {
+		if plan.NewTaskID != "" && allowNew != nil && !allowNew() {
+			return errRateLimited
+		}
 		resp = conloomapi.EventAccepted{EventID: s.ev.EventID, Disposition: conloomapi.DispositionObserve}
 		var task *store.TaskRecord
 		switch {

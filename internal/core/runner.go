@@ -36,13 +36,17 @@ const SkipMarker = "[[SKIP]]"
 
 // outcome is the result of executing a reply task. An empty text means no
 // action is sent; skipped means the model answered SkipMarker. proactive is
-// set for a proactive task none of whose messages is addressed to the bot.
+// set for a proactive task none of whose messages is addressed to the bot;
+// turn for a continuation task none of whose messages is; addressed for a
+// task with a message that mentions or replies to the bot.
 type outcome struct {
 	status    string
 	code      string
 	text      string
 	skipped   bool
 	proactive bool
+	turn      bool
+	addressed bool
 	meta      conloomapi.TaskMeta
 	conv      store.ConversationRecord
 	triggers  []store.MessageRecord
@@ -88,15 +92,9 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 		return
 	}
 	if sent {
-		now := o.now()
-		o.contacts.set(memberKey(task.ConversationKey, task.ActorPlatformUserID), now)
-		if out.status == conloomapi.TaskSucceeded {
-			o.sched.MarkReplied(task.ConversationKey, task.ActorPlatformUserID, now)
-		}
+		o.contacts.set(memberKey(task.ConversationKey, task.ActorPlatformUserID), o.now())
 	}
-	if out.skipped && task.Meta.Trigger == TriggerContinuation {
-		o.endContinuation(task.ConversationKey, task.ActorPlatformUserID, continuationExitModel)
-	}
+	o.updateSession(dbctx, task, out, sent)
 	if out.proactive {
 		switch {
 		case sent:
@@ -174,9 +172,14 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord) outco
 	}
 	out.triggers = triggers
 	directive := o.directive(ctx, task, triggers)
-	if out.proactive && directive == "" {
-		out.proactive = false
+	switch task.Meta.Trigger {
+	case conloomapi.TriggerMention, conloomapi.TriggerReply:
+		out.addressed = true
+	case TriggerContinuation, TriggerProactive:
+		out.addressed = directive == ""
 	}
+	out.proactive = out.proactive && !out.addressed
+	out.turn = task.Meta.Trigger == TriggerContinuation && !out.addressed
 	if out.proactive {
 		// The switch, the user's level or the budget may have changed while
 		// the task was queued (or across a restart): check before any model call.
@@ -342,7 +345,16 @@ func (o *Orchestrator) directive(ctx context.Context, task store.TaskRecord, tri
 	if task.Meta.Trigger == TriggerProactive {
 		return o.proactiveDirective(ctx, task)
 	}
-	return CopyDirectiveContinuation
+	return CopyDirectiveContinuation(speaker(triggers))
+}
+
+// speaker names the sender of the newest trigger message.
+func speaker(triggers []store.MessageRecord) string {
+	last := triggers[len(triggers)-1]
+	if last.DisplayName != "" {
+		return last.DisplayName
+	}
+	return last.PlatformUserID
 }
 
 // call builds the context for the routed profile, waits for admission and

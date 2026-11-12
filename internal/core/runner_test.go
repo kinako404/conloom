@@ -124,16 +124,19 @@ func TestRunner_BlockedOutputHasNoAction(t *testing.T) {
 
 const testWindow = time.Minute
 
+// withContinuation turns on sessions with short turns.
 func withContinuation(c *config.Config) {
 	c.DefaultGroupPolicy.Reply.ContinuationWindow = conloomapi.Duration{Duration: testWindow}
+	c.DefaultGroupPolicy.Reply.TurnGap = conloomapi.Duration{Duration: 100 * time.Millisecond}
+	c.DefaultGroupPolicy.Reply.TurnMaxWait = conloomapi.Duration{Duration: 400 * time.Millisecond}
 }
 
 func (e *testEnv) inContinuation(user string) bool {
-	return e.o.sched.InContinuation(testConvKey, user, testWindow, time.Now())
+	return e.o.inSession(testConvKey, user, time.Now(), e.cfg.DefaultGroupPolicy.Reply.ContinuationWindow.Duration)
 }
 
 // startContinuation has user mention the bot and waits until the bot's reply
-// opens user's continuation window.
+// makes user a participant of the group's session.
 func (e *testEnv) startContinuation(t *testing.T, user string) {
 	t.Helper()
 	task := e.waitTask(t, e.submit(t, e.groupEvent(user, "在吗", mentionBot)).TaskID)
@@ -174,19 +177,19 @@ func lastContent(req map[string]any) string {
 	return s
 }
 
-// skipOnDirective answers SkipMarker to requests carrying the continuation
-// directive and fakeReply otherwise.
+// turnDirective is the start of the hint appended to session turns.
+const turnDirective = "【提示】你正在和 "
+
+// skipOnDirective answers SkipMarker to requests carrying the turn directive
+// and fakeReply otherwise.
 func skipOnDirective(req map[string]any) (int, string) {
-	if strings.Contains(lastContent(req), CopyDirectiveContinuation) {
+	if strings.Contains(lastContent(req), turnDirective) {
 		return 200, SkipMarker
 	}
 	return 200, fakeReply
 }
 
-func TestRunner_ContinuationSkipSendsNothingAndEndsWindow(t *testing.T) {
-	if CopyDirectiveContinuation != "【提示】这条消息没有 @ 你，只是对方在你回复后接着说的。如果它不是在和你说话，或者话题已经转向别人，只输出 [[SKIP]]，不要输出其他内容。" {
-		t.Fatalf("CopyDirectiveContinuation = %q", CopyDirectiveContinuation)
-	}
+func TestRunner_ContinuationSkipSendsNothing(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{short: skipOnDirective, configure: withContinuation})
 	env.startContinuation(t, "20001")
 	if c := lastContent(env.short.Requests()[0]); strings.Contains(c, "【提示】") {
@@ -206,29 +209,18 @@ func TestRunner_ContinuationSkipSendsNothingAndEndsWindow(t *testing.T) {
 	}
 	msgs := requestMessages(t, env.short.Requests()[1])
 	last, _ := msgs[len(msgs)-1]["content"].(string)
-	if !strings.HasSuffix(last, "晚饭吃什么好呢\n\n"+CopyDirectiveContinuation) {
+	if !strings.HasSuffix(last, "晚饭吃什么好呢\n\n"+CopyDirectiveContinuation("用户20001")) {
 		t.Errorf("continuation request current = %q", last)
 	}
 	first := requestMessages(t, env.short.Requests()[0])
 	if sys, _ := msgs[0]["content"].(string); msgs[0]["role"] != "system" || sys != first[0]["content"] {
 		t.Errorf("system prompt differs between mention and continuation requests")
 	}
-
-	waitUntil(t, "continuation to end", func() bool { return !env.inContinuation("20001") })
-	waitUntil(t, "model exit metric", func() bool {
-		return env.counter(t, "conloom_continuation_exits_total", "reason", "model") == 1
-	})
-	if n := env.counter(t, "conloom_continuation_exits_total", "reason", "rule"); n != 0 {
-		t.Errorf("rule exits = %v, want 0", n)
+	if env.notifier.count(testBot) != 1 {
+		t.Errorf("notifier called %d times, want 1 (the mention)", env.notifier.count(testBot))
 	}
-
-	after := env.submit(t, env.groupEvent("20001", "算了"))
-	if after.Disposition != conloomapi.DispositionObserve || after.TaskID != "" {
-		t.Fatalf("message after skip = %+v, want observe", after)
-	}
-	time.Sleep(100 * time.Millisecond)
-	if n := env.short.Calls() + env.long.Calls(); n != 2 {
-		t.Fatalf("model calls = %d, want 2", n)
+	if strings.Contains(env.logs.String(), SkipMarker) {
+		t.Error("skip marker leaked into logs")
 	}
 }
 
@@ -310,7 +302,8 @@ func TestRunner_TriggerRecordedInMeta(t *testing.T) {
 func TestRunner_ContinuationMergedWithMentionHasNoDirective(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{short: skipOnDirective, configure: func(c *config.Config) {
 		withContinuation(c)
-		c.DefaultGroupPolicy.Reply.Debounce = conloomapi.Duration{Duration: 500 * time.Millisecond}
+		c.DefaultGroupPolicy.Reply.TurnGap = conloomapi.Duration{Duration: 500 * time.Millisecond}
+		c.DefaultGroupPolicy.Reply.TurnMaxWait = conloomapi.Duration{Duration: time.Second}
 	}})
 	env.startContinuation(t, "20001")
 	first := env.submit(t, env.groupEvent("20001", "对了"))

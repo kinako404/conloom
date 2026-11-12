@@ -36,6 +36,27 @@ type QueuedTask struct {
 	TriggerMessageIDs []string
 	EnqueuedAt        time.Time
 	ReadyAt           time.Time
+
+	// merge is the merge window the task was created with; zero fields (as
+	// in restored tasks) follow the conversation's SessionConfig.
+	merge MergeOptions
+}
+
+// MergeOptions set a new task's merge window: each merged message moves its
+// ReadyAt to Debounce later, but never past MaxMergeWindow after it was
+// enqueued. Zero fields take the conversation's SessionConfig values.
+type MergeOptions struct {
+	Debounce, MaxMergeWindow time.Duration
+}
+
+func (m MergeOptions) orConfig(cfg SessionConfig) MergeOptions {
+	if m.Debounce == 0 {
+		m.Debounce = cfg.Debounce
+	}
+	if m.MaxMergeWindow == 0 {
+		m.MaxMergeWindow = cfg.MaxMergeWindow
+	}
+	return m
 }
 
 // Runner executes a task. The scheduler considers the task finished when
@@ -91,7 +112,6 @@ type session struct {
 	running      []*runningTask
 	lastFinish   time.Time
 	lastActivity time.Time
-	replied      map[string]time.Time
 }
 
 type runningTask struct {
@@ -102,8 +122,8 @@ type runningTask struct {
 // NewScheduler returns a scheduler that executes tasks with run and reads
 // each conversation's policy from cfg. A conversation with no queued or
 // running tasks and no activity for idle has its goroutine and state
-// (including MarkReplied marks and pacing) reclaimed, so idle should exceed
-// any continuation window and MinReplyInterval in use.
+// (including pacing) reclaimed, so idle should exceed any MinReplyInterval in
+// use.
 func NewScheduler(run Runner, cfg func(convKey string) SessionConfig, idle time.Duration) *Scheduler {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Scheduler{
@@ -116,13 +136,19 @@ func NewScheduler(run Runner, cfg func(convKey string) SessionConfig, idle time.
 	}
 }
 
-// Admit decides, under the conversation's lock, whether messageID merges into
-// actorID's open merge window, creates a new task, or is only observed; calls
-// persist with that plan; and applies it only if persist succeeds. A merge
-// window is open while a not-yet-started task of the same actor has not
-// reached its ReadyAt. Creating a task when MaxQueued tasks are already
-// waiting returns ErrQueueFull without calling persist.
+// Admit is AdmitWith using the conversation's merge window for a new task.
 func (s *Scheduler) Admit(convKey, actorID, messageID string, mode AdmitMode, persist func(AdmitPlan) error) (AdmitResult, error) {
+	return s.AdmitWith(convKey, actorID, messageID, mode, MergeOptions{}, persist)
+}
+
+// AdmitWith decides, under the conversation's lock, whether messageID merges
+// into actorID's open merge window, creates a new task with the merge window
+// opts, or is only observed; calls persist with that plan; and applies it only
+// if persist succeeds. A merge window is open while a not-yet-started task of
+// the same actor has not reached its ReadyAt; a merge keeps the merge window
+// the task was created with. Creating a task when MaxQueued tasks are already
+// waiting returns ErrQueueFull without calling persist.
+func (s *Scheduler) AdmitWith(convKey, actorID, messageID string, mode AdmitMode, opts MergeOptions, persist func(AdmitPlan) error) (AdmitResult, error) {
 	if s.isClosed() {
 		return AdmitResult{}, ErrSchedulerClosed
 	}
@@ -143,7 +169,8 @@ func (s *Scheduler) Admit(convKey, actorID, messageID string, mode AdmitMode, pe
 			return AdmitResult{}, err
 		}
 		t.TriggerMessageIDs = append(t.TriggerMessageIDs, messageID)
-		t.ReadyAt = earliest(now.Add(cfg.Debounce), t.EnqueuedAt.Add(cfg.MaxMergeWindow))
+		m := t.merge.orConfig(cfg)
+		t.ReadyAt = earliest(now.Add(m.Debounce), t.EnqueuedAt.Add(m.MaxMergeWindow))
 		sess.lastActivity = now
 		sess.signal()
 		return AdmitResult{TaskID: t.TaskID, Merged: true}, nil
@@ -155,13 +182,15 @@ func (s *Scheduler) Admit(convKey, actorID, messageID string, mode AdmitMode, pe
 	if len(sess.pending) >= cfg.MaxQueued {
 		return AdmitResult{}, ErrQueueFull
 	}
+	m := opts.orConfig(cfg)
 	t := QueuedTask{
 		TaskID:            ids.New("task"),
 		ConversationKey:   convKey,
 		ActorID:           actorID,
 		TriggerMessageIDs: []string{messageID},
 		EnqueuedAt:        now,
-		ReadyAt:           now.Add(cfg.Debounce),
+		ReadyAt:           now.Add(m.Debounce),
+		merge:             m,
 	}
 	if err := persist(AdmitPlan{NewTaskID: t.TaskID}); err != nil {
 		return AdmitResult{}, err
@@ -236,48 +265,6 @@ func (s *Scheduler) Kick(convKey string) {
 	if sess != nil {
 		sess.signal()
 	}
-}
-
-// MarkReplied records that the bot replied to actorID at at.
-func (s *Scheduler) MarkReplied(convKey, actorID string, at time.Time) {
-	sess := s.lockSession(convKey, true)
-	if sess == nil {
-		return
-	}
-	defer sess.mu.Unlock()
-	if sess.replied == nil {
-		sess.replied = make(map[string]time.Time)
-	}
-	if at.After(sess.replied[actorID]) {
-		sess.replied[actorID] = at
-	}
-	sess.lastActivity = time.Now()
-}
-
-// InContinuation reports whether now is within window after the last reply
-// to actorID. A window <= 0 disables continuation.
-func (s *Scheduler) InContinuation(convKey, actorID string, window time.Duration, now time.Time) bool {
-	if window <= 0 {
-		return false
-	}
-	sess := s.lockSession(convKey, false)
-	if sess == nil {
-		return false
-	}
-	defer sess.mu.Unlock()
-	at, ok := sess.replied[actorID]
-	return ok && !now.After(at.Add(window))
-}
-
-// EndContinuation ends actorID's continuation window until the bot replies to
-// actorID again.
-func (s *Scheduler) EndContinuation(convKey, actorID string) {
-	sess := s.lockSession(convKey, false)
-	if sess == nil {
-		return
-	}
-	defer sess.mu.Unlock()
-	delete(sess.replied, actorID)
 }
 
 // Close cancels all running tasks and waits for every scheduler goroutine,

@@ -49,7 +49,9 @@ type DecideInput struct {
 	Enabled          bool
 	IsAdmin          bool
 	ReplyToIsBot     bool
-	InContinuation   bool
+	// InContinuation is set when the sender takes part in the group's
+	// ongoing session with the bot.
+	InContinuation bool
 	// MentionsOthers is set when the message mentions a user or everyone.
 	MentionsOthers bool
 	// ReplyToOther is set when the message replies to a stored message sent
@@ -59,7 +61,7 @@ type DecideInput struct {
 
 // Decision is the outcome of Decide. Reason is set only for ignore
 // dispositions; Trigger, Command and Args only for reply. EndContinuation asks
-// the caller to end the sender's continuation window.
+// the caller to take the sender out of the session.
 type Decision struct {
 	Disposition     string
 	Reason          string

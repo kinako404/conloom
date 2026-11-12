@@ -25,16 +25,18 @@ const (
 	CopyTooLong       = "这段内容太长了，我一次处理不了，可以分几段发给我吗？"
 	CopyUnavailable   = "我这边暂时有点卡住了，稍后再试试吧。"
 
-	// CopyDirectiveContinuation is appended to the current message of a
-	// continuation task.
-	CopyDirectiveContinuation = "【提示】这条消息没有 @ 你，只是对方在你回复后接着说的。如果它不是在和你说话，或者话题已经转向别人，只输出 [[SKIP]]，不要输出其他内容。"
-
 	CopyProactiveNotEligible = "先 @ 我聊几句，才能开启主动搭话。"
 	CopyProactivePrivateOnly = "主动搭话只在群聊里使用。"
 	CopyProactiveGroupOn     = "已开启本群的主动搭话。"
 	CopyProactiveGroupOff    = "已关闭本群的主动搭话。"
 	CopyProactiveUsage       = "用法：/主动 查看档位；/主动 关|低|中|高 设置档位；管理员：/主动 全群 开|关。"
 )
+
+// CopyDirectiveContinuation is appended to the current message of a turn in
+// the bot's conversation with speaker.
+func CopyDirectiveContinuation(speaker string) string {
+	return "【提示】你正在和 " + speaker + " 聊天，下面是他在你上次回复后说的话（可能有好几句）。你不需要每句都回应：只有当他在问你、在等你回应，或者你有明显值得说的话时，才回复一两句；如果他是在和别人说话、话题已经转开，或者没必要回应，只输出 [[SKIP]]，不要输出其他内容。"
+}
 
 // CopyDirectiveProactive is appended to the current message of a proactive
 // task; terms are the member's top interest terms.

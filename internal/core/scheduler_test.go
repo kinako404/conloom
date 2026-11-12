@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -471,57 +472,80 @@ func TestScheduler_PersistErrorLeavesNoState(t *testing.T) {
 	}
 }
 
-func TestScheduler_Continuation(t *testing.T) {
-	s := newTestScheduler(t, func(context.Context, QueuedTask) {}, fixedCfg(SessionConfig{MaxConcurrent: 1, MaxQueued: 10}))
-	at := time.Date(2026, 11, 12, 8, 0, 0, 0, time.UTC)
-	const window = 30 * time.Second
-
-	if s.InContinuation("group:10001", "20001", window, at) {
-		t.Fatal("continuation before any reply")
+func TestScheduler_AdmitWithMergeOptions(t *testing.T) {
+	const (
+		debounce = 20 * time.Millisecond
+		gap      = 300 * time.Millisecond
+		maxWait  = 800 * time.Millisecond
+	)
+	rec := newSchedRecorder()
+	rec.sleep = 200 * time.Millisecond
+	s := newTestScheduler(t, rec.run, fixedCfg(SessionConfig{
+		MaxConcurrent: 1, MaxQueued: 10, Debounce: debounce, MaxMergeWindow: time.Minute,
+	}))
+	pending := func(taskID string) QueuedTask {
+		t.Helper()
+		for _, qt := range s.Active("group:10001") {
+			if qt.TaskID == taskID {
+				return qt
+			}
+		}
+		t.Fatalf("task %s not active", taskID)
+		return QueuedTask{}
 	}
-	s.MarkReplied("group:10001", "20001", at)
 
-	cases := []struct {
-		conv, actor string
-		window      time.Duration
-		now         time.Time
-		want        bool
-	}{
-		{"group:10001", "20001", window, at.Add(time.Second), true},
-		{"group:10001", "20001", window, at.Add(window), true},
-		{"group:10001", "20001", window, at.Add(window + time.Millisecond), false},
-		{"group:10001", "20001", 0, at.Add(time.Second), false},
-		{"group:10001", "20002", window, at.Add(time.Second), false},
-		{"group:10002", "20001", window, at.Add(time.Second), false},
+	turn, err := s.AdmitWith("group:10001", "20001", "t1", AdmitNew, MergeOptions{Debounce: gap, MaxMergeWindow: maxWait}, nopPersist)
+	if err != nil || !turn.Created {
+		t.Fatalf("AdmitWith = %+v, %v; want a created task", turn, err)
 	}
-	for _, c := range cases {
-		if got := s.InContinuation(c.conv, c.actor, c.window, c.now); got != c.want {
-			t.Errorf("InContinuation(%s, %s, %v, +%v) = %v, want %v", c.conv, c.actor, c.window, c.now.Sub(at), got, c.want)
+	if qt := pending(turn.TaskID); qt.ReadyAt.Sub(qt.EnqueuedAt) != gap {
+		t.Fatalf("ReadyAt-EnqueuedAt = %v, want the task's gap %v", qt.ReadyAt.Sub(qt.EnqueuedAt), gap)
+	}
+	time.Sleep(4 * debounce)
+	// A later merge keeps using the gap the task was created with, even when
+	// the caller passes none.
+	merged := mustAdmit(t, s, "group:10001", "20001", "t2", AdmitMergeOnly)
+	if !merged.Merged || merged.TaskID != turn.TaskID {
+		t.Fatalf("merge after the conversation's debounce = %+v, want merged into %s", merged, turn.TaskID)
+	}
+	qt := pending(turn.TaskID)
+	if wait := time.Until(qt.ReadyAt); wait < gap-100*time.Millisecond || wait > gap {
+		t.Fatalf("ReadyAt in %v after a merge, want about the gap %v", wait, gap)
+	}
+
+	var started QueuedTask
+	deadline := time.After(waitLimit)
+loop:
+	for i := 3; ; i++ {
+		select {
+		case started = <-rec.started:
+			break loop
+		case <-deadline:
+			t.Fatal("turn never started while messages kept arriving")
+		case <-time.After(gap / 3):
+			mustAdmit(t, s, "group:10001", "20001", "t"+strconv.Itoa(i), AdmitMergeOnly)
 		}
 	}
-}
-
-func TestScheduler_EndContinuation(t *testing.T) {
-	s := newTestScheduler(t, func(context.Context, QueuedTask) {}, fixedCfg(SessionConfig{MaxConcurrent: 1, MaxQueued: 10}))
-	at := time.Now()
-	const window = time.Minute
-
-	s.EndContinuation("group:10001", "20001")
-	s.MarkReplied("group:10001", "20001", at)
-	s.MarkReplied("group:10001", "20002", at)
-	s.EndContinuation("group:10001", "20001")
-	s.EndContinuation("group:10002", "20002")
-
-	if s.InContinuation("group:10001", "20001", window, at.Add(time.Second)) {
-		t.Fatal("20001 still in continuation after EndContinuation")
+	if started.TaskID != turn.TaskID {
+		t.Fatalf("started %s, want %s", started.TaskID, turn.TaskID)
 	}
-	if !s.InContinuation("group:10001", "20002", window, at.Add(time.Second)) {
-		t.Fatal("EndContinuation of 20001 ended 20002's continuation")
+	if got := started.ReadyAt.Sub(started.EnqueuedAt); got != maxWait {
+		t.Fatalf("ReadyAt-EnqueuedAt = %v, want capped at the task's max wait %v", got, maxWait)
 	}
-	s.MarkReplied("group:10001", "20001", at.Add(2*time.Second))
-	if !s.InContinuation("group:10001", "20001", window, at.Add(3*time.Second)) {
-		t.Fatal("a new reply did not restart 20001's continuation")
+	rec.waitFinished(t, 1)
+
+	plain := mustAdmit(t, s, "group:10001", "20002", "p1", AdmitNew)
+	if qt := pending(plain.TaskID); qt.ReadyAt.Sub(qt.EnqueuedAt) != debounce {
+		t.Fatalf("Admit ReadyAt-EnqueuedAt = %v, want the conversation's debounce %v", qt.ReadyAt.Sub(qt.EnqueuedAt), debounce)
 	}
+	half, err := s.AdmitWith("group:10001", "20003", "h1", AdmitNew, MergeOptions{Debounce: gap}, nopPersist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if qt := pending(half.TaskID); qt.ReadyAt.Sub(qt.EnqueuedAt) != gap {
+		t.Fatalf("partial options ReadyAt-EnqueuedAt = %v, want %v", qt.ReadyAt.Sub(qt.EnqueuedAt), gap)
+	}
+	rec.waitFinished(t, 3)
 }
 
 func TestScheduler_RestoreRunsWithGivenReadyAt(t *testing.T) {

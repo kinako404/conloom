@@ -70,7 +70,7 @@ model_profiles:
     privacy: {data_location: remote, allow_sensitive_content: true}
 default_group_policy:
   concurrency: {max_interactive_requests: 1, max_queued_requests: 10, priority: normal, allow_long_requests: true}
-  reply: {command_prefix: /, continuation_window: CONTINUATION, debounce: DEBOUNCE, min_reply_interval: 0s, user_rate_limit_per_minute: RATE_LIMIT}
+  reply: {command_prefix: /, continuation_window: CONTINUATION, debounce: DEBOUNCE, min_reply_interval: 0s, user_rate_limit_per_minute: RATE_LIMIT, turn_gap: TURN_GAP, turn_max_wait: TURN_MAX_WAIT}
   context: {max_recent_messages: 50, max_context_tokens: 0}
   review: {level: basic, review_input: true, review_output: true, action: block}
   proactive: {user_cooldown: COOLDOWN, contact_cooldown: CONTACT}
@@ -91,6 +91,9 @@ type configParams struct {
 	cooldown string
 	// contact is proactive.contact_cooldown; empty means the default 0s.
 	contact string
+	// turnGap and turnMaxWait are reply.turn_gap and reply.turn_max_wait;
+	// empty means the defaults 6s and 20s.
+	turnGap, turnMaxWait string
 }
 
 // testConfig writes a config for p to a temporary directory and loads it.
@@ -121,6 +124,12 @@ func testConfig(t testing.TB, p configParams) *config.Config {
 	if p.contact == "" {
 		p.contact = "0s"
 	}
+	if p.turnGap == "" {
+		p.turnGap = "6s"
+	}
+	if p.turnMaxWait == "" {
+		p.turnMaxWait = "20s"
+	}
 	yml := strings.NewReplacer(
 		"DATA_DIR", strconv.Quote(p.dataDir),
 		"MODEL_URL", p.modelURL,
@@ -131,6 +140,8 @@ func testConfig(t testing.TB, p configParams) *config.Config {
 		"CONTINUATION", p.continuation,
 		"COOLDOWN", p.cooldown,
 		"CONTACT", p.contact,
+		"TURN_GAP", p.turnGap,
+		"TURN_MAX_WAIT", p.turnMaxWait,
 	).Replace(configTemplate)
 	path := filepath.Join(dir, "conloom.yaml")
 	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
@@ -754,5 +765,70 @@ func TestE2E_ProactiveShortlyAfterConversationByDefault(t *testing.T) {
 	}
 	if n := fake.Calls(); n != 2 {
 		t.Errorf("model calls = %d, want 2", n)
+	}
+}
+
+// turnDirective is the start of the hint appended to session turns.
+const turnDirective = "【提示】你正在和 "
+
+func TestE2E_TurnTakingDoesNotReplyEverySentence(t *testing.T) {
+	var mu sync.Mutex
+	turns := 0
+	fake := fakeopenai.New(t, func(req map[string]any) (int, string) {
+		if !strings.Contains(requestText(req), turnDirective) {
+			return 200, fakeReply
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if turns++; turns == 1 {
+			return 200, "爬山不错呀"
+		}
+		return 200, "[[SKIP]]"
+	})
+	e := newEnv(t, testConfig(t, configParams{
+		modelURL: fake.URL, continuation: "60s", turnGap: "1s", turnMaxWait: "3s",
+	}))
+
+	e.mention(group, alice, "在吗？")
+	e.drainOne()
+	var turnTask, lastMsg string
+	for i, text := range []string{"周末去爬山了", "山上风好大", "你周末干嘛了"} {
+		resp, msgID := e.say(group, alice, text, mock.SayOptions{})
+		if resp.Disposition != conloomapi.DispositionReply || resp.TaskID == "" {
+			t.Fatalf("sentence %d: response %+v, want part of a turn", i, resp)
+		}
+		if i == 0 {
+			turnTask = resp.TaskID
+		} else if !resp.Merged || resp.TaskID != turnTask {
+			t.Fatalf("sentence %d: response %+v, want merged into %s", i, resp, turnTask)
+		}
+		lastMsg = msgID
+	}
+	a := e.drainOne()
+	if a.Content.Text != "爬山不错呀" || a.ReplyToMessageID != lastMsg {
+		t.Fatalf("turn reply = %+v, want one reply quoting the last sentence %s", a, lastMsg)
+	}
+	if n := fake.Calls(); n != 2 {
+		t.Fatalf("model calls = %d, want 2 (mention, one turn)", n)
+	}
+
+	// Two skipped turns end the session; later messages trigger nothing.
+	for _, text := range []string{"哈哈", "好吧"} {
+		resp, _ := e.say(group, alice, text, mock.SayOptions{})
+		if resp.Disposition != conloomapi.DispositionReply || resp.TaskID == "" || resp.Merged {
+			t.Fatalf("%q: response %+v, want a new turn", text, resp)
+		}
+		waitUntil(t, "the turn to finish", func() bool {
+			task, err := e.client.GetTask(context.Background(), resp.TaskID)
+			return err == nil && task.Status == conloomapi.TaskSucceeded
+		})
+	}
+	resp, _ := e.say(group, alice, "人呢", mock.SayOptions{})
+	if resp.Disposition != conloomapi.DispositionObserve || resp.TaskID != "" {
+		t.Fatalf("message after the session ended: response %+v, want observe", resp)
+	}
+	e.requireNoAction(300 * time.Millisecond)
+	if n := fake.Calls(); n != 4 {
+		t.Fatalf("model calls = %d, want 4", n)
 	}
 }

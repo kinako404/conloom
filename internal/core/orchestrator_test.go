@@ -1150,7 +1150,8 @@ func TestSubmit_ContinuationRuleExit(t *testing.T) {
 func TestSubmit_RuleExitNotMergedIntoContinuationTask(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) {
 		withContinuation(c)
-		c.DefaultGroupPolicy.Reply.Debounce = conloomapi.Duration{Duration: 400 * time.Millisecond}
+		c.DefaultGroupPolicy.Reply.TurnGap = conloomapi.Duration{Duration: 400 * time.Millisecond}
+		c.DefaultGroupPolicy.Reply.TurnMaxWait = conloomapi.Duration{Duration: time.Second}
 	}})
 	env.startContinuation(t, "20001")
 	cont := env.submit(t, env.groupEvent("20001", "接着说"))
