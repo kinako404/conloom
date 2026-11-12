@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -596,5 +597,72 @@ func TestRunner_EchoPrefixWithKnownSpeakerName(t *testing.T) {
 				t.Fatalf("task = %+v, want one action %q", task, c.want)
 			}
 		})
+	}
+}
+
+func withName(name string) evOpt { return func(ev *conloomapi.Event) { ev.Actor.DisplayName = name } }
+
+func atUser(id, name string) evOpt {
+	return func(ev *conloomapi.Event) {
+		ev.Message.Mentions = append(ev.Message.Mentions, conloomapi.Mention{Type: "user", ID: id, Name: name})
+	}
+}
+
+func TestRunner_MentionNamesResolvedFromStore(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) {
+		c.DefaultGroupPolicy.Context.MaxRecentMessages = 1
+	}})
+	env.submit(t, env.groupEvent("20002", "早", withName("小红")))
+	env.submit(t, env.groupEvent("20001", "嗯", withName("小明")))
+	ev := env.groupEvent("20001", "你能看到我@到别人么", withName("小明"), mentionBot,
+		atUser("user_20002", "红红"), atUser("user_20001", ""), atUser("user_20002", ""))
+	task := env.waitTask(t, env.submit(t, ev).TaskID)
+	if task.Status != conloomapi.TaskSucceeded {
+		t.Fatalf("task = %+v", task)
+	}
+	all := requestText(t, env.short.Requests()[0])
+	if want := "【当前消息】发送者：小明\n（@了 你、小红、小明）\n你能看到我@到别人么"; !strings.Contains(all, want) {
+		t.Errorf("request lacks %q:\n%s", want, all)
+	}
+	for _, id := range []string{"20002", "user_"} {
+		if strings.Contains(all, id) {
+			t.Errorf("request shows ID %q:\n%s", id, all)
+		}
+	}
+	if calls := env.hooks.nameLookupCalls(); len(calls) != 1 || !slices.Equal(calls[0], []string{"user_20002"}) {
+		t.Errorf("name lookups = %v, want one lookup of [user_20002] (小明 is in the loaded history)", calls)
+	}
+}
+
+func TestRunner_MentionNamesFromHistoryNeedNoLookup(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	env.submit(t, env.groupEvent("20002", "早", withName("小红")))
+	env.submit(t, env.groupEvent("20001", "看", withName("小明"), atUser("user_20002", "")))
+	ev := env.groupEvent("20001", "你好", withName("小明"), mentionBot)
+	task := env.waitTask(t, env.submit(t, ev).TaskID)
+	if task.Status != conloomapi.TaskSucceeded {
+		t.Fatalf("task = %+v", task)
+	}
+	all := requestText(t, env.short.Requests()[0])
+	for _, want := range []string{"小明（@了 小红）：看", "【当前消息】发送者：小明\n（@了 你）\n你好"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("request lacks %q:\n%s", want, all)
+		}
+	}
+	if calls := env.hooks.nameLookupCalls(); len(calls) != 0 {
+		t.Errorf("name lookups = %v, want none", calls)
+	}
+}
+
+func TestRunner_MentionNameLookupFailureFallsBack(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	env.hooks.failNames.Store(true)
+	ev := env.groupEvent("20001", "你好", withName("小明"), mentionBot, atUser("user_20002", ""))
+	task := env.waitTask(t, env.submit(t, ev).TaskID)
+	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 {
+		t.Fatalf("task = %+v", task)
+	}
+	if all := requestText(t, env.short.Requests()[0]); !strings.Contains(all, "（@了 你、一位群友）") {
+		t.Errorf("request lacks the fallback name:\n%s", all)
 	}
 }

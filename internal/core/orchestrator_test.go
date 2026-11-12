@@ -150,6 +150,26 @@ type hookStore struct {
 	failRecent atomic.Bool
 	// lookups records the IDs of every GetMessages call.
 	lookups [][]string
+	// nameLookups records the actor IDs of every LatestDisplayNames call.
+	nameLookups [][]string
+	// failNames makes LatestDisplayNames fail.
+	failNames atomic.Bool
+}
+
+func (h *hookStore) LatestDisplayNames(ctx context.Context, convKey string, actorIDs []string) (map[string]string, error) {
+	h.mu.Lock()
+	h.nameLookups = append(h.nameLookups, slices.Clone(actorIDs))
+	h.mu.Unlock()
+	if h.failNames.Load() {
+		return nil, errors.New("test: display names unavailable")
+	}
+	return h.Store.LatestDisplayNames(ctx, convKey, actorIDs)
+}
+
+func (h *hookStore) nameLookupCalls() [][]string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.nameLookups)
 }
 
 func (h *hookStore) GetMessages(ctx context.Context, botID string, ids []string) ([]store.MessageRecord, error) {

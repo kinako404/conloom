@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -243,6 +244,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		Current:          current,
 		BotName:          bot.Name,
 		ReplyTargets:     o.replyTargets(ctx, task, history, triggers),
+		MentionNames:     o.mentionNames(ctx, task, history, triggers),
 		MaxRecent:        pol.Context.MaxRecentMessages,
 		TokenFactor:      o.tokenFactor,
 		Location:         o.loc,
@@ -368,6 +370,47 @@ func (o *Orchestrator) replyTargets(ctx context.Context, task store.TaskRecord, 
 		}
 	}
 	return targets
+}
+
+// mentionNames maps the users that history and triggers mention to their
+// newest display name in the task's conversation: from the loaded messages
+// where possible, else from one store lookup. Users without one are absent;
+// on a lookup error only the loaded names are returned.
+func (o *Orchestrator) mentionNames(ctx context.Context, task store.TaskRecord, history, triggers []store.MessageRecord) map[string]string {
+	loaded := slices.Concat(history, triggers)
+	var ids []string
+	for _, m := range loaded {
+		for _, mention := range m.Mentions {
+			if mention.Type == "user" && mention.ID != "" && !slices.Contains(ids, mention.ID) {
+				ids = append(ids, mention.ID)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	names := make(map[string]string, len(ids))
+	for _, m := range loaded {
+		if !m.FromBot && m.DisplayName != "" && slices.Contains(ids, m.ActorID) {
+			names[m.ActorID] = m.DisplayName
+		}
+	}
+	var missing []string
+	for _, id := range ids {
+		if _, ok := names[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) == 0 {
+		return names
+	}
+	found, err := o.st.LatestDisplayNames(ctx, task.ConversationKey, missing)
+	if err != nil {
+		o.log.Warn("load mentioned names failed", "count", len(missing), "error", err)
+		return names
+	}
+	maps.Copy(names, found)
+	return names
 }
 
 // directive returns the hint appended to the current message of a
