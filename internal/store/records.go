@@ -155,6 +155,73 @@ type ProactiveLogEntry struct {
 	CreatedAt       time.Time
 }
 
+// GroupMemory is a conversation's rolling summary and how far consolidation
+// has read; CursorSeq is the last consolidated messages.seq.
+type GroupMemory struct {
+	ConversationKey string
+	Summary         string
+	CursorSeq       int64
+	LastRunAt       time.Time
+	LastError       string
+	UpdatedAt       time.Time
+}
+
+// MemberMemory is what the bot remembers about one user in one conversation.
+// A nil Affinity means none yet. Day fields hold local dates as "2006-01-02",
+// empty when unset. Version increases on every write and is used for
+// optimistic checks.
+type MemberMemory struct {
+	ConversationKey    string
+	PlatformUserID     string
+	DisplayName        string
+	Note               string
+	Affinity           *int
+	LastInteractionDay string
+	ModelDeltaDay      string
+	ModelDeltaSum      int
+	DecaySteps         int
+	ForgottenAt        time.Time
+	Version            int64
+	UpdatedAt          time.Time
+}
+
+const (
+	FieldSummary  = "summary"
+	FieldNote     = "note"
+	FieldAffinity = "affinity"
+)
+
+const (
+	RevisionConsolidate = "consolidate"
+	RevisionRule        = "rule"
+	RevisionCommand     = "command"
+	RevisionAPI         = "api"
+)
+
+// MemoryRevision records one change to a memory field. Field is one of the
+// Field* constants and Source one of the Revision* constants; summary
+// revisions have an empty PlatformUserID.
+type MemoryRevision struct {
+	ID              int64
+	ConversationKey string
+	PlatformUserID  string
+	Field           string
+	OldValue        string
+	NewValue        string
+	Source          string
+	Reason          string
+	CreatedAt       time.Time
+}
+
+// MemoryWrite is everything written for one conversation's memory in one
+// transaction. A nil Group is left unchanged.
+type MemoryWrite struct {
+	ConversationKey string
+	Group           *GroupMemory
+	Members         []MemberMemory
+	Revisions       []MemoryRevision
+}
+
 // Ingest is everything written for one incoming event. Nil parts are skipped.
 // MergeIntoTaskID, when set, appends Message.ID to that task's trigger messages.
 type Ingest struct {

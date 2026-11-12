@@ -66,6 +66,40 @@ type Store interface {
 	// userID counts every user in the conversation.
 	CountProactive(ctx context.Context, convKey, userID, kind string, since time.Time) (int, error)
 	PurgeProactiveLog(ctx context.Context, before time.Time) (int, error)
+	// GetGroupMemory returns ErrNotFound when the conversation has no memory row.
+	GetGroupMemory(ctx context.Context, convKey string) (GroupMemory, error)
+	// PutGroupMemory inserts g or replaces the conversation's row; UpdatedAt is set to now.
+	PutGroupMemory(ctx context.Context, g GroupMemory) error
+	// GetMemberMemories maps each of userIDs that has a row to its memory.
+	GetMemberMemories(ctx context.Context, convKey string, userIDs []string) (map[string]MemberMemory, error)
+	// ListMemberMemories returns the conversation's member rows ordered by user ID.
+	ListMemberMemories(ctx context.Context, convKey string) ([]MemberMemory, error)
+	// ApplyMemoryWrite writes w in one transaction. A member is written only if
+	// its stored version equals m.Version (0 for no row) and then gets the next
+	// version; mismatched members are skipped with their revisions and returned
+	// as conflicts. Parts keyed to another conversation fail the whole write.
+	ApplyMemoryWrite(ctx context.Context, w MemoryWrite) (conflicts []string, err error)
+	// ForgetMember clears the user's memory, marks it forgotten at at (creating
+	// the row if needed) and deletes the user's revisions in the conversation.
+	ForgetMember(ctx context.Context, convKey, userID string, at time.Time) error
+	// ListMemoryRevisions returns the user's revisions oldest first; an empty
+	// userID lists summary revisions.
+	ListMemoryRevisions(ctx context.Context, convKey, userID string) ([]MemoryRevision, error)
+	// PurgeMemoryRevisions deletes revisions created before before.
+	PurgeMemoryRevisions(ctx context.Context, before time.Time) (int, error)
+	// MessagesAfter returns up to limit messages with Seq > afterSeq ordered by
+	// Seq ascending (none when limit <= 0).
+	MessagesAfter(ctx context.Context, convKey string, afterSeq int64, limit int) ([]MessageRecord, error)
+	// CountMessagesAfter counts the conversation's messages with Seq > afterSeq.
+	CountMessagesAfter(ctx context.Context, convKey string, afterSeq int64) (int, error)
+	// BacklogCursor returns the seq after which exactly backlog of the
+	// conversation's messages remain, or 0 when it has no more than backlog.
+	BacklogCursor(ctx context.Context, convKey string, backlog int) (int64, error)
+	// UserIDsForActors maps each of actorIDs to the platform user ID of its
+	// newest member message in the conversation; actors without one are absent.
+	UserIDsForActors(ctx context.Context, convKey string, actorIDs []string) (map[string]string, error)
+	// ListConversations returns all conversations of convType ordered by key.
+	ListConversations(ctx context.Context, convType string) ([]ConversationRecord, error)
 	Backup(ctx context.Context, path string) error
 	Close() error
 }
