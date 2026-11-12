@@ -21,7 +21,7 @@ import (
 // restart).
 const joinScanLimit = 500
 
-// Reasons considerJoin gives for not joining, logged at debug level.
+// Reasons considerJoin gives for not joining, logged with "join skipped".
 const (
 	joinNoClosed      = "closed"
 	joinNoError       = "error"
@@ -130,9 +130,7 @@ func (o *Orchestrator) lullFired(convKey string, lt *lullTimer) {
 	o.lulls.running.Add(1)
 	o.lulls.mu.Unlock()
 	defer o.lulls.running.Done()
-	if taskID, reason := o.considerJoin(convKey); taskID == "" {
-		o.log.Debug("not joining after a lull", "conversation", convKey, "reason", reason)
-	}
+	o.considerJoin(convKey)
 }
 
 // stopLull stops the group's lull timer.
@@ -172,11 +170,28 @@ type joinSpeaker struct {
 // group's join evaluations and proactive replies in the last hour below their
 // limits; enough recent member messages, the newest not stale; at least one
 // eligible member among the speakers who is not out of their own budget; and
-// the window matching such a member's interests or containing a question. It
-// then creates a join task replying to the newest message of an eligible
-// speaker that addresses nobody else, records the evaluation and returns the
-// task ID, or returns "" and the reason it did not join.
+// the window matching such a member's interests or containing a question. An
+// unanswered question waives the minimum number of messages: the newest
+// message is a question and would itself be the join target. It then creates
+// a join task replying to the newest message of an eligible speaker that
+// addresses nobody else, records the evaluation and returns the task ID, or
+// returns "" and the reason it did not join, which it logs at info level
+// without any message text or names.
 func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
+	windowSize, eligibleSpeakers := -1, -1
+	defer func() {
+		if taskID != "" {
+			return
+		}
+		attrs := []any{"conversation", convKey, "reason", reason}
+		if windowSize >= 0 {
+			attrs = append(attrs, "window_messages", windowSize)
+		}
+		if eligibleSpeakers >= 0 {
+			attrs = append(attrs, "eligible_speakers", eligibleSpeakers)
+		}
+		o.log.Info("join skipped", attrs...)
+	}()
 	ctx := o.bgCtx
 	if o.closing.Load() || ctx.Err() != nil {
 		return "", joinNoClosed
@@ -229,25 +244,36 @@ func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 		return "", joinNoCooldown
 	}
 	window := joinWindow(msgs, now.Add(-p.JoinWindow.Duration), pol.Reply.CommandPrefix)
-	if len(window) < p.JoinMinMessages {
+	windowSize = len(window)
+	// A short window can only be joined for an unanswered question.
+	short := len(window) < p.JoinMinMessages
+	if len(window) == 0 || short && !isQuestion(window[len(window)-1].Text) {
 		return "", joinNoFewMessages
 	}
-	if now.Sub(window[len(window)-1].OccurredAt) >= o.staleAfter {
+	newest := window[len(window)-1]
+	if now.Sub(newest.OccurredAt) >= o.staleAfter {
 		return "", joinNoStale
 	}
 	speakers, err := o.joinSpeakers(ctx, convKey, window, p, now)
 	if err != nil {
 		return fail(err)
 	}
-	if len(speakers) == 0 {
-		return "", joinNoEligible
-	}
-	if !joinRelevant(window, speakers) {
-		return "", joinNoRelevance
-	}
-	target, ok := o.joinTarget(ctx, window, msgs, speakers)
-	if !ok {
-		return "", joinNoTarget
+	eligibleSpeakers = len(speakers)
+	var target store.MessageRecord
+	if short {
+		if target, ok = o.joinTarget(ctx, window, msgs, speakers); !ok || target.ID != newest.ID {
+			return "", joinNoFewMessages
+		}
+	} else {
+		if len(speakers) == 0 {
+			return "", joinNoEligible
+		}
+		if !joinRelevant(window, speakers) {
+			return "", joinNoRelevance
+		}
+		if target, ok = o.joinTarget(ctx, window, msgs, speakers); !ok {
+			return "", joinNoTarget
+		}
 	}
 	plan := joinPlan{}
 	for _, sp := range speakers {

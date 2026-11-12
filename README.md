@@ -187,7 +187,7 @@ conloom version                                                    显示版本�
   1. 本群主动搭话总开关打开（`proactive.enabled`），群未暂停；
   2. 当前没有在聊会话，本群也没有排队或运行中的任务；
   3. Bot 上一次在本群发言（任何方式）距今至少 `join_cooldown`（默认 10 分钟；这个时间记在内存里，重启后第一次检查时从库里本群最近的 Bot 消息恢复，所以重启不会让 Bot 立刻加入）；
-  4. 最近 `join_window`（默认 5 分钟）内至少有 `join_min_messages`（默认 4）条非 Bot、非命令的消息，且最后一条不过时（`runtime.stale_task_after`）；
+  4. 最近 `join_window`（默认 5 分钟）内至少有 `join_min_messages`（默认 4）条非 Bot、非命令的消息，且最后一条不过时（`runtime.stale_task_after`）；例外是没人接的提问：最新一条消息是目标资格人提的问题（见第 6 条的判定）、且它本身可以作为下面的目标消息时，一条也够；
   5. 窗口内至少有一位发过言的**目标资格人**：有资格、档位不是“关”、今天被主动搭话的次数未达档位上限、距上次被主动搭话至少 `user_cooldown`；
   6. 相关：窗口内的文本与某位目标资格人的兴趣画像按其档位匹配，**或者**窗口里有人提问（含“？”或“?”，以“吗”“呢”“么”结尾，或含“怎么”“为什么”“为啥”“有没有”“谁知道”“啥”“咋”）；
   7. 预算：本群最近一小时的加入评估少于 `join_evaluations_per_hour` 次（默认 4），且最近一小时的主动发言少于 `group_hourly_limit` 次（默认 4）。
@@ -217,7 +217,7 @@ conloom version                                                    显示版本�
 | `conloom_continuation_exits_total` | `reason`：`rule`、`model`、`limit`、`idle` | 在聊模式的退出次数：`rule` 为参与者规则退出，`model` 为连续跳过使会话结束，`limit` 为未点名回复达到上限使会话结束，`idle` 为超过保持时间无活动而结束 |
 | `conloom_proactive_total` | `result`：`evaluated`、`sent`、`skipped` | 加入群聊：`evaluated` 为通过检查、交给模型评估，`sent` 为实际发出，`skipped` 为模型放弃，或调用模型前／发出前重新检查时已不允许发出 |
 
-日志不记录兴趣词与消息正文。
+每次停顿检查没有加入时记一条 INFO 日志 `join skipped`，带原因代码（如 `few_messages`、`cooldown`、`no_eligible`）以及窗口消息数、目标资格人数。日志不记录兴趣词、消息正文与群友昵称。
 
 ## 配置
 
