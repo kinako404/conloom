@@ -104,6 +104,7 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 		return
 	}
 	o.updateSession(dbctx, task, out, sent)
+	o.noteInteraction(dbctx, task, out, sent)
 	if out.proactive {
 		switch {
 		case sent:
@@ -237,18 +238,21 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	if err != nil {
 		return fail(conloomapi.CodeInternal, CopyUnavailable, err)
 	}
+	targets := o.replyTargets(ctx, task, history, triggers)
+	names := o.mentionNames(ctx, task, history, triggers)
 	in := contextbuilder.Input{
 		SystemPrompt:     system.Text,
 		ConversationType: conv.Type,
 		History:          history,
 		Current:          current,
 		BotName:          system.BotName,
-		ReplyTargets:     o.replyTargets(ctx, task, history, triggers),
-		MentionNames:     o.mentionNames(ctx, task, history, triggers),
+		ReplyTargets:     targets,
+		MentionNames:     names,
 		MaxRecent:        pol.Context.MaxRecentMessages,
 		TokenFactor:      o.tokenFactor,
 		Location:         o.loc,
 		Directive:        directive,
+		Memory:           o.injectMemory(ctx, task, pol, triggers, targets, names),
 	}
 	req := router.Request{
 		Sensitive:             conv.Type == conloomapi.ConvPrivate,
@@ -450,7 +454,7 @@ func (o *Orchestrator) directive(ctx context.Context, task store.TaskRecord, tri
 // speaker names the sender of the newest trigger message for a directive.
 func speaker(triggers []store.MessageRecord) string {
 	last := triggers[len(triggers)-1]
-	return directiveName(last.DisplayName, last.PlatformUserID)
+	return directiveName(last.DisplayName)
 }
 
 // call builds the context for the routed profile, waits for admission and
