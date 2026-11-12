@@ -45,8 +45,10 @@ type QueuedTask struct {
 	Held bool
 
 	// addressed is set once a message addressed to the bot merged into the
-	// task; deferred once it was first held (and reported to onHold).
-	addressed, deferred bool
+	// task; deferred once it was first held (and reported to onHold);
+	// ignoreCooldown once a message with MergeOptions.IgnoreCooldown created
+	// or merged into it.
+	addressed, deferred, ignoreCooldown bool
 	// merge is the merge window the task was created with; zero fields (as
 	// in restored tasks) follow the conversation's SessionConfig.
 	merge MergeOptions
@@ -71,11 +73,18 @@ type QueuedTask struct {
 // MaxHold, counted from when the task was enqueued, bounds all this: then its
 // merge window closes, and the task becomes ready at once if the cooldown has
 // passed and no task runs, or else is dropped (see Scheduler.OnDrop).
+//
+// IgnoreCooldown marks a message that frees its Cooldown task from waiting
+// for SessionConfig.CooldownUntil, from then on. The task still waits for
+// running tasks and, once held, for its sender's pause, and its merge window
+// still closes at MaxHold, but it is never dropped: past MaxHold it starts
+// once no task runs. Unlike Addressed it keeps the task's merge window.
 type MergeOptions struct {
 	Debounce, MaxMergeWindow time.Duration
 	Addressed                bool
 	Cooldown                 bool
 	MaxHold                  time.Duration
+	IgnoreCooldown           bool
 }
 
 func (m MergeOptions) orConfig(cfg SessionConfig) MergeOptions {
@@ -203,11 +212,14 @@ func (s *Scheduler) AdmitWith(convKey, actorID, messageID string, mode AdmitMode
 			return AdmitResult{}, err
 		}
 		t.TriggerMessageIDs = append(t.TriggerMessageIDs, messageID)
+		// Whether the task is held is judged before this message changes it.
+		held := t.deferred || sess.heldLocked(*t, cfg, now)
 		t.addressed = t.addressed || opts.Addressed
+		t.ignoreCooldown = t.ignoreCooldown || opts.IgnoreCooldown
 		switch m := t.merge.orConfig(cfg); {
 		case opts.Addressed && m.Debounce > cfg.Debounce:
 			t.ReadyAt = earliest(t.ReadyAt, now.Add(cfg.Debounce))
-		case t.paced() && (t.deferred || sess.heldLocked(*t, cfg, now)):
+		case t.paced() && held:
 			t.ReadyAt = now.Add(m.Debounce)
 		default:
 			t.ReadyAt = earliest(now.Add(m.Debounce), t.EnqueuedAt.Add(m.MaxMergeWindow))
@@ -224,7 +236,7 @@ func (s *Scheduler) AdmitWith(convKey, actorID, messageID string, mode AdmitMode
 		return AdmitResult{}, ErrQueueFull
 	}
 	m := opts.orConfig(cfg)
-	m.Addressed = false
+	m.Addressed, m.IgnoreCooldown = false, false
 	t := QueuedTask{
 		TaskID:            ids.New("task"),
 		ConversationKey:   convKey,
@@ -233,6 +245,7 @@ func (s *Scheduler) AdmitWith(convKey, actorID, messageID string, mode AdmitMode
 		EnqueuedAt:        now,
 		ReadyAt:           now.Add(m.Debounce),
 		merge:             m,
+		ignoreCooldown:    opts.IgnoreCooldown,
 	}
 	if err := persist(AdmitPlan{NewTaskID: t.TaskID}); err != nil {
 		return AdmitResult{}, err
@@ -444,10 +457,9 @@ type heldTask struct {
 // whether the session has been idle long enough to be reclaimed, the tasks
 // held for the first time and the dropped tasks.
 func (s *Scheduler) dispatchLocked(sess *session, cfg SessionConfig, now time.Time) (wait time.Duration, idle bool, held []heldTask, dropped []QueuedTask) {
-	blocked := sess.blockedLocked(cfg, now)
 	for i := 0; i < len(sess.pending); {
 		if t := &sess.pending[i]; t.paced() && t.pastHold(now) {
-			if blocked {
+			if !t.ignoreCooldown && sess.blockedLocked(*t, cfg, now) {
 				dropped = append(dropped, cloneTask(*t))
 				sess.pending = slices.Delete(sess.pending, i, i+1)
 				continue
@@ -496,7 +508,7 @@ func (s *Scheduler) dispatchLocked(sess *session, cfg SessionConfig, now time.Ti
 		if !t.deferred {
 			t.deferred = true
 			h := heldTask{task: cloneTask(*t)}
-			if now.Before(cfg.CooldownUntil) {
+			if !t.ignoreCooldown && now.Before(cfg.CooldownUntil) {
 				h.until = cfg.CooldownUntil
 			}
 			held = append(held, h)
@@ -525,16 +537,22 @@ func (t QueuedTask) pastHold(now time.Time) bool {
 	return t.merge.MaxHold > 0 && !now.Before(t.EnqueuedAt.Add(t.merge.MaxHold))
 }
 
-// blockedLocked reports whether paced tasks must wait at now: the cooldown
-// has not passed or a task of the conversation runs.
-func (sess *session) blockedLocked(cfg SessionConfig, now time.Time) bool {
-	return now.Before(cfg.CooldownUntil) || len(sess.running) > 0
+// blockedLocked reports whether the paced task t must wait at now: a task of
+// the conversation runs or, unless t ignores it, the cooldown has not passed.
+func (sess *session) blockedLocked(t QueuedTask, cfg SessionConfig, now time.Time) bool {
+	return len(sess.running) > 0 || !t.ignoreCooldown && now.Before(cfg.CooldownUntil)
 }
 
 // heldLocked reports whether the pending task t is held at now (see
-// MergeOptions.Cooldown).
+// MergeOptions.Cooldown and MergeOptions.IgnoreCooldown).
 func (sess *session) heldLocked(t QueuedTask, cfg SessionConfig, now time.Time) bool {
-	return t.paced() && !t.pastHold(now) && (sess.blockedLocked(cfg, now) || t.deferred && now.Before(t.ReadyAt))
+	switch {
+	case !t.paced():
+		return false
+	case t.pastHold(now):
+		return t.ignoreCooldown && len(sess.running) > 0
+	}
+	return sess.blockedLocked(t, cfg, now) || t.deferred && now.Before(t.ReadyAt)
 }
 
 func (s *Scheduler) startLocked(sess *session, t QueuedTask) {

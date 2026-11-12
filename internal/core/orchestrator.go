@@ -463,7 +463,8 @@ var errRateLimited = errors.New("core: sender is rate limited")
 // starts no earlier than the turn cooldown after the bot last spoke, and only
 // once the sender paused, absorbing their messages meanwhile; it waits at most
 // the turn cooldown plus the turn maximum wait (see MergeOptions.Cooldown and
-// dropHeldTurn). Only a new turn spends one of the sender's rate-limit hits.
+// dropHeldTurn). A turn with a clear question (isClearQuestion) skips the
+// cooldown and is never dropped (see MergeOptions.IgnoreCooldown). Only a new turn spends one of the sender's rate-limit hits.
 func (o *Orchestrator) submitTurn(ctx context.Context, s *submission, pol conloomapi.GroupPolicy) (conloomapi.EventAccepted, error) {
 	if pol.Concurrency.MaxInteractiveRequests == 0 {
 		return o.observeOnly(ctx, s, conloomapi.SuppressedPaused)
@@ -471,6 +472,7 @@ func (o *Orchestrator) submitTurn(ctx context.Context, s *submission, pol conloo
 	opts := MergeOptions{
 		Debounce: pol.Reply.TurnGap.Duration, MaxMergeWindow: pol.Reply.TurnMaxWait.Duration,
 		Cooldown: true, MaxHold: pol.Reply.TurnCooldown.Duration + pol.Reply.TurnMaxWait.Duration,
+		IgnoreCooldown: isClearQuestion(s.ev.Message.Text),
 	}
 	resp, err := o.admitWith(ctx, s, AdmitNew, TriggerContinuation, opts, func() bool {
 		return o.limiter.Allow(s.convKey+":"+s.ev.Actor.PlatformUserID, pol.Reply.UserRateLimitPerMinute, s.now)

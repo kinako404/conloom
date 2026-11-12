@@ -336,3 +336,87 @@ func TestScheduler_OnHoldWithoutCooldownReportsRunning(t *testing.T) {
 		t.Fatal("hold not reported")
 	}
 }
+
+func TestScheduler_IgnoreCooldownTaskNotHeld(t *testing.T) {
+	c := &cooldownCfg{base: SessionConfig{MaxConcurrent: 1, MaxQueued: 10, Debounce: 20 * time.Millisecond, MaxMergeWindow: time.Second}}
+	c.set(time.Now().Add(time.Minute))
+	rec := newSchedRecorder()
+	s := newTestScheduler(t, rec.run, c.cfg)
+	opts := turnOpts
+	opts.Debounce, opts.IgnoreCooldown = 100*time.Millisecond, true
+
+	before := time.Now()
+	q := admitWith(t, s, "20001", "q1", opts)
+	run := rec.waitFinished(t, 1)[0]
+	if run.task.TaskID != q.TaskID || run.start.Before(before.Add(100*time.Millisecond)) {
+		t.Fatalf("question turn started %v after its message, want %s after the 100ms pause", run.start.Sub(before), q.TaskID)
+	}
+}
+
+func TestScheduler_IgnoreCooldownMergeLiftsHold(t *testing.T) {
+	c := &cooldownCfg{base: SessionConfig{MaxConcurrent: 1, MaxQueued: 10, Debounce: 20 * time.Millisecond, MaxMergeWindow: time.Second}}
+	c.set(time.Now().Add(time.Minute))
+	rec := newSchedRecorder()
+	s := newTestScheduler(t, rec.run, c.cfg)
+	opts := turnOpts
+	opts.Debounce = 100 * time.Millisecond
+
+	turn := admitWith(t, s, "20001", "m1", opts)
+	waitUntil(t, "the turn to be held", func() bool { return heldTasks(s) == 1 })
+	q := opts
+	q.IgnoreCooldown = true
+	before := time.Now()
+	if merged := admitWith(t, s, "20001", "q2", q); !merged.Merged || merged.TaskID != turn.TaskID {
+		t.Fatalf("question = %+v, want merged into %s", merged, turn.TaskID)
+	}
+	run := rec.waitFinished(t, 1)[0]
+	if run.task.TaskID != turn.TaskID || len(run.task.TriggerMessageIDs) != 2 || run.start.Before(before.Add(100*time.Millisecond)) {
+		t.Fatalf("run = %+v started %v after the question, want the turn with both messages after the 100ms pause",
+			run.task, run.start.Sub(before))
+	}
+}
+
+func TestScheduler_IgnoreCooldownTaskNotDroppedAtHoldLimit(t *testing.T) {
+	c := &cooldownCfg{base: SessionConfig{MaxConcurrent: 2, MaxQueued: 10, Debounce: 20 * time.Millisecond, MaxMergeWindow: time.Second}}
+	c.set(time.Now().Add(time.Minute))
+	release := make(chan struct{})
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	var started sync.Map
+	run := func(ctx context.Context, qt QueuedTask) {
+		started.Store(qt.TaskID, time.Now())
+		if qt.ActorID == "20002" {
+			<-release
+		}
+	}
+	s := NewScheduler(run, c.cfg, time.Minute)
+	t.Cleanup(s.Close)
+	t.Cleanup(free)
+	var drops atomic.Int32
+	s.OnDrop(func(QueuedTask) { drops.Add(1) })
+	holds := make(chan time.Time, 4)
+	s.OnHold(func(_ QueuedTask, until time.Time) { holds <- until })
+
+	other := admitWith(t, s, "20002", "m1", MergeOptions{})
+	waitUntil(t, "the other task to run", func() bool { _, ok := started.Load(other.TaskID); return ok })
+	opts := MergeOptions{Debounce: 20 * time.Millisecond, MaxMergeWindow: 60 * time.Millisecond, Cooldown: true, MaxHold: 200 * time.Millisecond,
+		IgnoreCooldown: true}
+	q := admitWith(t, s, "20001", "q1", opts)
+	select {
+	case until := <-holds:
+		if !until.IsZero() {
+			t.Fatalf("hold until %v, want zero: a question waits only for the running task", until)
+		}
+	case <-time.After(waitLimit):
+		t.Fatal("question turn not held while another task runs")
+	}
+	time.Sleep(400 * time.Millisecond)
+	if _, ok := started.Load(q.TaskID); ok || drops.Load() != 0 {
+		t.Fatalf("question turn started %v or dropped %d times while another task ran past its hold limit", ok, drops.Load())
+	}
+	free()
+	waitUntil(t, "the question turn to run", func() bool { _, ok := started.Load(q.TaskID); return ok })
+	if n := drops.Load(); n != 0 {
+		t.Fatalf("drops = %d, want 0", n)
+	}
+}

@@ -191,3 +191,121 @@ func TestSession_HeldTurnDroppedAtHoldLimit(t *testing.T) {
 	free()
 	env.waitTask(t, busy.TaskID)
 }
+
+func TestSession_QuestionTurnSkipsCooldown(t *testing.T) {
+	clock := &turnClock{}
+	env := newTestOrchestrator(t, testOpts{short: clock.handler, long: clock.handler, configure: withTurnCooldown(time.Minute, nil)})
+	env.startContinuation(t, "20001")
+	resp := env.submit(t, env.groupEvent("20001", "这个好用吗"))
+	task := env.waitTask(t, resp.TaskID)
+	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 || task.Meta.Trigger != conloomapi.TriggerContinuation {
+		t.Fatalf("question turn = %+v, want a continuation reply", task)
+	}
+	if at, _ := clock.turns(); len(at) != 1 {
+		t.Fatalf("turn requests = %d, want 1 with the turn directive", len(at))
+	}
+	if u, _, _ := env.sessionCounts(); u != 1 {
+		t.Fatalf("session unprompted = %d, want 1", u)
+	}
+}
+
+func TestSession_QuestionMergedIntoHeldTurnLiftsCooldown(t *testing.T) {
+	clock := &turnClock{}
+	env := newTestOrchestrator(t, testOpts{short: clock.handler, long: clock.handler, configure: withTurnCooldown(time.Minute, nil)})
+	env.startContinuation(t, "20001")
+	turn := env.submit(t, env.groupEvent("20001", "今天去爬山了"))
+	waitUntil(t, "the turn to be deferred", env.heldTurn)
+	q := env.submit(t, env.groupEvent("20001", "你去过那座山吗"))
+	if !q.Merged || q.TaskID != turn.TaskID {
+		t.Fatalf("question during the cooldown: %+v, want merged into %s", q, turn.TaskID)
+	}
+	if task := env.waitTask(t, turn.TaskID); len(task.Actions) != 1 {
+		t.Fatalf("turn = %+v, want one reply", task)
+	}
+	_, reqs := clock.turns()
+	if len(reqs) != 1 || !strings.Contains(reqs[0], "今天去爬山了") || !strings.Contains(reqs[0], "你去过那座山吗") {
+		t.Fatalf("turn requests = %q, want one turn with both sentences", reqs)
+	}
+}
+
+func TestSession_StatementTurnStillHeld(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: withTurnCooldown(time.Minute, nil)})
+	env.startContinuation(t, "20001")
+	env.submit(t, env.groupEvent("20001", "我在吃饭呢"))
+	waitUntil(t, "the turn to be deferred", env.heldTurn)
+	time.Sleep(300 * time.Millisecond)
+	if n := env.modelCalls(); n != 1 {
+		t.Fatalf("model calls = %d during the cooldown, want 1 (the mention)", n)
+	}
+}
+
+// gateMention returns a model handler that holds the request whose current
+// message is text (outside session turns) until free is called, recording
+// turn requests in clock.
+func gateMention(clock *turnClock, text string) (handler handlerFunc, free func()) {
+	gate := make(chan struct{})
+	var once sync.Once
+	free = func() { once.Do(func() { close(gate) }) }
+	handler = func(req map[string]any) (int, string) {
+		if c := lastContent(req); !strings.Contains(c, turnDirective) && strings.Contains(c, text) {
+			<-gate
+		}
+		return clock.handler(req)
+	}
+	return handler, free
+}
+
+// TestSession_LiveQuestionAnsweredAfterOtherMention replays a live sequence:
+// a participant asks the bot a follow-up question without mentioning it, and
+// another member mentions the bot right after. The question must be answered,
+// not held for the cooldown and dropped.
+func TestSession_LiveQuestionAnsweredAfterOtherMention(t *testing.T) {
+	clock := &turnClock{}
+	handler, free := gateMention(clock, "小红有事")
+	// Hold limit: 600ms cooldown + 400ms turn_max_wait.
+	env := newTestOrchestrator(t, testOpts{short: handler, long: handler, configure: withTurnCooldown(600*time.Millisecond, nil)})
+	t.Cleanup(free)
+	env.startContinuation(t, "20001")
+	question := env.submit(t, env.groupEvent("20001", "我@的谁?"))
+	other := env.submit(t, env.groupEvent("20002", "小红有事", mentionBot))
+	task := env.waitTask(t, question.TaskID)
+	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 || task.Meta.Trigger != conloomapi.TriggerContinuation {
+		t.Fatalf("question turn = %+v, want answered as a turn", task)
+	}
+	free()
+	if task := env.waitTask(t, other.TaskID); len(task.Actions) != 1 {
+		t.Fatalf("other mention = %+v, want answered", task)
+	}
+	if at, _ := clock.turns(); len(at) != 1 {
+		t.Fatalf("turn requests = %d, want 1", len(at))
+	}
+	if strings.Contains(env.logs.String(), "held_too_long") {
+		t.Fatal("question turn dropped at its hold limit")
+	}
+}
+
+func TestSession_QuestionTurnWaitsForRunningTaskNotDropped(t *testing.T) {
+	clock := &turnClock{}
+	handler, free := gateMention(clock, "小红有事")
+	// Hold limit: 600ms cooldown + 400ms turn_max_wait.
+	env := newTestOrchestrator(t, testOpts{short: handler, long: handler, configure: withTurnCooldown(600*time.Millisecond, nil)})
+	t.Cleanup(free)
+	env.startContinuation(t, "20001")
+	other := env.submit(t, env.groupEvent("20002", "小红有事", mentionBot))
+	waitUntil(t, "the other mention to run", func() bool { return env.getTask(t, other.TaskID).Status == conloomapi.TaskRunning })
+	question := env.submit(t, env.groupEvent("20001", "我@的谁?"))
+	waitUntil(t, "the question turn to wait", env.heldTurn)
+	time.Sleep(1200 * time.Millisecond)
+	if at, _ := clock.turns(); len(at) != 0 {
+		t.Fatal("question turn ran while another task of the group was running")
+	}
+	free()
+	task := env.waitTask(t, question.TaskID)
+	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 {
+		t.Fatalf("question turn = %+v, want answered after the other task", task)
+	}
+	logs := env.logs.String()
+	if strings.Contains(logs, "held_too_long") || !strings.Contains(logs, "waiting_for=running") {
+		t.Fatalf("logs = %s, want the question deferred for the running task and not dropped", logs)
+	}
+}
