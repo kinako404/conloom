@@ -93,6 +93,9 @@ func consPlanBatch(in consBatchInput) consBatch {
 			introduced[i] = append(introduced[i], userID)
 		}
 		refs[actorID] = ref
+		if name = consOneLine(name); name == userID || name == actorID {
+			name = ""
+		}
 		seen[i] = append(seen[i], consAppearance{userID: userID, name: name, spoke: spoke})
 	}
 	for i, rec := range in.Messages {
@@ -190,13 +193,14 @@ func consFirstName(seen []consAppearance, userID string) string {
 }
 
 // consPromptMember shows m as ref under name, else its stored name, else a
-// generic name.
+// generic name; a name that is only m's user ID does not count.
 func consPromptMember(m store.MemberMemory, ref, name string) promptMember {
-	if name == "" {
-		name = m.DisplayName
+	shown := "一位群友"
+	for _, n := range []string{name, m.DisplayName} {
+		if n = consOneLine(n); n != "" && n != m.PlatformUserID {
+			shown = n
+			break
+		}
 	}
-	if name == "" {
-		name = "一位群友"
-	}
-	return promptMember{Ref: ref, Name: name, Note: m.Note, Affinity: m.Affinity}
+	return promptMember{Ref: ref, Name: shown, Note: m.Note, Affinity: m.Affinity}
 }

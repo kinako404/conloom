@@ -74,6 +74,29 @@ func TestTranscript_MemberWithoutRefShownGenerically(t *testing.T) {
 	}
 }
 
+func TestTranscript_NameThatIsTheUserIDShownGenerically(t *testing.T) {
+	xh := memberRec("m1", "20002", "20002", "早", at(9, 0))
+	xm := memberRec("m2", "20001", " 20001 ", "早啊", at(9, 1))
+	xm.ReplyTo = "m1"
+	actorNamed := memberRec("m3", "20003", "user_20003", "嗯", at(9, 2))
+	got := Transcript(TranscriptInput{
+		Messages:     []store.MessageRecord{xh, xm, actorNamed},
+		ReplyTargets: map[string]store.MessageRecord{"m1": xh},
+		Refs:         map[string]string{"user_20001": "P1", "user_20002": "P2", "user_20003": "P3"},
+		BotName:      "织语",
+		Location:     shanghai,
+	})
+	want := []string{
+		"[09:00] 一位群友（P2）：早",
+		"[09:01] 一位群友（P1）（回复 一位群友（P2） 09:00 的「早」）：早啊",
+		"[09:02] 一位群友（P3）：嗯",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("Transcript =\n%q\nwant\n%q", got, want)
+	}
+	assertNoneContain(t, got, "20001", "20002", "20003", "user_")
+}
+
 func TestTranscript_UnknownReplyTarget(t *testing.T) {
 	xm := memberRec("m2", "20001", "小明", "对", at(9, 1))
 	xm.ReplyTo = "m_missing"

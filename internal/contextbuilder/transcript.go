@@ -24,7 +24,8 @@ type TranscriptInput struct {
 
 // Transcript renders each message as one third-person line,
 // "[HH:MM] 名字（P1）（回复 …）（@了 …）：正文": the bot is "<BotName>（机器人）",
-// a member with a code is "名字（P1）" and one without is genericMemberName. A
+// a member with a code is "名字（P1）" (genericMemberName for the name when it
+// is empty or only their ID) and one without is genericMemberName. A
 // reply target missing from ReplyTargets is "（回复了一条更早的消息）". Bodies
 // are capped at HistoryMessageMaxRunes and put on one line; the bot's have
 // echoed transcript prefixes stripped first. No ID is ever shown.
@@ -55,7 +56,17 @@ func (in TranscriptInput) label(rec store.MessageRecord) string {
 	if rec.FromBot {
 		return in.botLabel()
 	}
-	return in.memberLabel(rec.ActorID, displayName(rec))
+	return in.memberLabel(rec.ActorID, speakerName(rec))
+}
+
+// speakerName is rec's display name, or genericMemberName when it is empty or
+// only the sender's platform user ID or actor ID.
+func speakerName(rec store.MessageRecord) string {
+	name := oneLine(rec.DisplayName)
+	if name == "" || name == rec.PlatformUserID || name == rec.ActorID {
+		return genericMemberName
+	}
+	return name
 }
 
 func (in TranscriptInput) botLabel() string {

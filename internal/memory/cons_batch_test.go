@@ -441,3 +441,36 @@ func TestConsolidate_BusyWhenAdmissionWaitExpires(t *testing.T) {
 		t.Errorf("GetGroupMemory err = %v, want no row", err)
 	}
 }
+
+func TestConsPlanBatch_NameThatIsTheUserIDShownGenerically(t *testing.T) {
+	target := consRec(1, "m1", "20002", "20002", "早", consAt(0))
+	reply := consRec(2, "m2", "20003", "20003", "早啊", consAt(1))
+	reply.ReplyTo = "m1"
+	b := consPlanBatch(consBatchInput{
+		ConversationKey: testConvKey,
+		Messages:        []store.MessageRecord{reply},
+		Members: map[string]store.MemberMemory{
+			"20002": {ConversationKey: testConvKey, PlatformUserID: "20002", DisplayName: "20002", Version: 1},
+		},
+		ReplyTargets: map[string]store.MessageRecord{"m1": target},
+		BotName:      "织语",
+		Location:     time.UTC,
+		Budget:       100000,
+		TokenFactor:  1,
+	})
+	if want := []string{"[09:01] 一位群友（P1）（回复 一位群友（P2） 09:00 的「早」）：早啊"}; !slices.Equal(b.Lines, want) {
+		t.Fatalf("Lines = %q, want %q", b.Lines, want)
+	}
+	var members []string
+	for _, m := range b.Members {
+		if m.Name != "" {
+			t.Errorf("member %s Name = %q, want empty (an ID is not a name)", m.UserID, m.Name)
+		}
+		members = append(members, consMemberLine(consPromptMember(m.Memory, m.Ref, m.Name)))
+	}
+	want := []string{"P1 一位群友：笔记：暂无；好感度：未建立", "P2 一位群友：笔记：暂无；好感度：未建立"}
+	if !slices.Equal(members, want) {
+		t.Errorf("member lines = %q, want %q", members, want)
+	}
+	consAssertNoIDs(t, strings.Join(append(b.Lines, members...), "\n"))
+}
