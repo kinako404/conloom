@@ -28,10 +28,22 @@ const (
 	maxBatchesPerRun = 10
 	maxBatchMessages = 1000
 
+	consMinBatchMessages = 20
+	consMinBatchMembers  = 1
+
 	consFailureLimit  = 3
 	consBackoff       = time.Hour
 	consAdmissionWait = 60 * time.Second
 	consLeaseSlack    = 10 * time.Second
+)
+
+// A batch's output is planned as consOutputBase tokens for the summary plus
+// consOutputPerMember per member, within consOutputShare of the long model's
+// reserved output.
+const (
+	consOutputShare     = 0.7
+	consOutputBase      = 800
+	consOutputPerMember = 260
 )
 
 // Failure categories stored as GroupMemory.LastError.
@@ -39,7 +51,20 @@ const (
 	consErrAdmission = "admission_error"
 	consErrModel     = "model_error"
 	consErrParse     = "parse_error"
+	consErrTruncated = "output_truncated"
 )
+
+// consMemberCap is how many members a batch may show for a model that may
+// output outputBudget tokens: at least 1.
+func consMemberCap(outputBudget int) int {
+	return max(consMinBatchMembers, (int(float64(outputBudget)*consOutputShare)-consOutputBase)/consOutputPerMember)
+}
+
+// consLimits are a conversation's reduced batch limits after truncated or
+// timed-out model calls; zero fields mean the defaults.
+type consLimits struct {
+	messages, members int
+}
 
 // ConsolidatorDeps are a Consolidator's collaborators. A nil Metrics, Logger
 // or Now uses a private registry, a discarding logger or time.Now; a nil
@@ -60,13 +85,18 @@ type ConsolidatorDeps struct {
 // Consolidator updates a group's summary, member notes and affinity from its
 // new messages with the long-context model. It counts consecutive failures
 // per conversation in memory and, after consFailureLimit of them, skips
-// unrequested runs for consBackoff.
+// unrequested runs for consBackoff. A truncated or timed-out model call
+// halves the conversation's next batch limits (messages and members, down to
+// consMinBatchMessages and consMinBatchMembers); each written batch doubles
+// them back towards the defaults.
 type Consolidator struct {
-	d ConsolidatorDeps
+	d             ConsolidatorDeps
+	admissionWait time.Duration
 
 	mu       sync.Mutex
 	failures map[string]int
 	backoff  map[string]time.Time
+	limits   map[string]consLimits
 }
 
 func NewConsolidator(d ConsolidatorDeps) *Consolidator {
@@ -82,16 +112,19 @@ func NewConsolidator(d ConsolidatorDeps) *Consolidator {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
-	return &Consolidator{d: d, failures: map[string]int{}, backoff: map[string]time.Time{}}
+	return &Consolidator{d: d, admissionWait: consAdmissionWait,
+		failures: map[string]int{}, backoff: map[string]time.Time{}, limits: map[string]consLimits{}}
 }
 
 // Run consolidates up to maxBatchesPerRun batches of the conversation's
 // messages after its cursor, advancing the cursor after each batch is
 // written. It skips the run when memory is off, during a failure backoff
 // (unless manual), when there is nothing new, when no long-context model is
-// available or when admission stays busy. A failed model call or unreadable
-// output keeps the cursor, records the failure category and returns an
-// error; a cancelled ctx keeps the cursor and is not a failure.
+// available or when admission stays busy. Batches are limited by the long
+// model's input budget and, through consMemberCap, by its reserved output. A
+// failed model call or truncated or unreadable output keeps the cursor,
+// records the failure category and returns an error; a cancelled ctx keeps
+// the cursor and is not a failure.
 func (c *Consolidator) Run(ctx context.Context, convKey string, manual bool) (Result, error) {
 	start := time.Now()
 	res, promptTokens, err := c.run(ctx, convKey, manual)
@@ -139,7 +172,7 @@ func (c *Consolidator) run(ctx context.Context, convKey string, manual bool) (Re
 	var res Result
 	promptTokens := 0
 	for res.Batches < maxBatchesPerRun {
-		msgs, err := c.d.Store.MessagesAfter(ctx, convKey, g.CursorSeq, maxBatchMessages)
+		msgs, err := c.d.Store.MessagesAfter(ctx, convKey, g.CursorSeq, c.messageLimit(convKey))
 		if err != nil {
 			return res, promptTokens, err
 		}
@@ -190,6 +223,8 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 	p := d.Profile
 	in.BotName, in.Location = botName, c.d.Location
 	in.BaseTokens, in.Budget, in.TokenFactor = base, d.PromptBudget, p.Config.TokenEstimateFactor
+	memberCap := consMemberCap(d.MaxOutputTokens)
+	in.MaxMembers = c.memberLimit(convKey, memberCap)
 	b := consPlanBatch(in)
 	now := c.d.Now()
 
@@ -218,7 +253,7 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 			c.d.Logger.Info("memory consolidation skipped: admission busy", "conversation", convKey)
 			return consOutcome{skipped: "busy"}, nil
 		}
-		return consOutcome{}, c.fail(ctx, *g, consErrAdmission, err)
+		return consOutcome{}, c.fail(ctx, *g, consErrAdmission, err, openai.ChatResponse{})
 	}
 	resp, err := c.chat(ctx, p, prompt, d.MaxOutputTokens)
 	lease.Release()
@@ -226,11 +261,18 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 		if ctx.Err() != nil {
 			return consOutcome{}, ctx.Err()
 		}
-		return consOutcome{}, c.fail(ctx, *g, consErrModel, err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			c.shrink(convKey, b, memberCap)
+		}
+		return consOutcome{}, c.fail(ctx, *g, consErrModel, err, resp)
+	}
+	if resp.FinishReason == "length" {
+		c.shrink(convKey, b, memberCap)
+		return consOutcome{}, c.fail(ctx, *g, consErrTruncated, errors.New("model output reached its token limit"), resp)
 	}
 	out, err := parseOutput(resp.Content)
 	if err != nil {
-		return consOutcome{}, c.fail(ctx, *g, consErrParse, err)
+		return consOutcome{}, c.fail(ctx, *g, consErrParse, err, resp)
 	}
 
 	w, affinityChanged := c.compose(*g, b, out, mp, now)
@@ -248,6 +290,7 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 		}
 	}
 	*g = *w.Group
+	c.grow(convKey, memberCap)
 	return consOutcome{messages: b.Messages, membersUpdated: len(w.Members) - len(conflicts), promptTokens: resp.PromptTokens}, nil
 }
 
@@ -366,16 +409,72 @@ func (c *Consolidator) compose(g store.GroupMemory, b consBatch, out modelOutput
 }
 
 // fail records a failed batch: g is stored with category as its last error
-// and the failure counts toward the backoff.
-func (c *Consolidator) fail(ctx context.Context, g store.GroupMemory, category string, cause error) error {
+// and the failure counts toward the backoff. resp is the model's response,
+// if any.
+func (c *Consolidator) fail(ctx context.Context, g store.GroupMemory, category string, cause error, resp openai.ChatResponse) error {
 	n := c.recordFailure(g.ConversationKey)
 	g.LastError = category
 	if err := c.d.Store.PutGroupMemory(ctx, g); err != nil {
 		c.d.Logger.Warn("record memory consolidation failure failed", "conversation", g.ConversationKey, "error", err)
 	}
 	c.d.Logger.Warn("memory consolidation failed", "conversation", g.ConversationKey, "category", category,
-		"failures", n, "error", cause)
+		"failures", n, "finish_reason", resp.FinishReason, "completion_tokens", resp.CompletionTokens, "error", cause)
 	return fmt.Errorf("memory: consolidate %s: %s: %w", g.ConversationKey, category, cause)
+}
+
+func (c *Consolidator) messageLimit(convKey string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if l := c.limits[convKey].messages; l > 0 {
+		return l
+	}
+	return maxBatchMessages
+}
+
+func (c *Consolidator) memberLimit(convKey string, memberCap int) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if l := c.limits[convKey].members; l > 0 && l < memberCap {
+		return l
+	}
+	return memberCap
+}
+
+// shrink halves the conversation's batch limits below the size of b, which
+// failed, down to consMinBatchMessages and consMinBatchMembers.
+func (c *Consolidator) shrink(convKey string, b consBatch, memberCap int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	l := c.limits[convKey]
+	messages, members := l.messages, l.members
+	if messages == 0 {
+		messages = maxBatchMessages
+	}
+	if members == 0 || members > memberCap {
+		members = memberCap
+	}
+	l.messages = max(consMinBatchMessages, min(messages, b.Messages)/2)
+	l.members = max(consMinBatchMembers, min(members, len(b.Members))/2)
+	c.limits[convKey] = l
+	c.d.Logger.Info("memory consolidation batch limits reduced", "conversation", convKey,
+		"messages", l.messages, "members", l.members)
+}
+
+// grow doubles the conversation's reduced batch limits, up to the defaults.
+func (c *Consolidator) grow(convKey string, memberCap int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	l, ok := c.limits[convKey]
+	if !ok {
+		return
+	}
+	l.messages = min(l.messages*2, maxBatchMessages)
+	l.members = min(l.members*2, memberCap)
+	if l.messages >= maxBatchMessages && l.members >= memberCap {
+		delete(c.limits, convKey)
+		return
+	}
+	c.limits[convKey] = l
 }
 
 func (c *Consolidator) recordFailure(convKey string) int {
@@ -402,10 +501,10 @@ func (c *Consolidator) clearFailures(convKey string) {
 	delete(c.backoff, convKey)
 }
 
-// acquire waits up to consAdmissionWait for a background lease on p.
+// acquire waits up to c.admissionWait for a background lease on p.
 func (c *Consolidator) acquire(ctx context.Context, p *router.Profile, convKey string, tokens int) (*admission.Lease, error) {
 	rt := p.Config.Runtime
-	wctx, cancel := context.WithTimeout(ctx, consAdmissionWait)
+	wctx, cancel := context.WithTimeout(ctx, c.admissionWait)
 	defer cancel()
 	return c.d.Admission.Acquire(wctx, admission.Request{
 		ID:       "memory:" + convKey,

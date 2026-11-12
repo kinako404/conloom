@@ -123,9 +123,10 @@ func (s *consSyncBuffer) String() string {
 }
 
 type consOpts struct {
-	softBudget int
-	noLong     bool
-	memory     func(*conloomapi.MemoryPolicy)
+	softBudget     int
+	reservedOutput int
+	noLong         bool
+	memory         func(*conloomapi.MemoryPolicy)
 }
 
 type consEnv struct {
@@ -147,13 +148,16 @@ func newConsEnv(t *testing.T, opts consOpts) *consEnv {
 	if opts.softBudget == 0 {
 		opts.softBudget = 16000
 	}
+	if opts.reservedOutput == 0 {
+		opts.reservedOutput = 4096
+	}
 	e := &consEnv{st: newTestStore(t), short: &consFake{}, long: &consFake{}, reg: prometheus.NewRegistry(),
 		logs: &consSyncBuffer{}, now: consNow}
 	profile := func(soft int) config.ModelProfile {
 		return config.ModelProfile{
 			Model: "fake",
 			Context: config.ContextLimits{NativeWindow: 128000, ConfiguredWindow: 128000, SoftInputBudget: soft,
-				ReservedOutputTokens: 2000, SafetyMarginTokens: 500},
+				ReservedOutputTokens: opts.reservedOutput, SafetyMarginTokens: 500},
 			Runtime:             config.ProfileRuntime{MaxConcurrency: 1, Timeout: conloomapi.Duration{Duration: time.Minute}},
 			TokenEstimateFactor: 1,
 		}

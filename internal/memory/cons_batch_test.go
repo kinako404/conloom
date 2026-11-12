@@ -2,13 +2,18 @@ package memory
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/kinako404/conloom/internal/admission"
 	"github.com/kinako404/conloom/internal/contextbuilder"
 	"github.com/kinako404/conloom/internal/provider/openai"
+	"github.com/kinako404/conloom/internal/router"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -258,5 +263,181 @@ func TestConsolidate_SplitsBatchesByBudget(t *testing.T) {
 	}
 	if g := e.group(t); g.CursorSeq != msgs[59].Seq || g.LastError != "" {
 		t.Fatalf("final group = %+v, want cursor %d", g, msgs[59].Seq)
+	}
+}
+
+func TestConsMemberCap(t *testing.T) {
+	for out, want := range map[int]int{0: 1, 1000: 1, 1900: 2, 2300: 3, 4096: 7} {
+		if got := consMemberCap(out); got != want {
+			t.Errorf("consMemberCap(%d) = %d, want %d", out, got, want)
+		}
+	}
+}
+
+func TestConsPlanBatch_CutsAtMemberCap(t *testing.T) {
+	reply := consRec(3, "m3", "20001", "小明", "对", consAt(2))
+	reply.ReplyTo = "m2"
+	msgs := []store.MessageRecord{
+		consRec(1, "m1", "20001", "小明", "早", consAt(0)),
+		consRec(2, "m2", "20002", "小红", "早啊", consAt(1)),
+		reply,
+		consRec(4, "m4", "20003", "", "大家好", consAt(3)),
+		consRec(5, "m5", "20001", "小明", "你好", consAt(4)),
+	}
+	in := consBatchInput{ConversationKey: testConvKey, Messages: msgs, BotName: "织语", Location: time.UTC,
+		Budget: 100000, TokenFactor: 1, ReplyTargets: map[string]store.MessageRecord{"m2": msgs[1]}}
+	for cap, want := range map[int]struct {
+		lines   int
+		lastSeq int64
+	}{0: {5, 5}, 1: {1, 1}, 2: {3, 3}, 3: {5, 5}} {
+		in.MaxMembers = cap
+		b := consPlanBatch(in)
+		if len(b.Lines) != want.lines || b.LastSeq != want.lastSeq || (cap > 0 && len(b.Members) > cap) {
+			t.Errorf("MaxMembers %d: %d lines up to seq %d with %d members; want %d lines up to seq %d",
+				cap, len(b.Lines), b.LastSeq, len(b.Members), want.lines, want.lastSeq)
+		}
+	}
+	single := consRec(1, "m1", "20001", "小明", "叫上你们", consAt(0))
+	single.Mentions = []conloomapi.Mention{{Type: "user", ID: "user_20002"}, {Type: "user", ID: "user_20003"}}
+	in.Messages, in.MaxMembers = []store.MessageRecord{single, msgs[1]}, 1
+	in.MentionUsers = map[string]string{"user_20002": "20002", "user_20003": "20003"}
+	if b := consPlanBatch(in); len(b.Lines) != 2 || len(b.Members) != 3 {
+		t.Errorf("one message over the cap: %d lines, %d members; want it kept, then a message adding nobody", len(b.Lines), len(b.Members))
+	}
+}
+
+func TestConsolidate_OutputBudgetSplitsManyMembers(t *testing.T) {
+	e := newConsEnv(t, consOpts{reservedOutput: 1900})
+	e.add(t,
+		e.msg("20001", "小明", "早", consAt(0)),
+		e.msg("20002", "小红", "早啊", consAt(1)),
+		e.msg("20003", "", "大家好", consAt(2)),
+		e.msg("20001", "小明", "你好", consAt(3)),
+	)
+	res := e.run(t, false)
+	if res.Batches != 2 || e.long.calls() != 2 {
+		t.Fatalf("Result = %+v with %d calls, want 2 batches", res, e.long.calls())
+	}
+	for i, want := range [][]string{
+		{"[09:00] 小明（P1）：早", "[09:01] 小红（P2）：早啊"},
+		{"[09:02] 一位群友（P1）：大家好", "[09:03] 小明（P2）：你好"},
+	} {
+		if got := consBatchLines(t, e.long.request(t, i)); !slices.Equal(got, want) {
+			t.Errorf("batch %d lines = %q, want %q", i, got, want)
+		}
+	}
+}
+
+// consRoundRobin stores n messages from 20001, 20002 and 20003 in turn.
+func consRoundRobin(t *testing.T, e *consEnv, n int) []store.MessageRecord {
+	t.Helper()
+	users := []struct{ id, name string }{{"20001", "小明"}, {"20002", "小红"}, {"20003", ""}}
+	var msgs []store.MessageRecord
+	for i := range n {
+		u := users[i%len(users)]
+		msgs = append(msgs, e.msg(u.id, u.name, "第"+strconv.Itoa(i)+"条", consAt(i)))
+	}
+	return e.add(t, msgs...)
+}
+
+func TestConsolidate_TruncatedOutputShrinksNextBatch(t *testing.T) {
+	e := newConsEnv(t, consOpts{reservedOutput: 2300})
+	consRoundRobin(t, e, 30)
+	e.long.setReply(func(int, openai.ChatRequest) (openai.ChatResponse, error) {
+		return openai.ChatResponse{Content: `{"group_summary":"S","members":[{"ref":"P1","note":"写到一半`, Model: "fake-long",
+			FinishReason: "length", CompletionTokens: 2300}, nil
+	})
+	if _, err := e.c.Run(context.Background(), testConvKey, false); err == nil {
+		t.Fatal("Run: want an error for truncated output")
+	}
+	if got := len(consBatchLines(t, e.long.request(t, 0))); got != 30 {
+		t.Fatalf("first batch has %d lines, want all 30", got)
+	}
+	if g := e.group(t); g.CursorSeq != 0 || g.LastError != consErrTruncated {
+		t.Fatalf("group = %+v, want cursor 0 and %s", g, consErrTruncated)
+	}
+	logs := e.logs.String()
+	for _, want := range []string{"finish_reason=length", "completion_tokens=2300"} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("failure log lacks %q:\n%s", want, logs)
+		}
+	}
+
+	e.long.answer(`{"group_summary":"S","members":[]}`)
+	if res := e.run(t, false); res.Batches != 3 {
+		t.Fatalf("Result = %+v, want 3 batches", res)
+	}
+	var sizes []int
+	for i := 1; i < e.long.calls(); i++ {
+		sizes = append(sizes, len(consBatchLines(t, e.long.request(t, i))))
+	}
+	if !slices.Equal(sizes, []int{1, 2, 27}) {
+		t.Errorf("batch sizes after truncation = %v, want [1 2 27] (1 member, then 2, then the default 3)", sizes)
+	}
+}
+
+func TestConsolidate_TimeoutShrinksMessagesToFloor(t *testing.T) {
+	e := newConsEnv(t, consOpts{})
+	var msgs []store.MessageRecord
+	for i := range 60 {
+		msgs = append(msgs, e.msg("20001", "小明", "第"+strconv.Itoa(i)+"条", consAt(i)))
+	}
+	msgs = e.add(t, msgs...)
+	e.long.setReply(func(int, openai.ChatRequest) (openai.ChatResponse, error) {
+		return openai.ChatResponse{}, fmt.Errorf("openai: %w", context.DeadlineExceeded)
+	})
+	for i := range 3 {
+		if _, err := e.c.Run(context.Background(), testConvKey, true); err == nil {
+			t.Fatalf("run %d: want a timeout error", i)
+		}
+	}
+	var sizes []int
+	for i := range 3 {
+		sizes = append(sizes, len(consBatchLines(t, e.long.request(t, i))))
+	}
+	if !slices.Equal(sizes, []int{60, 30, 20}) {
+		t.Fatalf("timed-out batch sizes = %v, want [60 30 20] (halved, floor 20)", sizes)
+	}
+	if g := e.group(t); g.CursorSeq != 0 || g.LastError != consErrModel {
+		t.Fatalf("group = %+v, want cursor 0 and %s", g, consErrModel)
+	}
+
+	e.long.answer(`{"group_summary":"S","members":[]}`)
+	if res := e.run(t, true); res.Batches != 2 || res.Messages != 60 {
+		t.Fatalf("Result = %+v, want 60 messages in 2 batches", res)
+	}
+	if a, b := len(consBatchLines(t, e.long.request(t, 3))), len(consBatchLines(t, e.long.request(t, 4))); a != 20 || b != 40 {
+		t.Errorf("batch sizes after timeouts = %d, %d; want 20 (floor) then 40 (doubled)", a, b)
+	}
+	if g := e.group(t); g.CursorSeq != msgs[59].Seq {
+		t.Errorf("cursor = %d, want %d", g.CursorSeq, msgs[59].Seq)
+	}
+}
+
+func TestConsolidate_BusyWhenAdmissionWaitExpires(t *testing.T) {
+	e := newConsEnv(t, consOpts{})
+	consSeedThree(t, e)
+	e.c.admissionWait = 20 * time.Millisecond
+	hold, err := e.adm.Acquire(context.Background(), admission.Request{ID: "hold", Profile: string(router.RoleLong), Tokens: 1})
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer hold.Release()
+	for range 4 {
+		if res := e.run(t, false); res.Skipped != "busy" {
+			t.Fatalf("Run = %+v, want busy (never backoff)", res)
+		}
+	}
+	if e.long.calls() != 0 {
+		t.Errorf("long calls = %d, want 0", e.long.calls())
+	}
+	if got := e.counter(t, "conloom_memory_consolidations_total", "skipped"); got != 4 {
+		t.Errorf("consolidations{skipped} = %v, want 4", got)
+	}
+	if got := e.counter(t, "conloom_memory_consolidations_total", "error"); got != 0 {
+		t.Errorf("consolidations{error} = %v, want 0", got)
+	}
+	if _, err := e.st.GetGroupMemory(context.Background(), testConvKey); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetGroupMemory err = %v, want no row", err)
 	}
 }

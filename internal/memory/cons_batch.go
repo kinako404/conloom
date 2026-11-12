@@ -25,6 +25,7 @@ type consBatchInput struct {
 	Location        *time.Location
 	BaseTokens      int
 	Budget          int
+	MaxMembers      int
 	TokenFactor     float64
 }
 
@@ -58,8 +59,9 @@ type consAppearance struct {
 // forgotten: their messages, their messages as reply targets and mentions of
 // them made before then. It codes the remaining members P1, P2… in order of
 // first appearance (speaker, reply target, then mentions) and takes messages
-// while the prompt stays within Budget, always at least one kept message.
-// Hidden messages up to the cut are covered by the batch too.
+// while the prompt stays within Budget and the batch shows at most MaxMembers
+// members (no limit when 0), always at least one kept message. Hidden
+// messages up to the cut are covered by the batch too.
 func consPlanBatch(in consBatchInput) consBatch {
 	hidden := func(userID string, at time.Time) bool {
 		m, ok := in.Members[userID]
@@ -143,7 +145,8 @@ func consPlanBatch(in consBatchInput) consBatch {
 				m := consPromptMember(in.member(userID), userRefs[userID], consFirstName(seen[i], userID))
 				cost += contextbuilder.Estimate(consMemberLine(m)+"\n", in.TokenFactor)
 			}
-			if len(b.Lines) > 0 && b.Tokens+cost > in.Budget {
+			overMembers := in.MaxMembers > 0 && len(introduced[i]) > 0 && len(inBatch)+len(introduced[i]) > in.MaxMembers
+			if len(b.Lines) > 0 && (b.Tokens+cost > in.Budget || overMembers) {
 				break
 			}
 			b.Tokens += cost
