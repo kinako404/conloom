@@ -135,7 +135,7 @@ default_group_policy:
     # 以下设置缺失时按默认值逐项补齐。
     turn_gap: 6s                  # 参与者停顿多久算说完一轮，1s~60s
     turn_max_wait: 20s            # 一轮最长等待，turn_gap~2m
-    turn_cooldown: 45s            # 接话冷却：Bot 在群里说话后多久内不处理未点名的一轮（先合并等待，到时再处理），1s~10m
+    turn_cooldown: 45s            # 接话冷却：Bot 在群里说话后多久内挂起未点名的一轮（合并等待，对方停顿后再处理；最多挂起 turn_cooldown+turn_max_wait，超时且仍在冷却或忙时丢弃），1s~10m；continuation_window 不为 0 时必须大于它
     max_unprompted_replies: 4     # 自上次被 @ 以来最多回复几轮就结束会话，1~20
     max_consecutive_skips: 2      # 连续几轮不回应就结束会话，1~10
     quote: auto                   # 群里回复何时引用原消息：auto 只在中间有别人插话或原消息超过 60 秒时引用；always 总是引用；never 从不引用
