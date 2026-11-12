@@ -1,0 +1,1 @@
+{"time":1762905600,"self_id":30001,"post_type":"message","message_type":"group","sub_type":"normal","message_id":7001,"user_id":20001,"group_id":10001,"message":[{"type":"at","data":{"qq":"30001"}},{"type":"text","data":{"text":" 你好"}}],"raw_message":"[CQ:at,qq=30001] 你好","sender":{"user_id":20001,"nickname":"小明","card":"","role":"member"}}
