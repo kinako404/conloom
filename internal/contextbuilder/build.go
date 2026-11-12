@@ -4,14 +4,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kinako404/conloom/internal/provider/openai"
 	"github.com/kinako404/conloom/internal/store"
 )
 
 // HistoryMessageMaxRunes caps the rendered body (text plus attachment
-// placeholders) of each history message; longer bodies are cut and suffixed
-// with historyTruncatedMarker.
+// placeholders) of each non-bot history message: the text is cut and marked
+// with historyTruncatedMarker, while placeholders stay whole. The bot's own
+// replies are never capped.
 const HistoryMessageMaxRunes = 300
 
 const (
@@ -56,8 +58,8 @@ func BaseTokens(in Input) int {
 
 // Build fills History from newest to oldest into the budget left after
 // BaseTokens and returns the messages in chronological order. The system
-// prompt and current input are never dropped or truncated; each history body is
-// capped at HistoryMessageMaxRunes before it is costed. Roles strictly alternate after
+// prompt and current input are never dropped or truncated; each non-bot history
+// body is capped at HistoryMessageMaxRunes before it is costed. Roles strictly alternate after
 // the system prompt: adjacent same-role history is merged, history never
 // starts with assistant, and trailing user history is merged into the final
 // user message under recentLabel.
@@ -134,22 +136,26 @@ func Build(in Input) Output {
 }
 
 func renderHistory(rec store.MessageRecord, loc *time.Location) (role, content string) {
-	body := truncateHistoryBody(renderBody(rec))
 	if rec.FromBot {
-		return "assistant", body
+		return "assistant", renderBody(rec)
 	}
-	return "user", "[" + rec.OccurredAt.In(loc).Format("15:04") + "] " + displayName(rec) + "：" + body
+	return "user", "[" + rec.OccurredAt.In(loc).Format("15:04") + "] " + displayName(rec) + "：" + renderCappedBody(rec)
 }
 
-func truncateHistoryBody(body string) string {
+// renderCappedBody is renderBody limited to HistoryMessageMaxRunes: only the
+// text is cut (marked with historyTruncatedMarker), and attachment placeholders
+// are always kept whole.
+func renderCappedBody(rec store.MessageRecord) string {
+	placeholders := renderPlaceholders(rec)
+	limit := max(HistoryMessageMaxRunes-utf8.RuneCountInString(placeholders), 0)
 	n := 0
-	for i := range body {
-		if n == HistoryMessageMaxRunes {
-			return body[:i] + historyTruncatedMarker
+	for i := range rec.Text {
+		if n == limit {
+			return rec.Text[:i] + historyTruncatedMarker + placeholders
 		}
 		n++
 	}
-	return body
+	return renderBody(rec)
 }
 
 func renderCurrent(in Input) string {
@@ -172,17 +178,21 @@ func renderCurrent(in Input) string {
 }
 
 func renderBody(rec store.MessageRecord) string {
+	body := rec.Text + renderPlaceholders(rec)
+	if body == "" {
+		return "[空消息]"
+	}
+	return body
+}
+
+func renderPlaceholders(rec store.MessageRecord) string {
 	var b strings.Builder
-	b.WriteString(rec.Text)
 	for _, a := range rec.Attachments {
 		if a.Type == "image" {
 			b.WriteString("[图片]")
 		} else {
 			b.WriteString("[文件]")
 		}
-	}
-	if b.Len() == 0 {
-		return "[空消息]"
 	}
 	return b.String()
 }
