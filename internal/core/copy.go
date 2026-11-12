@@ -1,9 +1,14 @@
 package core
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+
+	"github.com/kinako404/conloom/pkg/conloomapi"
+)
 
 func CopyHelp(botName string) string {
-	return "我是" + botName + "。在群里 @我 或回复我的消息就能和我聊天。\n命令：/help 帮助，/stop 停止当前回复，/persona 查看人格；管理员：/pause 暂停，/resume 恢复。"
+	return "我是" + botName + "。在群里 @我 或回复我的消息就能和我聊天。\n命令：/help 帮助，/stop 停止当前回复，/persona 查看人格，/主动 查看或设置主动搭话；管理员：/pause 暂停，/resume 恢复。"
 }
 
 func CopyPersonaInfo(name string, version int) string {
@@ -23,4 +28,53 @@ const (
 	// CopyDirectiveContinuation is appended to the current message of a
 	// continuation task.
 	CopyDirectiveContinuation = "【提示】这条消息没有 @ 你，只是对方在你回复后接着说的。如果它不是在和你说话，或者话题已经转向别人，只输出 [[SKIP]]，不要输出其他内容。"
+
+	CopyProactiveNotEligible = "先 @ 我聊几句，才能开启主动搭话。"
+	CopyProactivePrivateOnly = "主动搭话只在群聊里使用。"
+	CopyProactiveGroupOn     = "已开启本群的主动搭话。"
+	CopyProactiveGroupOff    = "已关闭本群的主动搭话。"
+	CopyProactiveUsage       = "用法：/主动 查看档位；/主动 关|低|中|高 设置档位；管理员：/主动 全群 开|关。"
 )
+
+// CopyDirectiveProactive is appended to the current message of a proactive
+// task; terms are the member's top interest terms.
+func CopyDirectiveProactive(terms []string) string {
+	return "【提示】没有人 @ 你，这是你在主动搭话。这个人以前常和你聊：" + strings.Join(terms, "、") +
+		"。只有当你能自然、简短地接上这个话题时才回复（一两句）；如果不合适、话题无关、或对方明显在和别人聊，只输出 [[SKIP]]，不要输出其他内容。"
+}
+
+// CopyProactiveStatus describes a member's proactive setting: level and
+// eligibility, how often the bot spoke up to them today out of their daily
+// limit, and whether the group switch is on.
+func CopyProactiveStatus(level string, eligible bool, sentToday, dailyLimit int, groupEnabled bool) string {
+	var b strings.Builder
+	if eligible {
+		b.WriteString("你的主动搭话档位：" + levelName(level) + "，今天已主动找你聊 " +
+			strconv.Itoa(sentToday) + "/" + strconv.Itoa(dailyLimit) + " 次。可用 /主动 关|低|中|高 调整。")
+	} else {
+		b.WriteString("你还没有主动搭话资格，" + CopyProactiveNotEligible)
+	}
+	if !groupEnabled {
+		b.WriteString("本群的主动搭话目前已关闭。")
+	}
+	return b.String()
+}
+
+// CopyProactiveSet confirms a member's new proactive level.
+func CopyProactiveSet(level string) string {
+	return "好的，你的主动搭话档位已设为：" + levelName(level) + "。"
+}
+
+func levelName(level string) string {
+	switch level {
+	case conloomapi.ProactiveOff:
+		return "关"
+	case conloomapi.ProactiveLow:
+		return "低"
+	case conloomapi.ProactiveMid:
+		return "中"
+	case conloomapi.ProactiveHigh:
+		return "高"
+	}
+	return level
+}

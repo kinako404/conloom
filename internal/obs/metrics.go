@@ -17,6 +17,7 @@ type Metrics struct {
 	Review            *prometheus.CounterVec // stage, verdict
 	BreakerOpen       *prometheus.GaugeVec   // role
 	ContinuationExits *prometheus.CounterVec // reason: rule|model
+	Proactive         *prometheus.CounterVec // result: evaluated|sent|skipped
 }
 
 // NewMetrics creates all ConLoom metrics and registers them on reg; it panics
@@ -68,12 +69,15 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		ContinuationExits: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "conloom_continuation_exits_total", Help: "Continuation windows ended early by reason (rule|model).",
 		}, []string{"reason"}),
+		Proactive: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "conloom_proactive_total", Help: "Proactive replies by result (evaluated|sent|skipped).",
+		}, []string{"result"}),
 	}
 	reg.MustRegister(
 		m.Events, m.Tasks, m.ModelLatency, m.ModelTokens, m.EstimateRatio,
 		m.QueueWait, m.QueueDepth, m.AdmissionRejects,
 		m.OutboxDelivered, m.OutboxRedelivered, m.OutboxExpired,
-		m.Review, m.BreakerOpen, m.ContinuationExits,
+		m.Review, m.BreakerOpen, m.ContinuationExits, m.Proactive,
 	)
 	return m
 }

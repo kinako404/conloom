@@ -70,7 +70,7 @@ model_profiles:
     privacy: {data_location: remote, allow_sensitive_content: true}
 default_group_policy:
   concurrency: {max_interactive_requests: 1, max_queued_requests: 10, priority: normal, allow_long_requests: true}
-  reply: {command_prefix: /, continuation_window: 0s, debounce: DEBOUNCE, min_reply_interval: 0s, user_rate_limit_per_minute: RATE_LIMIT}
+  reply: {command_prefix: /, continuation_window: CONTINUATION, debounce: DEBOUNCE, min_reply_interval: 0s, user_rate_limit_per_minute: RATE_LIMIT}
   context: {max_recent_messages: 50, max_context_tokens: 0}
   review: {level: basic, review_input: true, review_output: true, action: block}
 runtime:
@@ -84,6 +84,8 @@ type configParams struct {
 	lease     string
 	debounce  string
 	rateLimit int
+	// continuation is the continuation window; empty means 0s.
+	continuation string
 }
 
 // testConfig writes a config for p to a temporary directory and loads it.
@@ -105,6 +107,9 @@ func testConfig(t testing.TB, p configParams) *config.Config {
 	if p.rateLimit == 0 {
 		p.rateLimit = 6
 	}
+	if p.continuation == "" {
+		p.continuation = "0s"
+	}
 	yml := strings.NewReplacer(
 		"DATA_DIR", strconv.Quote(p.dataDir),
 		"MODEL_URL", p.modelURL,
@@ -112,6 +117,7 @@ func testConfig(t testing.TB, p configParams) *config.Config {
 		"LEASE", p.lease,
 		"DEBOUNCE", p.debounce,
 		"RATE_LIMIT", strconv.Itoa(p.rateLimit),
+		"CONTINUATION", p.continuation,
 	).Replace(configTemplate)
 	path := filepath.Join(dir, "conloom.yaml")
 	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
@@ -577,5 +583,123 @@ func TestE2E_PrivateChatAdminOnly(t *testing.T) {
 	}
 	if n := fake.Calls(); n != 1 {
 		t.Errorf("model calls = %d, want 1", n)
+	}
+}
+
+// proactiveDirective is the start of the hint appended to proactive requests.
+const proactiveDirective = "【提示】没有人 @ 你"
+
+func TestE2E_ProactiveReplyForEligibleUser(t *testing.T) {
+	fake := fakeopenai.New(t, answer(fakeReply))
+	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL}))
+
+	e.mention(group, alice, "我在研究咖啡豆烘焙")
+	e.drainOne()
+	resp, msgID := e.say(group, alice, "咖啡豆烘焙真难", mock.SayOptions{})
+	if resp.Disposition != conloomapi.DispositionReply || resp.TaskID == "" {
+		t.Fatalf("matching message from an eligible user: response %+v, want a proactive task", resp)
+	}
+	a := e.drainOne()
+	if a.Content.Text != fakeReply || a.ReplyToMessageID != msgID {
+		t.Errorf("proactive action = %+v, want %q quoting %s", a, fakeReply, msgID)
+	}
+	reqs := fake.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("model calls = %d, want 2", len(reqs))
+	}
+	if text := requestText(reqs[1]); !strings.Contains(text, proactiveDirective) || !strings.Contains(text, "咖啡") {
+		t.Errorf("proactive request lacks the directive with interest terms: %q", text)
+	}
+	task, err := e.client.GetTask(context.Background(), resp.TaskID)
+	if err != nil || task.Meta.Trigger != conloomapi.TriggerProactive {
+		t.Errorf("GetTask = %+v, %v; want trigger proactive", task, err)
+	}
+
+	if got := e.commandReply(alice, "/主动 关"); !strings.Contains(got, "关") {
+		t.Fatalf("/主动 关 reply = %q", got)
+	}
+	resp, _ = e.say(group, alice, "咖啡豆烘焙还要练", mock.SayOptions{})
+	if resp.Disposition != conloomapi.DispositionObserve || resp.TaskID != "" {
+		t.Fatalf("matching message after /主动 关: response %+v, want observe", resp)
+	}
+	e.requireNoAction(300 * time.Millisecond)
+	if n := fake.Calls(); n != 2 {
+		t.Errorf("model calls = %d, want 2", n)
+	}
+}
+
+// commandReply sends a command from user and returns the text of its reply.
+func (e *env) commandReply(user mock.User, text string) string {
+	e.t.Helper()
+	resp, _ := e.say(group, user, text, mock.SayOptions{})
+	if resp.Disposition != conloomapi.DispositionReply || resp.TaskID == "" {
+		e.t.Fatalf("command %q: response %+v", text, resp)
+	}
+	return e.drainOne().Content.Text
+}
+
+func TestE2E_NeverMentionedUserGetsNoProactive(t *testing.T) {
+	fake := fakeopenai.New(t, answer(fakeReply))
+	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL}))
+
+	e.mention(group, alice, "我在研究咖啡豆烘焙")
+	e.drainOne()
+	for i := range 10 {
+		resp, _ := e.say(group, bob, "我在研究咖啡豆烘焙"+strconv.Itoa(i), mock.SayOptions{})
+		if resp.Disposition != conloomapi.DispositionObserve || resp.TaskID != "" {
+			t.Fatalf("message %d from a user who never mentioned the bot: response %+v, want observe", i, resp)
+		}
+	}
+	e.requireNoAction(300 * time.Millisecond)
+	if n := fake.Calls(); n != 1 {
+		t.Fatalf("model calls = %d, want 1 (only the mention)", n)
+	}
+}
+
+func TestE2E_ContinuationExitWhenTalkingToOthers(t *testing.T) {
+	fake := fakeopenai.New(t, answer(fakeReply))
+	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL, continuation: "60s"}))
+
+	e.mention(group, alice, "在吗？")
+	e.drainOne()
+	_, bobMsg := e.say(group, bob, "小明你周末去哪", mock.SayOptions{})
+	resp, _ := e.say(group, alice, "去爬山啊", mock.SayOptions{ReplyTo: bobMsg})
+	if resp.Disposition != conloomapi.DispositionObserve || resp.TaskID != "" {
+		t.Fatalf("reply to another member in continuation: response %+v, want observe", resp)
+	}
+	resp, _ = e.say(group, alice, "下午出发", mock.SayOptions{})
+	if resp.Disposition != conloomapi.DispositionObserve || resp.TaskID != "" {
+		t.Fatalf("message after the continuation ended: response %+v, want observe", resp)
+	}
+
+	e.mention(group, alice, "我回来了")
+	e.drainOne()
+	ev := conloomapi.Event{
+		SchemaVersion: conloomapi.SchemaVersion,
+		EventID:       "evt_900010",
+		EventType:     conloomapi.EventTypeMessageCreated,
+		BotInstanceID: botID,
+		Platform:      "qq",
+		OccurredAt:    time.Now().UTC(),
+		Conversation:  conloomapi.Conversation{Type: conloomapi.ConvGroup, ID: "group_10001", PlatformConversationID: "10001"},
+		Actor:         conloomapi.Actor{ID: "user_20001", PlatformUserID: "20001", DisplayName: "小明", Roles: []string{"member"}},
+		Trigger:       conloomapi.Trigger{Type: conloomapi.TriggerObserve},
+		Message: conloomapi.Message{
+			ID: "msg_900010", PlatformMessageID: "900010", Text: "小红快来看",
+			Mentions:    []conloomapi.Mention{{Type: "user", ID: "user_20002"}},
+			Attachments: []conloomapi.Attachment{},
+		},
+	}
+	resp, err := e.client.SubmitEvent(context.Background(), "test:900010", ev)
+	if err != nil || resp.Disposition != conloomapi.DispositionObserve || resp.TaskID != "" {
+		t.Fatalf("mention of another member in continuation: response %+v, %v; want observe", resp, err)
+	}
+	resp, _ = e.say(group, alice, "晚上一起吃饭", mock.SayOptions{})
+	if resp.Disposition != conloomapi.DispositionObserve || resp.TaskID != "" {
+		t.Fatalf("message after the continuation ended: response %+v, want observe", resp)
+	}
+	e.requireNoAction(300 * time.Millisecond)
+	if n := fake.Calls(); n != 2 {
+		t.Fatalf("model calls = %d, want 2 (one per mention)", n)
 	}
 }

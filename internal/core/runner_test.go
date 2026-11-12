@@ -260,6 +260,30 @@ func TestRunner_SkipMarkerAnywhereSendsNothing(t *testing.T) {
 	}
 }
 
+func TestRunner_SkipMarkerVariantsSendNothing(t *testing.T) {
+	for _, output := range []string{
+		"[[skip]]", "[[ SKIP ]]", "［［SKIP］］", "【【SKIP】】", "［［ｓｋｉｐ］］", "好的 [[ Skip ]] 吧",
+		"SKIP", " skip\n", "[SKIP]", "【SKIP】", "［skip］", "[ S K I P ]",
+	} {
+		t.Run(output, func(t *testing.T) {
+			env := newTestOrchestrator(t, testOpts{short: answer(output)})
+			task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "你好", mentionBot)).TaskID)
+			if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 0 || task.Meta.ReviewResult != "skipped" {
+				t.Fatalf("task = %+v", task)
+			}
+		})
+	}
+	for _, output := range []string{"我不想 skip 这个话题", "SKIP 是跳过的意思", "[SKIP] 这个按钮"} {
+		t.Run(output, func(t *testing.T) {
+			env := newTestOrchestrator(t, testOpts{short: answer(output)})
+			task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "你好", mentionBot)).TaskID)
+			if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 || task.Actions[0].Content.Text != output {
+				t.Fatalf("task = %+v, want the output sent", task)
+			}
+		})
+	}
+}
+
 func TestRunner_TriggerRecordedInMeta(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{configure: withContinuation})
 	env.startContinuation(t, "20001")

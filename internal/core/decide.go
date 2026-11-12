@@ -10,7 +10,7 @@ import (
 
 const TriggerContinuation = conloomapi.TriggerContinuation
 
-var KnownCommands = []string{"help", "stop", "persona", "pause", "resume"}
+var KnownCommands = []string{"help", "stop", "persona", "pause", "resume", "主动", "proactive"}
 
 // ParseCommand reports whether text (after trimming) starts with prefix
 // immediately followed by a known command word. cmd is lower-cased and args

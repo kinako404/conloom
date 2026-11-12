@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
+	"unicode"
 
 	"github.com/kinako404/conloom/internal/ids"
 	"github.com/kinako404/conloom/internal/store"
@@ -17,7 +19,7 @@ func (o *Orchestrator) runCommand(ctx context.Context, task store.TaskRecord, co
 	ctx = context.WithoutCancel(ctx)
 	meta := conloomapi.TaskMeta{TraceID: ids.New("trace")}
 	status, code := conloomapi.TaskSucceeded, ""
-	text, err := o.execCommand(ctx, task)
+	text, err := o.execCommand(ctx, task, triggers)
 	if err != nil {
 		o.log.Error("command failed", "task_id", task.ID, "command", task.Command, "error", err)
 		status, code, text = conloomapi.TaskFailed, conloomapi.CodeInternal, CopyUnavailable
@@ -42,7 +44,7 @@ func (o *Orchestrator) runStoredCommand(ctx context.Context, task store.TaskReco
 	return nil
 }
 
-func (o *Orchestrator) execCommand(ctx context.Context, task store.TaskRecord) (string, error) {
+func (o *Orchestrator) execCommand(ctx context.Context, task store.TaskRecord, triggers []store.MessageRecord) (string, error) {
 	bot, ok := o.cfg.Bot(task.BotInstanceID)
 	if !ok {
 		return "", fmt.Errorf("core: unknown bot %q", task.BotInstanceID)
@@ -83,8 +85,24 @@ func (o *Orchestrator) execCommand(ctx context.Context, task store.TaskRecord) (
 		}
 		o.logPolicyAuditError(task, err)
 		return CopyResumed, nil
+	case "主动", "proactive":
+		return o.proactiveCommand(ctx, task, isAdmin, commandArgs(triggers))
 	}
 	return "", fmt.Errorf("core: unknown command %q", task.Command)
+}
+
+// commandArgs returns the arguments of the command message: the trimmed text
+// after its first word.
+func commandArgs(triggers []store.MessageRecord) string {
+	if len(triggers) == 0 {
+		return ""
+	}
+	text := strings.TrimSpace(triggers[0].Text)
+	i := strings.IndexFunc(text, unicode.IsSpace)
+	if i < 0 {
+		return ""
+	}
+	return strings.TrimSpace(text[i:])
 }
 
 // logPolicyAuditError logs an error returned together with a stored policy

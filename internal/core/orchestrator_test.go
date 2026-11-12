@@ -1146,3 +1146,20 @@ func TestSubmit_ContinuationRuleExit(t *testing.T) {
 		t.Fatalf("model calls = %d, want 3 (one per mention)", n)
 	}
 }
+
+func TestSubmit_ContinuationReplyToOwnMessageContinues(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: withContinuation})
+	own := env.groupEvent("20001", "今天好冷")
+	env.submit(t, own)
+	env.startContinuation(t, "20001")
+	resp := env.submit(t, env.groupEvent("20001", "补充一下", replyTo(own.Message.ID)))
+	if resp.Disposition != conloomapi.DispositionReply || resp.TaskID == "" {
+		t.Fatalf("reply to own message in continuation = %+v, want a continuation task", resp)
+	}
+	if task := env.waitTask(t, resp.TaskID); task.Meta.Trigger != conloomapi.TriggerContinuation {
+		t.Fatalf("task = %+v", task)
+	}
+	if n := env.counter(t, "conloom_continuation_exits_total", "reason", "rule"); n != 0 {
+		t.Fatalf("rule exits = %v, want 0", n)
+	}
+}

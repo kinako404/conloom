@@ -95,6 +95,12 @@ type Orchestrator struct {
 
 	mu     sync.Mutex
 	owners map[string]*taskOwner
+
+	// memberLocks serialise read-modify-writes of a member row;
+	// proactiveLocks serialise a conversation's proactive budget checks with
+	// the evaluation and sent records they depend on.
+	memberLocks    keyedLocks
+	proactiveLocks keyedLocks
 }
 
 // taskOwner is the one party in this process allowed to execute and complete
@@ -261,6 +267,9 @@ type submission struct {
 	convKey          string
 	isAdmin          bool
 	now              time.Time
+	// replyToOther is set when the message replies to a message that is not
+	// stored or was sent by another member.
+	replyToOther bool
 }
 
 // replayError reports that the idempotency key was stored concurrently.
@@ -325,11 +334,21 @@ func replay(rec store.EventRecord, hash string) (conloomapi.EventAccepted, bool,
 	return resp, true, nil
 }
 
+// submit decides and stores the event; a group message engaging the bot then
+// refreshes the sender's member record.
 func (o *Orchestrator) submit(ctx context.Context, s *submission) (conloomapi.EventAccepted, error) {
 	d, pol, err := o.decide(ctx, s)
 	if err != nil {
 		return conloomapi.EventAccepted{}, err
 	}
+	resp, err := o.dispatch(ctx, s, d, pol)
+	if err == nil && engages(s, d) {
+		o.recordEngagement(ctx, s, pol)
+	}
+	return resp, err
+}
+
+func (o *Orchestrator) dispatch(ctx context.Context, s *submission, d Decision, pol conloomapi.GroupPolicy) (conloomapi.EventAccepted, error) {
 	if d.Disposition == conloomapi.DispositionReply && s.now.Sub(s.occurredAt()) >= o.staleAfter {
 		return o.observeOnly(ctx, s, conloomapi.SuppressedStale)
 	}
@@ -367,6 +386,8 @@ func (o *Orchestrator) submit(ctx context.Context, s *submission) (conloomapi.Ev
 			o.endContinuation(s.convKey, s.ev.Actor.PlatformUserID, continuationExitRule)
 		}
 		return resp, err
+	case o.proactiveCandidate(s, pol):
+		return o.submitProactive(ctx, s, pol)
 	default:
 		return o.admit(ctx, s, AdmitMergeOnly, "")
 	}
@@ -427,8 +448,12 @@ func (o *Orchestrator) decide(ctx context.Context, s *submission) (Decision, con
 		m, err := o.st.GetMessage(ctx, s.botID, *ev.Message.ReplyTo)
 		switch {
 		case err == nil:
-			in.ReplyToIsBot, in.ReplyToOther = m.FromBot, !m.FromBot
-		case !errors.Is(err, store.ErrNotFound):
+			in.ReplyToIsBot = m.FromBot
+			in.ReplyToOther = !m.FromBot && m.PlatformUserID != ev.Actor.PlatformUserID
+			s.replyToOther = in.ReplyToOther
+		case errors.Is(err, store.ErrNotFound):
+			s.replyToOther = true
+		default:
 			return Decision{}, conloomapi.GroupPolicy{}, err
 		}
 	}

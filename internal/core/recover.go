@@ -36,7 +36,8 @@ const (
 // whose event is younger than StaleTaskAfter run again (commands at once,
 // replies through the scheduler); older ones fail with STALE and no action.
 // It then starts background maintenance, which expires undelivered outbox
-// actions every 30s and purges old idempotency records every hour until Close.
+// actions every 30s and purges old idempotency records and proactive log
+// entries older than 7 days every hour until Close.
 //
 // Recover runs once per Orchestrator and should be called before the first
 // Submit; later calls return ErrAlreadyRecovered. Tasks this process already
@@ -124,6 +125,7 @@ func (o *Orchestrator) maintain() {
 	defer purge.Stop()
 	o.expireOutbox()
 	o.purgeEvents()
+	o.purgeProactiveLog()
 	for {
 		select {
 		case <-o.bgCtx.Done():
@@ -132,6 +134,7 @@ func (o *Orchestrator) maintain() {
 			o.expireOutbox()
 		case <-purge.C:
 			o.purgeEvents()
+			o.purgeProactiveLog()
 		}
 	}
 }

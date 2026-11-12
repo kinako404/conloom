@@ -30,19 +30,22 @@ const (
 )
 
 // SkipMarker is the model's answer for "do not reply". An output containing
-// it anywhere is dropped and never reaches the outbox.
+// it anywhere, or a variant of it (see isSkip), is dropped and never reaches
+// the outbox.
 const SkipMarker = "[[SKIP]]"
 
 // outcome is the result of executing a reply task. An empty text means no
-// action is sent; skipped means the model answered SkipMarker.
+// action is sent; skipped means the model answered SkipMarker. proactive is
+// set for a proactive task none of whose messages is addressed to the bot.
 type outcome struct {
-	status   string
-	code     string
-	text     string
-	skipped  bool
-	meta     conloomapi.TaskMeta
-	conv     store.ConversationRecord
-	triggers []store.MessageRecord
+	status    string
+	code      string
+	text      string
+	skipped   bool
+	proactive bool
+	meta      conloomapi.TaskMeta
+	conv      store.ConversationRecord
+	triggers  []store.MessageRecord
 }
 
 // run is the scheduler's Runner: it executes one reply task and stores its
@@ -80,18 +83,23 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 		}
 		out.status, out.code, out.text, out.skipped = conloomapi.TaskCancelled, conloomapi.CodeTaskCancelled, "", false
 	}
-	var actions []store.OutboxRecord
-	if out.text != "" {
-		actions = append(actions, o.newAction(task, out.conv, out.triggers, out.text))
-	}
-	if err := o.complete(dbctx, task, out.status, out.meta, out.code, actions); err != nil {
+	sent, err := o.finish(dbctx, task, &out)
+	if err != nil {
 		return
 	}
-	if out.status == conloomapi.TaskSucceeded && len(actions) > 0 {
+	if out.status == conloomapi.TaskSucceeded && sent {
 		o.sched.MarkReplied(task.ConversationKey, task.ActorPlatformUserID, o.now())
 	}
 	if out.skipped && task.Meta.Trigger == TriggerContinuation {
 		o.endContinuation(task.ConversationKey, task.ActorPlatformUserID, continuationExitModel)
+	}
+	if out.proactive {
+		switch {
+		case sent:
+			o.metrics.Proactive.WithLabelValues(proactiveSent).Inc()
+		case out.skipped:
+			o.metrics.Proactive.WithLabelValues(proactiveSkipped).Inc()
+		}
 	}
 	o.log.Info("task finished", "task_id", task.ID, "conversation", task.ConversationKey, "status", out.status,
 		"error_code", out.code, "role", out.meta.SelectedModelRole, "model", out.meta.SelectedModel,
@@ -99,8 +107,50 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 		"duration_ms", time.Since(start).Milliseconds(), obs.MessageAttr(o.cfg.Observability, out.text))
 }
 
+// finish stores the task's outcome and reports whether an action was stored.
+// A proactive task sends only a successful reply, and only if, re-checked
+// under the conversation's proactive lock, the user is still a target within
+// the send budget; otherwise it ends as skipped. A sent proactive reply is
+// recorded under the same lock.
+func (o *Orchestrator) finish(ctx context.Context, task store.TaskRecord, out *outcome) (sent bool, err error) {
+	if out.proactive && out.status != conloomapi.TaskSucceeded {
+		out.text = ""
+	}
+	if out.proactive && out.text != "" {
+		unlock := o.proactiveLocks.lock(task.ConversationKey)
+		defer unlock()
+		ok, err := o.proactiveSendAllowed(ctx, task)
+		if err != nil {
+			o.log.Error("proactive send check failed; not sending", "task_id", task.ID, "error", err)
+		}
+		if !ok {
+			o.log.Info("proactive reply withheld: no longer allowed", "task_id", task.ID, "conversation", task.ConversationKey)
+			out.text, out.skipped, out.meta.ReviewResult = "", true, reviewResultSkipped
+		}
+	}
+	var actions []store.OutboxRecord
+	if out.text != "" {
+		actions = append(actions, o.newAction(task, out.conv, out.triggers, out.text))
+	}
+	if err := o.complete(ctx, task, out.status, out.meta, out.code, actions); err != nil {
+		return false, err
+	}
+	if out.proactive && len(actions) > 0 {
+		if err := o.st.AppendProactiveLog(ctx, store.ProactiveLogEntry{
+			ConversationKey: task.ConversationKey, PlatformUserID: task.ActorPlatformUserID, Kind: store.ProactiveSent,
+			TaskID: task.ID, CreatedAt: o.now().UTC(),
+		}); err != nil {
+			o.log.Error("record proactive reply failed", "task_id", task.ID, "error", err)
+		}
+	}
+	return len(actions) > 0, nil
+}
+
 func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord) outcome {
-	out := outcome{meta: conloomapi.TaskMeta{TraceID: ids.New("trace"), Trigger: task.Meta.Trigger}}
+	out := outcome{
+		meta:      conloomapi.TaskMeta{TraceID: ids.New("trace"), Trigger: task.Meta.Trigger},
+		proactive: task.Meta.Trigger == TriggerProactive,
+	}
 	fail := func(code, text string, err error) outcome {
 		if err != nil {
 			o.log.Warn("task failed", "task_id", task.ID, "error_code", code, "trace_id", out.meta.TraceID, "error", err)
@@ -119,6 +169,10 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord) outco
 		return fail(conloomapi.CodeInternal, "", fmt.Errorf("load trigger messages: %v (found %d)", err, len(triggers)))
 	}
 	out.triggers = triggers
+	directive := o.directive(ctx, task, triggers)
+	if out.proactive && directive == "" {
+		out.proactive = false
+	}
 	bot, ok := o.cfg.Bot(task.BotInstanceID)
 	if !ok {
 		return fail(conloomapi.CodeInternal, CopyUnavailable, fmt.Errorf("unknown bot %q", task.BotInstanceID))
@@ -151,7 +205,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord) outco
 		MaxRecent:        pol.Context.MaxRecentMessages,
 		TokenFactor:      o.tokenFactor,
 		Location:         o.loc,
-		Directive:        o.directive(ctx, task, triggers),
+		Directive:        directive,
 	}
 	req := router.Request{
 		Sensitive:             conv.Type == conloomapi.ConvPrivate,
@@ -189,7 +243,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord) outco
 	out.meta.SelectedModel = resp.Model
 
 	out.status = conloomapi.TaskSucceeded
-	if strings.Contains(resp.Content, SkipMarker) {
+	if isSkip(resp.Content) {
 		out.meta.ReviewResult = reviewResultSkipped
 		out.skipped = true
 		return out
@@ -244,11 +298,11 @@ func (o *Orchestrator) replyTarget(ctx context.Context, botID string, triggers [
 	return nil
 }
 
-// directive returns the hint appended to the current message: the
-// continuation directive for a continuation task, unless a merged trigger
-// mentions the bot or replies to it.
+// directive returns the hint appended to the current message of a
+// continuation or proactive task, or "" when a merged trigger mentions the
+// bot or replies to it.
 func (o *Orchestrator) directive(ctx context.Context, task store.TaskRecord, triggers []store.MessageRecord) string {
-	if task.Meta.Trigger != TriggerContinuation {
+	if task.Meta.Trigger != TriggerContinuation && task.Meta.Trigger != TriggerProactive {
 		return ""
 	}
 	for _, t := range triggers {
@@ -267,6 +321,9 @@ func (o *Orchestrator) directive(ctx context.Context, task store.TaskRecord, tri
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			o.log.Warn("load reply target failed", "message_id", t.ReplyTo, "error", err)
 		}
+	}
+	if task.Meta.Trigger == TriggerProactive {
+		return o.proactiveDirective(ctx, task)
 	}
 	return CopyDirectiveContinuation
 }
