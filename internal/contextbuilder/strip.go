@@ -22,17 +22,23 @@ var transcriptPrefixes = []*regexp.Regexp{
 
 var (
 	transcriptTime     = regexp.MustCompile(`^\[\d{1,2}:\d{2}\]\s*`)
-	transcriptNameTail = regexp.MustCompile(`^(?:（回复[^\n]{0,80}?）)?\s*[：:]`)
+	transcriptNameTail = regexp.MustCompile(`^(?:（回复[^\n]{0,80}?）)?(?:\s*[：:]|[ \t]*(?:\n|$))`)
 )
 
 // StripTranscriptPrefix removes the prompt's transcript formatting that a
 // model echoed at the start of its reply: repeated "[HH:MM] 名字：" prefixes,
 // the 【当前消息】 and 【近期消息…】 header lines and "<botName>：". A name
 // holds no sentence punctuation unless it is one of knownNames (the
-// conversation's speakers). Text that does not start with such a prefix is
-// returned unchanged.
+// conversation's speakers) or botName. For those names a bare header line
+// "[HH:MM] 名字" without the colon (optionally with its reply annotation) is
+// removed too. Text that does not start with such a prefix is returned
+// unchanged.
 func StripTranscriptPrefix(text, botName string, knownNames ...string) string {
 	s := strings.TrimSpace(text)
+	names := knownNames
+	if botName != "" {
+		names = append(knownNames[:len(knownNames):len(knownNames)], botName)
+	}
 	stripped := false
 	for {
 		cut := false
@@ -41,7 +47,7 @@ func StripTranscriptPrefix(text, botName string, knownNames ...string) string {
 				s, cut = s[loc[1]:], true
 			}
 		}
-		if rest, ok := cutKnownSpeaker(s, knownNames); ok {
+		if rest, ok := cutKnownSpeaker(s, names); ok {
 			s, cut = rest, true
 		}
 		if botName != "" {
@@ -62,8 +68,9 @@ func StripTranscriptPrefix(text, botName string, knownNames ...string) string {
 	return s
 }
 
-// cutKnownSpeaker removes a "[HH:MM] <name>：" prefix (optionally with its
-// reply annotation) whose name is exactly one of names, preferring the
+// cutKnownSpeaker removes a "[HH:MM] <name>：" prefix, or a bare
+// "[HH:MM] <name>" line ending in a newline or the end of s, optionally with
+// its reply annotation, whose name is exactly one of names, preferring the
 // longest such name.
 func cutKnownSpeaker(s string, names []string) (string, bool) {
 	loc := transcriptTime.FindStringIndex(s)

@@ -417,6 +417,28 @@ func TestRunner_TurnEchoOnlyOutputSendsNothing(t *testing.T) {
 	}
 }
 
+func TestRunner_TurnBareSpeakerHeaderSendsNothing(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: withContinuation, short: func(req map[string]any) (int, string) {
+		if strings.Contains(lastContent(req), turnDirective) {
+			return 200, "[22:56] 小红"
+		}
+		return 200, fakeReply
+	}})
+	env.submit(t, env.groupEvent("20002", "晚上好", func(ev *conloomapi.Event) { ev.Actor.DisplayName = "小红" }))
+	env.startContinuation(t, "20001")
+	resp := env.submit(t, env.groupEvent("20001", "晚饭吃什么好呢"))
+	if resp.Disposition != conloomapi.DispositionReply || resp.TaskID == "" {
+		t.Fatalf("continuation response = %+v", resp)
+	}
+	task := env.waitTask(t, resp.TaskID)
+	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 0 || task.Error != nil {
+		t.Fatalf("task = %+v", task)
+	}
+	if strings.Contains(env.logs.String(), "[22:56]") {
+		t.Error("model output leaked into logs")
+	}
+}
+
 func TestRunner_PassesReplyTargetsForHistory(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{})
 	cold := env.groupEvent("20002", "今天好冷")
