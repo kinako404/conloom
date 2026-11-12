@@ -151,6 +151,14 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 		}
 	}
 
+	if !reflect.DeepEqual(cfg.PersonaTemplates["default"], conloomapi.DefaultPersona()) {
+		t.Errorf("persona_templates.default = %+v, want the built-in default", cfg.PersonaTemplates["default"])
+	}
+	lib, ok := cfg.PersonaTemplates["librarian"]
+	if !ok || lib.CharacterName != "砚秋" || !strings.Contains(strings.TrimSpace(lib.Description), "\n") ||
+		lib.SpeakingStyle == "" || len(lib.Examples) < 2 {
+		t.Errorf("persona_templates.librarian = %+v, want a character template with multi-line text and examples", lib)
+	}
 	if got, want := cfg.DefaultGroupPolicy.Proactive, conloomapi.DefaultGroupPolicy().Proactive; got != want {
 		t.Errorf("default_group_policy.proactive = %+v, want %+v", got, want)
 	}
