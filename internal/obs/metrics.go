@@ -16,7 +16,7 @@ type Metrics struct {
 	OutboxExpired     prometheus.Counter
 	Review            *prometheus.CounterVec // stage, verdict
 	BreakerOpen       *prometheus.GaugeVec   // role
-	ContinuationExits *prometheus.CounterVec // reason: rule|model
+	ContinuationExits *prometheus.CounterVec // reason: rule|model|limit|idle
 	Proactive         *prometheus.CounterVec // result: evaluated|sent|skipped
 }
 

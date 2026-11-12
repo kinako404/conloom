@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/kinako404/conloom/internal/adapter/mock"
 	"github.com/kinako404/conloom/internal/app"
 	"github.com/kinako404/conloom/internal/config"
@@ -785,9 +787,10 @@ func TestE2E_TurnTakingDoesNotReplyEverySentence(t *testing.T) {
 		}
 		return 200, "[[SKIP]]"
 	})
-	e := newEnv(t, testConfig(t, configParams{
+	reg := prometheus.NewRegistry()
+	e := newEnvWith(t, testConfig(t, configParams{
 		modelURL: fake.URL, continuation: "60s", turnGap: "1s", turnMaxWait: "3s",
-	}))
+	}), app.Options{Registry: reg})
 
 	e.mention(group, alice, "在吗？")
 	e.drainOne()
@@ -823,6 +826,8 @@ func TestE2E_TurnTakingDoesNotReplyEverySentence(t *testing.T) {
 			return err == nil && task.Status == conloomapi.TaskSucceeded
 		})
 	}
+	// The session ends after the second skip is stored.
+	waitUntil(t, "the session to end", func() bool { return counterValue(t, reg, "conloom_continuation_exits_total", "model") == 1 })
 	resp, _ := e.say(group, alice, "人呢", mock.SayOptions{})
 	if resp.Disposition != conloomapi.DispositionObserve || resp.TaskID != "" {
 		t.Fatalf("message after the session ended: response %+v, want observe", resp)
@@ -831,4 +836,27 @@ func TestE2E_TurnTakingDoesNotReplyEverySentence(t *testing.T) {
 	if n := fake.Calls(); n != 4 {
 		t.Fatalf("model calls = %d, want 4", n)
 	}
+}
+
+// counterValue returns the value of the counter name with a label of value
+// labelValue, or 0.
+func counterValue(t *testing.T, reg *prometheus.Registry, name, labelValue string) float64 {
+	t.Helper()
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetValue() == labelValue {
+					return m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
 }

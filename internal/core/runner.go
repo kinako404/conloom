@@ -38,18 +38,20 @@ const SkipMarker = "[[SKIP]]"
 // action is sent; skipped means the model answered SkipMarker. proactive is
 // set for a proactive task none of whose messages is addressed to the bot;
 // turn for a continuation task none of whose messages is; addressed for a
-// task with a message that mentions or replies to the bot.
+// task with a message that mentions or replies to the bot. turnSession is the
+// session a turn was reserved in before calling the model.
 type outcome struct {
-	status    string
-	code      string
-	text      string
-	skipped   bool
-	proactive bool
-	turn      bool
-	addressed bool
-	meta      conloomapi.TaskMeta
-	conv      store.ConversationRecord
-	triggers  []store.MessageRecord
+	status      string
+	code        string
+	text        string
+	skipped     bool
+	proactive   bool
+	turn        bool
+	addressed   bool
+	turnSession *chatSession
+	meta        conloomapi.TaskMeta
+	conv        store.ConversationRecord
+	triggers    []store.MessageRecord
 }
 
 // run is the scheduler's Runner: it executes one reply task and stores its
@@ -81,6 +83,7 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 	task.TriggerMessageIDs = qt.TriggerMessageIDs
 
 	out := o.execute(ctx, task)
+	defer o.releaseTurn(out.turnSession)
 	if ctx.Err() != nil {
 		if o.closing.Load() && !o.cancelledByUser(ow) {
 			return
@@ -202,6 +205,17 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord) outco
 		return fail(conloomapi.CodeInternal, CopyUnavailable, err)
 	}
 	pol := pv.Policy
+	if out.turn {
+		// The sender may have left, or the session ended or reached its limit,
+		// while the turn was queued: such a turn is dropped without a model call.
+		out.turnSession = o.reserveTurn(task.ConversationKey, task.ActorPlatformUserID, o.now(),
+			pol.Reply.ContinuationWindow.Duration, pol.Reply.MaxUnpromptedReplies)
+		if out.turnSession == nil {
+			o.log.Info("turn dropped: sender not in a conversation with room for a reply", "task_id", task.ID, "conversation", task.ConversationKey)
+			out.status, out.skipped, out.meta.ReviewResult = conloomapi.TaskSucceeded, true, reviewResultSkipped
+			return out
+		}
+	}
 	history, err := o.history(ctx, task.ConversationKey, pol.Context.MaxRecentMessages, triggers)
 	if err != nil {
 		return fail(conloomapi.CodeInternal, CopyUnavailable, err)

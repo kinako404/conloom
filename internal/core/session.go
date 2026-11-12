@@ -20,13 +20,14 @@ const (
 
 // chatSession is the bot's ongoing conversation in a group: the members it is
 // talking with, when the conversation was last active, the replies the bot
-// gave since it was last addressed directly and the turns in a row it chose
-// not to answer.
+// gave since it was last addressed directly, the turns in a row it chose not
+// to answer and the turns being answered now.
 type chatSession struct {
 	participants map[string]bool
 	lastActivity time.Time
 	unprompted   int
 	skips        int
+	inflight     int
 }
 
 // chatSessions holds each group's session and when the bot last spoke there.
@@ -111,7 +112,8 @@ func (o *Orchestrator) directReplied(convKey, user string, now time.Time) {
 
 // startJoinSession records that the bot joined the group's conversation with
 // users: they take part in the session, and the bot's message counts as an
-// unprompted reply.
+// unprompted reply. The counts of a session already going on are kept, with
+// at least that one unprompted reply.
 func (o *Orchestrator) startJoinSession(convKey string, users []string, now time.Time) {
 	o.sessions.mu.Lock()
 	defer o.sessions.mu.Unlock()
@@ -119,7 +121,7 @@ func (o *Orchestrator) startJoinSession(convKey string, users []string, now time
 	for _, u := range users {
 		s.participants[u] = true
 	}
-	s.unprompted, s.skips = 1, 0
+	s.unprompted = max(s.unprompted, 1)
 }
 
 // touchSession records a participant's activity in the conversation's
@@ -132,14 +134,40 @@ func (o *Orchestrator) touchSession(convKey string, now time.Time) {
 	}
 }
 
-// turnReplied records that the bot answered a turn nobody addressed to it. The
-// session ends, and turnReplied reports true, once the bot gave maxUnprompted
-// such replies since it was last addressed directly.
-func (o *Orchestrator) turnReplied(convKey string, now time.Time, maxUnprompted int) (ended bool) {
+// reserveTurn returns the live session in which user's turn may call the
+// model, or nil if user takes part in no live session (lasting idle after its
+// last activity) or the unprompted replies given and in flight already reach
+// maxUnprompted. The turn counts as in flight until releaseTurn.
+func (o *Orchestrator) reserveTurn(convKey, user string, now time.Time, idle time.Duration, maxUnprompted int) *chatSession {
+	o.sessions.mu.Lock()
+	defer o.sessions.mu.Unlock()
+	s := o.liveLocked(convKey, now, idle)
+	if s == nil || !s.participants[user] || s.unprompted+s.inflight >= maxUnprompted {
+		return nil
+	}
+	s.inflight++
+	return s
+}
+
+// releaseTurn ends a turn reserved in s; a nil s does nothing.
+func (o *Orchestrator) releaseTurn(s *chatSession) {
+	if s == nil {
+		return
+	}
+	o.sessions.mu.Lock()
+	defer o.sessions.mu.Unlock()
+	s.inflight--
+}
+
+// turnReplied records that the bot answered a turn reserved in sess, nobody
+// having addressed it. If sess is still the conversation's session, it ends,
+// and turnReplied reports true, once the bot gave maxUnprompted such replies
+// since it was last addressed directly.
+func (o *Orchestrator) turnReplied(convKey string, sess *chatSession, now time.Time, maxUnprompted int) (ended bool) {
 	o.sessions.mu.Lock()
 	defer o.sessions.mu.Unlock()
 	s := o.sessions.byConv[convKey]
-	if s == nil {
+	if s == nil || s != sess {
 		return false
 	}
 	s.unprompted++
@@ -154,13 +182,14 @@ func (o *Orchestrator) turnReplied(convKey string, now time.Time, maxUnprompted 
 	return false
 }
 
-// turnSkipped records that the bot chose not to answer a turn. The session
-// ends, and turnSkipped reports true, after maxSkips such turns in a row.
-func (o *Orchestrator) turnSkipped(convKey string, maxSkips int) (ended bool) {
+// turnSkipped records that the bot chose not to answer a turn reserved in
+// sess. If sess is still the conversation's session, it ends, and turnSkipped
+// reports true, after maxSkips such turns in a row.
+func (o *Orchestrator) turnSkipped(convKey string, sess *chatSession, maxSkips int) (ended bool) {
 	o.sessions.mu.Lock()
 	defer o.sessions.mu.Unlock()
 	s := o.sessions.byConv[convKey]
-	if s == nil {
+	if s == nil || s != sess {
 		return false
 	}
 	s.skips++
@@ -228,9 +257,10 @@ func (o *Orchestrator) noteBotSpoke(convKey string, at time.Time) {
 
 // updateSession applies a finished group reply task to the conversation's
 // session: a reply to the bot's addressee makes them a participant, a turn
-// answered or skipped counts towards the session's limits, and a proactive
-// reply starts a session with its user. Nothing changes while the
-// conversation is paused or sessions are off (continuation window 0).
+// answered or skipped by the model counts towards the limits of the session
+// it was reserved in (a turn dropped before the model call counts nowhere),
+// and a proactive reply starts a session with its user. Nothing changes while
+// the conversation is paused or sessions are off (continuation window 0).
 func (o *Orchestrator) updateSession(ctx context.Context, task store.TaskRecord, out outcome, sent bool) {
 	key := task.ConversationKey
 	if convType(key) != conloomapi.ConvGroup {
@@ -260,10 +290,12 @@ func (o *Orchestrator) updateSession(ctx context.Context, task store.TaskRecord,
 			o.directReplied(key, user, now)
 		}
 	case out.turn:
-		if sent {
-			ended = o.turnReplied(key, now, r.MaxUnpromptedReplies)
-		} else if out.status == conloomapi.TaskSucceeded {
-			ended = o.turnSkipped(key, r.MaxConsecutiveSkips)
+		switch {
+		case out.turnSession == nil:
+		case sent:
+			ended = o.turnReplied(key, out.turnSession, now, r.MaxUnpromptedReplies)
+		case out.status == conloomapi.TaskSucceeded:
+			ended = o.turnSkipped(key, out.turnSession, r.MaxConsecutiveSkips)
 		}
 	case out.proactive:
 		if sent {

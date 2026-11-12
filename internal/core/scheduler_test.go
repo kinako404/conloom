@@ -548,6 +548,67 @@ loop:
 	rec.waitFinished(t, 3)
 }
 
+func TestScheduler_AddressedMergeReadyWithinDebounce(t *testing.T) {
+	const debounce = 100 * time.Millisecond
+	rec := newSchedRecorder()
+	s := newTestScheduler(t, rec.run, fixedCfg(SessionConfig{
+		MaxConcurrent: 3, MaxQueued: 10, Debounce: debounce, MaxMergeWindow: time.Minute,
+	}))
+	pending := func(taskID string) QueuedTask {
+		t.Helper()
+		for _, qt := range s.Active("group:10001") {
+			if qt.TaskID == taskID {
+				return qt
+			}
+		}
+		t.Fatalf("task %s not active", taskID)
+		return QueuedTask{}
+	}
+	addressed := func(actor, msg string) AdmitResult {
+		t.Helper()
+		res, err := s.AdmitWith("group:10001", actor, msg, AdmitNew, MergeOptions{Addressed: true}, nopPersist)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+
+	turn, err := s.AdmitWith("group:10001", "20001", "t1", AdmitNew, MergeOptions{Debounce: 5 * time.Second, MaxMergeWindow: 10 * time.Second}, nopPersist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := addressed("20001", "m1"); !res.Merged || res.TaskID != turn.TaskID {
+		t.Fatalf("mention = %+v, want merged into the turn %s", res, turn.TaskID)
+	}
+	if wait := time.Until(pending(turn.TaskID).ReadyAt); wait > debounce {
+		t.Fatalf("turn ready in %v after a merged mention, want within the debounce %v", wait, debounce)
+	}
+	if started := rec.waitStarted(t); started.TaskID != turn.TaskID || !slices.Equal(started.TriggerMessageIDs, []string{"t1", "m1"}) {
+		t.Fatalf("started %+v, want the turn with both messages", started)
+	}
+
+	soon, err := s.AdmitWith("group:10001", "20002", "t2", AdmitNew, MergeOptions{Debounce: 2 * debounce, MaxMergeWindow: time.Second}, nopPersist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(debounce * 6 / 5)
+	before := pending(soon.TaskID).ReadyAt
+	addressed("20002", "m2")
+	if after := pending(soon.TaskID).ReadyAt; !after.Equal(before) {
+		t.Fatalf("merged mention moved ReadyAt from %v to %v, want it kept", before, after)
+	}
+	rec.waitStarted(t)
+
+	plain := mustAdmit(t, s, "group:10001", "20003", "p1", AdmitNew)
+	time.Sleep(debounce / 2)
+	before = pending(plain.TaskID).ReadyAt
+	addressed("20003", "p2")
+	if after := pending(plain.TaskID).ReadyAt; !after.After(before) {
+		t.Fatalf("merged mention into a debounce task: ReadyAt %v -> %v, want extended as before", before, after)
+	}
+	rec.waitFinished(t, 3)
+}
+
 func TestScheduler_RestoreRunsWithGivenReadyAt(t *testing.T) {
 	rec := newSchedRecorder()
 	s := newTestScheduler(t, rec.run, fixedCfg(SessionConfig{MaxConcurrent: 1, MaxQueued: 10}))

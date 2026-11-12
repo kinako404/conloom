@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -308,5 +310,151 @@ func TestSession_PauseClearsSessions(t *testing.T) {
 	}
 	if n := env.modelCalls(); n != 3 {
 		t.Fatalf("model calls = %d, want 3 (the mentions)", n)
+	}
+}
+
+// holdTurns is a model that answers turn requests only after release is
+// called and everything else at once. Tests register release as a cleanup
+// after creating the orchestrator, so it runs before the model server closes.
+func holdTurns() (handler handlerFunc, turnCalls *atomic.Int32, release func()) {
+	gate := make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	turnCalls = &atomic.Int32{}
+	handler = func(req map[string]any) (int, string) {
+		if strings.Contains(lastContent(req), turnDirective) {
+			turnCalls.Add(1)
+			<-gate
+		}
+		return 200, fakeReply
+	}
+	return handler, turnCalls, release
+}
+
+// requireDropped requires taskID to end skipped without an action.
+func requireDropped(t *testing.T, env *testEnv, taskID string) {
+	t.Helper()
+	task := env.waitTask(t, taskID)
+	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 0 || task.Meta.ReviewResult != "skipped" {
+		t.Fatalf("task = %+v, want dropped (succeeded, skipped, no action)", task)
+	}
+}
+
+func TestSession_QueuedTurnsDroppedAfterLimit(t *testing.T) {
+	handler, turnCalls, release := holdTurns()
+	env := newTestOrchestrator(t, testOpts{short: handler, long: handler, configure: withReply(func(r *conloomapi.ReplyPolicy) {
+		r.MaxUnpromptedReplies = 1
+	})})
+	t.Cleanup(release)
+	env.startContinuation(t, "20001")
+	env.startContinuation(t, "20002")
+	first := env.submit(t, env.groupEvent("20001", "说个事"))
+	waitUntil(t, "the first turn's model call", func() bool { return turnCalls.Load() == 1 })
+	queued := []string{
+		env.submit(t, env.groupEvent("20001", "还有一件")).TaskID,
+		env.submit(t, env.groupEvent("20002", "我也说说")).TaskID,
+	}
+	for _, id := range queued {
+		if id == "" || id == first.TaskID {
+			t.Fatalf("queued turns %v, want new tasks besides %s", queued, first.TaskID)
+		}
+	}
+	release()
+	if task := env.waitTask(t, first.TaskID); len(task.Actions) != 1 {
+		t.Fatalf("first turn = %+v, want a reply", task)
+	}
+	for _, id := range queued {
+		requireDropped(t, env, id)
+	}
+	if n := turnCalls.Load(); n != 1 {
+		t.Fatalf("turn model calls = %d, want 1", n)
+	}
+	if n := env.modelCalls(); n != 3 {
+		t.Fatalf("model calls = %d, want 3 (two mentions, one turn)", n)
+	}
+	if n := env.counter(t, "conloom_continuation_exits_total", "reason", "limit"); n != 1 {
+		t.Fatalf("limit exits = %v, want 1", n)
+	}
+	if n := env.notifier.count(testBot); n != 3 {
+		t.Fatalf("notifications = %d, want 3 (two mentions, one turn)", n)
+	}
+}
+
+func TestSession_PendingTurnDroppedAfterRuleExit(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: withReply(func(r *conloomapi.ReplyPolicy) {
+		r.TurnGap = conloomapi.Duration{Duration: 400 * time.Millisecond}
+		r.TurnMaxWait = conloomapi.Duration{Duration: time.Second}
+	})})
+	env.startContinuation(t, "20001")
+	env.startContinuation(t, "20002")
+	pending := env.submit(t, env.groupEvent("20001", "接着说"))
+	if pending.TaskID == "" {
+		t.Fatalf("response = %+v, want a turn", pending)
+	}
+	requireObserved(t, env, env.groupEvent("20001", "你看这个", mentionUser("user_20002")), "")
+	requireDropped(t, env, pending.TaskID)
+	time.Sleep(100 * time.Millisecond)
+	if n := env.modelCalls(); n != 2 {
+		t.Fatalf("model calls = %d, want 2 (the mentions)", n)
+	}
+	if u, skips, ok := env.sessionCounts(); !ok || u != 0 || skips != 0 {
+		t.Fatalf("session (exists %v) unprompted %d skips %d, want 20002's session without counts", ok, u, skips)
+	}
+}
+
+func TestSession_ConcurrentTurnsBoundedByLimit(t *testing.T) {
+	handler, turnCalls, release := holdTurns()
+	env := newTestOrchestrator(t, testOpts{short: handler, long: handler, configure: func(c *config.Config) {
+		withContinuation(c)
+		c.DefaultGroupPolicy.Reply.MaxUnpromptedReplies = 1
+		c.DefaultGroupPolicy.Concurrency.MaxInteractiveRequests = 2
+	}})
+	t.Cleanup(release)
+	env.startContinuation(t, "20001")
+	env.startContinuation(t, "20002")
+	a := env.submit(t, env.groupEvent("20001", "说个事")).TaskID
+	b := env.submit(t, env.groupEvent("20002", "我也说说")).TaskID
+	waitUntil(t, "one turn's model call", func() bool { return turnCalls.Load() == 1 })
+	var answered, dropped string
+	waitUntil(t, "the other turn to finish", func() bool {
+		for _, c := range [][2]string{{a, b}, {b, a}} {
+			if taskFinished(env.getTask(t, c[0]).Status) {
+				dropped, answered = c[0], c[1]
+				return true
+			}
+		}
+		return false
+	})
+	requireDropped(t, env, dropped)
+	time.Sleep(100 * time.Millisecond)
+	if u, skips, ok := env.sessionCounts(); !ok || u != 0 || skips != 0 {
+		t.Fatalf("session (exists %v) unprompted %d skips %d, want no counts from the dropped turn", ok, u, skips)
+	}
+	release()
+	if task := env.waitTask(t, answered); len(task.Actions) != 1 {
+		t.Fatalf("answered turn = %+v, want a reply", task)
+	}
+	waitUntil(t, "the session to end", func() bool { return !env.sessionActive() })
+	if n := turnCalls.Load(); n != 1 {
+		t.Fatalf("turn model calls = %d, want 1", n)
+	}
+}
+
+func TestSession_StartJoinSessionKeepsCounts(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: withContinuation})
+	now := time.Now()
+	env.o.startJoinSession(testConvKey, []string{"20001"}, now)
+	if u, skips, ok := env.sessionCounts(); !ok || u != 1 || skips != 0 {
+		t.Fatalf("new join session: exists %v unprompted %d skips %d, want 1 and 0", ok, u, skips)
+	}
+	env.o.sessions.mu.Lock()
+	env.o.sessions.byConv[testConvKey].unprompted, env.o.sessions.byConv[testConvKey].skips = 3, 1
+	env.o.sessions.mu.Unlock()
+	env.o.startJoinSession(testConvKey, []string{"20002"}, now)
+	if u, skips, _ := env.sessionCounts(); u != 3 || skips != 1 {
+		t.Fatalf("joined session: unprompted %d skips %d, want kept 3 and 1", u, skips)
+	}
+	if !env.inContinuation("20001") || !env.inContinuation("20002") {
+		t.Fatal("want both members in the session")
 	}
 }

@@ -385,7 +385,8 @@ func (o *Orchestrator) dispatch(ctx context.Context, s *submission, d Decision, 
 		if reason := o.withheld(s, pol); reason != "" {
 			return o.observeOnly(ctx, s, reason)
 		}
-		resp, err := o.admit(ctx, s, AdmitNew, d.Trigger)
+		addressed := d.Trigger == conloomapi.TriggerMention || d.Trigger == conloomapi.TriggerReply
+		resp, err := o.admitWith(ctx, s, AdmitNew, d.Trigger, MergeOptions{Addressed: addressed}, nil)
 		if errors.Is(err, ErrQueueFull) {
 			return o.observeOnly(ctx, s, conloomapi.SuppressedQueueFull)
 		}

@@ -45,8 +45,14 @@ type QueuedTask struct {
 // MergeOptions set a new task's merge window: each merged message moves its
 // ReadyAt to Debounce later, but never past MaxMergeWindow after it was
 // enqueued. Zero fields take the conversation's SessionConfig values.
+//
+// Addressed marks a message that mentions or replies to the bot. Merged into
+// a task whose Debounce is longer than the conversation's, it makes the task
+// ready within the conversation's Debounce instead, and never later than the
+// task's current ReadyAt.
 type MergeOptions struct {
 	Debounce, MaxMergeWindow time.Duration
+	Addressed                bool
 }
 
 func (m MergeOptions) orConfig(cfg SessionConfig) MergeOptions {
@@ -146,8 +152,9 @@ func (s *Scheduler) Admit(convKey, actorID, messageID string, mode AdmitMode, pe
 // opts, or is only observed; calls persist with that plan; and applies it only
 // if persist succeeds. A merge window is open while a not-yet-started task of
 // the same actor has not reached its ReadyAt; a merge keeps the merge window
-// the task was created with. Creating a task when MaxQueued tasks are already
-// waiting returns ErrQueueFull without calling persist.
+// the task was created with, except as opts.Addressed describes. Creating a
+// task when MaxQueued tasks are already waiting returns ErrQueueFull without
+// calling persist.
 func (s *Scheduler) AdmitWith(convKey, actorID, messageID string, mode AdmitMode, opts MergeOptions, persist func(AdmitPlan) error) (AdmitResult, error) {
 	if s.isClosed() {
 		return AdmitResult{}, ErrSchedulerClosed
@@ -169,8 +176,11 @@ func (s *Scheduler) AdmitWith(convKey, actorID, messageID string, mode AdmitMode
 			return AdmitResult{}, err
 		}
 		t.TriggerMessageIDs = append(t.TriggerMessageIDs, messageID)
-		m := t.merge.orConfig(cfg)
-		t.ReadyAt = earliest(now.Add(m.Debounce), t.EnqueuedAt.Add(m.MaxMergeWindow))
+		if m := t.merge.orConfig(cfg); opts.Addressed && m.Debounce > cfg.Debounce {
+			t.ReadyAt = earliest(t.ReadyAt, now.Add(cfg.Debounce))
+		} else {
+			t.ReadyAt = earliest(now.Add(m.Debounce), t.EnqueuedAt.Add(m.MaxMergeWindow))
+		}
 		sess.lastActivity = now
 		sess.signal()
 		return AdmitResult{TaskID: t.TaskID, Merged: true}, nil
@@ -183,6 +193,7 @@ func (s *Scheduler) AdmitWith(convKey, actorID, messageID string, mode AdmitMode
 		return AdmitResult{}, ErrQueueFull
 	}
 	m := opts.orConfig(cfg)
+	m.Addressed = false
 	t := QueuedTask{
 		TaskID:            ids.New("task"),
 		ConversationKey:   convKey,
