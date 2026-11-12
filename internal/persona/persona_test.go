@@ -67,7 +67,8 @@ func TestCorePrompt_RulesOverridePersona(t *testing.T) {
 
 func TestCorePrompt_ForbidsPretendingToAct(t *testing.T) {
 	got := CorePrompt("织语")
-	for _, want := range []string{"8. 操作：", "/help", "不要假装已经做了", "不要编造不存在的命令"} {
+	for _, want := range []string{"8. 操作：", "/help", "不要假装已经做了", "不要编造不存在的命令",
+		"暂停、恢复、切换人格模板等只能由管理员用命令完成（/help 可查看），其他设置需要管理员在后台修改；"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("CorePrompt missing %q: %q", want, got)
 		}
@@ -117,6 +118,7 @@ func TestValidatePersona_TextFields(t *testing.T) {
 	}
 	ok := []func(p *conloomapi.PersonaDoc){
 		func(p *conloomapi.PersonaDoc) { p.CharacterName = strings.Repeat("名", 20) },
+		func(p *conloomapi.PersonaDoc) { p.CharacterName = " Mr. X·苔灯（灯塔） \n" },
 		func(p *conloomapi.PersonaDoc) { p.Description = strings.Repeat("设", 2000) },
 		func(p *conloomapi.PersonaDoc) { p.Description = strings.Repeat("设", 2000) + "\n" },
 		func(p *conloomapi.PersonaDoc) { p.SpeakingStyle = strings.Repeat("说", 1000) },
@@ -141,6 +143,17 @@ func TestValidatePersona_TextFields(t *testing.T) {
 	}{
 		{func(p *conloomapi.PersonaDoc) { p.CharacterName = strings.Repeat("名", 21) }, "character_name must be at most 20 characters, got 21"},
 		{func(p *conloomapi.PersonaDoc) { p.CharacterName = "苔\n灯" }, "character_name must be a single line"},
+		{func(p *conloomapi.PersonaDoc) { p.CharacterName = "苔\r灯" }, "character_name must be a single line"},
+		{func(p *conloomapi.PersonaDoc) { p.CharacterName = "苔\u2028灯" }, "character_name must be a single line"},
+		{func(p *conloomapi.PersonaDoc) { p.CharacterName = "苔\u2029灯" }, "character_name must be a single line"},
+		{func(p *conloomapi.PersonaDoc) { p.CharacterName = "苔\t灯" }, "character_name must be a single line"},
+		{func(p *conloomapi.PersonaDoc) { p.CharacterName = "苔\x07灯" }, "character_name must be a single line"},
+		{func(p *conloomapi.PersonaDoc) { p.CharacterName = "苔\u0085灯" }, "character_name must be a single line"},
+		{func(p *conloomapi.PersonaDoc) { p.CharacterName = "苔\u200b灯" }, "character_name must be a single line"},
+		{func(p *conloomapi.PersonaDoc) { p.CharacterName = "苔\u200c灯" }, "character_name must be a single line"},
+		{func(p *conloomapi.PersonaDoc) { p.CharacterName = "苔\u200d灯" }, "character_name must be a single line"},
+		{func(p *conloomapi.PersonaDoc) { p.CharacterName = "\ufeff苔灯" }, "character_name must be a single line"},
+		{func(p *conloomapi.PersonaDoc) { p.CharacterName = "苔灯\u2060" }, "character_name must be a single line"},
 		{func(p *conloomapi.PersonaDoc) { p.Description = strings.Repeat("设", 2001) }, "description must be at most 2000 characters, got 2001"},
 		{func(p *conloomapi.PersonaDoc) { p.SpeakingStyle = strings.Repeat("说", 1001) }, "speaking_style must be at most 1000 characters, got 1001"},
 		{func(p *conloomapi.PersonaDoc) { p.Examples = examples(9) }, "examples must have at most 8 items, got 9"},
@@ -459,6 +472,47 @@ func TestService_SystemPromptUsesCharacterName(t *testing.T) {
 	character.CharacterName = "  "
 	if got := BotName(character, "织语"); got != "织语" {
 		t.Errorf("BotName with a blank character name = %q, want 织语", got)
+	}
+}
+
+func TestService_SystemPromptNamesPlatformName(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newTestStore(t), nil)
+	const note = "群里的人也可能用你在平台上的名字“织语”称呼你，那也是你。"
+	prompt := func() string {
+		t.Helper()
+		p, err := svc.SystemPrompt(ctx, testConvKey, "default", "织语")
+		if err != nil {
+			t.Fatalf("SystemPrompt: %v", err)
+		}
+		return p.Text
+	}
+	set := func(p conloomapi.PersonaDoc) {
+		t.Helper()
+		if _, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Persona: &p}, "29999"); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+	}
+
+	if got, want := prompt(), CorePrompt("织语")+"\n\n"+Render(conloomapi.DefaultPersona()); got != want {
+		t.Errorf("prompt without a character = %q, want %q", got, want)
+	}
+
+	character := testCharacter()
+	set(character)
+	want := CorePrompt("苔灯") + "\n\n" + note + "\n\n" + Render(character)
+	if got := prompt(); got != want {
+		t.Errorf("prompt with a character =\n%s\nwant\n%s", got, want)
+	}
+	if again := prompt(); again != want {
+		t.Errorf("prompt for the same version changed: %q", again)
+	}
+
+	same := testCharacter()
+	same.CharacterName = "织语"
+	set(same)
+	if got, want := prompt(), CorePrompt("织语")+"\n\n"+Render(same); got != want {
+		t.Errorf("prompt with the platform name as character = %q, want %q", got, want)
 	}
 }
 

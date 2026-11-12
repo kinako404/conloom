@@ -694,8 +694,9 @@ func TestRunner_CharacterNameIsBotName(t *testing.T) {
 	if last := lastContent(env.short.Requests()[0]); !strings.Contains(last, "（回复 你（苔灯） 在 ") {
 		t.Errorf("current = %q, want the bot's message labelled with the character name", last)
 	}
-	if strings.Contains(requestText(t, env.short.Requests()[0]), "织语") {
-		t.Error("request still names the bot 织语")
+	all := requestText(t, env.short.Requests()[0])
+	if note := "群里的人也可能用你在平台上的名字“织语”称呼你，那也是你。"; strings.Count(all, "织语") != 1 || !strings.Contains(all, note) {
+		t.Errorf("request names the bot 织语 other than in the platform name note %q", note)
 	}
 }
 

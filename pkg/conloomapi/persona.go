@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -94,6 +95,16 @@ func DefaultPersona() PersonaDoc {
 	}
 }
 
+// breaksName reports whether r must not appear in a character name: a line or
+// paragraph separator, another control character, or a zero-width character.
+func breaksName(r rune) bool {
+	switch r {
+	case '\u2028', '\u2029', '\u200b', '\u200c', '\u200d', '\ufeff', '\u2060':
+		return true
+	}
+	return unicode.IsControl(r)
+}
+
 // Validate reports every rule violation, each prefixed with its snake_case field path.
 func (p PersonaDoc) Validate() error {
 	var errs []error
@@ -135,8 +146,8 @@ func (p PersonaDoc) Validate() error {
 		}
 	}
 	maxRunes("character_name", p.CharacterName, MaxCharacterNameRunes)
-	if strings.ContainsAny(strings.TrimSpace(p.CharacterName), "\r\n") {
-		fail("character_name must be a single line")
+	if strings.ContainsFunc(strings.TrimSpace(p.CharacterName), breaksName) {
+		fail("character_name must be a single line without control or zero-width characters")
 	}
 	maxRunes("description", p.Description, MaxDescriptionRunes)
 	maxRunes("speaking_style", p.SpeakingStyle, MaxSpeakingStyleRunes)

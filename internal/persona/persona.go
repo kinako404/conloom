@@ -164,10 +164,20 @@ func BotName(p conloomapi.PersonaDoc, botName string) string {
 	return botName
 }
 
+// PlatformNameNote tells a bot called name that members may also call it by
+// its platform name botName. It is empty when the two are the same.
+func PlatformNameNote(name, botName string) string {
+	if botName == "" || name == botName {
+		return ""
+	}
+	return "群里的人也可能用你在平台上的名字“" + botName + "”称呼你，那也是你。"
+}
+
 // SystemPrompt returns CorePrompt of the bot's name under the current persona
-// (see BotName) followed by the rendered persona. The prompt is cached per
-// conversation, version and configured bot name, so one version always yields
-// byte-identical output.
+// (see BotName), the PlatformNameNote when that name is not the configured
+// botName, and the rendered persona, separated by blank lines. The prompt is
+// cached per conversation, version and configured bot name, which determine
+// it, so one version always yields byte-identical output.
 func (s *Service) SystemPrompt(ctx context.Context, convKey, templateName, botName string) (Prompt, error) {
 	pv, err := s.Current(ctx, convKey, templateName)
 	if err != nil {
@@ -179,7 +189,11 @@ func (s *Service) SystemPrompt(ctx context.Context, convKey, templateName, botNa
 		return c.prompt, nil
 	}
 	name := BotName(pv.Persona, botName)
-	p := Prompt{Text: CorePrompt(name) + "\n\n" + Render(pv.Persona), Version: pv.Version, BotName: name}
+	text := CorePrompt(name) + "\n\n"
+	if note := PlatformNameNote(name, botName); note != "" {
+		text += note + "\n\n"
+	}
+	p := Prompt{Text: text + Render(pv.Persona), Version: pv.Version, BotName: name}
 	s.prompts[convKey] = cachedPrompt{version: pv.Version, botName: botName, prompt: p}
 	return p, nil
 }
