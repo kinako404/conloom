@@ -35,7 +35,7 @@ const (
 // CopyDirectiveContinuation is appended to the current message of a turn in
 // the bot's conversation with speaker.
 func CopyDirectiveContinuation(speaker string) string {
-	return "【提示】你正在和 " + speaker + " 聊天，下面是他在你上次回复后说的话（可能有好几句）。你不需要每句都回应：只有当他在问你、在等你回应，或者你有明显值得说的话时，才回复一两句；如果他是在和别人说话、话题已经转开，或者没必要回应，只输出 [[SKIP]]，不要输出其他内容。"
+	return "【提示】你正在和 " + speaker + " 聊天，下面是他在你上次回复后说的话（可能有好几句）。你不需要每句都回应：只有当他在问你、在等你回应，或者你有明显值得说的话时，才回复一两句（单纯附和，比如“确实”“是啊”“哈哈”，不算值得说的话）；如果他是在和别人说话、话题已经转开，或者没必要回应，只输出 [[SKIP]]，不要输出其他内容。"
 }
 
 // CopyDirectiveJoin is appended to the current message of a task joining the

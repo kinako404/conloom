@@ -79,7 +79,7 @@ func TestJoin_LiveSequenceAfterRuleExit(t *testing.T) {
 	}
 	env.waitIdle(t)
 
-	clock.advance(26 * time.Second)
+	clock.advance(50 * time.Second)
 	for _, text := range []string{"好吧。", "走，打游戏去。"} {
 		if _, resp := say("20002", text); resp.Disposition != conloomapi.DispositionObserve || resp.TaskID != "" {
 			t.Fatalf("%q from a member who never engaged the bot: %+v, want observe", text, resp)

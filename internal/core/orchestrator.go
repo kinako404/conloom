@@ -172,6 +172,9 @@ func New(d Deps) (*Orchestrator, error) {
 		idle = defaultSessionIdle
 	}
 	o.sched = NewScheduler(o.run, o.sessionConfig, max(idle, minSessionIdle))
+	o.sched.OnHold(func(t QueuedTask, until time.Time) {
+		o.log.Info("turn deferred", "conversation", t.ConversationKey, "task_id", t.TaskID, "until", until.UTC())
+	})
 	o.bgCtx, o.bgCancel = context.WithCancel(context.Background())
 	o.policies.OnChange(o.PolicyChanged)
 	if lvl := o.cfg.DefaultGroupPolicy.Review.Level; !review.LevelImplemented(lvl) {
@@ -264,13 +267,20 @@ func (o *Orchestrator) sessionConfig(convKey string) SessionConfig {
 	} else {
 		pol = pv.Policy
 	}
-	return SessionConfig{
+	cfg := SessionConfig{
 		MaxConcurrent:    pol.Concurrency.MaxInteractiveRequests,
 		MaxQueued:        pol.Concurrency.MaxQueuedRequests,
 		Debounce:         pol.Reply.Debounce.Duration,
 		MaxMergeWindow:   o.cfg.Runtime.MaxMergeWindow.Duration,
 		MinReplyInterval: pol.Reply.MinReplyInterval.Duration,
 	}
+	if spoke := o.lastBotSpoke(convKey); !spoke.IsZero() {
+		// Turns wait for the turn cooldown after the bot last spoke. The
+		// scheduler runs on the wall clock, so the cooldown's end is moved
+		// there from o.now.
+		cfg.CooldownUntil = time.Now().Add(spoke.Add(pol.Reply.TurnCooldown.Duration).Sub(o.now()))
+	}
+	return cfg
 }
 
 // submission is one incoming event being accepted.
@@ -418,13 +428,15 @@ var errRateLimited = errors.New("core: sender is rate limited")
 
 // submitTurn admits a session participant's message into their turn: their
 // pending task absorbs it, or else a continuation task starts whose merge
-// window is the policy's turn gap, capped at its turn maximum wait. Only a
+// window is the policy's turn gap, capped at its turn maximum wait. The turn
+// starts no earlier than the turn cooldown after the bot last spoke (see
+// MergeOptions.Cooldown), absorbing the sender's messages meanwhile. Only a
 // new turn spends one of the sender's rate-limit hits.
 func (o *Orchestrator) submitTurn(ctx context.Context, s *submission, pol conloomapi.GroupPolicy) (conloomapi.EventAccepted, error) {
 	if pol.Concurrency.MaxInteractiveRequests == 0 {
 		return o.observeOnly(ctx, s, conloomapi.SuppressedPaused)
 	}
-	opts := MergeOptions{Debounce: pol.Reply.TurnGap.Duration, MaxMergeWindow: pol.Reply.TurnMaxWait.Duration}
+	opts := MergeOptions{Debounce: pol.Reply.TurnGap.Duration, MaxMergeWindow: pol.Reply.TurnMaxWait.Duration, Cooldown: true}
 	resp, err := o.admitWith(ctx, s, AdmitNew, TriggerContinuation, opts, func() bool {
 		return o.limiter.Allow(s.convKey+":"+s.ev.Actor.PlatformUserID, pol.Reply.UserRateLimitPerMinute, s.now)
 	})

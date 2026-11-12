@@ -168,9 +168,9 @@ type joinSpeaker struct {
 // considerJoin decides, after a lull, whether the bot joins the group's
 // conversation, checking the cheap in-memory conditions before reading the
 // database: proactive replies on and the group not paused; no session and no
-// unfinished task; the bot last spoke at least the join cooldown ago; the
-// group's join evaluations and proactive replies in the last hour below their
-// limits; enough recent member messages, the newest not stale; at least one
+// unfinished task other than turns held for the turn cooldown; the bot last
+// spoke at least the join cooldown ago; the group's join evaluations and
+// proactive replies in the last hour below their limits; enough recent member messages, the newest not stale; at least one
 // eligible member among the speakers who is not out of their own budget; and
 // the window matching such a member's interests or containing a question. An
 // unanswered question waives the minimum number of messages: the newest
@@ -225,7 +225,7 @@ func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 	if o.sessionActive(convKey, now, pol.Reply.ContinuationWindow.Duration) {
 		guestOnly = joinNoSession
 	}
-	if len(o.sched.Active(convKey)) > 0 {
+	if slices.ContainsFunc(o.sched.Active(convKey), func(t QueuedTask) bool { return !t.Held }) {
 		if guestOnly != "" {
 			return "", guestOnly
 		}

@@ -27,6 +27,9 @@ type SessionConfig struct {
 	Debounce         time.Duration
 	MaxMergeWindow   time.Duration
 	MinReplyInterval time.Duration
+	// CooldownUntil is when tasks created with MergeOptions.Cooldown may
+	// start (see MergeOptions).
+	CooldownUntil time.Time
 }
 
 type QueuedTask struct {
@@ -36,7 +39,13 @@ type QueuedTask struct {
 	TriggerMessageIDs []string
 	EnqueuedAt        time.Time
 	ReadyAt           time.Time
+	// Held reports, in tasks returned by Active, that the task waits for the
+	// conversation's cooldown (see MergeOptions.Cooldown).
+	Held bool
 
+	// addressed is set once a message addressed to the bot merged into the
+	// task; reported is set once the task's hold was reported to onHold.
+	addressed, reported bool
 	// merge is the merge window the task was created with; zero fields (as
 	// in restored tasks) follow the conversation's SessionConfig.
 	merge MergeOptions
@@ -50,9 +59,16 @@ type QueuedTask struct {
 // a task whose Debounce is longer than the conversation's, it makes the task
 // ready within the conversation's Debounce instead, and never later than the
 // task's current ReadyAt.
+//
+// Cooldown makes a new task wait, past its ReadyAt, until the conversation's
+// SessionConfig.CooldownUntil and until no task of the conversation runs,
+// unless an Addressed message merged into it. While it waits (it is held) its
+// merge window stays open whatever its ReadyAt and MaxMergeWindow, and the
+// tasks queued behind it may start before it.
 type MergeOptions struct {
 	Debounce, MaxMergeWindow time.Duration
 	Addressed                bool
+	Cooldown                 bool
 }
 
 func (m MergeOptions) orConfig(cfg SessionConfig) MergeOptions {
@@ -93,7 +109,8 @@ type AdmitResult struct {
 
 // Scheduler runs tasks per conversation: FIFO, with merge windows, a
 // concurrency limit, and a minimum interval between a task finishing and the
-// next one starting. Each active conversation has its own goroutine, so
+// next one starting; held tasks (see MergeOptions.Cooldown) are passed over
+// until they may start. Each active conversation has its own goroutine, so
 // conversations never block each other.
 type Scheduler struct {
 	run    Runner
@@ -106,6 +123,7 @@ type Scheduler struct {
 	mu       sync.Mutex
 	closed   bool
 	sessions map[string]*session
+	onHold   func(t QueuedTask, until time.Time)
 }
 
 type session struct {
@@ -170,12 +188,13 @@ func (s *Scheduler) AdmitWith(convKey, actorID, messageID string, mode AdmitMode
 	defer sess.mu.Unlock()
 	now := time.Now()
 
-	if i := sess.openWindow(actorID, now); i >= 0 {
+	if i := sess.openWindow(actorID, cfg, now); i >= 0 {
 		t := &sess.pending[i]
 		if err := persist(AdmitPlan{MergeIntoTaskID: t.TaskID}); err != nil {
 			return AdmitResult{}, err
 		}
 		t.TriggerMessageIDs = append(t.TriggerMessageIDs, messageID)
+		t.addressed = t.addressed || opts.Addressed
 		if m := t.merge.orConfig(cfg); opts.Addressed && m.Debounce > cfg.Debounce {
 			t.ReadyAt = earliest(t.ReadyAt, now.Add(cfg.Debounce))
 		} else {
@@ -250,19 +269,23 @@ func (s *Scheduler) Cancel(convKey, taskID string) bool {
 }
 
 // Active returns the conversation's unfinished tasks: running ones in start
-// order, then queued ones in FIFO order.
+// order, then queued ones in FIFO order, with Held set on those held now.
 func (s *Scheduler) Active(convKey string) []QueuedTask {
+	cfg := s.cfg(convKey)
 	sess := s.lockSession(convKey, false)
 	if sess == nil {
 		return nil
 	}
 	defer sess.mu.Unlock()
+	now := time.Now()
 	out := make([]QueuedTask, 0, len(sess.running)+len(sess.pending))
 	for _, rt := range sess.running {
 		out = append(out, cloneTask(rt.task))
 	}
 	for _, t := range sess.pending {
-		out = append(out, cloneTask(t))
+		c := cloneTask(t)
+		c.Held = sess.heldLocked(t, cfg, now)
+		out = append(out, c)
 	}
 	return out
 }
@@ -286,6 +309,14 @@ func (s *Scheduler) Close() {
 	s.mu.Unlock()
 	s.cancel()
 	s.wg.Wait()
+}
+
+// OnHold sets fn to be called, outside the scheduler's locks, the first time
+// each task is held, with the conversation's CooldownUntil.
+func (s *Scheduler) OnHold(fn func(t QueuedTask, until time.Time)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onHold = fn
 }
 
 func (s *Scheduler) isClosed() bool {
@@ -340,11 +371,21 @@ func (s *Scheduler) loop(sess *session) {
 	for {
 		cfg := s.cfg(sess.key)
 		sess.mu.Lock()
-		wait, idle := s.dispatchLocked(sess, cfg, time.Now())
+		wait, idle, held := s.dispatchLocked(sess, cfg, time.Now())
 		if idle {
 			sess.dead = true
 		}
 		sess.mu.Unlock()
+		if len(held) > 0 {
+			s.mu.Lock()
+			onHold := s.onHold
+			s.mu.Unlock()
+			for _, t := range held {
+				if onHold != nil {
+					onHold(t, cfg.CooldownUntil)
+				}
+			}
+		}
 		if idle {
 			s.forget(sess)
 			return
@@ -366,36 +407,69 @@ func (s *Scheduler) loop(sess *session) {
 	}
 }
 
-// dispatchLocked starts every task that may start now. It returns how long to
-// wait before re-evaluating (0: until woken) and whether the session has been
-// idle long enough to be reclaimed.
-func (s *Scheduler) dispatchLocked(sess *session, cfg SessionConfig, now time.Time) (wait time.Duration, idle bool) {
-	for len(sess.pending) > 0 {
-		if s.ctx.Err() != nil {
-			return 0, false
+// dispatchLocked starts every task that may start now, in FIFO order but
+// passing over held tasks. It returns how long to wait before re-evaluating
+// (0: until woken), whether the session has been idle long enough to be
+// reclaimed, and the tasks held for the first time.
+func (s *Scheduler) dispatchLocked(sess *session, cfg SessionConfig, now time.Time) (wait time.Duration, idle bool, held []QueuedTask) {
+	// A held task is re-evaluated when its cooldown ends, or when a running
+	// task finishes and signals.
+	holdWait := time.Duration(0)
+	for i := range sess.pending {
+		t := &sess.pending[i]
+		if !sess.heldLocked(*t, cfg, now) {
+			continue
 		}
-		head := sess.pending[0]
+		if !t.reported {
+			t.reported = true
+			held = append(held, cloneTask(*t))
+		}
+		if d := cfg.CooldownUntil.Sub(now); d > 0 {
+			holdWait = d
+		}
+	}
+	soonest := func(d time.Duration) time.Duration {
+		if holdWait > 0 && (d <= 0 || holdWait < d) {
+			return holdWait
+		}
+		return d
+	}
+	for {
+		if s.ctx.Err() != nil {
+			return 0, false, held
+		}
+		i := slices.IndexFunc(sess.pending, func(t QueuedTask) bool { return !sess.heldLocked(t, cfg, now) })
+		if i < 0 {
+			break
+		}
+		head := sess.pending[i]
 		if d := head.ReadyAt.Sub(now); d > 0 {
-			return d, false
+			return soonest(d), false, held
 		}
 		if len(sess.running) >= cfg.MaxConcurrent {
-			return 0, false
+			return soonest(0), false, held
 		}
 		if !sess.lastFinish.IsZero() {
 			if d := sess.lastFinish.Add(cfg.MinReplyInterval).Sub(now); d > 0 {
-				return d, false
+				return soonest(d), false, held
 			}
 		}
-		sess.pending = slices.Delete(sess.pending, 0, 1)
+		sess.pending = slices.Delete(sess.pending, i, i+1)
 		s.startLocked(sess, head)
 	}
-	if len(sess.running) > 0 {
-		return 0, false
+	if len(sess.pending) > 0 || len(sess.running) > 0 {
+		return soonest(0), false, held
 	}
 	if d := sess.lastActivity.Add(s.idle).Sub(now); d > 0 {
-		return d, false
+		return d, false, held
 	}
-	return 0, true
+	return 0, true, held
+}
+
+// heldLocked reports whether the pending task t is held at now (see
+// MergeOptions.Cooldown).
+func (sess *session) heldLocked(t QueuedTask, cfg SessionConfig, now time.Time) bool {
+	return t.merge.Cooldown && !t.addressed && (now.Before(cfg.CooldownUntil) || len(sess.running) > 0)
 }
 
 func (s *Scheduler) startLocked(sess *session, t QueuedTask) {
@@ -418,10 +492,11 @@ func (s *Scheduler) startLocked(sess *session, t QueuedTask) {
 }
 
 // openWindow returns the index of actorID's most recent not-yet-started task
-// whose merge window is still open at now, or -1.
-func (sess *session) openWindow(actorID string, now time.Time) int {
+// whose merge window is still open at now (before its ReadyAt, or while it is
+// held), or -1.
+func (sess *session) openWindow(actorID string, cfg SessionConfig, now time.Time) int {
 	for i := len(sess.pending) - 1; i >= 0; i-- {
-		if t := sess.pending[i]; t.ActorID == actorID && now.Before(t.ReadyAt) {
+		if t := sess.pending[i]; t.ActorID == actorID && (now.Before(t.ReadyAt) || sess.heldLocked(t, cfg, now)) {
 			return i
 		}
 	}

@@ -140,7 +140,7 @@ func TestSession_TurnMergesBurstIntoOneCall(t *testing.T) {
 }
 
 func TestCopyDirectiveContinuation(t *testing.T) {
-	want := "【提示】你正在和 小明 聊天，下面是他在你上次回复后说的话（可能有好几句）。你不需要每句都回应：只有当他在问你、在等你回应，或者你有明显值得说的话时，才回复一两句；如果他是在和别人说话、话题已经转开，或者没必要回应，只输出 [[SKIP]]，不要输出其他内容。"
+	want := "【提示】你正在和 小明 聊天，下面是他在你上次回复后说的话（可能有好几句）。你不需要每句都回应：只有当他在问你、在等你回应，或者你有明显值得说的话时，才回复一两句（单纯附和，比如“确实”“是啊”“哈哈”，不算值得说的话）；如果他是在和别人说话、话题已经转开，或者没必要回应，只输出 [[SKIP]]，不要输出其他内容。"
 	if got := CopyDirectiveContinuation("小明"); got != want {
 		t.Fatalf("CopyDirectiveContinuation = %q, want %q", got, want)
 	}
@@ -403,7 +403,10 @@ func TestSession_PendingTurnDroppedAfterRuleExit(t *testing.T) {
 	}
 }
 
-func TestSession_ConcurrentTurnsBoundedByLimit(t *testing.T) {
+// Even with room for two tasks, a turn waits while another task of the
+// conversation runs; the turn answered first reaches the limit and the other
+// is then dropped.
+func TestSession_TurnsWaitForRunningTurnAndLimit(t *testing.T) {
 	handler, turnCalls, release := holdTurns()
 	env := newTestOrchestrator(t, testOpts{short: handler, long: handler, configure: func(c *config.Config) {
 		withContinuation(c)
@@ -416,25 +419,24 @@ func TestSession_ConcurrentTurnsBoundedByLimit(t *testing.T) {
 	a := env.submit(t, env.groupEvent("20001", "说个事")).TaskID
 	b := env.submit(t, env.groupEvent("20002", "我也说说")).TaskID
 	waitUntil(t, "one turn's model call", func() bool { return turnCalls.Load() == 1 })
-	var answered, dropped string
-	waitUntil(t, "the other turn to finish", func() bool {
-		for _, c := range [][2]string{{a, b}, {b, a}} {
-			if taskFinished(env.getTask(t, c[0]).Status) {
-				dropped, answered = c[0], c[1]
-				return true
-			}
-		}
-		return false
-	})
-	requireDropped(t, env, dropped)
+	waitUntil(t, "the other turn to wait", env.heldTurn)
 	time.Sleep(100 * time.Millisecond)
-	if u, skips, ok := env.sessionCounts(); !ok || u != 0 || skips != 0 {
-		t.Fatalf("session (exists %v) unprompted %d skips %d, want no counts from the dropped turn", ok, u, skips)
+	if n := turnCalls.Load(); n != 1 {
+		t.Fatalf("turn model calls = %d while one turn runs, want 1", n)
 	}
 	release()
-	if task := env.waitTask(t, answered); len(task.Actions) != 1 {
-		t.Fatalf("answered turn = %+v, want a reply", task)
+	var answered, dropped string
+	for _, id := range []string{a, b} {
+		if task := env.waitTask(t, id); len(task.Actions) == 1 {
+			answered = id
+		} else {
+			dropped = id
+		}
 	}
+	if answered == "" || dropped == "" {
+		t.Fatalf("answered %q dropped %q, want one of each", answered, dropped)
+	}
+	requireDropped(t, env, dropped)
 	waitUntil(t, "the session to end", func() bool { return !env.sessionActive() })
 	if n := turnCalls.Load(); n != 1 {
 		t.Fatalf("turn model calls = %d, want 1", n)

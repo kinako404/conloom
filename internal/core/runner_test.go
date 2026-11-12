@@ -126,11 +126,13 @@ func TestRunner_BlockedOutputHasNoAction(t *testing.T) {
 
 const testWindow = time.Minute
 
-// withContinuation turns on sessions with short turns.
+// withContinuation turns on sessions with short turns and a negligible turn
+// cooldown.
 func withContinuation(c *config.Config) {
 	c.DefaultGroupPolicy.Reply.ContinuationWindow = conloomapi.Duration{Duration: testWindow}
 	c.DefaultGroupPolicy.Reply.TurnGap = conloomapi.Duration{Duration: 100 * time.Millisecond}
 	c.DefaultGroupPolicy.Reply.TurnMaxWait = conloomapi.Duration{Duration: 400 * time.Millisecond}
+	c.DefaultGroupPolicy.Reply.TurnCooldown = conloomapi.Duration{Duration: time.Millisecond}
 }
 
 func (e *testEnv) inContinuation(user string) bool {

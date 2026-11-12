@@ -15,7 +15,7 @@ v1 上线后观察到：
 ## 2. 行为概览
 
 1. **直接对话**（@Bot、回复 Bot、命令、私聊）：照旧，每次都回复。
-2. **在聊模式**（Bot 已在和某些人聊）：参与者不 @ 的后续发言**按轮次**处理——等对方停顿 `turn_gap`（默认 6 秒，最长等 `turn_max_wait` 20 秒）后合并为一轮，模型判断这一轮值不值得回应，可以不回。
+2. **在聊模式**（Bot 已在和某些人聊）：参与者不 @ 的后续发言**按轮次**处理——等对方停顿 `turn_gap`（默认 6 秒，最长等 `turn_max_wait` 20 秒）后合并为一轮，模型判断这一轮值不值得回应，可以不回；Bot 刚在群里说过话时，这一轮还要等到接话冷却 `turn_cooldown`（默认 45 秒）过去才处理（§3.3）。
 3. **观望模式**（Bot 没在聊）：群里有人在聊、出现自然停顿（`join_lull` 15 秒）时，满足资格、相关性与预算条件，才让模型看最近的对话决定是否加入一两句。
 
 ## 3. 在聊模式（会话）
@@ -34,13 +34,14 @@ v1 上线后观察到：
 
 - 会话存续：`now − last_activity < continuation_window`（字段沿用 `reply.continuation_window`，含义改为“会话保持时间”，取值放宽到 [0, 10m]；0 表示不开启在聊模式，只回直接触发）。
 - 参与者的非 @ 发言（且不满足 v1 §5.1 的退出规则：@ 别人、回复其他群友）→ 触发 `continuation`，以 `turn_gap`/`turn_max_wait` 作为该任务的合并窗口，同一人的后续发言并入同一轮。`last_activity=now`。
+- **接话冷却**：一轮（只指没有 @ 或回复 Bot 的 `continuation` 任务）不早于“Bot 在本群最后一次发言（任何方式：直接回复、命令、轮次回复、加入群聊）+ `turn_cooldown`（默认 45 秒，[1s, 10m]）”开始；本群有任务正在运行时也继续等，它结束后再判断（它的回复会重新计时）。这是延后不是丢弃：等待期间这一轮的合并窗口一直开着，同一人的后续发言都并入这一轮（`turn_max_wait` 不会提前放行，也不会另开一轮），到时只调用一次模型，看到这期间他说的全部内容。等待中的一轮不挡其他任务：别人的 @、回复、命令、加入群聊与会话外提问照常及时处理（加入评估的“有排队任务”检查也不计等待中的轮次）。等待期间他 @ 或回复了 Bot，这条消息并入这一轮后按直接对话处理：及时放行、不受冷却限制，只回一条。被点名的回复、命令、加入群聊与会话外提问都不受接话冷却影响。一轮开始等待时记一条 INFO 日志 `turn deferred`（`conversation`、`task_id`、`until`），每轮只记一次。冷却按进程内记录的 Bot 发言时间计算；重启会清空会话，新会话总是始于本进程内 Bot 的一次发言，所以不需要从库里恢复。
 - 满足退出规则 → 该人移出 `participants`（无人则会话结束），消息按观察入库（v1 行为）。
 - 非参与者的非 @ 发言：观察入库（进入上下文），不触发。
 
 ### 3.4 一轮的处理
 
 - 提示词（附在当前消息末尾）：
-  `【提示】你正在和 {发言者} 聊天，下面是他在你上次回复后说的话（可能有好几句）。你不需要每句都回应：只有当他在问你、在等你回应，或者你有明显值得说的话时，才回复一两句；如果他是在和别人说话、话题已经转开，或者没必要回应，只输出 [[SKIP]]，不要输出其他内容。`
+  `【提示】你正在和 {发言者} 聊天，下面是他在你上次回复后说的话（可能有好几句）。你不需要每句都回应：只有当他在问你、在等你回应，或者你有明显值得说的话时，才回复一两句（单纯附和，比如“确实”“是啊”“哈哈”，不算值得说的话）；如果他是在和别人说话、话题已经转开，或者没必要回应，只输出 [[SKIP]]，不要输出其他内容。`
 - 回复 → `unprompted+1`，`skips=0`，`last_activity=now`；若 `unprompted ≥ max_unprompted_replies`（默认 4）→ 会话结束。
 - `[[SKIP]]` → `skips+1`；若 `skips ≥ max_consecutive_skips`（默认 2）→ 会话结束。
 - 会话结束原因计入 `conloom_continuation_exits_total{reason="rule"|"model"|"limit"|"idle"}`（`model`=连续跳过，`limit`=未点名回复上限）。
@@ -81,7 +82,7 @@ v1 上线后观察到：
 
 ## 6. 配置（新增字段，括号内为默认值与取值范围）
 
-`reply` 段：`continuation_window`（含义改为会话保持时间，[0, 10m]）、`turn_gap`（6s，[1s, 60s]）、`turn_max_wait`（20s，[turn_gap, 2m]）、`max_unprompted_replies`（4，[1, 20]）、`max_consecutive_skips`（2，[1, 10]）。
+`reply` 段：`continuation_window`（含义改为会话保持时间，[0, 10m]）、`turn_gap`（6s，[1s, 60s]）、`turn_max_wait`（20s，[turn_gap, 2m]）、`turn_cooldown`（45s，[1s, 10m]）、`max_unprompted_replies`（4，[1, 20]）、`max_consecutive_skips`（2，[1, 10]）。
 
 `proactive` 段：`join_lull`（15s，[5s, 5m]）、`join_window`（5m，[1m, 30m]）、`join_min_messages`（4，[2, 50]）、`join_evaluations_per_hour`（4，[1, 60]）、`join_cooldown`（10m，[1m, 24h]）。
 
@@ -89,7 +90,7 @@ v1 上线后观察到：
 
 ## 7. 成本上界
 
-- 在聊模式：每轮至多 1 次模型调用；两次被直接点名之间，一段会话最多 `max_unprompted_replies` 次未点名回复，每两次回复之间最多连续跳过 `max_consecutive_skips − 1` 轮，所以最多 `max_unprompted_replies × max_consecutive_skips` 次模型调用（默认 4 × 2 = 8），之后必须重新 @。
+- 在聊模式：每轮至多 1 次模型调用，两次未点名回复之间至少隔 `turn_cooldown`；两次被直接点名之间，一段会话最多 `max_unprompted_replies` 次未点名回复，每两次回复之间最多连续跳过 `max_consecutive_skips − 1` 轮，所以最多 `max_unprompted_replies × max_consecutive_skips` 次模型调用（默认 4 × 2 = 8），之后必须重新 @。
 - 观望模式：每群每小时至多 `join_evaluations_per_hour` 次模型调用，与群消息数量无关。
 
 ## 8. 测试与验收

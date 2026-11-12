@@ -36,7 +36,7 @@ QQ 群 ⇄ NapCat ⇄(OneBot 11 正向 WS)⇄ conloom adapter napcat ⇄(REST /a
 1. Adapter 把平台消息转为标准 Event，`POST /api/v1/events`，带 `Idempotency-Key`。
 2. Gateway 校验 token 权限、Schema 与幂等键，丢弃 Bot 自身的消息。
 3. 消息先落库，再由回复策略判定 `reply`／`observe`／`ignore`。没有被忽略的群消息还会重置该群的停顿计时器；群里安静下来时按观望模式的条件检查一次，全部满足才会建一个加入群聊的任务，否则不调用模型。
-4. `reply`：进入该会话的串行执行单元，在合并窗口内收集同一发送者的连续短消息（在聊模式的一轮用更长的 `turn_gap`／`turn_max_wait`）。
+4. `reply`：进入该会话的串行执行单元，在合并窗口内收集同一发送者的连续短消息（在聊模式的一轮用更长的 `turn_gap`／`turn_max_wait`，并在 Bot 刚说过话时等到接话冷却 `turn_cooldown` 过去）。
 5. 加载人格版本、群策略与近期消息，组装上下文并估算 token；他人的每条历史消息最多保留 300 字（超出部分截断并标注，附件占位符保持完整），Bot 自己的历史回复不截断。
 6. 角色路由选出模型 Profile，准入控制放行后调用模型。
 7. 输出经基础审查与后处理写入 Outbox，并唤醒长轮询中的 Adapter。
@@ -173,7 +173,8 @@ conloom version                                                    显示版本�
 群策略 `reply.continuation_window` 是在聊会话的保持时间（0~10m；0 表示不开启在聊模式，只回直接对话；示例配置为 `0s`）。每个群同时最多有一个在聊会话，只记在内存里，重启后清空（最多让一段闲聊需要重新 @Bot）。
 
 - **开始与刷新**：Bot 回复了群里 @Bot 或回复 Bot 的消息后，发起者成为在聊会话的参与者（会话不存在时随之开始）；会话中的直接对话同样把发起者加入，并把下面的未点名回复与连续跳过计数清零。Bot 以加入群聊的方式发言后（见[观望模式](#观望模式加入群聊)），也会开始一段会话，参与者是当时最近对话中的全部目标资格人，并且已计 1 次未点名回复。
-- **轮次**：参与者不 @Bot 的发言触发一轮（任务 `trigger` 为 `continuation`）。Bot 等他停顿 `turn_gap`（默认 6 秒）再处理；他一直在说时，从这一轮第一句算起最多等 `turn_max_wait`（默认 20 秒）。同一人在这期间的几句话合并为一轮，只调用一次模型，回复针对他最后一句（需要引用时引用这一句，见上文回复格式）。模型被告知不需要每句都回应：只有对方在问它、在等它回应，或者它有明显值得说的话时才回复一两句；对方在和别人说话、话题已经转开或没必要回应时输出跳过标记。
+- **轮次**：参与者不 @Bot 的发言触发一轮（任务 `trigger` 为 `continuation`）。Bot 等他停顿 `turn_gap`（默认 6 秒）再处理；他一直在说时，从这一轮第一句算起最多等 `turn_max_wait`（默认 20 秒）。同一人在这期间的几句话合并为一轮，只调用一次模型，回复针对他最后一句（需要引用时引用这一句，见上文回复格式）。模型被告知不需要每句都回应：只有对方在问它、在等它回应，或者它有明显值得说的话时才回复一两句（单纯附和，比如“确实”“是啊”“哈哈”，不算值得说的话）；对方在和别人说话、话题已经转开或没必要回应时输出跳过标记。
+- **接话冷却**：Bot 在本群说过话（任何方式）后的 `turn_cooldown`（默认 45 秒）内，以及本群有任务正在运行时，未点名的一轮先等着，不调用模型。等待期间他的后续发言都并入这一轮（`turn_max_wait` 不会提前放行，也不会另开一轮），冷却结束后只调用一次模型，看到他这段时间说的全部内容；日志记一条 `turn deferred`。等待中的一轮不挡别人：其他人的 @、回复、命令、加入群聊与会话外提问照常及时处理。他在等待期间 @ 或回复了 Bot，就按直接对话及时回复（只回一条）。被点名的回复、命令和加入群聊不受接话冷却影响。
 - **规则退出（不调用模型）**：参与者的非 @ 消息如果 @ 了 Bot 以外的人（包括 @全体成员），或回复的是另一位群友的消息，就不回复、只落库，并把此人移出参与者；参与者都走了，会话结束。
 - **非参与者**：不在会话里的人不 @Bot 的发言只落库（会进入上下文），不触发回复。
 - **结束**：满足任一条件会话即结束——连续 `max_consecutive_skips`（默认 2）轮模型都输出跳过标记或调用失败（在聊轮次和加入群聊的任务失败时不发出错误提示）；自上次被直接点名以来，未点名的回复达到 `max_unprompted_replies`（默认 4）次；超过 `continuation_window` 既没有参与者发言也没有 Bot 回复；参与者全部规则退出。`/pause` 也会清空会话。
@@ -208,7 +209,7 @@ conloom version                                                    显示版本�
 ### 成本上界
 
 - **直接对话**：每次触发（合并后）至多一次模型调用，受每用户限流约束。
-- **在聊模式**：每轮至多一次模型调用，对方连发几句也只算一轮。两次被直接点名之间，一段会话最多有 `max_unprompted_replies` 次未点名回复，两次回复之间最多连续跳过 `max_consecutive_skips − 1` 轮（再多一轮会话就结束），所以最多 `max_unprompted_replies × max_consecutive_skips` 次模型调用（默认 4 × 2 = 8 次），之后必须重新 @Bot。
+- **在聊模式**：每轮至多一次模型调用，对方连发几句也只算一轮；两次未点名回复之间至少隔 `turn_cooldown`。两次被直接点名之间，一段会话最多有 `max_unprompted_replies` 次未点名回复，两次回复之间最多连续跳过 `max_consecutive_skips − 1` 轮（再多一轮会话就结束），所以最多 `max_unprompted_replies × max_consecutive_skips` 次模型调用（默认 4 × 2 = 8 次），之后必须重新 @Bot。
 - **观望模式**：每群每小时至多 `join_evaluations_per_hour` 次模型调用（默认 4），与群消息数量无关；有人刷屏时，停顿只会更少。
 
 ### 指标
@@ -248,6 +249,7 @@ default_group_policy:
     continuation_window: 0s     # 在聊会话保持时间，0~10m；0 表示不开启在聊模式，只回直接对话
     turn_gap: 6s                # 在聊时等对方停顿多久再处理这一轮，1s~60s
     turn_max_wait: 20s          # 一轮从第一句算起最多等多久，turn_gap~2m
+    turn_cooldown: 45s          # 接话冷却：Bot 说话后多久内先不处理未点名的一轮（延后合并，不丢弃），1s~10m
     max_unprompted_replies: 4   # 两次被直接点名之间最多几次未点名回复，达到后会话结束，1~20
     max_consecutive_skips: 2    # 连续几轮跳过后会话结束，1~10
     quote: auto                 # 群里回复何时引用原消息：auto（必要时）| always | never
@@ -265,7 +267,7 @@ default_group_policy:
     join_cooldown: 10m          # Bot 上次在本群发言后多久之内不加入，1m~24h
 ```
 
-YAML 配置中省略的任何字段（或省略整个 `proactive` 段）都保持上面的默认值；群策略 API 不会这样合并，不完整的 `proactive` 段会被拒绝（下面的 v2 新增字段除外，见 [API](#api)）。升级前已存库的群策略版本没有 `proactive` 段时，读取时同样按默认值补齐，即主动搭话默认开启、档位默认为低。已存库的版本或 API 请求里缺少群聊参与 v2 新增的字段（`turn_gap`、`turn_max_wait`、`max_unprompted_replies`、`max_consecutive_skips` 与 `join_*`）或 `reply.quote` 时，逐字段按默认值补齐（`quote` 补为 `auto`）；这些字段的零值本身都不合法，所以不会覆盖有意的设置。`continuation_window` 不补，旧版本里的 `0s` 仍表示不开启在聊模式。
+YAML 配置中省略的任何字段（或省略整个 `proactive` 段）都保持上面的默认值；群策略 API 不会这样合并，不完整的 `proactive` 段会被拒绝（下面的 v2 新增字段除外，见 [API](#api)）。升级前已存库的群策略版本没有 `proactive` 段时，读取时同样按默认值补齐，即主动搭话默认开启、档位默认为低。已存库的版本或 API 请求里缺少群聊参与 v2 新增的字段（`turn_gap`、`turn_max_wait`、`max_unprompted_replies`、`max_consecutive_skips` 与 `join_*`）、`reply.quote` 或 `reply.turn_cooldown` 时，逐字段按默认值补齐（`quote` 补为 `auto`，`turn_cooldown` 补为 45s）；这些字段的零值本身都不合法，所以不会覆盖有意的设置。`continuation_window` 不补，旧版本里的 `0s` 仍表示不开启在聊模式。
 
 `proactive.contact_cooldown` 已移除：已存库的旧版本里的这个键在读取时被忽略；但配置文件不接受未知字段，升级后要从 `conloom.yaml` 里删掉这一行，否则启动时报错。
 
@@ -288,7 +290,7 @@ YAML 配置中省略的任何字段（或省略整个 `proactive` 段）都保�
 | `GET /healthz` | 无 | 健康检查 |
 | `GET /metrics` | 无 | Prometheus 指标（`server.metrics_enabled: false` 可关闭） |
 
-群策略包含 `proactive` 段（字段同上文配置）。`PUT …/policy` 的请求体完全不含 `proactive` 段时，保留本群**当前**的主动搭话设置；只要含有 `proactive` 段，它就必须是完整且合法的一段，API 不会与当前设置或默认值合并，像 `{"enabled": false}` 这样只写部分字段的请求会被拒绝并返回校验错误。唯一的例外是群聊参与 v2 新增的字段（`reply.turn_gap`、`reply.turn_max_wait`、`reply.max_unprompted_replies`、`reply.max_consecutive_skips` 与 `proactive.join_*`）及 `reply.quote`：请求里缺少时逐字段按默认值补齐，方便旧的调用方继续使用；已移除的 `proactive.contact_cooldown` 若出现在请求里会被忽略。只想关闭主动搭话时，可由管理员在群里发 `/主动 全群 关`，它以当前版本为基础写入一个新的群策略版本，且只改 `proactive.enabled`（`开` 同理），可用 `GET …/policy` 查看。任务的 `trigger` 除 `private`、`mention`、`reply`、`command` 等外，还可能是 `continuation`（在聊模式的一轮）与 `proactive`（加入群聊）。
+群策略包含 `proactive` 段（字段同上文配置）。`PUT …/policy` 的请求体完全不含 `proactive` 段时，保留本群**当前**的主动搭话设置；只要含有 `proactive` 段，它就必须是完整且合法的一段，API 不会与当前设置或默认值合并，像 `{"enabled": false}` 这样只写部分字段的请求会被拒绝并返回校验错误。唯一的例外是群聊参与 v2 新增的字段（`reply.turn_gap`、`reply.turn_max_wait`、`reply.max_unprompted_replies`、`reply.max_consecutive_skips` 与 `proactive.join_*`）及 `reply.quote`、`reply.turn_cooldown`：请求里缺少时逐字段按默认值补齐，方便旧的调用方继续使用；已移除的 `proactive.contact_cooldown` 若出现在请求里会被忽略。只想关闭主动搭话时，可由管理员在群里发 `/主动 全群 关`，它以当前版本为基础写入一个新的群策略版本，且只改 `proactive.enabled`（`开` 同理），可用 `GET …/policy` 查看。任务的 `trigger` 除 `private`、`mention`、`reply`、`command` 等外，还可能是 `continuation`（在聊模式的一轮）与 `proactive`（加入群聊）。
 
 会话 `{id}` 为标准会话 ID，如 `group_<群号>`、`private_<QQ号>`。同一幂等键重放返回首次响应并带 `Idempotent-Replayed: true`，同键不同内容返回 409。错误响应统一为：
 
