@@ -1,5 +1,7 @@
 # 氛围聊天：识趣退出与主动搭话 设计
 
+> 注：本设计 §5 的触发方式（按人的连续对话窗口）与 §6.4（逐条消息的主动搭话候选）已被群聊参与 v2 取代，见 `docs/superpowers/specs/2026-11-12-group-participation-design.md`。
+
 日期：2026-11-12
 上位：`docs/superpowers/specs/2026-11-12-conloom-p1-design.md`（P1 设计，下称“P1”）
 
