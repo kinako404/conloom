@@ -11,6 +11,7 @@ import (
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/ids"
+	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/outbox"
 	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/internal/policy"
@@ -19,7 +20,10 @@ import (
 )
 
 // Deps are the gateway's collaborators. Metrics is served at /metrics when
-// Config.Server.MetricsEnabled is set; a nil Logger discards.
+// Config.Server.MetricsEnabled is set; a nil Logger discards. Memory starts
+// consolidations asked for through the API; when nil they are accepted but
+// nothing runs. Counters records affinity changes made through the API; nil
+// records nothing.
 type Deps struct {
 	Orchestrator *core.Orchestrator
 	Outbox       *outbox.Service
@@ -29,6 +33,8 @@ type Deps struct {
 	Config       *config.Config
 	Metrics      http.Handler
 	Logger       *slog.Logger
+	Memory       interface{ Trigger(convKey string) }
+	Counters     *obs.Metrics
 }
 
 type Server struct {
@@ -77,6 +83,10 @@ func (s *Server) routes() {
 	s.handle("PUT /api/v1/conversations/{id}/persona", conloomapi.ScopePolicyWrite, s.putPersona)
 	s.handle("GET /api/v1/conversations/{id}/policy", conloomapi.ScopeAdminRead, s.getPolicy)
 	s.handle("PUT /api/v1/conversations/{id}/policy", conloomapi.ScopePolicyWrite, s.putPolicy)
+	s.handle("GET /api/v1/conversations/{id}/memory", conloomapi.ScopeMemoryRead, s.getMemory)
+	s.handle("PUT /api/v1/conversations/{id}/memory/members/{user_id}", conloomapi.ScopeMemoryWrite, s.putMemberMemory)
+	s.handle("DELETE /api/v1/conversations/{id}/memory/members/{user_id}", conloomapi.ScopeMemoryWrite, s.deleteMemberMemory)
+	s.handle("POST /api/v1/conversations/{id}/memory/consolidate", conloomapi.ScopeMemoryWrite, s.consolidateMemory)
 	s.mux.HandleFunc("GET /healthz", s.healthz)
 	if s.d.Config.Server.MetricsEnabled && s.d.Metrics != nil {
 		s.mux.Handle("GET /metrics", s.d.Metrics)

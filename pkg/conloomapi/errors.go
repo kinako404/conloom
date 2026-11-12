@@ -14,6 +14,7 @@ const (
 	CodeTaskCancelled         = "TASK_CANCELLED"
 	CodeInternal              = "INTERNAL_ERROR"
 	CodeNotFound              = "NOT_FOUND"
+	CodeMemoryDisabled        = "MEMORY_DISABLED"
 )
 
 type ErrorBody struct {

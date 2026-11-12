@@ -48,7 +48,8 @@ type Notifier interface{ Notify(botID string) }
 // Personas, Policies, Reviewer and Config are required. A nil Notifier does
 // nothing, nil Metrics are registered on a private registry, a nil Logger
 // discards, a nil Location is Config.Server.Timezone (falling back to
-// Asia/Shanghai, then UTC) and a nil Now is time.Now.
+// Asia/Shanghai, then UTC), a nil Now is time.Now and a nil MemoryTrigger
+// does nothing.
 type Deps struct {
 	Store     store.Store
 	Router    *router.Router
@@ -62,6 +63,8 @@ type Deps struct {
 	Config    *config.Config
 	Location  *time.Location
 	Now       func() time.Time
+
+	MemoryTrigger MemoryTrigger
 }
 
 // Orchestrator accepts events, runs commands and reply tasks, and recovers
@@ -79,6 +82,8 @@ type Orchestrator struct {
 	cfg      *config.Config
 	loc      *time.Location
 	now      func() time.Time
+
+	memTrigger MemoryTrigger
 
 	sched       *Scheduler
 	limiter     *RateLimiter
@@ -139,7 +144,7 @@ func New(d Deps) (*Orchestrator, error) {
 	o := &Orchestrator{
 		st: d.Store, router: d.Router, adm: d.Admission, personas: d.Personas, policies: d.Policies,
 		reviewer: d.Reviewer, notifier: d.Notifier, metrics: d.Metrics, log: d.Logger, cfg: d.Config,
-		loc: d.Location, now: d.Now,
+		loc: d.Location, now: d.Now, memTrigger: d.MemoryTrigger,
 		limiter: NewRateLimiter(),
 		owners:  map[string]*taskOwner{},
 	}

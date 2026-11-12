@@ -22,6 +22,10 @@
 | `PUT /api/v1/conversations/{id}/persona` | `policy:write` | 写入新人格版本 |
 | `GET /api/v1/conversations/{id}/policy` | `admin:read` | 当前群策略版本 |
 | `PUT /api/v1/conversations/{id}/policy` | `policy:write` | 写入新群策略版本 |
+| `GET /api/v1/conversations/{id}/memory` | `memory:read` | 群聊摘要、整理进度和群友记忆 |
+| `PUT /api/v1/conversations/{id}/memory/members/{user_id}` | `memory:write` | 修改某位群友的笔记、好感度 |
+| `DELETE /api/v1/conversations/{id}/memory/members/{user_id}` | `memory:write` | 忘记某位群友，等同于他发 `/忘记我` |
+| `POST /api/v1/conversations/{id}/memory/consolidate` | `memory:write` | 立即整理一次记忆；返回 202 |
 | `GET /healthz` | 无 | 健康检查：查一次数据库（2 秒超时），正常返回纯文本 `ok`，失败返回 503 |
 | `GET /metrics` | 无 | Prometheus 指标，`server.metrics_enabled: false` 时不注册 |
 
@@ -75,6 +79,44 @@
 - 只想关闭主动搭话时，管理员可以在群里发 `/主动 全群 关`：它以当前版本为基础写入一个新版本，只改 `proactive.enabled`（`开` 同理），可以用 `GET …/policy` 查看结果。
 - 把 `concurrency.max_interactive_requests` 设为 0 等同于 `/pause`：本群正在生成和排队的回复会被静默取消。
 
+## 记忆
+
+记忆只用于群聊：`{id}` 是私聊会话时这些端点返回 400，会话不属于令牌的机器人时返回 404。`{user_id}` 是群友的平台用户 ID（如 QQ 号）。记忆的规则见 [使用指南：记忆与好感度](usage.md#记忆与好感度)。
+
+`GET …/memory` 返回：
+
+```json
+{
+  "conversation_id": "group_10001",
+  "enabled": true,
+  "summary": "大家最近在聊咖啡。",
+  "cursor_seq": 1234,
+  "last_run_at": "2026-11-12T08:00:00Z",
+  "last_error": "",
+  "members": [
+    {"user_id": "20001", "name": "小明", "note": "喜欢手冲咖啡。", "affinity": 52, "tier": "熟悉", "updated_at": "2026-11-12T08:00:00Z"}
+  ]
+}
+```
+
+- `enabled` 表示记忆当前是否生效（`memory.enabled` 和 `concurrency.allow_long_requests` 都为 true）；关闭时照样返回已冻结的数据。
+- `cursor_seq` 是已整理到的位置；还没整理过时 `last_run_at` 为 `null`。`last_error` 是整理失败时记下的原因。
+- `members` 只列出有笔记或有好感度的群友，总是数组。还没有好感度的群友 `affinity` 为 `null`、`tier` 为空字符串。
+
+`PUT …/memory/members/{user_id}` 修改笔记、好感度或两者，没写的字段保持不变；群友还没有记录时新建：
+
+```json
+{"note": "喜欢手冲咖啡。", "affinity": 60, "reason": "管理员更正"}
+```
+
+- `note` 去掉首尾空白后最多 200 字，写 `""` 清空笔记；`affinity` 取 0–100 的整数。两个字段都没有、笔记超长或好感度越界时返回 400。
+- 返回修改后的这位群友（格式同 `members` 里的一项）。每个有变化的字段写一条修改记录（来源 `api`，原因取 `reason`），并写审计 `memory.update`，审计里只记用户 ID 和改了哪些字段。和整理同时修改同一个人时会自动重试；仍然冲突时返回 503（`retryable: true`），可以稍后重试。
+- 记忆关闭时也可以修改，方便管理员更正冻结的数据。
+
+`DELETE …/memory/members/{user_id}` 等同于这位群友发 `/忘记我`：清空笔记和好感度，删除他的修改记录，记下忘记的时间，写审计 `memory.forget`，返回 `{"ok":true}`。记忆关闭时同样可用；群聊摘要不会逐人删除。
+
+`POST …/memory/consolidate` 请求立即整理一次，返回 202 `{"accepted":true}`，整理在后台执行，结果可以用 `GET …/memory` 查看。本群没有开启记忆时返回 409 `MEMORY_DISABLED`，不会整理。
+
 ## 错误格式
 
 所有 JSON 错误响应统一为：
@@ -85,12 +127,13 @@
 
 | 状态码 | `code` | 场景 |
 |---|---|---|
-| 400 | `INVALID_EVENT` | 请求不合法，包括人格、群策略校验失败 |
+| 400 | `INVALID_EVENT` | 请求不合法，包括人格、群策略、记忆修改校验失败，以及对私聊使用记忆端点 |
 | 401 | `UNAUTHORIZED` | 缺少或无效的令牌 |
 | 403 | `FORBIDDEN` | 缺少 scope，或事件的机器人与令牌不一致 |
 | 404 | `NOT_FOUND` | 任务、动作或会话不存在 |
 | 409 | `DUPLICATE_EVENT` | 幂等键重复但请求体不同，或平台消息已经提交过 |
-| 503 | `INTERNAL_ERROR`，`retryable: true` | 服务正在关闭，可以稍后重试 |
+| 409 | `MEMORY_DISABLED` | 请求整理记忆，但本群没有开启记忆 |
+| 503 | `INTERNAL_ERROR`，`retryable: true` | 服务正在关闭，或记忆修改反复冲突，可以稍后重试 |
 | 500 | `INTERNAL_ERROR` | 其他内部错误，细节只写日志，可用 `trace_id` 查找 |
 
 `retry_after_ms` 目前总是 0。`RATE_LIMITED`、`QUEUE_FULL` 等错误码有定义，但不会作为 HTTP 错误返回（见上文 `suppressed_reason`）。Go SDK 把网络错误、5xx、429 和 `retryable: true` 视为可重试。

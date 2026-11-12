@@ -117,6 +117,8 @@ func (b *syncBuffer) String() string {
 type serverOpts struct {
 	configure func(*config.Config)
 	metrics   http.Handler
+	// deps changes the gateway's collaborators before the server is built.
+	deps func(*gateway.Deps)
 }
 
 type testServer struct {
@@ -187,10 +189,14 @@ func newTestServerWith(t *testing.T, opts serverOpts) *testServer {
 	if metricsHandler == nil {
 		metricsHandler = promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 	}
-	handler := gateway.New(gateway.Deps{
+	deps := gateway.Deps{
 		Orchestrator: o, Outbox: ob, Personas: personas, Policies: policies, Store: st,
 		Config: cfg, Metrics: metricsHandler, Logger: logger,
-	}).Handler()
+	}
+	if opts.deps != nil {
+		opts.deps(&deps)
+	}
+	handler := gateway.New(deps).Handler()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	return &testServer{URL: srv.URL, handler: handler, st: st, logs: logs}
