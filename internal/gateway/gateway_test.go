@@ -486,13 +486,31 @@ func TestOutbox_PollAndAckFlow(t *testing.T) {
 	}
 }
 
+func (s *testServer) waitTaskSucceeded(t *testing.T, token, taskID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r := s.do(t, http.MethodGet, "/api/v1/tasks/"+taskID, token, nil, nil)
+		var task conloomapi.Task
+		decode(t, r.body, &task)
+		if r.status == http.StatusOK && task.Status == conloomapi.TaskSucceeded {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task %s did not succeed: status %d, body %s", taskID, r.status, r.body)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestOutbox_OtherBotsActionsInvisible(t *testing.T) {
 	s := newTestServer(t)
-	s.accept(t, adapterToken, s.event("20001", "在吗", mentionBot))
-	if got := s.poll(t, otherToken, "?wait=300ms"); len(got) != 0 {
+	acc := s.accept(t, adapterToken, s.event("20001", "在吗", mentionBot))
+	s.waitTaskSucceeded(t, adapterToken, acc.TaskID)
+	if got := s.poll(t, otherToken, "?wait=0s"); len(got) != 0 {
 		t.Fatalf("other bot saw %+v", got)
 	}
-	actions := s.poll(t, adapterToken, "?wait=5s")
+	actions := s.poll(t, adapterToken, "?wait=0s")
 	if len(actions) != 1 {
 		t.Fatalf("actions = %+v", actions)
 	}
