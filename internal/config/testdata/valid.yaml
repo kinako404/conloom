@@ -1,0 +1,47 @@
+api_tokens:
+  - name: adapter
+    token: fake-adapter-token
+    bot_instance_id: bot_main
+    scopes: [events:write, tasks:read, outbox:read, outbox:ack, persona:read]
+
+bots:
+  - id: bot_main
+    platform: qq
+    platform_self_id: "30001"
+    admins: ["29999"]
+    enabled_conversations:
+      - {type: group, platform_id: "10001"}
+
+model_profiles:
+  short_context:
+    endpoint: http://127.0.0.1:9/v1
+    model: fake-short
+    api_key: fake-short-key
+    context:
+      native_window: 32768
+      configured_window: 32768
+      soft_input_budget: 16000
+      reserved_output_tokens: 1024
+      safety_margin_tokens: 1024
+  long_context:
+    endpoint: http://127.0.0.1:9/v1
+    model: fake-long
+    api_key: fake-long-key
+    context:
+      native_window: 1000000
+      configured_window: 1000000
+      soft_input_budget: 120000
+      reserved_output_tokens: 4096
+      safety_margin_tokens: 4096
+
+adapters:
+  napcat:
+    ws_url: ws://127.0.0.1:9
+    access_token: fake-napcat-token
+    core_url: http://127.0.0.1:8787
+    core_token: fake-adapter-token
+    bot_instance_id: bot_main
+  mock:
+    core_url: http://127.0.0.1:8787
+    core_token: fake-adapter-token
+    bot_instance_id: bot_main

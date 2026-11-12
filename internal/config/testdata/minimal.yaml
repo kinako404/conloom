@@ -1,0 +1,8 @@
+bots:
+  - id: bot_main
+    platform: qq
+
+model_profiles:
+  short_context:
+    endpoint: http://127.0.0.1:9/v1
+    model: fake-short

@@ -1,0 +1,476 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/kinako404/conloom/pkg/conloomapi"
+)
+
+func writeConfig(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "conloom.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func mustLoad(t *testing.T, path string) *Config {
+	t.Helper()
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(%s): %v", path, err)
+	}
+	return cfg
+}
+
+func TestExpand(t *testing.T) {
+	env := map[string]string{"A": "x", "EMPTY": ""}
+	lookup := func(k string) (string, bool) {
+		v, ok := env[k]
+		return v, ok
+	}
+	cases := []struct {
+		in, want    string
+		wantMissing []string
+	}{
+		{"${A}", "x", nil},
+		{"${B:-d}", "d", nil},
+		{"${A:-d}", "x", nil},
+		{"${EMPTY:-d}", "d", nil},
+		{"${EMPTY}", "", nil},
+		{"${C}", "", []string{"C"}},
+		{"$$x", "$x", nil},
+		{"$${A}", "${A}", nil},
+		{"a${A}b", "axb", nil},
+		{"${C}-${D}-${C}", "--", []string{"C", "D", "C"}},
+		{"cost $5", "cost $5", nil},
+		{"${unterminated", "${unterminated", nil},
+		{"plain", "plain", nil},
+	}
+	for _, c := range cases {
+		got, missing := Expand(c.in, lookup)
+		if got != c.want || !slices.Equal(missing, c.wantMissing) {
+			t.Errorf("Expand(%q) = %q, %v; want %q, %v", c.in, got, missing, c.want, c.wantMissing)
+		}
+	}
+}
+
+var exampleEnv = map[string]string{
+	"CONLOOM_SHORT_MODEL_ENDPOINT": "http://127.0.0.1:9/v1",
+	"CONLOOM_SHORT_MODEL_NAME":     "fake-short",
+	"CONLOOM_SHORT_MODEL_KEY":      "fake-short-key",
+	"CONLOOM_LONG_MODEL_ENDPOINT":  "http://127.0.0.1:9/v1",
+	"CONLOOM_LONG_MODEL_NAME":      "fake-long",
+	"CONLOOM_LONG_MODEL_KEY":       "fake-long-key",
+	"CONLOOM_ADAPTER_TOKEN":        "fake-adapter-token",
+	"CONLOOM_ADMIN_TOKEN":          "fake-admin-token",
+	"CONLOOM_BOT_SELF_ID":          "30001",
+	"CONLOOM_ADMIN_QQ":             "29999",
+	"CONLOOM_GROUP_ID":             "10001",
+	"CONLOOM_NAPCAT_WS_URL":        "ws://127.0.0.1:9",
+	"CONLOOM_NAPCAT_TOKEN":         "fake-napcat-token",
+}
+
+func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
+	for k, v := range exampleEnv {
+		t.Setenv(k, v)
+	}
+	cfg := mustLoad(t, "../../conloom.example.yaml")
+	if len(cfg.MissingEnv) != 0 {
+		t.Fatalf("MissingEnv = %v", cfg.MissingEnv)
+	}
+	if err := cfg.ValidateServe(); err != nil {
+		t.Fatalf("ValidateServe: %v", err)
+	}
+	if err := cfg.ValidateNapCat(); err != nil {
+		t.Fatalf("ValidateNapCat: %v", err)
+	}
+	if err := cfg.ValidateMock(); err != nil {
+		t.Fatalf("ValidateMock: %v", err)
+	}
+
+	bot, ok := cfg.Bot("bot_main")
+	if !ok {
+		t.Fatal("bot_main not found")
+	}
+	if bot.Platform != "qq" || bot.Name != "织语" || bot.PlatformSelfID != "30001" {
+		t.Errorf("bot = %+v", bot)
+	}
+	if !slices.Equal(bot.Admins, []string{"29999"}) {
+		t.Errorf("admins = %v", bot.Admins)
+	}
+	wantConv := []conloomapi.ConversationRef{{Type: "group", PlatformID: "10001"}}
+	if !reflect.DeepEqual(bot.EnabledConversations, wantConv) {
+		t.Errorf("enabled_conversations = %+v", bot.EnabledConversations)
+	}
+
+	short := cfg.ModelProfiles["short_context"]
+	if short.Endpoint != "http://127.0.0.1:9/v1" || short.Model != "fake-short" || short.APIKey != "fake-short-key" {
+		t.Errorf("short_context = %+v", short)
+	}
+	wantShortCtx := ContextLimits{NativeWindow: 32768, ConfiguredWindow: 32768, SoftInputBudget: 16000, ReservedOutputTokens: 1024, SafetyMarginTokens: 1024}
+	if short.Context != wantShortCtx {
+		t.Errorf("short_context.context = %+v", short.Context)
+	}
+	if !slices.Equal(short.Modalities, []string{"text"}) || short.Runtime.MaxConcurrency != 2 {
+		t.Errorf("short_context modalities/runtime = %v %+v", short.Modalities, short.Runtime)
+	}
+	if short.Privacy != (Privacy{DataLocation: "remote", AllowSensitiveContent: true}) {
+		t.Errorf("short_context.privacy = %+v", short.Privacy)
+	}
+	long := cfg.ModelProfiles["long_context"]
+	wantLongCtx := ContextLimits{NativeWindow: 1000000, ConfiguredWindow: 1000000, SoftInputBudget: 120000, ReservedOutputTokens: 4096, SafetyMarginTokens: 4096}
+	if long.Context != wantLongCtx || long.Runtime.MaxConcurrency != 2 {
+		t.Errorf("long_context = %+v", long)
+	}
+
+	if len(cfg.APITokens) != 2 {
+		t.Fatalf("api_tokens = %+v", cfg.APITokens)
+	}
+	for _, tok := range cfg.APITokens {
+		switch tok.Name {
+		case "napcat":
+			want := []string{"events:write", "tasks:read", "outbox:read", "outbox:ack", "persona:read"}
+			if tok.Token != "fake-adapter-token" || !slices.Equal(tok.Scopes, want) {
+				t.Errorf("napcat token = %+v", tok)
+			}
+		case "admin":
+			if tok.Token != "fake-admin-token" || !slices.Equal(tok.Scopes, allScopes) {
+				t.Errorf("admin token = %+v", tok)
+			}
+		default:
+			t.Errorf("unexpected token %q", tok.Name)
+		}
+	}
+
+	nc := cfg.Adapters.NapCat
+	if nc.CoreURL != "http://127.0.0.1:8787" || nc.WSURL != "ws://127.0.0.1:9" || nc.AccessToken != "fake-napcat-token" {
+		t.Errorf("napcat = %+v", nc)
+	}
+}
+
+func TestLoad_DotEnvDoesNotOverrideProcessEnv(t *testing.T) {
+	path := writeConfig(t, `bots:
+  - id: bot_main
+    platform: qq
+    name: ${CONLOOM_TEST_DOTENV_A}
+    platform_self_id: ${CONLOOM_TEST_DOTENV_B}
+    admins: ["${CONLOOM_TEST_DOTENV_C}"]
+`)
+	dotenv := "# comment\n\nCONLOOM_TEST_DOTENV_A=from-file\nexport CONLOOM_TEST_DOTENV_B=\"30001\"\nCONLOOM_TEST_DOTENV_C='29999'\n"
+	if err := os.WriteFile(filepath.Join(filepath.Dir(path), ".env"), []byte(dotenv), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONLOOM_TEST_DOTENV_A", "from-process")
+
+	cfg := mustLoad(t, path)
+	bot := cfg.Bots[0]
+	if bot.Name != "from-process" {
+		t.Errorf("name = %q, want process env to win", bot.Name)
+	}
+	if bot.PlatformSelfID != "30001" {
+		t.Errorf("platform_self_id = %q, want value from .env", bot.PlatformSelfID)
+	}
+	if !slices.Equal(bot.Admins, []string{"29999"}) {
+		t.Errorf("admins = %v", bot.Admins)
+	}
+	if len(cfg.MissingEnv) != 0 {
+		t.Errorf("MissingEnv = %v", cfg.MissingEnv)
+	}
+}
+
+func TestLoad_DefaultsApplied(t *testing.T) {
+	cfg := mustLoad(t, "testdata/minimal.yaml")
+
+	absPath, err := filepath.Abs("testdata/minimal.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Path != absPath {
+		t.Errorf("Path = %q, want %q", cfg.Path, absPath)
+	}
+	if cfg.Server != (ServerConfig{Listen: "127.0.0.1:8787", Timezone: "Asia/Shanghai", MetricsEnabled: true}) {
+		t.Errorf("server = %+v", cfg.Server)
+	}
+	wantData := filepath.Join(filepath.Dir(absPath), "data")
+	if cfg.Storage.DataDir != wantData {
+		t.Errorf("DataDir = %q, want %q", cfg.Storage.DataDir, wantData)
+	}
+	if cfg.DBPath() != filepath.Join(wantData, "conloom.db") {
+		t.Errorf("DBPath = %q", cfg.DBPath())
+	}
+	if cfg.Adapters.NapCat.StateDir != wantData {
+		t.Errorf("napcat.state_dir = %q, want %q", cfg.Adapters.NapCat.StateDir, wantData)
+	}
+
+	bot := cfg.Bots[0]
+	if bot.Name != "织语" || bot.PrivateChat != "admins" || bot.PersonaTemplate != "default" {
+		t.Errorf("bot defaults = %+v", bot)
+	}
+
+	wantRuntime := RuntimeConfig{
+		ActionTTL:            conloomapi.Duration{Duration: 10 * time.Minute},
+		OutboxLease:          conloomapi.Duration{Duration: 60 * time.Second},
+		StaleTaskAfter:       conloomapi.Duration{Duration: 2 * time.Minute},
+		IdempotencyRetention: conloomapi.Duration{Duration: 168 * time.Hour},
+		MaxMergeWindow:       conloomapi.Duration{Duration: 4500 * time.Millisecond},
+		SessionIdle:          conloomapi.Duration{Duration: 5 * time.Minute},
+	}
+	if cfg.Runtime != wantRuntime {
+		t.Errorf("runtime = %+v", cfg.Runtime)
+	}
+
+	p := cfg.ModelProfiles["short_context"]
+	wantRT := ProfileRuntime{MaxConcurrency: 2, Timeout: conloomapi.Duration{Duration: 60 * time.Second}, MaxRetries: 2}
+	if p.Runtime != wantRT || p.TokenEstimateFactor != 1.0 {
+		t.Errorf("profile defaults = %+v factor=%v", p.Runtime, p.TokenEstimateFactor)
+	}
+
+	if cfg.Observability != (ObservabilityConfig{LogLevel: "info", LogFormat: "json"}) {
+		t.Errorf("observability = %+v", cfg.Observability)
+	}
+	if !reflect.DeepEqual(cfg.DefaultGroupPolicy, conloomapi.DefaultGroupPolicy()) {
+		t.Errorf("default_group_policy = %+v", cfg.DefaultGroupPolicy)
+	}
+	if !reflect.DeepEqual(cfg.PersonaTemplates["default"], conloomapi.DefaultPersona()) {
+		t.Errorf("persona_templates.default = %+v", cfg.PersonaTemplates["default"])
+	}
+}
+
+func TestLoad_ExplicitValuesOverrideDefaults(t *testing.T) {
+	path := writeConfig(t, `server:
+  metrics_enabled: false
+storage:
+  data_dir: state
+default_group_policy:
+  concurrency:
+    max_interactive_requests: 2
+model_profiles:
+  short_context:
+    endpoint: http://127.0.0.1:9/v1
+    model: fake-short
+    api_key: ${CONLOOM_TEST_KEY}
+    context:
+      native_window: ${CONLOOM_TEST_WINDOW}
+    runtime:
+      max_retries: 0
+      timeout: 5s
+`)
+	t.Setenv("CONLOOM_TEST_WINDOW", "4096")
+	t.Setenv("CONLOOM_TEST_KEY", "null")
+	cfg := mustLoad(t, path)
+
+	if cfg.Server.MetricsEnabled || cfg.Server.Listen != "127.0.0.1:8787" {
+		t.Errorf("server = %+v", cfg.Server)
+	}
+	if want := filepath.Join(filepath.Dir(path), "state"); cfg.Storage.DataDir != want {
+		t.Errorf("DataDir = %q, want %q", cfg.Storage.DataDir, want)
+	}
+	gp := cfg.DefaultGroupPolicy
+	if gp.Concurrency.MaxInteractiveRequests != 2 || gp.Concurrency.MaxQueuedRequests != 10 {
+		t.Errorf("group policy concurrency = %+v", gp.Concurrency)
+	}
+	p := cfg.ModelProfiles["short_context"]
+	if p.Runtime.MaxRetries != 0 || p.Runtime.Timeout.Duration != 5*time.Second || p.Runtime.MaxConcurrency != 2 {
+		t.Errorf("profile runtime = %+v", p.Runtime)
+	}
+	if p.APIKey != "null" {
+		t.Errorf("api_key = %q, want the literal expanded value", p.APIKey)
+	}
+	if p.Context.NativeWindow != 4096 {
+		t.Errorf("native_window = %d, want env-expanded 4096", p.Context.NativeWindow)
+	}
+}
+
+func TestLoad_MissingEnvRecorded(t *testing.T) {
+	path := writeConfig(t, `adapters:
+  napcat:
+    ws_url: ${CONLOOM_TEST_UNSET_WS_URL}
+    access_token: ${CONLOOM_TEST_UNSET_TOKEN:-}
+    core_url: ${CONLOOM_TEST_UNSET_CORE:-http://127.0.0.1:8787}
+`)
+	cfg := mustLoad(t, path)
+	if !slices.Equal(cfg.MissingEnv, []string{"CONLOOM_TEST_UNSET_WS_URL"}) {
+		t.Errorf("MissingEnv = %v", cfg.MissingEnv)
+	}
+	if cfg.Adapters.NapCat.WSURL != "" || cfg.Adapters.NapCat.CoreURL != "http://127.0.0.1:8787" {
+		t.Errorf("napcat = %+v", cfg.Adapters.NapCat)
+	}
+}
+
+func TestLoad_UnknownFieldRejected(t *testing.T) {
+	_, err := Load("testdata/unknown_field.yaml")
+	if err == nil {
+		t.Fatal("Load succeeded, want error for unknown field")
+	}
+	if !strings.Contains(err.Error(), "nmae") {
+		t.Errorf("error %q does not name the unknown field", err)
+	}
+}
+
+func TestValidateServe_WindowOrdering(t *testing.T) {
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	if err := cfg.ValidateServe(); err != nil {
+		t.Fatalf("valid config: %v", err)
+	}
+
+	p := cfg.ModelProfiles["short_context"]
+	p.Context.SoftInputBudget = p.Context.ConfiguredWindow + 1
+	cfg.ModelProfiles["short_context"] = p
+	err := cfg.ValidateServe()
+	if err == nil || !strings.Contains(err.Error(), "model_profiles.short_context.context") {
+		t.Fatalf("soft > configured: err = %v", err)
+	}
+
+	p.Context.SoftInputBudget = 1000
+	p.Context.ConfiguredWindow = p.Context.NativeWindow + 1
+	cfg.ModelProfiles["short_context"] = p
+	err = cfg.ValidateServe()
+	if err == nil || !strings.Contains(err.Error(), "model_profiles.short_context.context") {
+		t.Fatalf("configured > native: err = %v", err)
+	}
+}
+
+func TestValidateServe_Rules(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(c *Config)
+		want   []string
+	}{
+		{"no bots", func(c *Config) { c.Bots = nil }, []string{"bots"}},
+		{"duplicate bot id", func(c *Config) { c.Bots = append(c.Bots, c.Bots[0]) }, []string{"bots[1].id", "duplicate"}},
+		{"bad private_chat", func(c *Config) { c.Bots[0].PrivateChat = "everyone" }, []string{"bots[0].private_chat"}},
+		{"unknown persona template", func(c *Config) { c.Bots[0].PersonaTemplate = "nope" }, []string{"bots[0].persona_template", "nope"}},
+		{"no short_context", func(c *Config) { delete(c.ModelProfiles, "short_context") }, []string{"model_profiles.short_context"}},
+		{"empty endpoint and model", func(c *Config) {
+			p := c.ModelProfiles["long_context"]
+			p.Endpoint, p.Model = "", ""
+			c.ModelProfiles["long_context"] = p
+		}, []string{"model_profiles.long_context.endpoint", "model_profiles.long_context.model"}},
+		{"zero window", func(c *Config) {
+			p := c.ModelProfiles["long_context"]
+			p.Context.SoftInputBudget = 0
+			c.ModelProfiles["long_context"] = p
+		}, []string{"model_profiles.long_context.context.soft_input_budget"}},
+		{"token for unknown bot", func(c *Config) { c.APITokens[0].BotInstanceID = "ghost" }, []string{"api_tokens[0].bot_instance_id", "ghost"}},
+		{"bad scope", func(c *Config) { c.APITokens[0].Scopes = append(c.APITokens[0].Scopes, "root") }, []string{"api_tokens[0].scopes", "root"}},
+		{"empty token", func(c *Config) { c.APITokens[0].Token = "" }, []string{"api_tokens[0].token"}},
+		{"invalid persona template", func(c *Config) {
+			p := c.PersonaTemplates["default"]
+			p.Style.Warmth = 2
+			c.PersonaTemplates["default"] = p
+		}, []string{"persona_templates.default.style.warmth"}},
+		{"invalid group policy", func(c *Config) {
+			c.DefaultGroupPolicy.Concurrency.MaxInteractiveRequests = 3
+			c.DefaultGroupPolicy.Review.Action = "explode"
+		}, []string{"default_group_policy.concurrency.max_interactive_requests", "default_group_policy.review.action"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := mustLoad(t, "testdata/valid.yaml")
+			tc.mutate(cfg)
+			err := cfg.ValidateServe()
+			if err == nil {
+				t.Fatal("ValidateServe succeeded, want error")
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error %q does not contain %q", err, w)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateNapCat_ReportsMissingEnv(t *testing.T) {
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	cfg.Adapters.NapCat.WSURL = ""
+	cfg.MissingEnv = []string{"CONLOOM_NAPCAT_WS_URL"}
+	err := cfg.ValidateNapCat()
+	if err == nil {
+		t.Fatal("ValidateNapCat succeeded, want error")
+	}
+	for _, w := range []string{"adapters.napcat.ws_url", "CONLOOM_NAPCAT_WS_URL"} {
+		if !strings.Contains(err.Error(), w) {
+			t.Errorf("error %q does not contain %q", err, w)
+		}
+	}
+
+	cfg.Adapters.NapCat.WSURL = "ws://127.0.0.1:9"
+	cfg.Adapters.NapCat.CoreToken = ""
+	cfg.Adapters.NapCat.BotInstanceID = ""
+	err = cfg.ValidateNapCat()
+	if err == nil {
+		t.Fatal("ValidateNapCat succeeded, want error")
+	}
+	for _, w := range []string{"adapters.napcat.core_token", "adapters.napcat.bot_instance_id"} {
+		if !strings.Contains(err.Error(), w) {
+			t.Errorf("error %q does not contain %q", err, w)
+		}
+	}
+}
+
+func TestValidateMock(t *testing.T) {
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	if err := cfg.ValidateMock(); err != nil {
+		t.Fatalf("valid config: %v", err)
+	}
+	cfg.Adapters.Mock.CoreURL = ""
+	cfg.MissingEnv = []string{"CONLOOM_MOCK_CORE_URL"}
+	err := cfg.ValidateMock()
+	if err == nil {
+		t.Fatal("ValidateMock succeeded, want error")
+	}
+	for _, w := range []string{"adapters.mock.core_url", "CONLOOM_MOCK_CORE_URL"} {
+		if !strings.Contains(err.Error(), w) {
+			t.Errorf("error %q does not contain %q", err, w)
+		}
+	}
+}
+
+func TestValidateServe_IgnoresAdapterFields(t *testing.T) {
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	cfg.Adapters = AdaptersConfig{}
+	if err := cfg.ValidateServe(); err != nil {
+		t.Fatalf("ValidateServe should not require adapter fields: %v", err)
+	}
+}
+
+func TestSecrets(t *testing.T) {
+	cfg := &Config{
+		APITokens: []APIToken{{Token: "tok-a"}, {Token: ""}, {Token: "tok-b"}},
+		ModelProfiles: map[string]ModelProfile{
+			"short_context": {APIKey: "key-short"},
+			"long_context":  {APIKey: ""},
+		},
+		Adapters: AdaptersConfig{
+			NapCat: NapCatConfig{AccessToken: "napcat-access", CoreToken: "tok-a"},
+			Mock:   MockConfig{CoreToken: "mock-core"},
+		},
+	}
+	got := cfg.Secrets()
+	slices.Sort(got)
+	want := []string{"key-short", "mock-core", "napcat-access", "tok-a", "tok-b"}
+	if !slices.Equal(got, want) {
+		t.Errorf("Secrets() = %v, want %v", got, want)
+	}
+}
+
+func TestBot(t *testing.T) {
+	cfg := &Config{Bots: []BotConfig{{ID: "bot_a"}, {ID: "bot_b", Name: "B"}}}
+	b, ok := cfg.Bot("bot_b")
+	if !ok || b.Name != "B" {
+		t.Errorf("Bot(bot_b) = %+v, %v", b, ok)
+	}
+	if _, ok := cfg.Bot("bot_c"); ok {
+		t.Error("Bot(bot_c) found, want missing")
+	}
+}

@@ -1,0 +1,173 @@
+# ConLoom 示例配置。
+# 复制为 conloom.yaml（已被 .gitignore 排除）后使用；真实地址、密钥、群号与 QQ 号
+# 写在同目录的 .env 或进程环境变量中，不要直接写进本文件。
+# 支持 ${VAR} 与 ${VAR:-默认值} 展开，$$ 表示字面量 $。
+
+# 核心服务：HTTP 监听地址、展示用时区、是否开放 /metrics。
+server:
+  listen: 127.0.0.1:8787
+  timezone: Asia/Shanghai
+  metrics_enabled: true
+
+# 存储：数据目录（SQLite 数据库与 Adapter 去重记录），相对路径按本文件所在目录解析。
+storage:
+  data_dir: ./data
+
+# API 令牌：每个令牌绑定一个 Bot 实例，并按 scope 授权。
+api_tokens:
+  # NapCat Adapter 使用的令牌：上报事件、查询任务、拉取与确认 Outbox、读取人格。
+  - name: napcat
+    token: ${CONLOOM_ADAPTER_TOKEN}
+    bot_instance_id: bot_main
+    scopes: [events:write, tasks:read, outbox:read, outbox:ack, persona:read]
+  # 管理员令牌：拥有全部 scope。
+  - name: admin
+    token: ${CONLOOM_ADMIN_TOKEN}
+    bot_instance_id: bot_main
+    scopes:
+      - events:write
+      - tasks:read
+      - outbox:read
+      - outbox:ack
+      - memory:read
+      - memory:write
+      - persona:read
+      - policy:write
+      - admin:read
+
+# Bot 实例：平台、显示名、平台自身 ID、管理员、启用的会话与私聊策略。
+bots:
+  - id: bot_main
+    platform: qq
+    name: 织语
+    platform_self_id: ${CONLOOM_BOT_SELF_ID}
+    admins: ["${CONLOOM_ADMIN_QQ}"]
+    # 只在这些会话中工作；未列出的群消息会被忽略。
+    enabled_conversations:
+      - {type: group, platform_id: "${CONLOOM_GROUP_ID}"}
+    # 私聊策略：admins（仅管理员）| all（所有人）| off（关闭）。
+    private_chat: admins
+    persona_template: default
+
+# 模型 Profile：按角色配置，换模型只需改这里。short_context 为必需项。
+model_profiles:
+  # 短上下文模型：日常群聊回复。
+  short_context:
+    provider: openai  # OpenAI 兼容接口
+    endpoint: ${CONLOOM_SHORT_MODEL_ENDPOINT}
+    model: ${CONLOOM_SHORT_MODEL_NAME}
+    api_key: ${CONLOOM_SHORT_MODEL_KEY}
+    modalities: [text]
+    # 上下文窗口：须满足 soft_input_budget <= configured_window <= native_window。
+    context:
+      native_window: 32768
+      configured_window: 32768
+      soft_input_budget: 16000
+      reserved_output_tokens: 1024
+      safety_margin_tokens: 1024
+    runtime:
+      max_concurrency: 2
+      timeout: 60s
+      max_retries: 2
+    # 隐私：remote 表示数据会发往远端服务；allow_sensitive_content 允许发送敏感内容。
+    privacy:
+      data_location: remote
+      allow_sensitive_content: true
+    # extra_body 会原样合并进请求体，可用于关闭思考等厂商参数，例如：
+    # extra_body:
+    #   enable_thinking: false
+    token_estimate_factor: 1.0
+  # 长上下文模型：短模型装不下时使用。
+  long_context:
+    provider: openai  # OpenAI 兼容接口
+    endpoint: ${CONLOOM_LONG_MODEL_ENDPOINT}
+    model: ${CONLOOM_LONG_MODEL_NAME}
+    api_key: ${CONLOOM_LONG_MODEL_KEY}
+    modalities: [text]
+    context:
+      native_window: 1000000
+      configured_window: 1000000
+      soft_input_budget: 120000
+      reserved_output_tokens: 4096
+      safety_margin_tokens: 4096
+    runtime:
+      max_concurrency: 2
+      timeout: 60s
+      max_retries: 2
+    privacy:
+      data_location: remote
+      allow_sensitive_content: true
+    token_estimate_factor: 1.0
+
+# 人格模板：Bot 通过 persona_template 引用；省略 default 时使用内置默认人格。
+persona_templates:
+  default:
+    persona_name: 默认群友人格
+    template_version: 1
+    # 风格各项取值 0~1。
+    style:
+      warmth: 0.75
+      humor: 0.45
+      directness: 0.65
+      verbosity: 0.30
+      emoji_usage: 0.15
+      proactivity: 0.20
+    behavior:
+      default_reply_length: short            # short | medium | long
+      allow_memes: true
+      ask_followup_questions: occasionally   # never | occasionally | often
+      technical_explanations: clear_and_practical  # brief | clear_and_practical | detailed
+
+# 默认群策略：新群的初始策略；通过 API 或命令修改后存库并版本化，库内版本优先。
+default_group_policy:
+  concurrency:
+    max_interactive_requests: 1   # 0~2
+    max_queued_requests: 10
+    priority: normal              # low | normal | high
+    allow_long_requests: true
+  reply:
+    command_prefix: /
+    continuation_window: 0s
+    debounce: 1500ms
+    min_reply_interval: 2s
+    user_rate_limit_per_minute: 6
+  context:
+    max_recent_messages: 50
+    max_context_tokens: 0         # 0 表示不额外限制
+  review:
+    level: basic                  # basic | standard | strict
+    review_input: true
+    review_output: true
+    action: block                 # allow | sanitize | block
+    blocked_words: []
+
+# 运行时参数。
+runtime:
+  action_ttl: 10m               # 超时未投递的动作将过期
+  outbox_lease: 60s             # Outbox 拉取后的租约时长
+  stale_task_after: 2m          # 重启后超过该时长的任务不再回复
+  idempotency_retention: 168h   # 幂等记录保留时长
+  max_merge_window: 4.5s        # 连续消息最长合并窗口
+  session_idle: 5m              # 会话空闲回收时长
+
+# Adapter：独立进程，通过公开 REST API 与核心交互。
+adapters:
+  # NapCat（OneBot v11 正向 WebSocket）。
+  napcat:
+    ws_url: ${CONLOOM_NAPCAT_WS_URL}
+    access_token: ${CONLOOM_NAPCAT_TOKEN}
+    core_url: http://127.0.0.1:8787
+    core_token: ${CONLOOM_ADAPTER_TOKEN}
+    bot_instance_id: bot_main
+    # state_dir 默认与 storage.data_dir 相同。
+  # Mock Adapter：本地调试用。
+  mock:
+    core_url: http://127.0.0.1:8787
+    core_token: ${CONLOOM_ADAPTER_TOKEN}
+    bot_instance_id: bot_main
+
+# 可观测性：日志级别、格式（json | text），默认不记录消息正文。
+observability:
+  log_level: info
+  log_format: json
+  log_message_content: false

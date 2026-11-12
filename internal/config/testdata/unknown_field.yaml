@@ -1,0 +1,4 @@
+bots:
+  - id: bot_main
+    platform: qq
+    nmae: typo
