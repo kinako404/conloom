@@ -1,0 +1,10 @@
+conloom.yaml
+.env
+*.env
+data/
+dist/
+*.db
+*.db-*
+/conloom
+/conloom.exe
+.superpowers/
