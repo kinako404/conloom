@@ -739,3 +739,25 @@ func TestConsolidate_CanceledIsNotAFailure(t *testing.T) {
 		t.Fatalf("Run after cancellations = %+v, want a batch (no backoff)", res)
 	}
 }
+
+func TestConsolidate_FailuresLeaveSharedBreakerAlone(t *testing.T) {
+	e := newConsEnv(t, consOpts{})
+	consSeedThree(t, e)
+	e.long.setReply(func(int, openai.ChatRequest) (openai.ChatResponse, error) {
+		return openai.ChatResponse{}, &openai.StatusError{Code: 500, Body: "boom"}
+	})
+	for i := range 5 {
+		if _, err := e.c.Run(context.Background(), testConvKey, true); err == nil {
+			t.Fatalf("run %d: want the model error", i)
+		}
+	}
+	if e.long.calls() != 5 {
+		t.Fatalf("long calls = %d, want 5 (consolidation never sees its own breaker trip)", e.long.calls())
+	}
+	if e.router.BreakerOpen(router.RoleLong) {
+		t.Fatal("long-context breaker opened by consolidation failures; replies would lose the long model")
+	}
+	if _, err := e.router.Route(router.Request{AllowLong: true, Exclude: []router.Role{router.RoleShort}}); err != nil {
+		t.Fatalf("Route long after consolidation failures: %v", err)
+	}
+}

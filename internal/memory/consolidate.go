@@ -416,18 +416,15 @@ func (c *Consolidator) acquire(ctx context.Context, p *router.Profile, convKey s
 	})
 }
 
-// chat calls p's model, reports the outcome to the router (unless ctx ended)
-// and records model metrics.
+// chat calls p's model and records model metrics. It never reports to the
+// router: the breaker is shared with replies, and consolidation failures only
+// count toward its own backoff.
 func (c *Consolidator) chat(ctx context.Context, p *router.Profile, msgs []openai.ChatMessage, maxTokens int) (openai.ChatResponse, error) {
 	start := time.Now()
 	resp, err := p.Client.Chat(ctx, openai.ChatRequest{Messages: msgs, MaxTokens: maxTokens})
 	if err != nil {
-		if ctx.Err() == nil {
-			c.d.Router.ReportFailure(p.Role)
-		}
 		return openai.ChatResponse{}, err
 	}
-	c.d.Router.ReportSuccess(p.Role)
 	role := string(p.Role)
 	c.d.Metrics.ModelLatency.WithLabelValues(role, resp.Model).Observe(time.Since(start).Seconds())
 	c.d.Metrics.ModelTokens.WithLabelValues(role, resp.Model, "prompt").Add(float64(resp.PromptTokens))
