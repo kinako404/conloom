@@ -48,8 +48,8 @@ func (s *Service) OnChange(fn func(convKey string)) {
 }
 
 // Current returns the latest stored policy, or the defaults as version 0 without writing anything.
-// A section missing from a stored version (such as proactive in versions written before it existed)
-// is filled from the defaults.
+// A section or setting missing from a stored version (such as proactive, or the turn-taking and
+// join settings, in versions written before they existed) is filled from the defaults.
 func (s *Service) Current(ctx context.Context, convKey string) (store.PolicyVersion, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -74,12 +74,18 @@ func (s *Service) current(ctx context.Context, convKey string) (store.PolicyVers
 
 // Update stores put.Policy as a new version. When put omits the proactive section (see
 // conloomapi.PolicyPut.ProactiveOmitted) the group's current section is kept, which is the
-// defaults for a group that never configured one; a section that is present is validated as given.
+// defaults for a group that never configured one; a section that is present is validated as given,
+// except that zero turn-taking and join settings are filled from the defaults as in Current.
 func (s *Service) Update(ctx context.Context, convKey string, put conloomapi.PolicyPut, by string) (store.PolicyVersion, error) {
 	return s.change(ctx, convKey, by, "update", func(cur store.PolicyVersion) (conloomapi.GroupPolicy, string, bool, error) {
 		p := put.Policy
 		if put.ProactiveOmitted() {
 			p.Proactive = cur.Policy.Proactive
+		}
+		zeroProactive := p.Proactive == (conloomapi.ProactivePolicy{})
+		p = p.WithDefaults(s.defaults)
+		if zeroProactive {
+			p.Proactive = conloomapi.ProactivePolicy{}
 		}
 		if err := Validate(p); err != nil {
 			return conloomapi.GroupPolicy{}, "", false, err

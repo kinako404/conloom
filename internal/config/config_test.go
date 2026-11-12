@@ -154,6 +154,9 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 	if got, want := cfg.DefaultGroupPolicy.Proactive, conloomapi.DefaultGroupPolicy().Proactive; got != want {
 		t.Errorf("default_group_policy.proactive = %+v, want %+v", got, want)
 	}
+	if got, want := cfg.DefaultGroupPolicy.Reply, conloomapi.DefaultGroupPolicy().Reply; got != want {
+		t.Errorf("default_group_policy.reply = %+v, want %+v", got, want)
+	}
 
 	nc := cfg.Adapters.NapCat
 	if nc.CoreURL != "http://127.0.0.1:8787" || nc.WSURL != "ws://127.0.0.1:9" || nc.AccessToken != "fake-napcat-token" {
@@ -323,6 +326,49 @@ func TestLoad_ConfigWithoutProactiveUsesDefaults(t *testing.T) {
 	want.DailyLimits.High = 5
 	if gp.Proactive != want {
 		t.Errorf("partial proactive = %+v, want %+v", gp.Proactive, want)
+	}
+}
+
+func TestLoad_ConfigWithoutParticipationFieldsUsesDefaults(t *testing.T) {
+	path := writeConfig(t, `default_group_policy:
+  reply:
+    command_prefix: /
+    continuation_window: 60s
+    debounce: 1500ms
+    min_reply_interval: 2s
+    user_rate_limit_per_minute: 6
+  proactive:
+    enabled: true
+    default_level: low
+    eligibility_ttl: 720h
+    user_cooldown: 30m
+    contact_cooldown: 0s
+    group_hourly_limit: 4
+    daily_limits: {low: 2, mid: 4, high: 8}
+`)
+	cfg := mustLoad(t, path)
+	gp := cfg.DefaultGroupPolicy
+	want := conloomapi.DefaultGroupPolicy()
+	want.Reply.ContinuationWindow = conloomapi.Duration{Duration: time.Minute}
+	if !reflect.DeepEqual(gp, want) {
+		t.Errorf("default_group_policy = %+v\nwant %+v", gp, want)
+	}
+	if err := gp.Validate(); err != nil {
+		t.Errorf("Validate: %v", err)
+	}
+
+	path = writeConfig(t, `default_group_policy:
+  reply:
+    turn_gap: 3s
+  proactive:
+    join_cooldown: 1h
+`)
+	gp = mustLoad(t, path).DefaultGroupPolicy
+	want = conloomapi.DefaultGroupPolicy()
+	want.Reply.TurnGap = conloomapi.Duration{Duration: 3 * time.Second}
+	want.Proactive.JoinCooldown = conloomapi.Duration{Duration: time.Hour}
+	if !reflect.DeepEqual(gp, want) {
+		t.Errorf("partial participation fields = %+v\nwant %+v", gp, want)
 	}
 }
 

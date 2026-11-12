@@ -267,7 +267,7 @@ func TestGroupPolicyValidate(t *testing.T) {
 		{"debounce over 1m", func(p *GroupPolicy) { p.Reply.Debounce = Duration{time.Minute + time.Millisecond} }, "reply.debounce"},
 		{"debounce 1m ok", func(p *GroupPolicy) { p.Reply.Debounce = Duration{time.Minute} }, ""},
 		{"min interval over", func(p *GroupPolicy) { p.Reply.MinReplyInterval = Duration{2 * time.Minute} }, "reply.min_reply_interval"},
-		{"continuation over", func(p *GroupPolicy) { p.Reply.ContinuationWindow = Duration{61 * time.Second} }, "reply.continuation_window"},
+		{"continuation over", func(p *GroupPolicy) { p.Reply.ContinuationWindow = Duration{10*time.Minute + time.Second} }, "reply.continuation_window"},
 		{"continuation negative", func(p *GroupPolicy) { p.Reply.ContinuationWindow = Duration{-time.Second} }, "reply.continuation_window"},
 		{"rate limit zero", func(p *GroupPolicy) { p.Reply.UserRateLimitPerMinute = 0 }, "reply.user_rate_limit_per_minute"},
 		{"recent negative", func(p *GroupPolicy) { p.Context.MaxRecentMessages = -1 }, "context.max_recent_messages"},

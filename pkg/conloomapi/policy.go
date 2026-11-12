@@ -37,6 +37,17 @@ type ProactivePolicy struct {
 	ContactCooldown  Duration             `json:"contact_cooldown" yaml:"contact_cooldown"`
 	GroupHourlyLimit int                  `json:"group_hourly_limit" yaml:"group_hourly_limit"`
 	DailyLimits      ProactiveDailyLimits `json:"daily_limits" yaml:"daily_limits"`
+	// JoinLull is the pause after the last group message that triggers an
+	// evaluation of whether to join the conversation.
+	JoinLull Duration `json:"join_lull" yaml:"join_lull"`
+	// JoinWindow is how far back the messages considered for joining reach.
+	JoinWindow Duration `json:"join_window" yaml:"join_window"`
+	// JoinMinMessages is the fewest non-bot messages in JoinWindow needed to join.
+	JoinMinMessages int `json:"join_min_messages" yaml:"join_min_messages"`
+	// JoinEvaluationsPerHour caps the join evaluations (model calls) per group per hour.
+	JoinEvaluationsPerHour int `json:"join_evaluations_per_hour" yaml:"join_evaluations_per_hour"`
+	// JoinCooldown is how long after the bot last spoke in the group before it may join.
+	JoinCooldown Duration `json:"join_cooldown" yaml:"join_cooldown"`
 }
 
 type ProactiveDailyLimits struct {
@@ -66,11 +77,23 @@ type ConcurrencyPolicy struct {
 }
 
 type ReplyPolicy struct {
-	CommandPrefix          string   `json:"command_prefix" yaml:"command_prefix"`
+	CommandPrefix string `json:"command_prefix" yaml:"command_prefix"`
+	// ContinuationWindow is how long a conversation with the bot stays open
+	// after its last activity; 0 disables it, so only direct triggers get replies.
 	ContinuationWindow     Duration `json:"continuation_window" yaml:"continuation_window"`
 	Debounce               Duration `json:"debounce" yaml:"debounce"`
 	MinReplyInterval       Duration `json:"min_reply_interval" yaml:"min_reply_interval"`
 	UserRateLimitPerMinute int      `json:"user_rate_limit_per_minute" yaml:"user_rate_limit_per_minute"`
+	// TurnGap is the pause that ends a participant's turn; TurnMaxWait caps
+	// how long a turn may keep growing.
+	TurnGap     Duration `json:"turn_gap" yaml:"turn_gap"`
+	TurnMaxWait Duration `json:"turn_max_wait" yaml:"turn_max_wait"`
+	// MaxUnpromptedReplies ends a conversation after this many replies since
+	// the bot was last addressed directly.
+	MaxUnpromptedReplies int `json:"max_unprompted_replies" yaml:"max_unprompted_replies"`
+	// MaxConsecutiveSkips ends a conversation after this many turns in a row
+	// that the model chose not to answer.
+	MaxConsecutiveSkips int `json:"max_consecutive_skips" yaml:"max_consecutive_skips"`
 }
 
 type ContextPolicy struct {
@@ -161,6 +184,10 @@ func DefaultGroupPolicy() GroupPolicy {
 			Debounce:               Duration{1500 * time.Millisecond},
 			MinReplyInterval:       Duration{2 * time.Second},
 			UserRateLimitPerMinute: 6,
+			TurnGap:                Duration{6 * time.Second},
+			TurnMaxWait:            Duration{20 * time.Second},
+			MaxUnpromptedReplies:   4,
+			MaxConsecutiveSkips:    2,
 		},
 		Context: ContextPolicy{
 			MaxRecentMessages: 50,
@@ -173,23 +200,46 @@ func DefaultGroupPolicy() GroupPolicy {
 			Action:       "block",
 		},
 		Proactive: ProactivePolicy{
-			Enabled:          true,
-			DefaultLevel:     ProactiveLow,
-			EligibilityTTL:   Duration{720 * time.Hour},
-			UserCooldown:     Duration{30 * time.Minute},
-			ContactCooldown:  Duration{0},
-			GroupHourlyLimit: 4,
-			DailyLimits:      ProactiveDailyLimits{Low: 2, Mid: 4, High: 8},
+			Enabled:                true,
+			DefaultLevel:           ProactiveLow,
+			EligibilityTTL:         Duration{720 * time.Hour},
+			UserCooldown:           Duration{30 * time.Minute},
+			ContactCooldown:        Duration{0},
+			GroupHourlyLimit:       4,
+			DailyLimits:            ProactiveDailyLimits{Low: 2, Mid: 4, High: 8},
+			JoinLull:               Duration{15 * time.Second},
+			JoinWindow:             Duration{5 * time.Minute},
+			JoinMinMessages:        4,
+			JoinEvaluationsPerHour: 4,
+			JoinCooldown:           Duration{10 * time.Minute},
 		},
 	}
 }
 
-// WithDefaults returns p with a missing (zero) Proactive section replaced by def.Proactive.
+// WithDefaults returns p with a missing (zero) Proactive section replaced by def.Proactive,
+// and each turn-taking and join setting that is zero (missing from policies stored before
+// it existed; zero is never valid for them) taken from def.
 func (p GroupPolicy) WithDefaults(def GroupPolicy) GroupPolicy {
 	if p.Proactive == (ProactivePolicy{}) {
 		p.Proactive = def.Proactive
 	}
+	fillZero(&p.Reply.TurnGap, def.Reply.TurnGap)
+	fillZero(&p.Reply.TurnMaxWait, def.Reply.TurnMaxWait)
+	fillZero(&p.Reply.MaxUnpromptedReplies, def.Reply.MaxUnpromptedReplies)
+	fillZero(&p.Reply.MaxConsecutiveSkips, def.Reply.MaxConsecutiveSkips)
+	fillZero(&p.Proactive.JoinLull, def.Proactive.JoinLull)
+	fillZero(&p.Proactive.JoinWindow, def.Proactive.JoinWindow)
+	fillZero(&p.Proactive.JoinMinMessages, def.Proactive.JoinMinMessages)
+	fillZero(&p.Proactive.JoinEvaluationsPerHour, def.Proactive.JoinEvaluationsPerHour)
+	fillZero(&p.Proactive.JoinCooldown, def.Proactive.JoinCooldown)
 	return p
+}
+
+func fillZero[T comparable](v *T, def T) {
+	var zero T
+	if *v == zero {
+		*v = def
+	}
 }
 
 // Validate reports every rule violation, each prefixed with its snake_case field path.
@@ -209,11 +259,13 @@ func (p GroupPolicy) Validate() error {
 		fail("concurrency.priority must be one of low|normal|high, got %q", c.Priority)
 	}
 	r := p.Reply
+	if r.ContinuationWindow.Duration < 0 || r.ContinuationWindow.Duration > 10*time.Minute {
+		fail("reply.continuation_window must be in [0, 10m], got %s", r.ContinuationWindow)
+	}
 	for _, d := range []struct {
 		path string
 		v    Duration
 	}{
-		{"reply.continuation_window", r.ContinuationWindow},
 		{"reply.debounce", r.Debounce},
 		{"reply.min_reply_interval", r.MinReplyInterval},
 	} {
@@ -223,6 +275,18 @@ func (p GroupPolicy) Validate() error {
 	}
 	if r.UserRateLimitPerMinute < 1 {
 		fail("reply.user_rate_limit_per_minute must be >= 1, got %d", r.UserRateLimitPerMinute)
+	}
+	if r.TurnGap.Duration < time.Second || r.TurnGap.Duration > time.Minute {
+		fail("reply.turn_gap must be in [1s, 60s], got %s", r.TurnGap)
+	}
+	if r.TurnMaxWait.Duration < r.TurnGap.Duration || r.TurnMaxWait.Duration > 2*time.Minute {
+		fail("reply.turn_max_wait must be in [reply.turn_gap (%s), 2m], got %s", r.TurnGap, r.TurnMaxWait)
+	}
+	if r.MaxUnpromptedReplies < 1 || r.MaxUnpromptedReplies > 20 {
+		fail("reply.max_unprompted_replies must be in [1, 20], got %d", r.MaxUnpromptedReplies)
+	}
+	if r.MaxConsecutiveSkips < 1 || r.MaxConsecutiveSkips > 10 {
+		fail("reply.max_consecutive_skips must be in [1, 10], got %d", r.MaxConsecutiveSkips)
 	}
 	if p.Context.MaxRecentMessages < 0 || p.Context.MaxRecentMessages > 500 {
 		fail("context.max_recent_messages must be in [0, 500], got %d", p.Context.MaxRecentMessages)
@@ -267,6 +331,26 @@ func (p GroupPolicy) Validate() error {
 	}
 	if dl.Low > dl.Mid || dl.Mid > dl.High {
 		fail("proactive.daily_limits must satisfy low <= mid <= high, got %d/%d/%d", dl.Low, dl.Mid, dl.High)
+	}
+	for _, d := range []struct {
+		path     string
+		v        Duration
+		min, max time.Duration
+		bounds   string
+	}{
+		{"proactive.join_lull", a.JoinLull, 5 * time.Second, 5 * time.Minute, "[5s, 5m]"},
+		{"proactive.join_window", a.JoinWindow, time.Minute, 30 * time.Minute, "[1m, 30m]"},
+		{"proactive.join_cooldown", a.JoinCooldown, time.Minute, 24 * time.Hour, "[1m, 24h]"},
+	} {
+		if d.v.Duration < d.min || d.v.Duration > d.max {
+			fail("%s must be in %s, got %s", d.path, d.bounds, d.v)
+		}
+	}
+	if a.JoinMinMessages < 2 || a.JoinMinMessages > 50 {
+		fail("proactive.join_min_messages must be in [2, 50], got %d", a.JoinMinMessages)
+	}
+	if a.JoinEvaluationsPerHour < 1 || a.JoinEvaluationsPerHour > 60 {
+		fail("proactive.join_evaluations_per_hour must be in [1, 60], got %d", a.JoinEvaluationsPerHour)
 	}
 	return errors.Join(errs...)
 }

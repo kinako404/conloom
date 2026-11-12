@@ -346,6 +346,8 @@ func TestPolicy_UpdateAppliesPresentProactive(t *testing.T) {
 		Enabled: false, DefaultLevel: conloomapi.ProactiveMid,
 		EligibilityTTL: conloomapi.Duration{Duration: 48 * time.Hour}, UserCooldown: conloomapi.Duration{Duration: 10 * time.Minute},
 		GroupHourlyLimit: 3, DailyLimits: conloomapi.ProactiveDailyLimits{Low: 1, Mid: 2, High: 3},
+		JoinLull: conloomapi.Duration{Duration: 30 * time.Second}, JoinWindow: conloomapi.Duration{Duration: 10 * time.Minute},
+		JoinMinMessages: 6, JoinEvaluationsPerHour: 2, JoinCooldown: conloomapi.Duration{Duration: time.Hour},
 	}
 	section, err := json.Marshal(want)
 	if err != nil {
@@ -354,6 +356,108 @@ func TestPolicy_UpdateAppliesPresentProactive(t *testing.T) {
 	pv, err := svc.Update(ctx, testConvKey, decodePut(t, putBody(t, conloomapi.DefaultGroupPolicy(), string(section))), "29999")
 	if err != nil || pv.Version != 1 || pv.Policy.Proactive != want || pv.Reason != "test" {
 		t.Fatalf("Update = %+v, %v; want proactive %+v", pv, err, want)
+	}
+}
+
+// legacyPolicyJSON returns p as stored JSON without the participation fields
+// added in v2, as written by versions that predate them.
+func legacyPolicyJSON(t *testing.T, p conloomapi.GroupPolicy, dropProactive bool) []byte {
+	t.Helper()
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"turn_gap", "turn_max_wait", "max_unprompted_replies", "max_consecutive_skips"} {
+		delete(doc["reply"], k)
+	}
+	for _, k := range []string{"join_lull", "join_window", "join_min_messages", "join_evaluations_per_hour", "join_cooldown"} {
+		delete(doc["proactive"], k)
+	}
+	if dropProactive {
+		delete(doc, "proactive")
+	}
+	raw, err = json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestPolicy_CurrentFillsParticipationDefaultsForLegacyVersion(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "conloom.db")
+	db, err := sqlite.Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	legacy := conloomapi.DefaultGroupPolicy()
+	legacy.Reply.ContinuationWindow = conloomapi.Duration{Duration: time.Minute}
+	raw := legacyPolicyJSON(t, legacy, true)
+	if strings.Contains(string(raw), "proactive") || strings.Contains(string(raw), "turn_") {
+		t.Fatalf("legacy policy has new fields: %s", raw)
+	}
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `INSERT INTO group_policies
+		(conversation_key, version, policy, reason, updated_by, created_at) VALUES (?, 5, ?, 'legacy', '29999', ?)`,
+		testConvKey, string(raw), time.Now().UTC().Format("2006-01-02T15:04:05.000000000Z07:00")); err != nil {
+		t.Fatalf("insert legacy policy: %v", err)
+	}
+
+	defaults := conloomapi.DefaultGroupPolicy()
+	svc := NewService(db, defaults)
+	pv, err := svc.Current(ctx, testConvKey)
+	if err != nil || pv.Version != 5 || !reflect.DeepEqual(pv.Policy, legacy) {
+		t.Fatalf("Current = %+v, %v; want %+v", pv, err, legacy)
+	}
+	if err := Validate(pv.Policy); err != nil {
+		t.Fatalf("filled policy invalid: %v", err)
+	}
+	paused, err := svc.Pause(ctx, testConvKey, "29999")
+	want := withConcurrency(legacy, 0)
+	if err != nil || paused.Version != 6 || !reflect.DeepEqual(paused.Policy, want) {
+		t.Fatalf("Pause = %+v, %v; want %+v", paused, err, want)
+	}
+}
+
+func TestPolicy_UpdateFillsMissingParticipationFields(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newTestStore(t), conloomapi.DefaultGroupPolicy())
+	p := conloomapi.DefaultGroupPolicy()
+	p.Reply.ContinuationWindow = conloomapi.Duration{Duration: 2 * time.Minute}
+	body, err := json.Marshal(map[string]json.RawMessage{"policy": legacyPolicyJSON(t, p, false), "reason": json.RawMessage(`"test"`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pv, err := svc.Update(ctx, testConvKey, decodePut(t, string(body)), "29999")
+	if err != nil || pv.Version != 1 || !reflect.DeepEqual(pv.Policy, p) {
+		t.Fatalf("Update = %+v, %v; want %+v", pv, err, p)
+	}
+
+	body, err = json.Marshal(map[string]json.RawMessage{"policy": legacyPolicyJSON(t, p, true), "reason": json.RawMessage(`"test"`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pv, err = svc.Update(ctx, testConvKey, decodePut(t, string(body)), "29999")
+	if err != nil || pv.Version != 2 || !reflect.DeepEqual(pv.Policy, p) {
+		t.Fatalf("Update without proactive = %+v, %v; want %+v", pv, err, p)
+	}
+
+	bad := conloomapi.DefaultGroupPolicy()
+	bad.Reply.TurnGap = conloomapi.Duration{Duration: 30 * time.Second}
+	bad.Reply.TurnMaxWait = conloomapi.Duration{}
+	if _, err := svc.Update(ctx, testConvKey, conloomapi.PolicyPut{Policy: bad}, "29999"); !errors.Is(err, ErrInvalid) ||
+		!strings.Contains(err.Error(), "reply.turn_max_wait") {
+		t.Fatalf("Update gap above filled max wait: err = %v, want reply.turn_max_wait", err)
 	}
 }
 
