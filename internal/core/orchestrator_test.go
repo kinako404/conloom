@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -85,6 +86,7 @@ type testOpts struct {
 type testEnv struct {
 	o        *Orchestrator
 	st       *sqlite.DB
+	hooks    *hookStore
 	cfg      *config.Config
 	policies *policy.Service
 	short    *fakeopenai.Server
@@ -131,6 +133,79 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+// hookStore is the orchestrator's store in tests: it records every stored
+// task completion and can pause completions before they are written.
+type hookStore struct {
+	store.Store
+
+	mu          sync.Mutex
+	onComplete  func(store.TaskCompletion)
+	completions map[string][]string
+}
+
+func (h *hookStore) setOnComplete(f func(store.TaskCompletion)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.onComplete = f
+}
+
+func (h *hookStore) CompleteTask(ctx context.Context, c store.TaskCompletion) error {
+	h.mu.Lock()
+	hook := h.onComplete
+	h.mu.Unlock()
+	if hook != nil {
+		hook(c)
+	}
+	if err := h.Store.CompleteTask(ctx, c); err != nil {
+		return err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.completions == nil {
+		h.completions = map[string][]string{}
+	}
+	h.completions[c.TaskID] = append(h.completions[c.TaskID], c.Status)
+	return nil
+}
+
+// completed returns the statuses taskID was completed with, in order.
+func (h *hookStore) completed(taskID string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.completions[taskID])
+}
+
+// blockFirstCompletion pauses the first completion of a task accepted by
+// match until the returned release is called; entered is closed when it is
+// paused. Release is also called at cleanup.
+func (e *testEnv) blockFirstCompletion(t *testing.T, match func(store.TaskCompletion) bool) (entered <-chan string, release func()) {
+	t.Helper()
+	in := make(chan string, 1)
+	proceed := make(chan struct{})
+	var first atomic.Bool
+	var once sync.Once
+	release = func() { once.Do(func() { close(proceed) }) }
+	t.Cleanup(release)
+	e.hooks.setOnComplete(func(c store.TaskCompletion) {
+		if match(c) && first.CompareAndSwap(false, true) {
+			in <- c.TaskID
+			<-proceed
+		}
+	})
+	return in, release
+}
+
+func waitEntered(t *testing.T, entered <-chan string) string {
+	t.Helper()
+	select {
+	case id := <-entered:
+		return id
+	case <-time.After(waitLimit):
+		t.Fatal("timed out waiting for a paused completion")
+		return ""
+	}
+}
+
 func answer(content string) handlerFunc {
 	return func(map[string]any) (int, string) { return 200, content }
 }
@@ -168,6 +243,7 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	env.st = st
+	env.hooks = &hookStore{Store: st}
 
 	var profiles []*router.Profile
 	limits := map[string]admission.Limits{}
@@ -181,7 +257,7 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 	}
 	env.policies = policy.NewService(st, cfg.DefaultGroupPolicy)
 	o, err := New(Deps{
-		Store:     st,
+		Store:     env.hooks,
 		Router:    router.New(profiles, router.BreakerConfig{}, time.Now),
 		Admission: admission.New(limits),
 		Personas:  persona.NewService(st, cfg.PersonaTemplates),
@@ -724,5 +800,71 @@ func TestSubmit_LogsOmitMessageText(t *testing.T) {
 	env.waitTask(t, resp.TaskID)
 	if logs := env.logs.String(); strings.Contains(logs, "私密内容") || strings.Contains(logs, fakeReply) {
 		t.Fatalf("logs contain message text: %q", logs)
+	}
+}
+
+func TestCommand_StopRacingDispatchCompletesOnce(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	id, msg := env.seedTask(t, "20001", "讲个故事", "", conloomapi.TaskQueued, time.Now().UTC())
+	qt := QueuedTask{TaskID: id, ConversationKey: testConvKey, ActorID: "20001", TriggerMessageIDs: []string{msg}}
+	held := qt
+	held.ReadyAt = time.Now().Add(time.Hour)
+	env.o.sched.Restore(held)
+	entered, release := env.blockFirstCompletion(t, func(c store.TaskCompletion) bool { return c.TaskID == id })
+
+	ev := env.groupEvent("20001", "/stop")
+	body, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		resp conloomapi.EventAccepted
+		err  error
+	}
+	stopped := make(chan result, 1)
+	go func() {
+		resp, _, err := env.o.Submit(context.Background(), testBot, "stop", body, ev)
+		stopped <- result{resp, err}
+	}()
+	waitEntered(t, entered)
+	// The scheduler dispatches the task while /stop is still completing it.
+	env.o.run(context.Background(), qt)
+	release()
+	r := <-stopped
+	if r.err != nil {
+		t.Fatalf("/stop: %v", r.err)
+	}
+	if st := env.getTask(t, r.resp.TaskID); len(st.Actions) != 1 || st.Actions[0].Content.Text != CopyStopDone {
+		t.Fatalf("/stop task = %+v", st)
+	}
+	if got := env.hooks.completed(id); !slices.Equal(got, []string{conloomapi.TaskCancelled}) {
+		t.Fatalf("completions = %v, want [cancelled]", got)
+	}
+	task := env.getTask(t, id)
+	if task.Status != conloomapi.TaskCancelled || len(task.Actions) != 0 {
+		t.Fatalf("task = %+v", task)
+	}
+	if n := env.short.Calls() + env.long.Calls(); n != 0 {
+		t.Fatalf("model calls = %d, want 0", n)
+	}
+}
+
+func TestCancelTask_DuringCloseRecordsCancellation(t *testing.T) {
+	release := make(chan struct{})
+	env := newTestOrchestrator(t, testOpts{short: func(map[string]any) (int, string) { <-release; return 200, fakeReply }})
+	t.Cleanup(func() { close(release) })
+	resp := env.submit(t, env.groupEvent("20001", "你好", mentionBot))
+	waitUntil(t, "model called", func() bool { return env.short.Calls() == 1 })
+	// Close has begun but has not stopped the scheduler yet.
+	env.o.closing.Store(true)
+	task, err := env.o.CancelTask(context.Background(), testBot, resp.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != conloomapi.TaskCancelled || len(task.Actions) != 0 {
+		t.Fatalf("task = %+v", task)
+	}
+	if got := env.hooks.completed(resp.TaskID); !slices.Equal(got, []string{conloomapi.TaskCancelled}) {
+		t.Fatalf("completions = %v, want [cancelled]", got)
 	}
 }

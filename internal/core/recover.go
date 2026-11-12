@@ -2,9 +2,12 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"time"
 
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -17,14 +20,34 @@ const (
 	purgeEventsEvery            = time.Hour
 )
 
+// ErrAlreadyRecovered is returned by every Recover call after the first.
+var ErrAlreadyRecovered = errors.New("core: Recover already called")
+
+type recovery int
+
+const (
+	recoverSkipped recovery = iota
+	recoverRan
+	recoverRequeued
+	recoverStale
+)
+
 // Recover resumes tasks left queued or running by a previous process: tasks
 // whose event is younger than StaleTaskAfter run again (commands at once,
 // replies through the scheduler); older ones fail with STALE and no action.
 // It then starts background maintenance, which expires undelivered outbox
 // actions every 30s and purges old idempotency records every hour until Close.
+//
+// Recover runs once per Orchestrator and should be called before the first
+// Submit; later calls return ErrAlreadyRecovered. Tasks this process already
+// schedules or executes are left alone, so overlapping live traffic never
+// runs a task twice.
 func (o *Orchestrator) Recover(ctx context.Context) error {
 	if o.closing.Load() {
 		return ErrSchedulerClosed
+	}
+	if !o.recovered.CompareAndSwap(false, true) {
+		return ErrAlreadyRecovered
 	}
 	tasks, err := o.st.ListUnfinishedTasks(ctx)
 	if err != nil {
@@ -35,37 +58,66 @@ func (o *Orchestrator) Recover(ctx context.Context) error {
 		staleAfter = defaultStaleTaskAfter
 	}
 	now := o.now()
-	requeued, stale := 0, 0
+	counts := map[recovery]int{}
 	for _, t := range tasks {
-		switch {
-		case now.Sub(t.EventOccurredAt) >= staleAfter:
-			if err := o.complete(ctx, t, conloomapi.TaskFailed, t.Meta, errorCodeStale, nil); err != nil {
-				return fmt.Errorf("core: fail stale task %s: %w", t.ID, err)
-			}
-			stale++
-		case t.Command != "":
-			if err := o.runStoredCommand(ctx, t); err != nil {
-				return fmt.Errorf("core: recover command task %s: %w", t.ID, err)
-			}
-			requeued++
-		default:
-			if err := o.st.SetTaskStatus(ctx, t.ID, conloomapi.TaskQueued); err != nil {
-				return fmt.Errorf("core: requeue task %s: %w", t.ID, err)
-			}
-			at := time.Now()
-			o.sched.Restore(QueuedTask{
-				TaskID: t.ID, ConversationKey: t.ConversationKey, ActorID: t.ActorPlatformUserID,
-				TriggerMessageIDs: t.TriggerMessageIDs, EnqueuedAt: at, ReadyAt: at,
-			})
-			requeued++
+		r, err := o.recoverTask(ctx, t, now, staleAfter)
+		if err != nil {
+			return fmt.Errorf("core: recover task %s: %w", t.ID, err)
 		}
+		counts[r]++
 	}
-	o.log.Info("recovered unfinished tasks", "requeued", requeued, "stale", stale)
-	o.maintOnce.Do(func() {
-		o.bgWG.Add(1)
-		go o.maintain()
-	})
+	o.log.Info("recovered unfinished tasks", "requeued", counts[recoverRan]+counts[recoverRequeued],
+		"stale", counts[recoverStale], "skipped", counts[recoverSkipped])
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closing.Load() {
+		return ErrSchedulerClosed
+	}
+	o.bgWG.Add(1)
+	go o.maintain()
 	return nil
+}
+
+// recoverTask resumes or fails one unfinished task unless this process
+// already schedules or owns it. Only a task outside the scheduler is claimed,
+// so the claim never turns away the task's own runner.
+func (o *Orchestrator) recoverTask(ctx context.Context, t store.TaskRecord, now time.Time, staleAfter time.Duration) (recovery, error) {
+	if slices.ContainsFunc(o.sched.Active(t.ConversationKey), func(q QueuedTask) bool { return q.TaskID == t.ID }) {
+		return recoverSkipped, nil
+	}
+	ow := o.claim(t.ID, false)
+	if ow == nil {
+		return recoverSkipped, nil
+	}
+	r, rec, err := o.recoverOwned(ctx, t, now, staleAfter)
+	o.release(t.ID, ow)
+	if r == recoverRequeued {
+		at := time.Now()
+		o.sched.Restore(QueuedTask{
+			TaskID: rec.ID, ConversationKey: rec.ConversationKey, ActorID: rec.ActorPlatformUserID,
+			TriggerMessageIDs: rec.TriggerMessageIDs, EnqueuedAt: at, ReadyAt: at,
+		})
+	}
+	return r, err
+}
+
+func (o *Orchestrator) recoverOwned(ctx context.Context, t store.TaskRecord, now time.Time, staleAfter time.Duration) (recovery, store.TaskRecord, error) {
+	rec, err := o.st.GetTask(ctx, t.BotInstanceID, t.ID)
+	if err != nil {
+		return recoverSkipped, rec, err
+	}
+	switch {
+	case taskFinished(rec.Status):
+		return recoverSkipped, rec, nil
+	case now.Sub(rec.EventOccurredAt) >= staleAfter:
+		return recoverStale, rec, o.complete(ctx, rec, conloomapi.TaskFailed, rec.Meta, errorCodeStale, nil)
+	case rec.Command != "":
+		return recoverRan, rec, o.runStoredCommand(ctx, rec)
+	}
+	if err := o.st.SetTaskStatus(ctx, rec.ID, conloomapi.TaskQueued); err != nil {
+		return recoverSkipped, rec, err
+	}
+	return recoverRequeued, rec, nil
 }
 
 func (o *Orchestrator) maintain() {

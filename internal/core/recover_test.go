@@ -2,10 +2,14 @@ package core
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/ids"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -85,5 +89,107 @@ func TestClose_LeavesRunningTaskForRecovery(t *testing.T) {
 	}
 	if _, _, err := env.submitRaw(t, "after-close", env.groupEvent("20001", "还在吗", mentionBot)); err == nil {
 		t.Fatal("Submit after Close succeeded")
+	}
+}
+
+func TestRecover_SecondCallFails(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) {
+		c.DefaultGroupPolicy.Concurrency.MaxInteractiveRequests = 2
+	}})
+	id, _ := env.seedTask(t, "20001", "还在吗", "", conloomapi.TaskRunning, time.Now().UTC().Add(-10*time.Second))
+	ctx := context.Background()
+	if err := env.o.Recover(ctx); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if err := env.o.Recover(ctx); !errors.Is(err, ErrAlreadyRecovered) {
+		t.Fatalf("second Recover: err = %v, want ErrAlreadyRecovered", err)
+	}
+	env.waitTask(t, id)
+	time.Sleep(100 * time.Millisecond)
+	if task := env.getTask(t, id); task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 {
+		t.Fatalf("task = %+v", task)
+	}
+	if got := env.hooks.completed(id); len(got) != 1 {
+		t.Fatalf("completions = %v, want one", got)
+	}
+	if n := env.short.Calls(); n != 1 {
+		t.Fatalf("model calls = %d, want 1", n)
+	}
+}
+
+func TestRecover_LeavesLiveTasksAlone(t *testing.T) {
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	env := newTestOrchestrator(t, testOpts{
+		short: func(map[string]any) (int, string) { <-release; return 200, fakeReply },
+		configure: func(c *config.Config) {
+			c.DefaultGroupPolicy.Concurrency.MaxInteractiveRequests = 2
+			c.DefaultGroupPolicy.Reply.Debounce = conloomapi.Duration{Duration: 300 * time.Millisecond}
+		},
+	})
+	t.Cleanup(unblock)
+	running := env.submit(t, env.groupEvent("20001", "第一个问题", mentionBot))
+	waitUntil(t, "first task running", func() bool { return env.short.Calls() == 1 })
+	queued := env.submit(t, env.groupEvent("20002", "第二个问题", mentionBot))
+	merged := env.submit(t, env.groupEvent("20002", "补充一句"))
+	if !merged.Merged || merged.TaskID != queued.TaskID {
+		t.Fatalf("follow-up = %+v, want merged into %s", merged, queued.TaskID)
+	}
+
+	if err := env.o.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	unblock()
+
+	for _, id := range []string{running.TaskID, queued.TaskID} {
+		env.waitTask(t, id)
+	}
+	time.Sleep(200 * time.Millisecond)
+	for _, id := range []string{running.TaskID, queued.TaskID} {
+		if task := env.getTask(t, id); task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 {
+			t.Fatalf("task %s = %+v", id, task)
+		}
+		if got := env.hooks.completed(id); len(got) != 1 {
+			t.Fatalf("task %s completions = %v, want one", id, got)
+		}
+	}
+	if n := env.short.Calls(); n != 2 {
+		t.Fatalf("model calls = %d, want 2", n)
+	}
+}
+
+func TestRecover_SkipsCommandInProgress(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	entered, release := env.blockFirstCompletion(t, func(c store.TaskCompletion) bool { return len(c.Actions) > 0 })
+	ev := env.groupEvent("20001", "/help")
+	body, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		resp conloomapi.EventAccepted
+		err  error
+	}
+	submitted := make(chan result, 1)
+	go func() {
+		resp, _, err := env.o.Submit(context.Background(), testBot, "help", body, ev)
+		submitted <- result{resp, err}
+	}()
+	id := waitEntered(t, entered)
+
+	if err := env.o.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	release()
+	if r := <-submitted; r.err != nil || r.resp.TaskID != id {
+		t.Fatalf("Submit = %+v, %v (paused task %s)", r.resp, r.err, id)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if task := env.getTask(t, id); task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 {
+		t.Fatalf("command task = %+v", task)
+	}
+	if got := env.hooks.completed(id); len(got) != 1 {
+		t.Fatalf("completions = %v, want one", got)
 	}
 }

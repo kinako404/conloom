@@ -11,8 +11,8 @@ import (
 )
 
 // runCommand executes a command task and completes it with one reply action.
-// It is not cancelled with ctx, so a disconnecting client cannot leave a
-// command half done.
+// The caller must own the task. It is not cancelled with ctx, so a
+// disconnecting client cannot leave a command half done.
 func (o *Orchestrator) runCommand(ctx context.Context, task store.TaskRecord, conv store.ConversationRecord, triggers []store.MessageRecord) {
 	ctx = context.WithoutCancel(ctx)
 	meta := conloomapi.TaskMeta{TraceID: ids.New("trace")}
@@ -27,7 +27,8 @@ func (o *Orchestrator) runCommand(ctx context.Context, task store.TaskRecord, co
 		"command", task.Command, "status", status)
 }
 
-// runStoredCommand runs a command task recovered after a restart.
+// runStoredCommand runs an unfinished command task recovered after a
+// restart. The caller must own the task.
 func (o *Orchestrator) runStoredCommand(ctx context.Context, task store.TaskRecord) error {
 	conv, err := o.conversation(ctx, task.ConversationKey)
 	if err != nil {

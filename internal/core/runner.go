@@ -40,10 +40,16 @@ type outcome struct {
 }
 
 // run is the scheduler's Runner: it executes one reply task and stores its
-// result. A task interrupted by Close keeps its stored status for Recover.
+// result. A task owned by another party (e.g. cancelled while being
+// dispatched) is left to that party. A task interrupted by Close, and not
+// cancelled by a user, keeps its stored status for Recover.
 func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
-	done := o.track(qt.TaskID)
-	defer o.untrack(qt.TaskID, done)
+	ow := o.claim(qt.TaskID, true)
+	if ow == nil {
+		o.log.Debug("task owned elsewhere; not running it", "task_id", qt.TaskID)
+		return
+	}
+	defer o.release(qt.TaskID, ow)
 	start := time.Now()
 	dbctx := context.WithoutCancel(ctx)
 	botID, _, _ := strings.Cut(qt.ConversationKey, ":")
@@ -63,7 +69,7 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 
 	out := o.execute(ctx, task)
 	if ctx.Err() != nil {
-		if o.closing.Load() {
+		if o.closing.Load() && !o.cancelledByUser(ow) {
 			return
 		}
 		out.status, out.code, out.text = conloomapi.TaskCancelled, conloomapi.CodeTaskCancelled, ""

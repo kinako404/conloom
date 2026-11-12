@@ -87,13 +87,24 @@ type Orchestrator struct {
 
 	closing   atomic.Bool
 	closeOnce sync.Once
-	maintOnce sync.Once
+	recovered atomic.Bool
 	bgCtx     context.Context
 	bgCancel  context.CancelFunc
 	bgWG      sync.WaitGroup
 
-	mu       sync.Mutex
-	inflight map[string]chan struct{}
+	mu     sync.Mutex
+	owners map[string]*taskOwner
+}
+
+// taskOwner is the one party in this process allowed to execute and complete
+// a task: its runner, the command path, a cancellation or Recover. A party
+// completes a task only while owning it, and re-reads the stored task after
+// claiming it, so no task is completed twice or produces actions twice.
+type taskOwner struct {
+	runner bool
+	// cancelled is set when a user cancels the runner's task.
+	cancelled bool
+	done      chan struct{}
 }
 
 type nopNotifier struct{}
@@ -117,8 +128,8 @@ func New(d Deps) (*Orchestrator, error) {
 		st: d.Store, router: d.Router, adm: d.Admission, personas: d.Personas, policies: d.Policies,
 		reviewer: d.Reviewer, notifier: d.Notifier, metrics: d.Metrics, log: d.Logger, cfg: d.Config,
 		loc: d.Location, now: d.Now,
-		limiter:  NewRateLimiter(),
-		inflight: map[string]chan struct{}{},
+		limiter: NewRateLimiter(),
+		owners:  map[string]*taskOwner{},
 	}
 	if o.notifier == nil {
 		o.notifier = nopNotifier{}
@@ -185,10 +196,12 @@ func (o *Orchestrator) PolicyChanged(convKey string) {
 
 // Close stops background maintenance and the scheduler. Running tasks are
 // cancelled but keep their stored status, so Recover resumes them after a
-// restart.
+// restart; tasks a user already cancelled are still recorded as cancelled.
 func (o *Orchestrator) Close() {
 	o.closeOnce.Do(func() {
+		o.mu.Lock()
 		o.closing.Store(true)
+		o.mu.Unlock()
 		o.bgCancel()
 		o.bgWG.Wait()
 		o.sched.Close()
@@ -364,6 +377,11 @@ func enabledIn(bot config.BotConfig, c conloomapi.Conversation) bool {
 
 func (o *Orchestrator) submitCommand(ctx context.Context, s *submission, command string) (conloomapi.EventAccepted, error) {
 	task := s.task(ids.New("task"), command)
+	ow := o.claim(task.ID, false)
+	if ow == nil {
+		return conloomapi.EventAccepted{}, fmt.Errorf("core: new task %s is already owned", task.ID)
+	}
+	defer o.release(task.ID, ow)
 	resp := conloomapi.EventAccepted{
 		EventID: s.ev.EventID, Disposition: conloomapi.DispositionReply, TaskID: task.ID, Status: conloomapi.TaskQueued,
 	}
@@ -527,8 +545,9 @@ func taskError(code, traceID string) *conloomapi.ErrorBody {
 	return b
 }
 
-// CancelTask cancels a queued or running task and returns its state. For a
-// running task it waits briefly for the runner to record the cancellation.
+// CancelTask cancels a queued or running task and returns its state. If the
+// task is being executed (a running reply or a command in progress) it waits
+// briefly for the executor to record the outcome.
 func (o *Orchestrator) CancelTask(ctx context.Context, botID, taskID string) (conloomapi.Task, error) {
 	rec, err := o.st.GetTask(ctx, botID, taskID)
 	if err != nil {
@@ -554,14 +573,27 @@ func (o *Orchestrator) CancelTask(ctx context.Context, botID, taskID string) (co
 	return o.GetTask(ctx, botID, taskID)
 }
 
-// cancel cancels taskID. If a runner is executing it, the runner records the
-// cancellation and the returned channel closes when it exits; otherwise the
-// stored task is marked cancelled here and the channel is nil.
+// cancel cancels taskID. If another party owns the task, the returned channel
+// closes when it lets go; a runner owner records the cancellation itself.
+// Otherwise cancel takes ownership, marks the stored task cancelled and
+// returns a nil channel; a runner dispatched meanwhile finds the task owned
+// and does not run it.
 func (o *Orchestrator) cancel(ctx context.Context, botID, convKey, taskID string) (<-chan struct{}, error) {
-	o.sched.Cancel(convKey, taskID)
-	if done := o.runnerDone(taskID); done != nil {
-		return done, nil
+	o.mu.Lock()
+	ow, owned := o.owners[taskID]
+	switch {
+	case owned && ow.runner:
+		ow.cancelled = true
+	case !owned:
+		ow = &taskOwner{done: make(chan struct{})}
+		o.owners[taskID] = ow
 	}
+	o.mu.Unlock()
+	o.sched.Cancel(convKey, taskID)
+	if owned {
+		return ow.done, nil
+	}
+	defer o.release(taskID, ow)
 	rec, err := o.st.GetTask(ctx, botID, taskID)
 	if err != nil || taskFinished(rec.Status) {
 		return nil, err
@@ -569,28 +601,32 @@ func (o *Orchestrator) cancel(ctx context.Context, botID, convKey, taskID string
 	return nil, o.complete(ctx, rec, conloomapi.TaskCancelled, rec.Meta, conloomapi.CodeTaskCancelled, nil)
 }
 
-func (o *Orchestrator) track(taskID string) chan struct{} {
-	done := make(chan struct{})
-	o.mu.Lock()
-	o.inflight[taskID] = done
-	o.mu.Unlock()
-	return done
-}
-
-func (o *Orchestrator) untrack(taskID string, done chan struct{}) {
-	o.mu.Lock()
-	delete(o.inflight, taskID)
-	o.mu.Unlock()
-	close(done)
-}
-
-func (o *Orchestrator) runnerDone(taskID string) <-chan struct{} {
+// claim makes the caller the only owner of taskID until release. It returns
+// nil if another party owns the task, which the caller must then leave alone.
+// An owner must re-read the stored task and skip it if it is finished.
+func (o *Orchestrator) claim(taskID string, runner bool) *taskOwner {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if done, ok := o.inflight[taskID]; ok {
-		return done
+	if _, ok := o.owners[taskID]; ok {
+		return nil
 	}
-	return nil
+	ow := &taskOwner{runner: runner, done: make(chan struct{})}
+	o.owners[taskID] = ow
+	return ow
+}
+
+func (o *Orchestrator) release(taskID string, ow *taskOwner) {
+	o.mu.Lock()
+	delete(o.owners, taskID)
+	o.mu.Unlock()
+	close(ow.done)
+}
+
+// cancelledByUser reports whether a user cancelled the task owned by ow.
+func (o *Orchestrator) cancelledByUser(ow *taskOwner) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return ow.cancelled
 }
 
 func taskFinished(status string) bool {
