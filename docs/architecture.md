@@ -221,12 +221,13 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 
 目的：机器人刚说完话，不马上接下一轮。
 
-- 判定（`heldLocked`，`internal/core/scheduler.go:536`）：一轮任务如果没有被点名，并且现在早于“机器人在本群最后发言时间 + `turn_cooldown`”，或者本群有任务正在运行，就先挂起，不调用模型。已挂起过的一轮在对方停顿满 `turn_gap` 之前也保持挂起。
+- 判定（`heldLocked`，`internal/core/scheduler.go:546`）：一轮任务如果没有被点名，并且现在早于“机器人在本群最后发言时间 + `turn_cooldown`”，或者本群有任务正在运行，就先挂起，不调用模型。已挂起过的一轮在对方停顿满 `turn_gap` 之前也保持挂起。
 - 截止时间由 `sessionConfig` 每次调度时现算（`orchestrator.go:268`）；策略改短冷却后 `Kick` 会立即重新判断。机器人发言时间记在内存里，取的是回复写入 Outbox 的时刻，命令回复也算。
 - 挂起期间合并窗口一直开着，同一人的后续发言都并进这一轮，每并入一句，就绪时间改为“现在 + `turn_gap`”，不受 `turn_max_wait` 限制。放行要同时满足：冷却已过、本群没有任务在运行、他已停顿满 `turn_gap`、满足 `min_reply_interval`。放行后只处理一次，看到他这段时间说的全部内容。
 - 硬上限：从入队算起最多挂起 `turn_cooldown + turn_max_wait`（默认 65s）。到点后合并窗口关闭，他的新消息另开一轮；此时冷却已过且没有任务在运行就立即放行，否则丢弃（`dropHeldTurn`，`orchestrator.go:294`）：不调用模型、不计入连续跳过，任务记为 `succeeded`／`review_result=skipped`，日志 `turn dropped reason=held_too_long`。
 - 挂起的轮次不挡别人：调度器跳过它，后面的 @、命令、加入群聊、会话外提问照常执行。机器人在此期间又说了话，冷却重新计时。
 - 挂起期间他 @ 或回复了机器人，这一轮立即放行，按直接对话回一条。
+- 明确提问不受冷却限制：一轮只要包含他自己发的明确提问（`isClearQuestion`，与会话外提问同一判定；创建时或挂起期间并入都算），就不再等冷却，到上限也不丢弃；仍等他停顿满 `turn_gap`、等运行中的任务结束，仍按在聊轮次计数，模型可以跳过。
 - 每个任务第一次被挂起时记一条 INFO 日志 `turn deferred`：因冷却挂起时 `waiting_for=cooldown` 带 `until`，只在等运行中的任务时 `waiting_for=running`。直接对话、命令和加入群聊不受接话冷却影响。
 
 ### 4.7 模型调用次数的上界
