@@ -15,6 +15,7 @@ const modulePath = "github.com/kinako404/conloom"
 // corePackages must stay independent of any platform adapter and model vendor.
 var corePackages = []string{
 	"core", "gateway", "router", "contextbuilder", "persona", "policy", "review", "outbox", "store", "admission",
+	"memory",
 }
 
 var vendorNames = regexp.MustCompile(`(?i)onebot|napcat|qwen|deepseek|grok`)

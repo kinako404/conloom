@@ -64,9 +64,10 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `persona:read` | 读取人格 |
 | `policy:write` | 写入人格和群策略 |
 | `admin:read` | 读取群策略 |
-| `memory:read`、`memory:write` | 为长期记忆预留，目前没有端点使用 |
+| `memory:read` | 读取群聊摘要、整理进度和群友记忆 |
+| `memory:write` | 修改、删除群友记忆，立即整理一次记忆 |
 
-适配器令牌通常只需要 `events:write tasks:read outbox:read outbox:ack persona:read`；管理令牌另加 `policy:write admin:read`（示例配置还加上了预留的 `memory:read memory:write`）。各端点需要的 scope 见 [HTTP API](api.md)。
+适配器令牌通常只需要 `events:write tasks:read outbox:read outbox:ack persona:read`；管理令牌另加 `policy:write admin:read`，要通过 API 查看或管理记忆时再加 `memory:read memory:write`（示例配置已经加上）。各端点需要的 scope 见 [HTTP API](api.md)。
 
 ## bots
 
