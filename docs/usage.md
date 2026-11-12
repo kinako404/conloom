@@ -132,7 +132,7 @@ conloom version                                                 显示版本与�
 
 开启记忆的群里，机器人会在后台用长模型定期整理聊天记录，维护一份群聊摘要、每位群友的笔记和好感度，回复时参考这些内容。只在群聊里使用，私聊不整理。
 
-- **开启**：默认关闭，因为会为群友建立档案。管理员通过群策略 API 按群开启，例如 `PUT /api/v1/conversations/{id}/policy` 写入 `{"memory":{"enabled":true}}`（见 [API](api.md#群策略)）。开启时要求 `concurrency.allow_long_requests` 为 true；群策略里还可以用 `memory.affinity: false` 只关闭好感度。
+- **开启**：默认关闭，因为会为群友建立档案。管理员通过群策略 API 按群开启（见 [API](api.md#群策略)）：先 `GET /api/v1/conversations/{id}/policy` 取当前策略，把返回的 `policy` 里的 `memory.enabled` 改成 `true`，并确认 `concurrency.allow_long_requests` 是 `true`（开启记忆要求它为 true，否则校验失败），然后把整份策略 `PUT` 回同一个地址，请求体是 `{"policy":{…改好的完整策略…},"reason":"开启记忆"}`。群策略里还可以用 `memory.affinity: false` 只关闭好感度。
 - **查看和修改**：群友用 `/记忆`、`/好感度` 查看自己的笔记和好感度，管理员用 `/记忆 群` 查看群聊摘要，用 `/记忆 整理` 立即整理一次。管理员也可以通过 [记忆 API](api.md#记忆) 查看全部记录、修改某人的笔记或好感度。
 - **档位**：回复模型只看到档位名，看不到数值；好感度只表示机器人和对方有多熟，不解锁任何内容，也不改变任何规则。
 
