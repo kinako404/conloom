@@ -1,9 +1,12 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -32,6 +35,7 @@ type schedCall struct {
 type schedRunner struct {
 	st      store.Store
 	advance bool
+	skipped string
 	block   chan struct{}
 	started chan string
 
@@ -89,6 +93,9 @@ func (r *schedRunner) Run(ctx context.Context, convKey string, manual bool) (Res
 		if err := r.st.PutGroupMemory(context.Background(), g); err != nil {
 			return Result{}, err
 		}
+	}
+	if r.skipped != "" {
+		return Result{Skipped: r.skipped}, nil
 	}
 	return Result{Batches: 1, Messages: pending}, nil
 }
@@ -458,5 +465,30 @@ func TestScheduler_CloseWithoutStart(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Close without Start did not return")
+	}
+}
+
+func TestScheduler_BackoffSkipLogsAtDebug(t *testing.T) {
+	for _, c := range []struct {
+		skipped   string
+		infoLines int
+	}{{"backoff", 0}, {"busy", 1}, {"", 1}} {
+		e := newSchedEnv(t)
+		e.seed(t, 200, testConvKey)
+		e.setMemory(t, testConvKey, true, 1000)
+		e.runner.skipped = c.skipped
+		var info, debug bytes.Buffer
+		e.sched = NewScheduler(SchedulerDeps{Store: e.st, Policies: e.policies, Runner: e.runner,
+			Logger: slog.New(slog.NewTextHandler(&info, &slog.HandlerOptions{Level: slog.LevelInfo}))})
+		e.sched.tick(context.Background())
+		if got := strings.Count(info.String(), "consolidation finished"); got != c.infoLines {
+			t.Errorf("skipped %q: %d Info lines, want %d:\n%s", c.skipped, got, c.infoLines, info.String())
+		}
+		e.sched = NewScheduler(SchedulerDeps{Store: e.st, Policies: e.policies, Runner: e.runner,
+			Logger: slog.New(slog.NewTextHandler(&debug, &slog.HandlerOptions{Level: slog.LevelDebug}))})
+		e.sched.tick(context.Background())
+		if c.skipped == "backoff" && !strings.Contains(debug.String(), "skipped=backoff") {
+			t.Errorf("backoff skip not logged at Debug:\n%s", debug.String())
+		}
 	}
 }

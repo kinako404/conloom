@@ -213,7 +213,11 @@ func (s *Scheduler) consolidate(ctx context.Context, convKey string, manual bool
 		s.logError(ctx, "memory: consolidation failed", "conversation", convKey, "manual", manual, "error", err)
 		return
 	}
-	s.d.Logger.Info("memory: consolidation finished", "conversation", convKey, "manual", manual,
+	level := slog.LevelInfo
+	if res.Skipped == "backoff" {
+		level = slog.LevelDebug
+	}
+	s.d.Logger.Log(ctx, level, "memory: consolidation finished", "conversation", convKey, "manual", manual,
 		"batches", res.Batches, "messages", res.Messages, "members", res.MembersUpdated, "skipped", res.Skipped)
 }
 
