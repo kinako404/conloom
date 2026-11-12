@@ -101,11 +101,11 @@ type Orchestrator struct {
 	// the evaluation and sent records they depend on.
 	memberLocks    keyedLocks
 	proactiveLocks keyedLocks
-	// contacts holds each member's last contact with the bot, which delays
-	// proactive replies by the contact cooldown.
-	contacts contactTimes
-	// sessions holds the groups' ongoing conversations with the bot.
-	sessions chatSessions
+	// sessions holds the groups' ongoing conversations with the bot, lulls
+	// their lull timers and joinPlans the plans of queued join tasks.
+	sessions  chatSessions
+	lulls     lullTimers
+	joinPlans joinPlans
 }
 
 // taskOwner is the one party in this process allowed to execute and complete
@@ -206,15 +206,19 @@ func maxTokenFactor(profiles map[string]config.ModelProfile) float64 {
 }
 
 // PolicyChanged makes the conversation's scheduler re-read its policy. A
-// policy that pauses the conversation (concurrency 0) also ends its session
-// and cancels its active tasks.
+// policy that pauses the conversation (concurrency 0) also ends its session,
+// stops its lull timer and cancels its active tasks; one that turns proactive
+// replies off stops the lull timer.
 func (o *Orchestrator) PolicyChanged(convKey string) {
 	ctx := context.Background()
 	if pv, err := o.policies.Current(ctx, convKey); err != nil {
 		o.log.Error("load changed policy failed", "conversation", convKey, "error", err)
-	} else if pv.Policy.Concurrency.MaxInteractiveRequests == 0 {
+	} else if pol := pv.Policy; pol.Concurrency.MaxInteractiveRequests == 0 {
 		o.endSession(convKey, "")
+		o.stopLull(convKey)
 		o.cancelActive(ctx, convKey)
+	} else if !pol.Proactive.Enabled {
+		o.stopLull(convKey)
 	}
 	o.sched.Kick(convKey)
 }
@@ -234,19 +238,22 @@ func (o *Orchestrator) cancelActive(ctx context.Context, convKey string) {
 	}
 }
 
-// Close stops background maintenance and the scheduler and ends every
-// session. Running tasks are cancelled but keep their stored status, so
-// Recover resumes them after a restart; tasks a user already cancelled are
-// still recorded as cancelled.
+// Close stops the lull timers, background maintenance and the scheduler and
+// ends every session. Running tasks are cancelled but keep their stored
+// status, so Recover resumes them after a restart; tasks a user already
+// cancelled are still recorded as cancelled.
 func (o *Orchestrator) Close() {
 	o.closeOnce.Do(func() {
 		o.mu.Lock()
 		o.closing.Store(true)
 		o.mu.Unlock()
+		o.closeLulls()
 		o.bgCancel()
+		o.waitLulls()
 		o.bgWG.Wait()
 		o.sched.Close()
 		o.clearSessions()
+		o.joinPlans.clear()
 	})
 }
 
@@ -275,11 +282,6 @@ type submission struct {
 	convKey          string
 	isAdmin          bool
 	now              time.Time
-	// replyToOther is set when the message replies to a message that is not
-	// stored or was sent by another member; mentionsOthers when it mentions
-	// a user or everyone.
-	replyToOther   bool
-	mentionsOthers bool
 }
 
 // replayError reports that the idempotency key was stored concurrently.
@@ -345,17 +347,24 @@ func replay(rec store.EventRecord, hash string) (conloomapi.EventAccepted, bool,
 }
 
 // submit decides and stores the event; a group message engaging the bot then
-// refreshes the sender's member record.
+// refreshes the sender's member record, and any stored group message restarts
+// the group's lull timer.
 func (o *Orchestrator) submit(ctx context.Context, s *submission) (conloomapi.EventAccepted, error) {
 	d, pol, err := o.decide(ctx, s)
 	if err != nil {
 		return conloomapi.EventAccepted{}, err
 	}
 	resp, err := o.dispatch(ctx, s, d, pol)
-	if err == nil && engages(s, d) {
+	if err != nil {
+		return resp, err
+	}
+	if engages(s, d) {
 		o.recordEngagement(ctx, s, d, pol)
 	}
-	return resp, err
+	if s.ev.Conversation.Type == conloomapi.ConvGroup && d.Disposition != conloomapi.DispositionIgnore {
+		o.armLull(ctx, s.convKey)
+	}
+	return resp, nil
 }
 
 func (o *Orchestrator) dispatch(ctx context.Context, s *submission, d Decision, pol conloomapi.GroupPolicy) (conloomapi.EventAccepted, error) {
@@ -396,16 +405,9 @@ func (o *Orchestrator) dispatch(ctx context.Context, s *submission, d Decision, 
 		// merged into a pending task of the sender, who leaves the session.
 		resp, err := o.observeOnly(ctx, s, "")
 		if err == nil {
-			user := s.ev.Actor.PlatformUserID
-			o.leaveSession(s.convKey, user, sessionExitRule)
-			o.contacts.set(memberKey(s.convKey, user), o.now())
+			o.leaveSession(s.convKey, s.ev.Actor.PlatformUserID, sessionExitRule)
 		}
 		return resp, err
-	case o.proactiveCandidate(s, pol):
-		return o.submitProactive(ctx, s, pol)
-	case (s.mentionsOthers || s.replyToOther) && o.hasPendingProactive(ctx, s):
-		// A message to someone else never joins the sender's proactive task.
-		return o.observeOnly(ctx, s, "")
 	default:
 		return o.admit(ctx, s, AdmitMergeOnly, "")
 	}
@@ -463,11 +465,8 @@ func (o *Orchestrator) decide(ctx context.Context, s *submission) (Decision, con
 		Mentions:         ev.Message.Mentions,
 		Enabled:          enabledIn(s.bot, ev.Conversation),
 		IsAdmin:          s.isAdmin,
-		MentionsOthers: slices.ContainsFunc(ev.Message.Mentions, func(m conloomapi.Mention) bool {
-			return m.Type == "user" || m.Type == "all"
-		}),
+		MentionsOthers:   mentionsOthers(ev.Message.Mentions),
 	}
-	s.mentionsOthers = in.MentionsOthers
 	// Ignore decisions do not depend on policy, so no policy is loaded (and
 	// cached) for conversations the bot does not serve.
 	if d := Decide(in); d.Disposition == conloomapi.DispositionIgnore {
@@ -485,10 +484,7 @@ func (o *Orchestrator) decide(ctx context.Context, s *submission) (Decision, con
 		case err == nil:
 			in.ReplyToIsBot = m.FromBot
 			in.ReplyToOther = !m.FromBot && m.PlatformUserID != ev.Actor.PlatformUserID
-			s.replyToOther = in.ReplyToOther
-		case errors.Is(err, store.ErrNotFound):
-			s.replyToOther = true
-		default:
+		case !errors.Is(err, store.ErrNotFound):
 			return Decision{}, conloomapi.GroupPolicy{}, err
 		}
 	}
@@ -787,7 +783,9 @@ func taskFinished(status string) bool {
 
 // complete stores the task's final state and actions and notifies the bot's
 // adapter when there are actions. A meta without a trigger keeps the task's.
+// A join plan the task did not use is dropped.
 func (o *Orchestrator) complete(ctx context.Context, task store.TaskRecord, status string, meta conloomapi.TaskMeta, code string, actions []store.OutboxRecord) error {
+	o.joinPlans.take(task.ID)
 	if meta.Trigger == "" {
 		meta.Trigger = task.Meta.Trigger
 	}

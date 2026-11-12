@@ -31,11 +31,13 @@ type chatSession struct {
 }
 
 // chatSessions holds each group's session and when the bot last spoke there.
-// It lives in memory only, so a restart ends every session.
+// It lives in memory only, so a restart ends every session; seeded records
+// the groups whose last bot message was looked up in the store.
 type chatSessions struct {
 	mu       sync.Mutex
 	byConv   map[string]*chatSession
 	botSpoke map[string]time.Time
+	seeded   map[string]bool
 }
 
 // liveLocked returns the conversation's session, or nil if there is none. A
@@ -255,12 +257,46 @@ func (o *Orchestrator) noteBotSpoke(convKey string, at time.Time) {
 	}
 }
 
+// seedBotSpoke learns, once per group, when the bot last spoke there before
+// this process started: from the newest bot message among msgs (the group's
+// newest messages) or, when there is none and full reports that more
+// messages exist, from the oldest of msgs, since the bot may have spoken just
+// before.
+func (o *Orchestrator) seedBotSpoke(convKey string, msgs []store.MessageRecord, full bool) {
+	o.sessions.mu.Lock()
+	defer o.sessions.mu.Unlock()
+	if o.sessions.seeded[convKey] {
+		return
+	}
+	if o.sessions.seeded == nil {
+		o.sessions.seeded = map[string]bool{}
+	}
+	o.sessions.seeded[convKey] = true
+	var at time.Time
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].FromBot {
+			at = msgs[i].OccurredAt
+			break
+		}
+	}
+	if at.IsZero() && full && len(msgs) > 0 {
+		at = msgs[0].OccurredAt
+	}
+	if o.sessions.botSpoke == nil {
+		o.sessions.botSpoke = map[string]time.Time{}
+	}
+	if at.After(o.sessions.botSpoke[convKey]) {
+		o.sessions.botSpoke[convKey] = at
+	}
+}
+
 // updateSession applies a finished group reply task to the conversation's
 // session: a reply to the bot's addressee makes them a participant, a turn
 // answered or skipped by the model counts towards the limits of the session
 // it was reserved in (a turn dropped before the model call counts nowhere),
-// and a proactive reply starts a session with its user. Nothing changes while
-// the conversation is paused or sessions are off (continuation window 0).
+// and a join reply starts a session with the eligible members it addressed
+// (its target alone without a plan). Nothing changes while the conversation
+// is paused or sessions are off (continuation window 0).
 func (o *Orchestrator) updateSession(ctx context.Context, task store.TaskRecord, out outcome, sent bool) {
 	key := task.ConversationKey
 	if convType(key) != conloomapi.ConvGroup {
@@ -283,7 +319,6 @@ func (o *Orchestrator) updateSession(ctx context.Context, task store.TaskRecord,
 	// A lapsed session ends as idle before this task's outcome applies.
 	o.sessionActive(key, now, window)
 	user := task.ActorPlatformUserID
-	ended := false
 	switch {
 	case out.addressed:
 		if sent && out.status == conloomapi.TaskSucceeded {
@@ -293,16 +328,17 @@ func (o *Orchestrator) updateSession(ctx context.Context, task store.TaskRecord,
 		switch {
 		case out.turnSession == nil:
 		case sent:
-			ended = o.turnReplied(key, out.turnSession, now, r.MaxUnpromptedReplies)
+			o.turnReplied(key, out.turnSession, now, r.MaxUnpromptedReplies)
 		case out.status == conloomapi.TaskSucceeded:
-			ended = o.turnSkipped(key, out.turnSession, r.MaxConsecutiveSkips)
+			o.turnSkipped(key, out.turnSession, r.MaxConsecutiveSkips)
 		}
 	case out.proactive:
 		if sent {
-			o.startJoinSession(key, []string{user}, now)
+			users := out.join.users
+			if len(users) == 0 {
+				users = []string{user}
+			}
+			o.startJoinSession(key, users, now)
 		}
-	}
-	if ended {
-		o.contacts.set(memberKey(key, user), now)
 	}
 }

@@ -4,15 +4,12 @@ import (
 	"context"
 	"errors"
 	"hash/fnv"
-	"slices"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/kinako404/conloom/internal/interest"
-	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -20,14 +17,8 @@ import (
 const (
 	TriggerProactive = conloomapi.TriggerProactive
 
-	proactiveMinRunes      = 4
-	proactiveDirectiveTerm = 5
-	// proactiveEvalFactor bounds model calls: evaluations per user per day
-	// and per group per hour are this many times the matching send limit.
-	proactiveEvalFactor   = 3
-	proactiveLogRetention = 7 * 24 * time.Hour
-	// contactRetention is the longest contact cooldown policy validation allows.
-	contactRetention = 24 * time.Hour
+	proactiveDirectiveTerms = 5
+	proactiveLogRetention   = 7 * 24 * time.Hour
 
 	proactiveEvaluated = "evaluated"
 	proactiveSent      = "sent"
@@ -47,43 +38,6 @@ func (l *keyedLocks) lock(key string) (unlock func()) {
 }
 
 func memberKey(convKey, userID string) string { return convKey + "\x00" + userID }
-
-// contactTimes remembers, per conversation member, when the bot last replied
-// to them or their continuation ended. It lives in memory only.
-type contactTimes struct {
-	mu sync.Mutex
-	at map[string]time.Time
-}
-
-func (c *contactTimes) set(key string, at time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.at == nil {
-		c.at = map[string]time.Time{}
-	}
-	c.at[key] = at
-}
-
-func (c *contactTimes) get(key string) (time.Time, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	at, ok := c.at[key]
-	return at, ok
-}
-
-// prune forgets contacts before cutoff and returns how many it forgot.
-func (c *contactTimes) prune(cutoff time.Time) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	n := 0
-	for k, at := range c.at {
-		if at.Before(cutoff) {
-			delete(c.at, k)
-			n++
-		}
-	}
-	return n
-}
 
 // engages reports whether the accepted message counts as the sender engaging
 // the bot: a group message that mentions or replies to the bot, or continues a
@@ -129,109 +83,6 @@ func (o *Orchestrator) recordEngagement(ctx context.Context, s *submission, d De
 	}
 }
 
-// proactiveCandidate applies the in-memory proactive filters to an observed
-// message: a fresh group message long enough, not a command, mentioning
-// nobody, not replying to another member, in an unpaused group with proactive
-// replies on, from a sender with no unfinished task. With a non-zero contact
-// cooldown, the sender's last contact with the bot (a reply or the end of a
-// continuation) must also be at least that long ago.
-func (o *Orchestrator) proactiveCandidate(s *submission, pol conloomapi.GroupPolicy) bool {
-	text := strings.TrimSpace(s.ev.Message.Text)
-	switch {
-	case s.ev.Conversation.Type != conloomapi.ConvGroup, !pol.Proactive.Enabled,
-		pol.Concurrency.MaxInteractiveRequests == 0,
-		s.now.Sub(s.occurredAt()) >= o.staleAfter,
-		utf8.RuneCountInString(text) < proactiveMinRunes,
-		pol.Reply.CommandPrefix != "" && strings.HasPrefix(text, pol.Reply.CommandPrefix),
-		len(s.ev.Message.Mentions) > 0,
-		s.replyToOther:
-		return false
-	}
-	user := s.ev.Actor.PlatformUserID
-	if cd := pol.Proactive.ContactCooldown.Duration; cd > 0 {
-		if at, ok := o.contacts.get(memberKey(s.convKey, user)); ok && s.now.Sub(at) < cd {
-			return false
-		}
-	}
-	return !slices.ContainsFunc(o.sched.Active(s.convKey), func(t QueuedTask) bool { return t.ActorID == user })
-}
-
-// hasPendingProactive reports whether the sender has an unfinished proactive
-// task in the conversation.
-func (o *Orchestrator) hasPendingProactive(ctx context.Context, s *submission) bool {
-	user := s.ev.Actor.PlatformUserID
-	for _, t := range o.sched.Active(s.convKey) {
-		if t.ActorID != user {
-			continue
-		}
-		rec, err := o.st.GetTask(ctx, s.botID, t.TaskID)
-		if err != nil {
-			o.log.Warn("load task failed", "task_id", t.TaskID, "error", err)
-			continue
-		}
-		if rec.Meta.Trigger == TriggerProactive {
-			return true
-		}
-	}
-	return false
-}
-
-// submitProactive handles an observed proactive candidate: if the sender is
-// a proactive target, the message matches their interests and the send and
-// evaluation budgets allow it, it creates a proactive task and records the
-// evaluation; otherwise the message is admitted like any observed message.
-// The conversation's proactive lock makes the budget check and the
-// evaluation record atomic.
-func (o *Orchestrator) submitProactive(ctx context.Context, s *submission, pol conloomapi.GroupPolicy) (conloomapi.EventAccepted, error) {
-	unlock := o.proactiveLocks.lock(s.convKey)
-	defer unlock()
-	user := s.ev.Actor.PlatformUserID
-	ok, err := o.proactiveEvaluable(ctx, s.convKey, user, s.ev.Message.Text, pol.Proactive, s.now)
-	if err != nil {
-		o.log.Error("proactive check failed", "conversation", s.convKey, "error", err)
-	}
-	if !ok {
-		return o.admit(ctx, s, AdmitMergeOnly, "")
-	}
-	resp, err := o.admit(ctx, s, AdmitNew, TriggerProactive)
-	if errors.Is(err, ErrQueueFull) {
-		return o.observeOnly(ctx, s, "")
-	}
-	if err != nil || resp.TaskID == "" || resp.Merged {
-		return resp, err
-	}
-	if err := o.st.AppendProactiveLog(ctx, store.ProactiveLogEntry{
-		ConversationKey: s.convKey, PlatformUserID: user, Kind: store.ProactiveEvaluated,
-		TaskID: resp.TaskID, CreatedAt: s.now.UTC(),
-	}); err != nil {
-		// Without the record the evaluation budget cannot hold, so the
-		// evaluation does not happen.
-		o.log.Error("record proactive evaluation failed; cancelling the task", "task_id", resp.TaskID, "error", err)
-		if _, cerr := o.cancel(ctx, s.botID, s.convKey, resp.TaskID); cerr != nil {
-			o.log.Error("cancel unrecorded proactive task failed", "task_id", resp.TaskID, "error", cerr)
-		}
-		return resp, nil
-	}
-	o.metrics.Proactive.WithLabelValues(proactiveEvaluated).Inc()
-	o.log.Info("proactive evaluation", "conversation", s.convKey, "task_id", resp.TaskID,
-		obs.MessageAttr(o.cfg.Observability, s.ev.Message.Text))
-	return resp, nil
-}
-
-// proactiveEvaluable reports whether the model may evaluate a proactive reply
-// to user's text: user is a proactive target, text matches their interests,
-// and both the send and the evaluation budgets have room.
-func (o *Orchestrator) proactiveEvaluable(ctx context.Context, convKey, user, text string, p conloomapi.ProactivePolicy, now time.Time) (bool, error) {
-	m, ok, err := o.proactiveTarget(ctx, convKey, user, p, now)
-	if err != nil || !ok {
-		return false, err
-	}
-	if _, ok := interest.Match(m.Interests, text, m.ProactiveLevel); !ok {
-		return false, nil
-	}
-	return o.proactiveBudget(ctx, convKey, user, m.ProactiveLevel, p, now, true)
-}
-
 // proactiveTarget returns user's member record and whether the bot may speak
 // up to them: proactive replies are on, user is eligible and their level is
 // not off.
@@ -254,44 +105,36 @@ func eligible(m store.MemberRecord, p conloomapi.ProactivePolicy, now time.Time)
 	return !m.LastEngagedAt.IsZero() && now.Sub(m.LastEngagedAt) < p.EligibilityTTL.Duration
 }
 
-// proactiveBudget reports whether the send budget has room: today's replies
-// to user are below their level's daily limit, the last one is at least the
-// user cooldown ago, and the group spoke up fewer than its hourly limit in
-// the last hour. With evaluate it also checks the evaluation budget, which is
-// proactiveEvalFactor times the daily and hourly limits.
-func (o *Orchestrator) proactiveBudget(ctx context.Context, convKey, user, level string, p conloomapi.ProactivePolicy, now time.Time, evaluate bool) (bool, error) {
-	type budget struct {
-		user, kind string
-		since      time.Time
-		limit      int
-	}
-	daily := p.DailyLimit(level)
-	day, hour := o.dayStart(now), now.Add(-time.Hour)
-	checks := []budget{
-		{user, store.ProactiveSent, day, daily},
-		{"", store.ProactiveSent, hour, p.GroupHourlyLimit},
+// userSendBudget reports whether the bot may still speak up to user today:
+// today's replies to them are below their level's daily limit and the last
+// one is at least the user cooldown ago.
+func (o *Orchestrator) userSendBudget(ctx context.Context, convKey, user, level string, p conloomapi.ProactivePolicy, now time.Time) (bool, error) {
+	if ok, err := o.underLimit(ctx, convKey, user, store.ProactiveSent, o.dayStart(now), p.DailyLimit(level)); err != nil || !ok {
+		return false, err
 	}
 	if cd := p.UserCooldown.Duration; cd > 0 {
-		checks = append(checks, budget{user, store.ProactiveSent, now.Add(-cd), 1})
-	}
-	if evaluate {
-		checks = append(checks,
-			budget{user, store.ProactiveEvaluated, day, proactiveEvalFactor * daily},
-			budget{"", store.ProactiveEvaluated, hour, proactiveEvalFactor * p.GroupHourlyLimit})
-	}
-	for _, c := range checks {
-		if c.limit <= 0 {
-			return false, nil
-		}
-		n, err := o.st.CountProactive(ctx, convKey, c.user, c.kind, c.since)
-		if err != nil {
-			return false, err
-		}
-		if n >= c.limit {
-			return false, nil
-		}
+		return o.underLimit(ctx, convKey, user, store.ProactiveSent, now.Add(-cd), 1)
 	}
 	return true, nil
+}
+
+// groupSendBudget reports whether the group's proactive replies in the last
+// hour are below its hourly limit.
+func (o *Orchestrator) groupSendBudget(ctx context.Context, convKey string, p conloomapi.ProactivePolicy, now time.Time) (bool, error) {
+	return o.underLimit(ctx, convKey, "", store.ProactiveSent, now.Add(-time.Hour), p.GroupHourlyLimit)
+}
+
+// underLimit reports whether fewer than limit proactive log entries of kind
+// (for user, or anyone when user is "") were recorded since since.
+func (o *Orchestrator) underLimit(ctx context.Context, convKey, user, kind string, since time.Time, limit int) (bool, error) {
+	if limit <= 0 {
+		return false, nil
+	}
+	n, err := o.st.CountProactive(ctx, convKey, user, kind, since)
+	if err != nil {
+		return false, err
+	}
+	return n < limit, nil
 }
 
 // dayStart is the most recent local midnight at or before now.
@@ -300,33 +143,32 @@ func (o *Orchestrator) dayStart(now time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, o.loc)
 }
 
-// proactiveSendAllowed re-checks, just before a proactive reply is stored,
-// that the bot may still speak up to the task's user within the send budget.
-// The caller holds the conversation's proactive lock.
+// proactiveSendAllowed re-checks, before a join task calls the model and
+// just before its reply is stored, that the bot may still speak up: the group
+// is not paused, proactive replies are on, the task's target is still a
+// target within the send budget, no session started and the bot did not speak
+// in the group since the task was created. The caller of the send-time check
+// holds the conversation's proactive lock.
 func (o *Orchestrator) proactiveSendAllowed(ctx context.Context, task store.TaskRecord) (bool, error) {
 	pv, err := o.policies.Current(ctx, task.ConversationKey)
 	if err != nil {
 		return false, err
 	}
-	p, now := pv.Policy.Proactive, o.now()
-	if pv.Policy.Concurrency.MaxInteractiveRequests == 0 {
+	pol, now := pv.Policy, o.now()
+	if pol.Concurrency.MaxInteractiveRequests == 0 ||
+		o.sessionActive(task.ConversationKey, now, pol.Reply.ContinuationWindow.Duration) ||
+		o.lastBotSpoke(task.ConversationKey).After(task.CreatedAt) {
 		return false, nil
 	}
+	p := pol.Proactive
 	m, ok, err := o.proactiveTarget(ctx, task.ConversationKey, task.ActorPlatformUserID, p, now)
 	if err != nil || !ok {
 		return false, err
 	}
-	return o.proactiveBudget(ctx, task.ConversationKey, task.ActorPlatformUserID, m.ProactiveLevel, p, now, false)
-}
-
-// proactiveDirective is the hint for a proactive task, naming the user's top
-// interest terms.
-func (o *Orchestrator) proactiveDirective(ctx context.Context, task store.TaskRecord) string {
-	m, err := o.st.GetMember(ctx, task.ConversationKey, task.ActorPlatformUserID)
-	if err != nil {
-		o.log.Warn("load member for proactive directive failed", "task_id", task.ID, "error", err)
+	if ok, err := o.userSendBudget(ctx, task.ConversationKey, task.ActorPlatformUserID, m.ProactiveLevel, p, now); err != nil || !ok {
+		return false, err
 	}
-	return CopyDirectiveProactive(interest.Top(m.Interests, proactiveDirectiveTerm))
+	return o.groupSendBudget(ctx, task.ConversationKey, p, now)
 }
 
 // skipTrim is the punctuation allowed around a bare "SKIP" or "[SKIP]".
@@ -460,13 +302,6 @@ func convType(convKey string) string {
 		return ""
 	}
 	return parts[2]
-}
-
-// pruneContacts forgets last contacts older than any contact cooldown can be.
-func (o *Orchestrator) pruneContacts() {
-	if n := o.contacts.prune(o.now().Add(-contactRetention)); n > 0 {
-		o.log.Debug("pruned last contacts", "count", n)
-	}
 }
 
 func (o *Orchestrator) purgeProactiveLog() {

@@ -37,8 +37,7 @@ const (
 // replies through the scheduler); older ones fail with STALE and no action.
 // It then starts background maintenance, which expires undelivered outbox
 // actions every 30s and, every hour until Close, purges old idempotency
-// records and proactive log entries older than 7 days and forgets last
-// contacts older than 24h.
+// records and proactive log entries older than 7 days.
 //
 // Recover runs once per Orchestrator and should be called before the first
 // Submit; later calls return ErrAlreadyRecovered. Tasks this process already
@@ -127,7 +126,6 @@ func (o *Orchestrator) maintain() {
 	o.expireOutbox()
 	o.purgeEvents()
 	o.purgeProactiveLog()
-	o.pruneContacts()
 	for {
 		select {
 		case <-o.bgCtx.Done():
@@ -137,7 +135,6 @@ func (o *Orchestrator) maintain() {
 		case <-purge.C:
 			o.purgeEvents()
 			o.purgeProactiveLog()
-			o.pruneContacts()
 		}
 	}
 }

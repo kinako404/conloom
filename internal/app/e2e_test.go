@@ -75,7 +75,7 @@ default_group_policy:
   reply: {command_prefix: /, continuation_window: CONTINUATION, debounce: DEBOUNCE, min_reply_interval: 0s, user_rate_limit_per_minute: RATE_LIMIT, turn_gap: TURN_GAP, turn_max_wait: TURN_MAX_WAIT}
   context: {max_recent_messages: 50, max_context_tokens: 0}
   review: {level: basic, review_input: true, review_output: true, action: block}
-  proactive: {user_cooldown: COOLDOWN, contact_cooldown: CONTACT}
+  proactive: {user_cooldown: COOLDOWN}
 runtime:
   outbox_lease: LEASE
 `
@@ -91,8 +91,6 @@ type configParams struct {
 	continuation string
 	// cooldown is proactive.user_cooldown; empty means the default 30m.
 	cooldown string
-	// contact is proactive.contact_cooldown; empty means the default 0s.
-	contact string
 	// turnGap and turnMaxWait are reply.turn_gap and reply.turn_max_wait;
 	// empty means the defaults 6s and 20s.
 	turnGap, turnMaxWait string
@@ -123,9 +121,6 @@ func testConfig(t testing.TB, p configParams) *config.Config {
 	if p.cooldown == "" {
 		p.cooldown = "30m"
 	}
-	if p.contact == "" {
-		p.contact = "0s"
-	}
 	if p.turnGap == "" {
 		p.turnGap = "6s"
 	}
@@ -141,7 +136,6 @@ func testConfig(t testing.TB, p configParams) *config.Config {
 		"RATE_LIMIT", strconv.Itoa(p.rateLimit),
 		"CONTINUATION", p.continuation,
 		"COOLDOWN", p.cooldown,
-		"CONTACT", p.contact,
 		"TURN_GAP", p.turnGap,
 		"TURN_MAX_WAIT", p.turnMaxWait,
 	).Replace(configTemplate)
@@ -612,45 +606,63 @@ func TestE2E_PrivateChatAdminOnly(t *testing.T) {
 	}
 }
 
-// proactiveDirective is the start of the hint appended to proactive requests.
-const proactiveDirective = "【提示】没有人 @ 你"
+// joinDirective is the start of the hint appended to join requests.
+const joinDirective = "【提示】群里大家正在聊天"
 
-func TestE2E_ProactiveReplyForEligibleUser(t *testing.T) {
+// joinTestConfig is testConfig with a join lull and cooldown far shorter than
+// validation allows, so joins happen within a test.
+func joinTestConfig(t *testing.T, p configParams) *config.Config {
+	cfg := testConfig(t, p)
+	pr := &cfg.DefaultGroupPolicy.Proactive
+	pr.JoinLull = conloomapi.Duration{Duration: 200 * time.Millisecond}
+	pr.JoinCooldown = conloomapi.Duration{Duration: 300 * time.Millisecond}
+	pr.JoinMinMessages = 3
+	return cfg
+}
+
+// observe has user say text and requires it to be only observed.
+func (e *env) observe(user mock.User, text string) string {
+	e.t.Helper()
+	resp, msgID := e.say(group, user, text, mock.SayOptions{})
+	if resp.Disposition != conloomapi.DispositionObserve || resp.TaskID != "" {
+		e.t.Fatalf("%q from %s: response %+v, want observe", text, user.Name, resp)
+	}
+	return msgID
+}
+
+func TestE2E_JoinAfterLullWithEligibleSpeaker(t *testing.T) {
 	fake := fakeopenai.New(t, answer(fakeReply))
-	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL, cooldown: "0s"}))
+	e := newEnv(t, joinTestConfig(t, configParams{modelURL: fake.URL}))
 
 	e.mention(group, alice, "我在研究咖啡豆烘焙")
 	e.drainOne()
-	resp, msgID := e.say(group, alice, "咖啡豆烘焙真难", mock.SayOptions{})
-	if resp.Disposition != conloomapi.DispositionReply || resp.TaskID == "" {
-		t.Fatalf("matching message from an eligible user: response %+v, want a proactive task", resp)
-	}
+	time.Sleep(400 * time.Millisecond)
+	e.observe(bob, "周末干嘛去")
+	target := e.observe(alice, "咖啡豆烘焙真难")
+	e.observe(bob, "哈哈")
 	a := e.drainOne()
-	if a.Content.Text != fakeReply || a.ReplyToMessageID != msgID {
-		t.Errorf("proactive action = %+v, want %q quoting %s", a, fakeReply, msgID)
+	if a.Content.Text != fakeReply || a.ReplyToMessageID != target {
+		t.Fatalf("join action = %+v, want %q quoting %s", a, fakeReply, target)
 	}
 	reqs := fake.Requests()
 	if len(reqs) != 2 {
-		t.Fatalf("model calls = %d, want 2", len(reqs))
+		t.Fatalf("model calls = %d, want 2 (mention, join)", len(reqs))
 	}
-	if text := requestText(reqs[1]); !strings.Contains(text, proactiveDirective) || !strings.Contains(text, "咖啡") {
-		t.Errorf("proactive request lacks the directive with interest terms: %q", text)
+	if text := requestText(reqs[1]); !strings.Contains(text, joinDirective) || !strings.Contains(text, "咖啡") || !strings.Contains(text, alice.Name) {
+		t.Errorf("join request lacks the directive with the eligible member and interest terms: %q", text)
 	}
-	task, err := e.client.GetTask(context.Background(), resp.TaskID)
-	if err != nil || task.Meta.Trigger != conloomapi.TriggerProactive {
-		t.Errorf("GetTask = %+v, %v; want trigger proactive", task, err)
-	}
+	e.requireNoAction(500 * time.Millisecond)
 
 	if got := e.commandReply(alice, "/主动 关"); !strings.Contains(got, "关") {
 		t.Fatalf("/主动 关 reply = %q", got)
 	}
-	resp, _ = e.say(group, alice, "咖啡豆烘焙还要练", mock.SayOptions{})
-	if resp.Disposition != conloomapi.DispositionObserve || resp.TaskID != "" {
-		t.Fatalf("matching message after /主动 关: response %+v, want observe", resp)
-	}
-	e.requireNoAction(300 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond)
+	e.observe(bob, "咖啡豆好贵")
+	e.observe(alice, "咖啡豆烘焙还要练")
+	e.observe(bob, "是啊")
+	e.requireNoAction(700 * time.Millisecond)
 	if n := fake.Calls(); n != 2 {
-		t.Errorf("model calls = %d, want 2", n)
+		t.Errorf("model calls = %d after /主动 关, want 2", n)
 	}
 }
 
@@ -664,21 +676,19 @@ func (e *env) commandReply(user mock.User, text string) string {
 	return e.drainOne().Content.Text
 }
 
-func TestE2E_NeverMentionedUserGetsNoProactive(t *testing.T) {
+func TestE2E_NoJoinWithoutEligibleSpeaker(t *testing.T) {
 	fake := fakeopenai.New(t, answer(fakeReply))
-	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL}))
+	e := newEnv(t, joinTestConfig(t, configParams{modelURL: fake.URL}))
+	carol := mock.User{PlatformID: "20003", Name: "小刚"}
 
-	e.mention(group, alice, "我在研究咖啡豆烘焙")
-	e.drainOne()
-	for i := range 10 {
-		resp, _ := e.say(group, bob, "我在研究咖啡豆烘焙"+strconv.Itoa(i), mock.SayOptions{})
-		if resp.Disposition != conloomapi.DispositionObserve || resp.TaskID != "" {
-			t.Fatalf("message %d from a user who never mentioned the bot: response %+v, want observe", i, resp)
-		}
+	for i := range 3 {
+		e.observe(bob, "我在研究咖啡豆烘焙"+strconv.Itoa(i))
+		e.observe(carol, "咖啡豆烘焙怎么弄？")
+		time.Sleep(300 * time.Millisecond)
 	}
-	e.requireNoAction(300 * time.Millisecond)
-	if n := fake.Calls(); n != 1 {
-		t.Fatalf("model calls = %d, want 1 (only the mention)", n)
+	e.requireNoAction(500 * time.Millisecond)
+	if n := fake.Calls(); n != 0 {
+		t.Fatalf("model calls = %d, want 0", n)
 	}
 }
 
@@ -727,46 +737,6 @@ func TestE2E_ContinuationExitWhenTalkingToOthers(t *testing.T) {
 	e.requireNoAction(300 * time.Millisecond)
 	if n := fake.Calls(); n != 2 {
 		t.Fatalf("model calls = %d, want 2 (one per mention)", n)
-	}
-}
-
-func TestE2E_NoProactiveRightAfterReplyWithContactCooldown(t *testing.T) {
-	fake := fakeopenai.New(t, answer(fakeReply))
-	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL, contact: "30m"}))
-
-	e.mention(group, alice, "我在研究咖啡豆烘焙")
-	e.drainOne()
-	resp, _ := e.say(group, alice, "咖啡豆烘焙真难", mock.SayOptions{})
-	if resp.Disposition != conloomapi.DispositionObserve || resp.TaskID != "" {
-		t.Fatalf("on-topic message right after a reply: response %+v, want observe", resp)
-	}
-	e.requireNoAction(300 * time.Millisecond)
-	if n := fake.Calls(); n != 1 {
-		t.Fatalf("model calls = %d, want 1 (only the mention)", n)
-	}
-}
-
-func TestE2E_ProactiveShortlyAfterConversationByDefault(t *testing.T) {
-	fake := fakeopenai.New(t, answer(fakeReply))
-	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL, continuation: "1s"}))
-
-	e.mention(group, alice, "我在研究咖啡豆烘焙")
-	e.drainOne()
-	time.Sleep(1200 * time.Millisecond)
-	resp, msgID := e.say(group, alice, "咖啡豆烘焙真难", mock.SayOptions{})
-	if resp.Disposition != conloomapi.DispositionReply || resp.TaskID == "" {
-		t.Fatalf("on-topic message after the continuation window: response %+v, want a proactive task", resp)
-	}
-	a := e.drainOne()
-	if a.Content.Text != fakeReply || a.ReplyToMessageID != msgID {
-		t.Errorf("proactive action = %+v, want %q quoting %s", a, fakeReply, msgID)
-	}
-	task, err := e.client.GetTask(context.Background(), resp.TaskID)
-	if err != nil || task.Meta.Trigger != conloomapi.TriggerProactive {
-		t.Errorf("GetTask = %+v, %v; want trigger proactive", task, err)
-	}
-	if n := fake.Calls(); n != 2 {
-		t.Errorf("model calls = %d, want 2", n)
 	}
 }
 

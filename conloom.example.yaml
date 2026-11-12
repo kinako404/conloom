@@ -153,7 +153,6 @@ default_group_policy:
     default_level: low            # 获得资格时的默认档位：off | low | mid | high
     eligibility_ttl: 720h         # 多久没 @ 机器人就失去资格（30 天），1h~8760h
     user_cooldown: 30m            # 对同一人两次主动搭话的最短间隔，0~24h
-    contact_cooldown: 0s          # 机器人普通回复某人或其连续对话结束后，多久之内不对其主动搭话，0~24h；0 表示不等待
     group_hourly_limit: 4         # 全群每小时主动发言上限，0~60
     daily_limits: {low: 2, mid: 4, high: 8}   # 每人每天主动发言上限，0~100 且 low <= mid <= high
     # 加入群聊：群里停顿时才评估是否加入；以下设置缺失时按默认值逐项补齐。

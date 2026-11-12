@@ -25,9 +25,7 @@ func (o *Orchestrator) runCommand(ctx context.Context, task store.TaskRecord, co
 		status, code, text = conloomapi.TaskFailed, conloomapi.CodeInternal, CopyUnavailable
 	}
 	if err := o.complete(ctx, task, status, meta, code, []store.OutboxRecord{o.newAction(task, conv, triggers, text)}); err == nil {
-		now := o.now()
-		o.contacts.set(memberKey(task.ConversationKey, task.ActorPlatformUserID), now)
-		o.noteBotSpoke(task.ConversationKey, now)
+		o.noteBotSpoke(task.ConversationKey, o.now())
 	}
 	o.log.Info("command finished", "task_id", task.ID, "conversation", task.ConversationKey,
 		"command", task.Command, "status", status)
@@ -75,10 +73,12 @@ func (o *Orchestrator) execCommand(ctx context.Context, task store.TaskRecord, t
 			return "", err
 		}
 		o.logPolicyAuditError(task, err)
-		// A change already ended the session and cancelled active tasks
-		// through PolicyChanged; this also clears a session or tasks that
-		// started while the conversation was being paused.
+		// A change already ended the session, stopped the lull timer and
+		// cancelled active tasks through PolicyChanged; this also clears a
+		// session, timer or tasks that started while the conversation was
+		// being paused.
 		o.endSession(task.ConversationKey, "")
+		o.stopLull(task.ConversationKey)
 		o.cancelActive(ctx, task.ConversationKey)
 		return CopyPaused, nil
 	case "resume":

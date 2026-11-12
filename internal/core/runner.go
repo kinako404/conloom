@@ -49,9 +49,11 @@ type outcome struct {
 	turn        bool
 	addressed   bool
 	turnSession *chatSession
-	meta        conloomapi.TaskMeta
-	conv        store.ConversationRecord
-	triggers    []store.MessageRecord
+	// join is the plan of a join task.
+	join     joinPlan
+	meta     conloomapi.TaskMeta
+	conv     store.ConversationRecord
+	triggers []store.MessageRecord
 }
 
 // run is the scheduler's Runner: it executes one reply task and stores its
@@ -82,7 +84,8 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 	}
 	task.TriggerMessageIDs = qt.TriggerMessageIDs
 
-	out := o.execute(ctx, task)
+	plan, _ := o.joinPlans.take(task.ID)
+	out := o.execute(ctx, task, plan)
 	defer o.releaseTurn(out.turnSession)
 	if ctx.Err() != nil {
 		if o.closing.Load() && !o.cancelledByUser(ow) {
@@ -93,9 +96,6 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 	sent, err := o.finish(dbctx, task, &out)
 	if err != nil {
 		return
-	}
-	if sent {
-		o.contacts.set(memberKey(task.ConversationKey, task.ActorPlatformUserID), o.now())
 	}
 	o.updateSession(dbctx, task, out, sent)
 	if out.proactive {
@@ -151,10 +151,11 @@ func (o *Orchestrator) finish(ctx context.Context, task store.TaskRecord, out *o
 	return len(actions) > 0, nil
 }
 
-func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord) outcome {
+func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan joinPlan) outcome {
 	out := outcome{
 		meta:      conloomapi.TaskMeta{TraceID: ids.New("trace"), Trigger: task.Meta.Trigger},
 		proactive: task.Meta.Trigger == TriggerProactive,
+		join:      plan,
 	}
 	fail := func(code, text string, err error) outcome {
 		if err != nil {
@@ -174,7 +175,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord) outco
 		return fail(conloomapi.CodeInternal, "", fmt.Errorf("load trigger messages: %v (found %d)", err, len(triggers)))
 	}
 	out.triggers = triggers
-	directive := o.directive(ctx, task, triggers)
+	directive := o.directive(ctx, task, triggers, plan)
 	switch task.Meta.Trigger {
 	case conloomapi.TriggerMention, conloomapi.TriggerReply:
 		out.addressed = true
@@ -333,9 +334,9 @@ func (o *Orchestrator) replyTarget(ctx context.Context, botID string, triggers [
 }
 
 // directive returns the hint appended to the current message of a
-// continuation or proactive task, or "" when a merged trigger mentions the
-// bot or replies to it.
-func (o *Orchestrator) directive(ctx context.Context, task store.TaskRecord, triggers []store.MessageRecord) string {
+// continuation or join task (plan is the join task's), or "" when a merged
+// trigger mentions the bot or replies to it.
+func (o *Orchestrator) directive(ctx context.Context, task store.TaskRecord, triggers []store.MessageRecord, plan joinPlan) string {
 	if task.Meta.Trigger != TriggerContinuation && task.Meta.Trigger != TriggerProactive {
 		return ""
 	}
@@ -357,7 +358,7 @@ func (o *Orchestrator) directive(ctx context.Context, task store.TaskRecord, tri
 		}
 	}
 	if task.Meta.Trigger == TriggerProactive {
-		return o.proactiveDirective(ctx, task)
+		return o.joinDirective(ctx, task, triggers, plan)
 	}
 	return CopyDirectiveContinuation(speaker(triggers))
 }

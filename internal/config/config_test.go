@@ -342,7 +342,6 @@ func TestLoad_ConfigWithoutParticipationFieldsUsesDefaults(t *testing.T) {
     default_level: low
     eligibility_ttl: 720h
     user_cooldown: 30m
-    contact_cooldown: 0s
     group_hourly_limit: 4
     daily_limits: {low: 2, mid: 4, high: 8}
 `)

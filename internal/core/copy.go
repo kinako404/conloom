@@ -38,11 +38,17 @@ func CopyDirectiveContinuation(speaker string) string {
 	return "【提示】你正在和 " + speaker + " 聊天，下面是他在你上次回复后说的话（可能有好几句）。你不需要每句都回应：只有当他在问你、在等你回应，或者你有明显值得说的话时，才回复一两句；如果他是在和别人说话、话题已经转开，或者没必要回应，只输出 [[SKIP]]，不要输出其他内容。"
 }
 
-// CopyDirectiveProactive is appended to the current message of a proactive
-// task; terms are the member's top interest terms.
-func CopyDirectiveProactive(terms []string) string {
-	return "【提示】没有人 @ 你，这是你在主动搭话。这个人以前常和你聊：" + strings.Join(terms, "、") +
-		"。只有当你能自然、简短地接上这个话题时才回复（一两句）；如果不合适、话题无关、或对方明显在和别人聊，只输出 [[SKIP]]，不要输出其他内容。"
+// CopyDirectiveJoin is appended to the current message of a task joining the
+// group's conversation: target is the sender of that message, names the
+// eligible members in the conversation and terms their top interest terms.
+// Without terms the sentence naming them is left out.
+func CopyDirectiveJoin(target string, names, terms []string) string {
+	s := "【提示】群里大家正在聊天（见上面的近期消息），没有人 @ 你。只有当你能自然地接上正在聊的话题、对大家有帮助或有趣，而且不会打断别人时，才说一两句（会以回复 " +
+		target + " 这条消息的形式发出）；不合适就只输出 [[SKIP]]，不要输出其他内容。"
+	if len(terms) > 0 {
+		s += strings.Join(names, "、") + " 以前常和你聊：" + strings.Join(terms, "、") + "。"
+	}
+	return s
 }
 
 // CopyProactiveStatus describes a member's proactive setting: level and
