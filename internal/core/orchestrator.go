@@ -173,8 +173,13 @@ func New(d Deps) (*Orchestrator, error) {
 	}
 	o.sched = NewScheduler(o.run, o.sessionConfig, max(idle, minSessionIdle))
 	o.sched.OnHold(func(t QueuedTask, until time.Time) {
-		o.log.Info("turn deferred", "conversation", t.ConversationKey, "task_id", t.TaskID, "until", until.UTC())
+		if until.IsZero() {
+			o.log.Info("turn deferred", "conversation", t.ConversationKey, "task_id", t.TaskID, "waiting_for", "running")
+			return
+		}
+		o.log.Info("turn deferred", "conversation", t.ConversationKey, "task_id", t.TaskID, "waiting_for", "cooldown", "until", until.UTC())
 	})
+	o.sched.OnDrop(o.dropHeldTurn)
 	o.bgCtx, o.bgCancel = context.WithCancel(context.Background())
 	o.policies.OnChange(o.PolicyChanged)
 	if lvl := o.cfg.DefaultGroupPolicy.Review.Level; !review.LevelImplemented(lvl) {
@@ -281,6 +286,32 @@ func (o *Orchestrator) sessionConfig(convKey string) SessionConfig {
 		cfg.CooldownUntil = time.Now().Add(spoke.Add(pol.Reply.TurnCooldown.Duration).Sub(o.now()))
 	}
 	return cfg
+}
+
+// dropHeldTurn ends a turn the scheduler dropped at its hold limit: it is
+// stored as skipped without a model call and counts as no skip of the
+// session.
+func (o *Orchestrator) dropHeldTurn(qt QueuedTask) {
+	ow := o.claim(qt.TaskID, false)
+	if ow == nil {
+		return
+	}
+	defer o.release(qt.TaskID, ow)
+	ctx := context.WithoutCancel(o.bgCtx)
+	botID, _, _ := strings.Cut(qt.ConversationKey, ":")
+	task, err := o.st.GetTask(ctx, botID, qt.TaskID)
+	if err != nil {
+		o.log.Error("load dropped turn failed", "task_id", qt.TaskID, "error", err)
+		return
+	}
+	if taskFinished(task.Status) {
+		return
+	}
+	meta := task.Meta
+	meta.ReviewResult = reviewResultSkipped
+	if err := o.complete(ctx, task, conloomapi.TaskSucceeded, meta, "", nil); err == nil {
+		o.log.Info("turn dropped", "conversation", qt.ConversationKey, "task_id", qt.TaskID, "reason", "held_too_long")
+	}
 }
 
 // submission is one incoming event being accepted.
@@ -429,14 +460,18 @@ var errRateLimited = errors.New("core: sender is rate limited")
 // submitTurn admits a session participant's message into their turn: their
 // pending task absorbs it, or else a continuation task starts whose merge
 // window is the policy's turn gap, capped at its turn maximum wait. The turn
-// starts no earlier than the turn cooldown after the bot last spoke (see
-// MergeOptions.Cooldown), absorbing the sender's messages meanwhile. Only a
-// new turn spends one of the sender's rate-limit hits.
+// starts no earlier than the turn cooldown after the bot last spoke, and only
+// once the sender paused, absorbing their messages meanwhile; it waits at most
+// the turn cooldown plus the turn maximum wait (see MergeOptions.Cooldown and
+// dropHeldTurn). Only a new turn spends one of the sender's rate-limit hits.
 func (o *Orchestrator) submitTurn(ctx context.Context, s *submission, pol conloomapi.GroupPolicy) (conloomapi.EventAccepted, error) {
 	if pol.Concurrency.MaxInteractiveRequests == 0 {
 		return o.observeOnly(ctx, s, conloomapi.SuppressedPaused)
 	}
-	opts := MergeOptions{Debounce: pol.Reply.TurnGap.Duration, MaxMergeWindow: pol.Reply.TurnMaxWait.Duration, Cooldown: true}
+	opts := MergeOptions{
+		Debounce: pol.Reply.TurnGap.Duration, MaxMergeWindow: pol.Reply.TurnMaxWait.Duration,
+		Cooldown: true, MaxHold: pol.Reply.TurnCooldown.Duration + pol.Reply.TurnMaxWait.Duration,
+	}
 	resp, err := o.admitWith(ctx, s, AdmitNew, TriggerContinuation, opts, func() bool {
 		return o.limiter.Allow(s.convKey+":"+s.ev.Actor.PlatformUserID, pol.Reply.UserRateLimitPerMinute, s.now)
 	})

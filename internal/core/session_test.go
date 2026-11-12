@@ -420,6 +420,12 @@ func TestSession_TurnsWaitForRunningTurnAndLimit(t *testing.T) {
 	b := env.submit(t, env.groupEvent("20002", "我也说说")).TaskID
 	waitUntil(t, "one turn's model call", func() bool { return turnCalls.Load() == 1 })
 	waitUntil(t, "the other turn to wait", env.heldTurn)
+	waitUntil(t, "the deferred log", func() bool { return strings.Contains(env.logs.String(), "turn deferred") })
+	for _, l := range strings.Split(env.logs.String(), "\n") {
+		if strings.Contains(l, "turn deferred") && (!strings.Contains(l, "waiting_for=running") || strings.Contains(l, "until=")) {
+			t.Fatalf("turn deferred log = %q, want waiting_for=running without until", l)
+		}
+	}
 	time.Sleep(100 * time.Millisecond)
 	if n := turnCalls.Load(); n != 1 {
 		t.Fatalf("turn model calls = %d while one turn runs, want 1", n)

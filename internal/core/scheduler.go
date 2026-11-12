@@ -39,13 +39,14 @@ type QueuedTask struct {
 	TriggerMessageIDs []string
 	EnqueuedAt        time.Time
 	ReadyAt           time.Time
-	// Held reports, in tasks returned by Active, that the task waits for the
-	// conversation's cooldown (see MergeOptions.Cooldown).
+	// Held reports, in tasks returned by Active, that the task is held (see
+	// MergeOptions.Cooldown): it waits for the conversation's cooldown, for a
+	// running task or, once held, for its sender's pause.
 	Held bool
 
 	// addressed is set once a message addressed to the bot merged into the
-	// task; reported is set once the task's hold was reported to onHold.
-	addressed, reported bool
+	// task; deferred once it was first held (and reported to onHold).
+	addressed, deferred bool
 	// merge is the merge window the task was created with; zero fields (as
 	// in restored tasks) follow the conversation's SessionConfig.
 	merge MergeOptions
@@ -60,15 +61,21 @@ type QueuedTask struct {
 // ready within the conversation's Debounce instead, and never later than the
 // task's current ReadyAt.
 //
-// Cooldown makes a new task wait, past its ReadyAt, until the conversation's
-// SessionConfig.CooldownUntil and until no task of the conversation runs,
-// unless an Addressed message merged into it. While it waits (it is held) its
-// merge window stays open whatever its ReadyAt and MaxMergeWindow, and the
-// tasks queued behind it may start before it.
+// Cooldown makes a new task wait until the conversation's
+// SessionConfig.CooldownUntil has passed and no task of the conversation runs,
+// unless an Addressed message merged into it. While it waits it is held: its
+// merge window stays open, and the tasks queued behind it may start before
+// it. Once held, each merged message moves its ReadyAt to Debounce later
+// without the MaxMergeWindow cap, and the task stays held until its ReadyAt
+// too, so it starts only after its sender paused (and after MinReplyInterval).
+// MaxHold, counted from when the task was enqueued, bounds all this: then its
+// merge window closes, and the task becomes ready at once if the cooldown has
+// passed and no task runs, or else is dropped (see Scheduler.OnDrop).
 type MergeOptions struct {
 	Debounce, MaxMergeWindow time.Duration
 	Addressed                bool
 	Cooldown                 bool
+	MaxHold                  time.Duration
 }
 
 func (m MergeOptions) orConfig(cfg SessionConfig) MergeOptions {
@@ -124,6 +131,7 @@ type Scheduler struct {
 	closed   bool
 	sessions map[string]*session
 	onHold   func(t QueuedTask, until time.Time)
+	onDrop   func(t QueuedTask)
 }
 
 type session struct {
@@ -169,8 +177,9 @@ func (s *Scheduler) Admit(convKey, actorID, messageID string, mode AdmitMode, pe
 // into actorID's open merge window, creates a new task with the merge window
 // opts, or is only observed; calls persist with that plan; and applies it only
 // if persist succeeds. A merge window is open while a not-yet-started task of
-// the same actor has not reached its ReadyAt; a merge keeps the merge window
-// the task was created with, except as opts.Addressed describes. Creating a
+// the same actor has not reached its ReadyAt, or is held, up to its MaxHold; a
+// merge keeps the merge window the task was created with, except as
+// opts.Addressed and MergeOptions.Cooldown describe. Creating a
 // task when MaxQueued tasks are already waiting returns ErrQueueFull without
 // calling persist.
 func (s *Scheduler) AdmitWith(convKey, actorID, messageID string, mode AdmitMode, opts MergeOptions, persist func(AdmitPlan) error) (AdmitResult, error) {
@@ -195,9 +204,12 @@ func (s *Scheduler) AdmitWith(convKey, actorID, messageID string, mode AdmitMode
 		}
 		t.TriggerMessageIDs = append(t.TriggerMessageIDs, messageID)
 		t.addressed = t.addressed || opts.Addressed
-		if m := t.merge.orConfig(cfg); opts.Addressed && m.Debounce > cfg.Debounce {
+		switch m := t.merge.orConfig(cfg); {
+		case opts.Addressed && m.Debounce > cfg.Debounce:
 			t.ReadyAt = earliest(t.ReadyAt, now.Add(cfg.Debounce))
-		} else {
+		case t.paced() && (t.deferred || sess.heldLocked(*t, cfg, now)):
+			t.ReadyAt = now.Add(m.Debounce)
+		default:
 			t.ReadyAt = earliest(now.Add(m.Debounce), t.EnqueuedAt.Add(m.MaxMergeWindow))
 		}
 		sess.lastActivity = now
@@ -312,11 +324,20 @@ func (s *Scheduler) Close() {
 }
 
 // OnHold sets fn to be called, outside the scheduler's locks, the first time
-// each task is held, with the conversation's CooldownUntil.
+// each task is held, with the conversation's CooldownUntil, or the zero time
+// if the cooldown has passed and the task waits for a running task.
 func (s *Scheduler) OnHold(fn func(t QueuedTask, until time.Time)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onHold = fn
+}
+
+// OnDrop sets fn to be called, outside the scheduler's locks, for each held
+// task dropped at its MaxHold; fn must finish the task.
+func (s *Scheduler) OnDrop(fn func(t QueuedTask)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onDrop = fn
 }
 
 func (s *Scheduler) isClosed() bool {
@@ -371,19 +392,22 @@ func (s *Scheduler) loop(sess *session) {
 	for {
 		cfg := s.cfg(sess.key)
 		sess.mu.Lock()
-		wait, idle, held := s.dispatchLocked(sess, cfg, time.Now())
+		wait, idle, held, dropped := s.dispatchLocked(sess, cfg, time.Now())
 		if idle {
 			sess.dead = true
 		}
 		sess.mu.Unlock()
-		if len(held) > 0 {
-			s.mu.Lock()
-			onHold := s.onHold
-			s.mu.Unlock()
-			for _, t := range held {
-				if onHold != nil {
-					onHold(t, cfg.CooldownUntil)
-				}
+		s.mu.Lock()
+		onHold, onDrop := s.onHold, s.onDrop
+		s.mu.Unlock()
+		for _, h := range held {
+			if onHold != nil {
+				onHold(h.task, h.until)
+			}
+		}
+		for _, t := range dropped {
+			if onDrop != nil {
+				onDrop(t)
 			}
 		}
 		if idle {
@@ -407,36 +431,34 @@ func (s *Scheduler) loop(sess *session) {
 	}
 }
 
-// dispatchLocked starts every task that may start now, in FIFO order but
-// passing over held tasks. It returns how long to wait before re-evaluating
-// (0: until woken), whether the session has been idle long enough to be
-// reclaimed, and the tasks held for the first time.
-func (s *Scheduler) dispatchLocked(sess *session, cfg SessionConfig, now time.Time) (wait time.Duration, idle bool, held []QueuedTask) {
-	// A held task is re-evaluated when its cooldown ends, or when a running
-	// task finishes and signals.
-	holdWait := time.Duration(0)
-	for i := range sess.pending {
-		t := &sess.pending[i]
-		if !sess.heldLocked(*t, cfg, now) {
-			continue
+// heldTask is a task held for the first time, with the cooldown end it waits
+// for (zero if it only waits for a running task).
+type heldTask struct {
+	task  QueuedTask
+	until time.Time
+}
+
+// dispatchLocked releases or drops the held tasks at their MaxHold, then
+// starts every task that may start now, in FIFO order but passing over held
+// tasks. It returns how long to wait before re-evaluating (0: until woken),
+// whether the session has been idle long enough to be reclaimed, the tasks
+// held for the first time and the dropped tasks.
+func (s *Scheduler) dispatchLocked(sess *session, cfg SessionConfig, now time.Time) (wait time.Duration, idle bool, held []heldTask, dropped []QueuedTask) {
+	blocked := sess.blockedLocked(cfg, now)
+	for i := 0; i < len(sess.pending); {
+		if t := &sess.pending[i]; t.paced() && t.pastHold(now) {
+			if blocked {
+				dropped = append(dropped, cloneTask(*t))
+				sess.pending = slices.Delete(sess.pending, i, i+1)
+				continue
+			}
+			t.ReadyAt = earliest(t.ReadyAt, now)
 		}
-		if !t.reported {
-			t.reported = true
-			held = append(held, cloneTask(*t))
-		}
-		if d := cfg.CooldownUntil.Sub(now); d > 0 {
-			holdWait = d
-		}
-	}
-	soonest := func(d time.Duration) time.Duration {
-		if holdWait > 0 && (d <= 0 || holdWait < d) {
-			return holdWait
-		}
-		return d
+		i++
 	}
 	for {
 		if s.ctx.Err() != nil {
-			return 0, false, held
+			return 0, false, nil, dropped
 		}
 		i := slices.IndexFunc(sess.pending, func(t QueuedTask) bool { return !sess.heldLocked(t, cfg, now) })
 		if i < 0 {
@@ -444,32 +466,75 @@ func (s *Scheduler) dispatchLocked(sess *session, cfg SessionConfig, now time.Ti
 		}
 		head := sess.pending[i]
 		if d := head.ReadyAt.Sub(now); d > 0 {
-			return soonest(d), false, held
+			wait = d
+			break
 		}
 		if len(sess.running) >= cfg.MaxConcurrent {
-			return soonest(0), false, held
+			break
 		}
 		if !sess.lastFinish.IsZero() {
 			if d := sess.lastFinish.Add(cfg.MinReplyInterval).Sub(now); d > 0 {
-				return soonest(d), false, held
+				wait = d
+				break
 			}
 		}
 		sess.pending = slices.Delete(sess.pending, i, i+1)
 		s.startLocked(sess, head)
 	}
+	// Held tasks are re-evaluated at the earliest of their wake times, or
+	// when a running task finishes and signals.
+	wake := func(at time.Time) {
+		if d := at.Sub(now); d > 0 && (wait == 0 || d < wait) {
+			wait = d
+		}
+	}
+	for i := range sess.pending {
+		t := &sess.pending[i]
+		if !sess.heldLocked(*t, cfg, now) {
+			continue
+		}
+		if !t.deferred {
+			t.deferred = true
+			h := heldTask{task: cloneTask(*t)}
+			if now.Before(cfg.CooldownUntil) {
+				h.until = cfg.CooldownUntil
+			}
+			held = append(held, h)
+		}
+		wake(cfg.CooldownUntil)
+		wake(t.ReadyAt)
+		if t.merge.MaxHold > 0 {
+			wake(t.EnqueuedAt.Add(t.merge.MaxHold))
+		}
+	}
 	if len(sess.pending) > 0 || len(sess.running) > 0 {
-		return soonest(0), false, held
+		return wait, false, held, dropped
 	}
 	if d := sess.lastActivity.Add(s.idle).Sub(now); d > 0 {
-		return d, false, held
+		return d, false, held, dropped
 	}
-	return 0, true, held
+	return 0, true, held, dropped
+}
+
+// paced reports whether t waits for the cooldown (see MergeOptions.Cooldown):
+// a Cooldown task no message addressed to the bot merged into.
+func (t QueuedTask) paced() bool { return t.merge.Cooldown && !t.addressed }
+
+// pastHold reports whether t reached its MaxHold at now.
+func (t QueuedTask) pastHold(now time.Time) bool {
+	return t.merge.MaxHold > 0 && !now.Before(t.EnqueuedAt.Add(t.merge.MaxHold))
+}
+
+// blockedLocked reports whether paced tasks must wait at now: the cooldown
+// has not passed or a task of the conversation runs.
+func (sess *session) blockedLocked(cfg SessionConfig, now time.Time) bool {
+	return now.Before(cfg.CooldownUntil) || len(sess.running) > 0
 }
 
 // heldLocked reports whether the pending task t is held at now (see
 // MergeOptions.Cooldown).
 func (sess *session) heldLocked(t QueuedTask, cfg SessionConfig, now time.Time) bool {
-	return t.merge.Cooldown && !t.addressed && (now.Before(cfg.CooldownUntil) || len(sess.running) > 0)
+	return t.paced() && !t.pastHold(now) && (sess.blockedLocked(cfg, now) || t.deferred && now.Before(t.ReadyAt))
 }
 
 func (s *Scheduler) startLocked(sess *session, t QueuedTask) {
@@ -493,10 +558,14 @@ func (s *Scheduler) startLocked(sess *session, t QueuedTask) {
 
 // openWindow returns the index of actorID's most recent not-yet-started task
 // whose merge window is still open at now (before its ReadyAt, or while it is
-// held), or -1.
+// held; never for a paced task past its MaxHold), or -1.
 func (sess *session) openWindow(actorID string, cfg SessionConfig, now time.Time) int {
 	for i := len(sess.pending) - 1; i >= 0; i-- {
-		if t := sess.pending[i]; t.ActorID == actorID && (now.Before(t.ReadyAt) || sess.heldLocked(t, cfg, now)) {
+		t := sess.pending[i]
+		if t.ActorID != actorID || t.paced() && t.pastHold(now) {
+			continue
+		}
+		if now.Before(t.ReadyAt) || sess.heldLocked(t, cfg, now) {
 			return i
 		}
 	}

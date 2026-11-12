@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,7 +25,7 @@ func (c *cooldownCfg) cfg(string) SessionConfig {
 	return s
 }
 
-var turnOpts = MergeOptions{Debounce: 20 * time.Millisecond, MaxMergeWindow: 60 * time.Millisecond, Cooldown: true}
+var turnOpts = MergeOptions{Debounce: 20 * time.Millisecond, MaxMergeWindow: 60 * time.Millisecond, Cooldown: true, MaxHold: time.Minute}
 
 func admitWith(t *testing.T, s *Scheduler, actor, msg string, opts MergeOptions) AdmitResult {
 	t.Helper()
@@ -187,5 +188,151 @@ func TestScheduler_CooldownPassedRunsAsBefore(t *testing.T) {
 	}
 	if n := heldTasks(s); n != 0 {
 		t.Fatalf("held tasks = %d, want 0", n)
+	}
+}
+
+// talk admits a message from 20001 every interval until end and returns the
+// results with the time just before each admit.
+func talk(t *testing.T, s *Scheduler, opts MergeOptions, interval time.Duration, end time.Time) ([]AdmitResult, []time.Time) {
+	t.Helper()
+	var res []AdmitResult
+	var at []time.Time
+	for i := 0; time.Now().Before(end); i++ {
+		at = append(at, time.Now())
+		res = append(res, admitWith(t, s, "20001", "t"+strconv.Itoa(i), opts))
+		time.Sleep(interval)
+	}
+	return res, at
+}
+
+func TestScheduler_HeldTaskWaitsForPauseAfterCooldown(t *testing.T) {
+	c := &cooldownCfg{base: SessionConfig{MaxConcurrent: 1, MaxQueued: 10, Debounce: 20 * time.Millisecond, MaxMergeWindow: time.Second}}
+	start := time.Now()
+	c.set(start.Add(300 * time.Millisecond))
+	rec := newSchedRecorder()
+	s := newTestScheduler(t, rec.run, c.cfg)
+	opts := MergeOptions{Debounce: 200 * time.Millisecond, MaxMergeWindow: 60 * time.Millisecond, Cooldown: true, MaxHold: 5 * time.Second}
+
+	res, at := talk(t, s, opts, 80*time.Millisecond, start.Add(600*time.Millisecond))
+	run := rec.waitFinished(t, 1)[0]
+	got, started := run.task, run.start
+	for _, r := range res {
+		if r.TaskID != res[0].TaskID {
+			t.Fatalf("admits = %+v, want every message in one turn", res)
+		}
+	}
+	if last := at[len(at)-1]; started.Before(last.Add(200 * time.Millisecond)) {
+		t.Fatalf("turn started %v after the last message, want at least the 200ms pause", started.Sub(last))
+	}
+	if len(got.TriggerMessageIDs) != len(res) {
+		t.Fatalf("turn has %d messages, want %d", len(got.TriggerMessageIDs), len(res))
+	}
+}
+
+func TestScheduler_HoldLimitReleasesWhenFree(t *testing.T) {
+	c := &cooldownCfg{base: SessionConfig{MaxConcurrent: 1, MaxQueued: 10, Debounce: 20 * time.Millisecond, MaxMergeWindow: time.Second}}
+	start := time.Now()
+	c.set(start.Add(150 * time.Millisecond))
+	rec := newSchedRecorder()
+	s := newTestScheduler(t, rec.run, c.cfg)
+	opts := MergeOptions{Debounce: 400 * time.Millisecond, MaxMergeWindow: 60 * time.Millisecond, Cooldown: true, MaxHold: 400 * time.Millisecond}
+
+	res, at := talk(t, s, opts, 100*time.Millisecond, start.Add(700*time.Millisecond))
+	first := res[0].TaskID
+	run := rec.waitFinished(t, 1)[0]
+	if run.task.TaskID != first {
+		t.Fatalf("first run = %s, want %s", run.task.TaskID, first)
+	}
+	started := run.start
+	if d := started.Sub(start); d < 400*time.Millisecond || d >= 750*time.Millisecond {
+		t.Fatalf("turn started %v after its first message, want at the 400ms hold limit, before its pause ended", d)
+	}
+	for i, r := range res {
+		if at[i].After(start.Add(450*time.Millisecond)) && r.TaskID == first {
+			t.Fatalf("message %d after the hold limit merged into the held turn", i)
+		}
+	}
+	if res[len(res)-1].TaskID == first {
+		t.Fatal("no new turn after the hold limit")
+	}
+}
+
+func TestScheduler_HoldLimitDropsWhileCoolingDown(t *testing.T) {
+	c := &cooldownCfg{base: SessionConfig{MaxConcurrent: 1, MaxQueued: 10, Debounce: 20 * time.Millisecond, MaxMergeWindow: time.Second}}
+	c.set(time.Now().Add(time.Minute))
+	rec := newSchedRecorder()
+	s := NewScheduler(rec.run, c.cfg, time.Minute)
+	t.Cleanup(s.Close)
+	dropped := make(chan QueuedTask, 4)
+	s.OnDrop(func(qt QueuedTask) { dropped <- qt })
+	opts := MergeOptions{Debounce: 50 * time.Millisecond, MaxMergeWindow: 60 * time.Millisecond, Cooldown: true, MaxHold: 300 * time.Millisecond}
+
+	turn := admitWith(t, s, "20001", "m1", opts)
+	select {
+	case qt := <-dropped:
+		if qt.TaskID != turn.TaskID {
+			t.Fatalf("dropped %s, want %s", qt.TaskID, turn.TaskID)
+		}
+	case <-time.After(waitLimit):
+		t.Fatal("held turn not dropped at its hold limit")
+	}
+	if n := len(s.Active("group:10001")); n != 0 {
+		t.Fatalf("Active = %d tasks after the drop, want 0", n)
+	}
+	if next := admitWith(t, s, "20001", "m2", opts); !next.Created || next.TaskID == turn.TaskID {
+		t.Fatalf("message after the drop = %+v, want a new turn", next)
+	}
+	rec.assertNotStarted(t, 100*time.Millisecond)
+}
+
+func TestScheduler_KickReleasesAfterCooldownShortened(t *testing.T) {
+	c := &cooldownCfg{base: SessionConfig{MaxConcurrent: 1, MaxQueued: 10, Debounce: 20 * time.Millisecond, MaxMergeWindow: time.Second}}
+	c.set(time.Now().Add(time.Minute))
+	rec := newSchedRecorder()
+	s := newTestScheduler(t, rec.run, c.cfg)
+	turn := admitWith(t, s, "20001", "m1", turnOpts)
+	waitUntil(t, "the turn to be held", func() bool { return heldTasks(s) == 1 })
+	c.set(time.Now().Add(-time.Millisecond))
+	s.Kick("group:10001")
+	if got := rec.waitStarted(t); got.TaskID != turn.TaskID {
+		t.Fatalf("started %s, want %s", got.TaskID, turn.TaskID)
+	}
+}
+
+func TestScheduler_HeldTaskRespectsMinReplyInterval(t *testing.T) {
+	c := &cooldownCfg{base: SessionConfig{MaxConcurrent: 1, MaxQueued: 10, Debounce: 20 * time.Millisecond, MaxMergeWindow: time.Second,
+		MinReplyInterval: 400 * time.Millisecond}}
+	rec := newSchedRecorder()
+	s := newTestScheduler(t, rec.run, c.cfg)
+	admitWith(t, s, "20002", "m1", MergeOptions{})
+	end := rec.waitFinished(t, 1)[0].end
+	c.set(time.Now().Add(100 * time.Millisecond))
+	turn := admitWith(t, s, "20001", "m2", turnOpts)
+	got := rec.waitStarted(t)
+	got = rec.waitStarted(t)
+	if got.TaskID != turn.TaskID || time.Since(end) < 400*time.Millisecond {
+		t.Fatalf("turn %s started %v after the previous task, want %s after at least 400ms", got.TaskID, time.Since(end), turn.TaskID)
+	}
+}
+
+func TestScheduler_OnHoldWithoutCooldownReportsRunning(t *testing.T) {
+	c := &cooldownCfg{base: SessionConfig{MaxConcurrent: 2, MaxQueued: 10, Debounce: 20 * time.Millisecond, MaxMergeWindow: time.Second}}
+	rec := newSchedRecorder()
+	rec.hold = make(chan struct{})
+	s := NewScheduler(rec.run, c.cfg, time.Minute)
+	t.Cleanup(s.Close)
+	t.Cleanup(func() { close(rec.hold) })
+	holds := make(chan time.Time, 4)
+	s.OnHold(func(_ QueuedTask, until time.Time) { holds <- until })
+	admitWith(t, s, "20002", "m1", MergeOptions{})
+	rec.waitStarted(t)
+	admitWith(t, s, "20001", "m2", turnOpts)
+	select {
+	case until := <-holds:
+		if !until.IsZero() {
+			t.Fatalf("hold until %v, want zero while only waiting for a running task", until)
+		}
+	case <-time.After(waitLimit):
+		t.Fatal("hold not reported")
 	}
 }

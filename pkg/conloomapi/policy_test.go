@@ -108,6 +108,13 @@ func TestValidateParticipationFields(t *testing.T) {
 			p.Reply.TurnGap = Duration{time.Minute + time.Second}
 			p.Reply.TurnMaxWait = Duration{2 * time.Minute}
 		}, "reply.turn_gap"},
+		{"continuation above turn_cooldown ok", func(p *GroupPolicy) { p.Reply.ContinuationWindow = Duration{46 * time.Second} }, ""},
+		{"continuation equal to turn_cooldown", func(p *GroupPolicy) { p.Reply.ContinuationWindow = Duration{45 * time.Second} }, "reply.continuation_window"},
+		{"continuation below turn_cooldown", func(p *GroupPolicy) {
+			p.Reply.ContinuationWindow = Duration{time.Minute}
+			p.Reply.TurnCooldown = Duration{2 * time.Minute}
+		}, "reply.continuation_window"},
+		{"turn_cooldown above window off ok", func(p *GroupPolicy) { p.Reply.TurnCooldown = Duration{10 * time.Minute} }, ""},
 		{"turn_cooldown 1s ok", func(p *GroupPolicy) { p.Reply.TurnCooldown = Duration{time.Second} }, ""},
 		{"turn_cooldown 10m ok", func(p *GroupPolicy) { p.Reply.TurnCooldown = Duration{10 * time.Minute} }, ""},
 		{"turn_cooldown under", func(p *GroupPolicy) { p.Reply.TurnCooldown = Duration{time.Second - time.Millisecond} }, "reply.turn_cooldown"},

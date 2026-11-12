@@ -321,7 +321,8 @@ func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 
 // startJoin creates the join task of plan replying to target and logs the
 // evaluation; a group that became busy meanwhile gives a reason instead.
-func (o *Orchestrator) startJoin(ctx context.Context, convKey string, target store.MessageRecord, plan joinPlan, now time.Time, windowSize int) (taskID, reason string, err error) {
+func (o *Orchestrator) startJoin(ctx context.Context, convKey string, target store.MessageRecord, plan joinPlan, now time.Time,
+	windowSize int) (taskID, reason string, err error) {
 	taskID, err = o.createJoinTask(ctx, convKey, target, plan, now)
 	if reason, ok := joinNotCreated(err); ok {
 		return "", reason, nil
@@ -342,7 +343,8 @@ func (o *Orchestrator) startJoin(ctx context.Context, convKey string, target sto
 // stale, is a clear question (isClearQuestion) from a member outside the
 // session whom the bot may join (see joinSpeakers), and would itself be the
 // join target. It returns that member and message.
-func (o *Orchestrator) guestQuestion(ctx context.Context, convKey string, window, msgs []store.MessageRecord, pol conloomapi.GroupPolicy, now time.Time) (joinSpeaker, store.MessageRecord, bool, error) {
+func (o *Orchestrator) guestQuestion(ctx context.Context, convKey string, window, msgs []store.MessageRecord, pol conloomapi.GroupPolicy,
+	now time.Time) (joinSpeaker, store.MessageRecord, bool, error) {
 	if len(window) == 0 {
 		return joinSpeaker{}, store.MessageRecord{}, false, nil
 	}

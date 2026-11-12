@@ -297,6 +297,9 @@ func (p GroupPolicy) Validate() error {
 	if r.TurnCooldown.Duration < time.Second || r.TurnCooldown.Duration > 10*time.Minute {
 		fail("reply.turn_cooldown must be in [1s, 10m], got %s", r.TurnCooldown)
 	}
+	if w := r.ContinuationWindow.Duration; w != 0 && w <= r.TurnCooldown.Duration {
+		fail("reply.continuation_window must be 0 or longer than reply.turn_cooldown (%s), got %s", r.TurnCooldown, r.ContinuationWindow)
+	}
 	if r.MaxUnpromptedReplies < 1 || r.MaxUnpromptedReplies > 20 {
 		fail("reply.max_unprompted_replies must be in [1, 20], got %d", r.MaxUnpromptedReplies)
 	}

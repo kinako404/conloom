@@ -84,7 +84,7 @@ func TestSession_TurnWaitsForCooldownAndMerges(t *testing.T) {
 			deferred = append(deferred, l)
 		}
 	}
-	if len(deferred) != 1 || !strings.Contains(deferred[0], "task_id="+first.TaskID) ||
+	if len(deferred) != 1 || !strings.Contains(deferred[0], "task_id="+first.TaskID) || !strings.Contains(deferred[0], "waiting_for=cooldown") ||
 		!strings.Contains(deferred[0], "until=") || !strings.Contains(deferred[0], "conversation=") {
 		t.Fatalf("turn deferred log lines = %q, want one for %s", deferred, first.TaskID)
 	}
@@ -152,4 +152,42 @@ func TestJoin_GuestQuestionNotBlockedByHeldTurn(t *testing.T) {
 	if len(task.Actions) != 1 || joinTarget(t, env, task.TaskID) != q.Message.ID {
 		t.Fatalf("guest join during a held turn = %+v, want a reply to %s", task, q.Message.ID)
 	}
+}
+
+func TestSession_HeldTurnDroppedAtHoldLimit(t *testing.T) {
+	gate := make(chan struct{})
+	var once sync.Once
+	free := func() { once.Do(func() { close(gate) }) }
+	handler := func(req map[string]any) (int, string) {
+		if strings.Contains(lastContent(req), "等我一下") {
+			<-gate
+		}
+		return 200, fakeReply
+	}
+	env := newTestOrchestrator(t, testOpts{short: handler, long: handler, configure: withTurnCooldown(200*time.Millisecond, nil)})
+	t.Cleanup(free)
+	env.startContinuation(t, "20001")
+	busy := env.submit(t, env.groupEvent("20002", "等我一下", mentionBot))
+	waitUntil(t, "the mention to run", func() bool { return env.getTask(t, busy.TaskID).Status == conloomapi.TaskRunning })
+
+	turn := env.submit(t, env.groupEvent("20001", "今天去爬山了"))
+	waitUntil(t, "the turn to be deferred", env.heldTurn)
+	// The hold limit is turn_cooldown + turn_max_wait = 600ms; the mention
+	// still runs then.
+	requireDropped(t, env, turn.TaskID)
+	if n := env.modelCalls(); n != 2 {
+		t.Fatalf("model calls = %d, want 2 (two mentions)", n)
+	}
+	if _, skips, ok := env.sessionCounts(); !ok || skips != 0 {
+		t.Fatalf("session exists %v skips %d, want no skip for a dropped turn", ok, skips)
+	}
+	if logs := env.logs.String(); !strings.Contains(logs, "turn dropped") || !strings.Contains(logs, "reason=held_too_long") {
+		t.Fatalf("logs lack the held_too_long drop: %s", logs)
+	}
+	next := env.submit(t, env.groupEvent("20001", "山上好冷"))
+	if next.Disposition != conloomapi.DispositionReply || next.Merged || next.TaskID == turn.TaskID {
+		t.Fatalf("message after the drop = %+v, want a new turn", next)
+	}
+	free()
+	env.waitTask(t, busy.TaskID)
 }
