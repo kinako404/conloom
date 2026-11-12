@@ -275,23 +275,16 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 		return consOutcome{}, c.fail(ctx, *g, consErrParse, err, resp)
 	}
 
-	w, affinityChanged := c.compose(*g, b, out, mp, now)
+	day := LocalDay(now, c.d.Location)
+	w, entries := c.compose(*g, b, out, mp.Affinity, day, now)
 	conflicts, err := c.d.Store.ApplyMemoryWrite(ctx, w)
 	if err != nil {
 		return consOutcome{}, err
 	}
-	if len(conflicts) > 0 {
-		c.d.Logger.Info("memory consolidation left members changed during the run", "conversation", convKey,
-			"users", strings.Join(conflicts, ","))
-	}
-	for _, userID := range affinityChanged {
-		if !slices.Contains(conflicts, userID) {
-			c.d.Metrics.MemoryAffinityChanges.WithLabelValues(store.RevisionConsolidate).Inc()
-		}
-	}
 	*g = *w.Group
 	c.grow(convKey, memberCap)
-	return consOutcome{messages: b.Messages, membersUpdated: len(w.Members) - len(conflicts), promptTokens: resp.PromptTokens}, nil
+	updated := c.settle(ctx, convKey, entries, conflicts, mp.Affinity, day)
+	return consOutcome{messages: b.Messages, membersUpdated: updated, promptTokens: resp.PromptTokens}, nil
 }
 
 // gather loads what planning msgs needs: reply targets in the conversation,
@@ -354,12 +347,37 @@ func (c *Consolidator) gather(ctx context.Context, convKey string, msgs []store.
 	return in, nil
 }
 
+// consEntry is the model's entry for a batch member whose row the batch
+// writes, and whether it changed the member's affinity.
+type consEntry struct {
+	member          consBatchMember
+	output          modelMember
+	affinityChanged bool
+}
+
+// consApplyEntry applies the model's entry to m: a non-empty new note, the
+// affinity delta (on day) when affinityOn and m has an affinity, and name
+// along with either. It reports whether the note and the affinity changed.
+func consApplyEntry(m *store.MemberMemory, name string, om modelMember, affinityOn bool, day string) (note, affinity bool) {
+	if om.Note != "" && om.Note != m.Note {
+		m.Note, note = om.Note, true
+	}
+	if affinityOn && om.Delta != 0 {
+		if after, applied := ApplyModelDelta(*m, om.Delta, day); applied != 0 {
+			*m, affinity = after, true
+		}
+	}
+	if (note || affinity) && name != "" {
+		m.DisplayName = name
+	}
+	return note, affinity
+}
+
 // compose builds the write of a consolidated batch: the new summary when the
-// model gave one, a new note when it gave one, the affinity delta for members
-// with an affinity when affinity is on, each member's newest name with its
-// other changes, a revision per change, and the cursor moved past the batch.
-// It also returns the members whose affinity changed.
-func (c *Consolidator) compose(g store.GroupMemory, b consBatch, out modelOutput, mp conloomapi.MemoryPolicy, now time.Time) (store.MemoryWrite, []string) {
+// model gave one, each member's entry applied to the row the batch read (see
+// consApplyEntry), a revision per change, and the cursor moved past the
+// batch. It also returns the entries of the members it writes.
+func (c *Consolidator) compose(g store.GroupMemory, b consBatch, out modelOutput, affinityOn bool, day string, now time.Time) (store.MemoryWrite, []consEntry) {
 	convKey := g.ConversationKey
 	w := store.MemoryWrite{ConversationKey: convKey}
 	revise := func(userID, field, old, next, reason string) {
@@ -378,34 +396,68 @@ func (c *Consolidator) compose(g store.GroupMemory, b consBatch, out modelOutput
 	for _, m := range b.Members {
 		byRef[m.Ref] = m
 	}
-	day := LocalDay(now, c.d.Location)
-	var affinityChanged []string
+	var entries []consEntry
 	for _, om := range out.Members {
 		bm, ok := byRef[om.Ref]
 		if !ok {
 			continue
 		}
-		m, changed := bm.Memory, false
-		if om.Note != "" && om.Note != m.Note {
-			revise(bm.UserID, store.FieldNote, m.Note, om.Note, "")
-			m.Note, changed = om.Note, true
+		m := bm.Memory
+		note, affinity := consApplyEntry(&m, bm.Name, om, affinityOn, day)
+		if note {
+			revise(bm.UserID, store.FieldNote, bm.Memory.Note, m.Note, "")
 		}
-		if mp.Affinity && om.Delta != 0 {
-			if after, applied := ApplyModelDelta(m, om.Delta, day); applied != 0 {
-				revise(bm.UserID, store.FieldAffinity, strconv.Itoa(*m.Affinity), strconv.Itoa(*after.Affinity), om.Reason)
-				m, changed = after, true
-				affinityChanged = append(affinityChanged, bm.UserID)
-			}
+		if affinity {
+			revise(bm.UserID, store.FieldAffinity, strconv.Itoa(*bm.Memory.Affinity), strconv.Itoa(*m.Affinity), om.Reason)
 		}
-		if !changed {
-			continue
+		if note || affinity {
+			w.Members = append(w.Members, m)
+			entries = append(entries, consEntry{member: bm, output: om, affinityChanged: affinity})
 		}
-		if bm.Name != "" {
-			m.DisplayName = bm.Name
-		}
-		w.Members = append(w.Members, m)
 	}
-	return w, affinityChanged
+	return w, entries
+}
+
+// settle counts the members a batch wrote and re-applies the entries of those
+// whose rows changed during the model call (conflicts), but only when their
+// note and ForgottenAt are still what the batch read, so a rule's change to
+// affinity, day or name is kept while /忘记我 or an edited note wins. It
+// returns how many members were updated.
+func (c *Consolidator) settle(ctx context.Context, convKey string, entries []consEntry, conflicts []string, affinityOn bool, day string) int {
+	updated := 0
+	var skipped []string
+	for _, e := range entries {
+		userID, affinity := e.member.UserID, e.affinityChanged
+		if slices.Contains(conflicts, userID) {
+			read := e.member.Memory
+			u, err := UpdateMember(ctx, c.d.Store, convKey, userID, store.RevisionConsolidate, func(m *store.MemberMemory) (string, bool) {
+				if m.Note != read.Note || !m.ForgottenAt.Equal(read.ForgottenAt) {
+					return "", false
+				}
+				note, affinity := consApplyEntry(m, e.member.Name, e.output, affinityOn, day)
+				return e.output.Reason, note || affinity
+			})
+			if err != nil {
+				c.d.Logger.Warn("re-applying consolidation to a changed member failed", "conversation", convKey,
+					"user", userID, "error", err)
+				continue
+			}
+			if !u.Written {
+				skipped = append(skipped, userID)
+				continue
+			}
+			affinity = u.AffinityChanged()
+		}
+		updated++
+		if affinity {
+			c.d.Metrics.MemoryAffinityChanges.WithLabelValues(store.RevisionConsolidate).Inc()
+		}
+	}
+	if len(skipped) > 0 {
+		c.d.Logger.Info("memory consolidation left members changed during the run", "conversation", convKey,
+			"users", strings.Join(skipped, ","))
+	}
+	return updated
 }
 
 // fail records a failed batch: g is stored with category as its last error

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -763,5 +764,93 @@ func TestConsolidate_FailuresLeaveSharedBreakerAlone(t *testing.T) {
 	}
 	if _, err := e.router.Route(router.Request{AllowLong: true, Exclude: []router.Role{router.RoleShort}}); err != nil {
 		t.Fatalf("Route long after consolidation failures: %v", err)
+	}
+}
+
+// consDuringModelCall runs Run and calls during while the model call is blocked.
+func consDuringModelCall(t *testing.T, e *consEnv, reply string, during func()) Result {
+	t.Helper()
+	entered, release := make(chan struct{}), make(chan struct{})
+	e.long.setReply(func(int, openai.ChatRequest) (openai.ChatResponse, error) {
+		close(entered)
+		<-release
+		return openai.ChatResponse{Content: reply, Model: "fake-long"}, nil
+	})
+	done := make(chan Result, 1)
+	go func() {
+		res, err := e.c.Run(context.Background(), testConvKey, false)
+		if err != nil {
+			t.Errorf("Run: %v", err)
+		}
+		done <- res
+	}()
+	<-entered
+	during()
+	close(release)
+	return <-done
+}
+
+func TestConsolidate_RuleChangeDuringRunIsReapplied(t *testing.T) {
+	e := newConsEnv(t, consOpts{})
+	putMember(t, e.st, store.MemberMemory{ConversationKey: testConvKey, PlatformUserID: "20001", Note: "旧笔记", Affinity: intPtr(40)})
+	consSeedThree(t, e)
+	day := LocalDay(consNow, nil)
+	res := consDuringModelCall(t, e, consReplyBoth, func() {
+		for _, id := range []string{"20001", "20002"} {
+			if _, err := UpdateMember(context.Background(), e.st, testConvKey, id, store.RevisionRule, func(m *store.MemberMemory) (string, bool) {
+				next, _ := ApplyInteraction(*m, day)
+				next.DisplayName = "规则写的名字"
+				*m = next
+				return ReasonDaily, true
+			}); err != nil {
+				t.Errorf("rule update %s: %v", id, err)
+			}
+		}
+	})
+	if res.MembersUpdated != 2 {
+		t.Errorf("MembersUpdated = %d, want 2", res.MembersUpdated)
+	}
+	xm := getMember(t, e.st, testConvKey, "20001")
+	if xm.Note != "N1" || xm.Affinity == nil || *xm.Affinity != 43 || xm.LastInteractionDay != day || xm.ModelDeltaSum != 2 || xm.DisplayName != "小明" {
+		t.Errorf("20001 = %+v, want note N1, affinity 41+2, the rule's day kept, name 小明", xm)
+	}
+	xh := getMember(t, e.st, testConvKey, "20002")
+	if xh.Note != "N2" || xh.Affinity == nil || *xh.Affinity != 23 || xh.LastInteractionDay != day || xh.DisplayName != "小红" {
+		t.Errorf("20002 = %+v, want note N2, affinity 20+3, the rule's day kept, name 小红", xh)
+	}
+	revs := revisionFields(t, e.st, "20001")
+	var got []string
+	for _, r := range revs {
+		got = append(got, r.Source+"/"+r.Field+":"+r.OldValue+"→"+r.NewValue)
+	}
+	want := []string{"rule/affinity:40→41", "consolidate/note:旧笔记→N1", "consolidate/affinity:41→43"}
+	if !slices.Equal(got, want) {
+		t.Errorf("20001 revisions = %v, want %v", got, want)
+	}
+	if n := e.counter(t, "conloom_memory_affinity_changes_total", store.RevisionConsolidate); n != 2 {
+		t.Errorf("affinity changes{consolidate} = %v, want 2", n)
+	}
+}
+
+func TestConsolidate_NoteChangeDuringRunIsKept(t *testing.T) {
+	e := newConsEnv(t, consOpts{})
+	putMember(t, e.st, store.MemberMemory{ConversationKey: testConvKey, PlatformUserID: "20001", Note: "旧笔记", Affinity: intPtr(40)})
+	consSeedThree(t, e)
+	res := consDuringModelCall(t, e, consReplyBoth, func() {
+		if _, err := UpdateMember(context.Background(), e.st, testConvKey, "20001", store.RevisionAPI, func(m *store.MemberMemory) (string, bool) {
+			m.Note = "管理员写的"
+			return "", true
+		}); err != nil {
+			t.Errorf("api update: %v", err)
+		}
+	})
+	if res.MembersUpdated != 1 {
+		t.Errorf("MembersUpdated = %d, want 1 (only 20002)", res.MembersUpdated)
+	}
+	if xm := getMember(t, e.st, testConvKey, "20001"); xm.Note != "管理员写的" || xm.Affinity == nil || *xm.Affinity != 40 {
+		t.Errorf("20001 = %+v, want the admin's note and affinity 40", xm)
+	}
+	if xh := getMember(t, e.st, testConvKey, "20002"); xh.Note != "N2" {
+		t.Errorf("20002 = %+v, want note N2", xh)
 	}
 }
