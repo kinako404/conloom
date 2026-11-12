@@ -1,6 +1,7 @@
 package conloomapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,42 @@ type GroupPolicy struct {
 	Context     ContextPolicy     `json:"context" yaml:"context"`
 	Review      ReviewPolicy      `json:"review" yaml:"review"`
 	Proactive   ProactivePolicy   `json:"proactive" yaml:"proactive"`
+	Memory      MemoryPolicy      `json:"memory" yaml:"memory"`
+}
+
+// MemoryPolicy controls the group's memory: summaries, member notes and affinity.
+// The zero value means the section is missing and is replaced by WithDefaults.
+type MemoryPolicy struct {
+	Enabled             bool     `json:"enabled" yaml:"enabled"`
+	Affinity            bool     `json:"affinity" yaml:"affinity"`
+	ConsolidateEvery    int      `json:"consolidate_every" yaml:"consolidate_every"`
+	ConsolidateInterval Duration `json:"consolidate_interval" yaml:"consolidate_interval"`
+	Backlog             int      `json:"backlog" yaml:"backlog"`
+}
+
+func DefaultMemoryPolicy() MemoryPolicy {
+	return MemoryPolicy{
+		Enabled:             false,
+		Affinity:            true,
+		ConsolidateEvery:    150,
+		ConsolidateInterval: Duration{6 * time.Hour},
+		Backlog:             1000,
+	}
+}
+
+// UnmarshalJSON decodes over DefaultMemoryPolicy, so keys missing from the section
+// take the built-in defaults while explicit zero values are kept.
+func (m *MemoryPolicy) UnmarshalJSON(b []byte) error {
+	if string(bytes.TrimSpace(b)) == "null" {
+		return nil
+	}
+	type plain MemoryPolicy
+	v := plain(DefaultMemoryPolicy())
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*m = MemoryPolicy(v)
+	return nil
 }
 
 const (
@@ -127,16 +164,18 @@ type PolicyState struct {
 	CreatedAt      time.Time   `json:"created_at" yaml:"created_at"`
 }
 
-// PolicyPut replaces a group policy. Its proactive section may be left out to keep the group's
-// current one: the section counts as omitted when it is zero and ProactivePresent is false.
-// UnmarshalJSON sets ProactivePresent when the body has a non-null policy.proactive key, so a
-// JSON section such as {"enabled":false} is applied as given and fails validation. Go callers that
-// build a PolicyPut leave ProactivePresent false, and a zero section from them is omitted.
+// PolicyPut replaces a group policy. Its proactive and memory sections may each be left out to keep
+// the group's current one: a section counts as omitted when it is zero and its Present flag is false.
+// UnmarshalJSON sets ProactivePresent and MemoryPresent when the body has a non-null policy.proactive
+// or policy.memory key, so a JSON section such as {"enabled":false} is applied as given (missing
+// memory keys take the built-in defaults) and an invalid one fails validation. Go callers that build
+// a PolicyPut leave the flags false, and a zero section from them is omitted.
 type PolicyPut struct {
 	Policy GroupPolicy `json:"policy" yaml:"policy"`
 	Reason string      `json:"reason" yaml:"reason"`
 
 	ProactivePresent bool `json:"-" yaml:"-"`
+	MemoryPresent    bool `json:"-" yaml:"-"`
 }
 
 // ProactiveOmitted reports whether the update leaves the proactive section unchanged.
@@ -144,23 +183,32 @@ func (p PolicyPut) ProactiveOmitted() bool {
 	return !p.ProactivePresent && p.Policy.Proactive == (ProactivePolicy{})
 }
 
-// groupPolicyFields has GroupPolicy's fields; policyPutWire's own Proactive field shadows the embedded one.
+// MemoryOmitted reports whether the update leaves the memory section unchanged.
+func (p PolicyPut) MemoryOmitted() bool {
+	return !p.MemoryPresent && p.Policy.Memory == (MemoryPolicy{})
+}
+
+// groupPolicyFields has GroupPolicy's fields; policyPutWire's own Proactive and Memory fields shadow the embedded ones.
 type groupPolicyFields GroupPolicy
 
 type policyPutWire struct {
 	Policy struct {
 		groupPolicyFields
 		Proactive *ProactivePolicy `json:"proactive,omitempty"`
+		Memory    *MemoryPolicy    `json:"memory,omitempty"`
 	} `json:"policy"`
 	Reason string `json:"reason"`
 }
 
-// MarshalJSON writes the PolicyPut wire format and leaves out an omitted proactive section.
+// MarshalJSON writes the PolicyPut wire format and leaves out omitted proactive and memory sections.
 func (p PolicyPut) MarshalJSON() ([]byte, error) {
 	var w policyPutWire
 	w.Policy.groupPolicyFields = groupPolicyFields(p.Policy)
 	if !p.ProactiveOmitted() {
 		w.Policy.Proactive = &p.Policy.Proactive
+	}
+	if !p.MemoryOmitted() {
+		w.Policy.Memory = &p.Policy.Memory
 	}
 	w.Reason = p.Reason
 	return json.Marshal(w)
@@ -175,6 +223,10 @@ func (p *PolicyPut) UnmarshalJSON(b []byte) error {
 	if w.Policy.Proactive != nil {
 		p.Policy.Proactive = *w.Policy.Proactive
 		p.ProactivePresent = true
+	}
+	if w.Policy.Memory != nil {
+		p.Policy.Memory = *w.Policy.Memory
+		p.MemoryPresent = true
 	}
 	return nil
 }
@@ -223,15 +275,19 @@ func DefaultGroupPolicy() GroupPolicy {
 			JoinEvaluationsPerHour: 4,
 			JoinCooldown:           Duration{10 * time.Minute},
 		},
+		Memory: DefaultMemoryPolicy(),
 	}
 }
 
-// WithDefaults returns p with a missing (zero) Proactive section replaced by def.Proactive,
+// WithDefaults returns p with a missing (zero) Proactive or Memory section replaced by def's,
 // and each turn-taking, quote and join setting that is zero (missing from policies stored
 // before it existed; zero is never valid for them) taken from def.
 func (p GroupPolicy) WithDefaults(def GroupPolicy) GroupPolicy {
 	if p.Proactive == (ProactivePolicy{}) {
 		p.Proactive = def.Proactive
+	}
+	if p.Memory == (MemoryPolicy{}) {
+		p.Memory = def.Memory
 	}
 	fillZero(&p.Reply.TurnGap, def.Reply.TurnGap)
 	fillZero(&p.Reply.TurnMaxWait, def.Reply.TurnMaxWait)
@@ -369,6 +425,19 @@ func (p GroupPolicy) Validate() error {
 	}
 	if a.JoinEvaluationsPerHour < 1 || a.JoinEvaluationsPerHour > 60 {
 		fail("proactive.join_evaluations_per_hour must be in [1, 60], got %d", a.JoinEvaluationsPerHour)
+	}
+	m := p.Memory
+	if m.ConsolidateEvery < 30 || m.ConsolidateEvery > 2000 {
+		fail("memory.consolidate_every must be in [30, 2000], got %d", m.ConsolidateEvery)
+	}
+	if m.ConsolidateInterval.Duration < 30*time.Minute || m.ConsolidateInterval.Duration > 48*time.Hour {
+		fail("memory.consolidate_interval must be in [30m, 48h], got %s", m.ConsolidateInterval)
+	}
+	if m.Backlog < 0 || m.Backlog > 5000 {
+		fail("memory.backlog must be in [0, 5000], got %d", m.Backlog)
+	}
+	if m.Enabled && !c.AllowLongRequests {
+		fail("memory.enabled requires concurrency.allow_long_requests")
 	}
 	return errors.Join(errs...)
 }

@@ -197,6 +197,15 @@ default_group_policy:
     join_min_messages: 4          # 窗口内至少几条群友消息，2~50
     join_evaluations_per_hour: 4  # 每群每小时最多评估几次（每次一次模型调用），1~60
     join_cooldown: 10m            # 机器人在本群上次发言后多久内不加入，1m~24h
+  # 记忆：长模型在后台定期整理群聊摘要、群友笔记和好感度，回复时注入相关记忆。
+  # 会为群友建立档案，所以默认关闭，按群通过 API 开启。
+  # 库中已有的旧策略版本没有本段时，按这里的设置补齐；本段缺少的键取内置默认值。
+  memory:
+    enabled: false                # 是否开启记忆；开启时要求 concurrency.allow_long_requests: true
+    affinity: true                # 开启记忆时是否计算好感度
+    consolidate_every: 150        # 新消息达到这么多条就整理一次，30~2000
+    consolidate_interval: 6h      # 新消息不足条数时，距上次整理超过这么久且至少有 20 条新消息也整理一次，30m~48h
+    backlog: 1000                 # 第一次开启时往回整理多少条旧消息，0~5000
 
 # 运行时参数。
 runtime:

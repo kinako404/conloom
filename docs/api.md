@@ -71,6 +71,7 @@
 - 请求体完全不含 `proactive` 段时，保留本群**当前**的主动搭话设置。
 - 只要含有 `proactive` 段，它就必须是完整且合法的一段。API 不会把它与当前设置或默认值合并，像 `{"enabled": false}` 这样只写部分字段的请求会被拒绝并返回校验错误。
 - 例外：`reply.turn_gap`、`turn_max_wait`、`turn_cooldown`、`max_unprompted_replies`、`max_consecutive_skips`、`quote` 和 `proactive.join_*` 在请求里缺少时逐字段按默认值补齐，方便旧的调用方继续使用；已移除的 `proactive.contact_cooldown` 出现在请求里会被忽略。
+- 请求体完全不含 `memory` 段时，同样保留本群**当前**的记忆设置，与 `proactive` 相同。含有 `memory` 段时，段内缺少的键取内置默认值，不与当前设置合并：`{"memory":{"enabled":true}}` 得到 `affinity: true`、`consolidate_every: 150`、`consolidate_interval: 6h`、`backlog: 1000`；显式写出的 `0` 和 `false` 保留。`memory.enabled` 为 true 时要求 `concurrency.allow_long_requests` 也为 true，否则返回校验错误。
 - 只想关闭主动搭话时，管理员可以在群里发 `/主动 全群 关`：它以当前版本为基础写入一个新版本，只改 `proactive.enabled`（`开` 同理），可以用 `GET …/policy` 查看结果。
 - 把 `concurrency.max_interactive_requests` 设为 0 等同于 `/pause`：本群正在生成和排队的回复会被静默取消。
 

@@ -536,6 +536,181 @@ func TestPolicyPutMarshalWireFormat(t *testing.T) {
 	}
 }
 
+func TestDefaultGroupPolicyMemory(t *testing.T) {
+	want := MemoryPolicy{
+		Enabled:             false,
+		Affinity:            true,
+		ConsolidateEvery:    150,
+		ConsolidateInterval: Duration{6 * time.Hour},
+		Backlog:             1000,
+	}
+	if got := DefaultMemoryPolicy(); got != want {
+		t.Fatalf("DefaultMemoryPolicy() = %+v, want %+v", got, want)
+	}
+	if got := DefaultGroupPolicy().Memory; got != want {
+		t.Fatalf("DefaultGroupPolicy().Memory = %+v, want %+v", got, want)
+	}
+	b, err := json.Marshal(DefaultGroupPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"memory":{"enabled":false,"affinity":true,"consolidate_every":150,"consolidate_interval":"6h0m0s","backlog":1000}`; !strings.Contains(string(b), want) {
+		t.Fatalf("json %s missing %s", b, want)
+	}
+	var y GroupPolicy
+	src := "memory:\n  enabled: true\n  affinity: false\n  consolidate_every: 300\n  consolidate_interval: 12h\n  backlog: 0\n"
+	if err := yaml.Unmarshal([]byte(src), &y); err != nil {
+		t.Fatal(err)
+	}
+	if want := (MemoryPolicy{Enabled: true, ConsolidateEvery: 300, ConsolidateInterval: Duration{12 * time.Hour}}); y.Memory != want {
+		t.Fatalf("yaml memory = %+v, want %+v", y.Memory, want)
+	}
+}
+
+func TestValidateMemory_Bounds(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*MemoryPolicy)
+		wantErr string
+	}{
+		{"default", func(*MemoryPolicy) {}, ""},
+		{"every 29", func(m *MemoryPolicy) { m.ConsolidateEvery = 29 }, "memory.consolidate_every must be in [30, 2000]"},
+		{"every 30 ok", func(m *MemoryPolicy) { m.ConsolidateEvery = 30 }, ""},
+		{"every 2000 ok", func(m *MemoryPolicy) { m.ConsolidateEvery = 2000 }, ""},
+		{"every 2001", func(m *MemoryPolicy) { m.ConsolidateEvery = 2001 }, "memory.consolidate_every must be in [30, 2000]"},
+		{"interval 29m", func(m *MemoryPolicy) { m.ConsolidateInterval = Duration{29 * time.Minute} }, "memory.consolidate_interval must be in [30m, 48h]"},
+		{"interval 30m ok", func(m *MemoryPolicy) { m.ConsolidateInterval = Duration{30 * time.Minute} }, ""},
+		{"interval 48h ok", func(m *MemoryPolicy) { m.ConsolidateInterval = Duration{48 * time.Hour} }, ""},
+		{"interval 49h", func(m *MemoryPolicy) { m.ConsolidateInterval = Duration{49 * time.Hour} }, "memory.consolidate_interval must be in [30m, 48h]"},
+		{"backlog -1", func(m *MemoryPolicy) { m.Backlog = -1 }, "memory.backlog must be in [0, 5000]"},
+		{"backlog 0 ok", func(m *MemoryPolicy) { m.Backlog = 0 }, ""},
+		{"backlog 5000 ok", func(m *MemoryPolicy) { m.Backlog = 5000 }, ""},
+		{"backlog 5001", func(m *MemoryPolicy) { m.Backlog = 5001 }, "memory.backlog must be in [0, 5000]"},
+		{"zero section", func(m *MemoryPolicy) { *m = MemoryPolicy{} }, "memory.consolidate_every"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := DefaultGroupPolicy()
+			tt.mutate(&p.Memory)
+			err := p.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateMemory_RequiresLongRequests(t *testing.T) {
+	p := DefaultGroupPolicy()
+	p.Concurrency.AllowLongRequests = false
+	p.Memory.Enabled = true
+	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "memory.enabled requires concurrency.allow_long_requests") {
+		t.Fatalf("enabled without long requests: err = %v", err)
+	}
+	p.Memory.Enabled = false
+	if err := p.Validate(); err != nil {
+		t.Fatalf("disabled without long requests: %v", err)
+	}
+	p.Concurrency.AllowLongRequests = true
+	p.Memory.Enabled = true
+	if err := p.Validate(); err != nil {
+		t.Fatalf("enabled with long requests: %v", err)
+	}
+}
+
+func TestMemoryPolicy_MissingKeysUseDefaults(t *testing.T) {
+	var m MemoryPolicy
+	if err := json.Unmarshal([]byte(`{"enabled":true}`), &m); err != nil {
+		t.Fatal(err)
+	}
+	want := DefaultMemoryPolicy()
+	want.Enabled = true
+	if m != want || !m.Affinity || m.Backlog != 1000 || m.ConsolidateEvery != 150 {
+		t.Fatalf("partial section = %+v, want %+v", m, want)
+	}
+
+	m = MemoryPolicy{}
+	if err := json.Unmarshal([]byte(`{"enabled":true,"backlog":0,"affinity":false}`), &m); err != nil {
+		t.Fatal(err)
+	}
+	want = DefaultMemoryPolicy()
+	want.Enabled, want.Backlog, want.Affinity = true, 0, false
+	if m != want {
+		t.Fatalf("explicit zero values = %+v, want %+v", m, want)
+	}
+
+	var put PolicyPut
+	if err := json.Unmarshal([]byte(`{"policy":{"memory":{"enabled":true}}}`), &put); err != nil {
+		t.Fatal(err)
+	}
+	want = DefaultMemoryPolicy()
+	want.Enabled = true
+	if !put.MemoryPresent || put.MemoryOmitted() || put.Policy.Memory != want {
+		t.Fatalf("put memory = %+v (present %v)", put.Policy.Memory, put.MemoryPresent)
+	}
+
+	var p GroupPolicy
+	if err := json.Unmarshal([]byte(`{"memory":{"backlog":5}}`), &p); err != nil {
+		t.Fatal(err)
+	}
+	want = DefaultMemoryPolicy()
+	want.Backlog = 5
+	if p.Memory != want {
+		t.Fatalf("group policy memory = %+v, want %+v", p.Memory, want)
+	}
+	p = GroupPolicy{}
+	if err := json.Unmarshal([]byte(`{"memory":null}`), &p); err != nil || p.Memory != (MemoryPolicy{}) {
+		t.Fatalf("null memory = %+v, %v; want zero", p.Memory, err)
+	}
+
+	if err := json.Unmarshal([]byte(`{"enabled":"yes"}`), new(MemoryPolicy)); err == nil {
+		t.Fatal("bad memory type: err = nil")
+	}
+}
+
+func TestWithDefaultsFillsMissingMemorySection(t *testing.T) {
+	def := DefaultGroupPolicy()
+	def.Memory = MemoryPolicy{Enabled: true, Affinity: false, ConsolidateEvery: 300, ConsolidateInterval: Duration{time.Hour}, Backlog: 50}
+
+	raw, err := json.Marshal(DefaultGroupPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	delete(doc, "memory")
+	legacy, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p GroupPolicy
+	if err := json.Unmarshal(legacy, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Memory != (MemoryPolicy{}) {
+		t.Fatalf("legacy memory decoded as %+v, want zero", p.Memory)
+	}
+	got := p.WithDefaults(def)
+	if !reflect.DeepEqual(got, def) {
+		t.Fatalf("legacy read back = %+v\nwant %+v", got, def)
+	}
+
+	custom := DefaultGroupPolicy()
+	custom.Memory.Affinity = false
+	custom.Memory.Backlog = 0
+	if got := custom.WithDefaults(def); got.Memory != custom.Memory {
+		t.Fatalf("non-zero memory replaced: got %+v", got.Memory)
+	}
+}
+
 func TestTaskMetaTrigger(t *testing.T) {
 	b, err := json.Marshal(TaskMeta{Trigger: TriggerProactive})
 	if err != nil || string(b) != `{"trigger":"proactive"}` {

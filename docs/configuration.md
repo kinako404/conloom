@@ -124,7 +124,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 
 ## 群策略
 
-`default_group_policy` 是新会话的初始群策略。通过 API 或聊天命令修改后，策略按会话存库并版本化，库里的版本优先；没有存库版本的会话一直使用配置里的默认值。策略分 `concurrency`、`reply`、`context`、`review`、`proactive` 五段。
+`default_group_policy` 是新会话的初始群策略。通过 API 或聊天命令修改后，策略按会话存库并版本化，库里的版本优先；没有存库版本的会话一直使用配置里的默认值。策略分 `concurrency`、`reply`、`context`、`review`、`proactive`、`memory` 六段。
 
 ```yaml
 default_group_policy:
@@ -166,6 +166,12 @@ default_group_policy:
     join_min_messages: 4          # 窗口内至少多少条非机器人消息，2~50
     join_evaluations_per_hour: 4  # 每群每小时最多几次加入评估（即模型调用），1~60
     join_cooldown: 10m            # 机器人上次在本群发言后多久之内不加入，1m~24h
+  memory:
+    enabled: false                # 是否开启记忆（群聊摘要、群友笔记、好感度）；默认关闭，开启时要求 concurrency.allow_long_requests: true
+    affinity: true                # 开启记忆时是否计算好感度
+    consolidate_every: 150        # 新消息达到这么多条就整理一次，30~2000
+    consolidate_interval: 6h      # 新消息不足条数时，距上次整理超过这么久且至少有 20 条新消息也整理一次，30m~48h
+    backlog: 1000                 # 第一次开启时往回整理多少条旧消息，0~5000
 ```
 
 各字段的具体行为见 [使用指南](usage.md#机器人在群里怎么说话)，汇总表见 [架构 4.9 节](architecture.md#49-阈值一览)。
@@ -178,7 +184,9 @@ default_group_policy:
 - 已存库的策略版本缺少 `proactive` 段时，读取时按默认值补齐，即主动搭话默认开启、档位默认为低。
 - 已存库的版本或 API 请求里缺少 `reply.turn_gap`、`turn_max_wait`、`turn_cooldown`、`max_unprompted_replies`、`max_consecutive_skips`、`quote` 或 `proactive.join_*` 时，逐字段按默认值补齐（`quote` 补为 `auto`，`turn_cooldown` 补为 45s）；这些字段的零值本身都不合法，所以不会覆盖有意的设置。补齐用的是配置里 `default_group_policy` 的值。
 - `continuation_window` 不补，旧版本里的 `0s` 仍表示不开启在聊模式；它不为 0 时必须大于 `turn_cooldown`，否则校验失败（否则挂起的一轮会在会话超时后才放行，然后被丢弃）。
-- 群策略 API 对 `proactive` 段的处理不同于 YAML，见 [API：群策略](api.md#群策略)。
+- 已存库的策略版本缺少整个 `memory` 段时，读取时用配置里 `default_group_policy.memory` 的值补齐，即记忆按配置默认关闭。
+- `memory` 段内缺少的键取内置默认值（`affinity: true`、`consolidate_every: 150`、`consolidate_interval: 6h`、`backlog: 1000`，`enabled` 为 `false`）；显式写出的 `0` 和 `false` 保留。
+- 群策略 API 对 `proactive` 和 `memory` 段的处理不同于 YAML，见 [API：群策略](api.md#群策略)。
 - `proactive.contact_cooldown` 已移除：已存库的旧版本里的这个键在读取时被忽略；但配置文件不接受未知字段，升级后要从 `conloom.yaml` 里删掉这一行，否则启动时报错。
 
 ## runtime

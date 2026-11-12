@@ -172,6 +172,19 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 	}
 }
 
+func TestLoad_ExampleConfigMemoryDisabled(t *testing.T) {
+	for k, v := range exampleEnv {
+		t.Setenv(k, v)
+	}
+	gp := mustLoad(t, "../../conloom.example.yaml").DefaultGroupPolicy
+	if gp.Memory.Enabled {
+		t.Fatal("default_group_policy.memory.enabled = true, want false")
+	}
+	if want := conloomapi.DefaultMemoryPolicy(); gp.Memory != want {
+		t.Errorf("default_group_policy.memory = %+v, want %+v", gp.Memory, want)
+	}
+}
+
 func TestLoad_DotEnvDoesNotOverrideProcessEnv(t *testing.T) {
 	path := writeConfig(t, `bots:
   - id: bot_main

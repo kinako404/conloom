@@ -475,6 +475,88 @@ func TestPolicy_UpdateOmittedProactiveNeverConfiguredUsesDefaults(t *testing.T) 
 	}
 }
 
+func TestPolicyPut_OmittedMemoryKeepsCurrent(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := NewService(st, conloomapi.DefaultGroupPolicy())
+	pv, err := svc.Update(ctx, testConvKey, decodePut(t, `{"policy":`+policyJSON(t, conloomapi.DefaultGroupPolicy(), `{"enabled":true}`)+`}`), "29999")
+	want := conloomapi.DefaultMemoryPolicy()
+	want.Enabled = true
+	if err != nil || pv.Version != 1 || pv.Policy.Memory != want {
+		t.Fatalf("enable memory = %+v, %v; want memory %+v", pv, err, want)
+	}
+
+	pv, err = svc.Update(ctx, testConvKey, decodePut(t, `{"policy":`+policyJSON(t, withConcurrency(conloomapi.DefaultGroupPolicy(), 2), "")+`}`), "29999")
+	if err != nil || pv.Version != 2 || pv.Policy.Memory != want || pv.Policy.Concurrency.MaxInteractiveRequests != 2 {
+		t.Fatalf("JSON update without memory = %+v, %v; want memory kept on", pv, err)
+	}
+
+	goPut := conloomapi.DefaultGroupPolicy()
+	goPut.Memory = conloomapi.MemoryPolicy{}
+	pv, err = svc.Update(ctx, testConvKey, conloomapi.PolicyPut{Policy: goPut}, "29999")
+	if err != nil || pv.Version != 3 || pv.Policy.Memory != want {
+		t.Fatalf("Go update without memory = %+v, %v; want memory kept on", pv, err)
+	}
+	cur, err := svc.Current(ctx, testConvKey)
+	if err != nil || !cur.Policy.Memory.Enabled {
+		t.Fatalf("Current = %+v, %v; want memory enabled", cur, err)
+	}
+
+	zero := `{"enabled":false,"affinity":false,"consolidate_every":0,"consolidate_interval":"0s","backlog":0}`
+	pv, err = svc.Update(ctx, testConvKey, decodePut(t, `{"policy":`+policyJSON(t, conloomapi.DefaultGroupPolicy(), zero)+`}`), "29999")
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "memory.consolidate_every") || pv.Version != 0 {
+		t.Fatalf("explicit zero memory = %+v, %v; want ErrInvalid", pv, err)
+	}
+
+	noLong := conloomapi.DefaultGroupPolicy()
+	noLong.Concurrency.AllowLongRequests = false
+	pv, err = svc.Update(ctx, testConvKey, decodePut(t, `{"policy":`+policyJSON(t, noLong, "")+`}`), "29999")
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "memory.enabled requires concurrency.allow_long_requests") || pv.Version != 0 {
+		t.Fatalf("kept memory without long requests = %+v, %v; want ErrInvalid", pv, err)
+	}
+	if list, _ := st.ListPolicyVersions(ctx, testConvKey); len(list) != 3 {
+		t.Fatalf("stored %d versions, want 3", len(list))
+	}
+
+	for _, put := range []conloomapi.PolicyPut{
+		{Policy: conloomapi.DefaultGroupPolicy()},
+		{Policy: goPut},
+		{Policy: goPut, MemoryPresent: true},
+	} {
+		raw, err := json.Marshal(put)
+		if err != nil {
+			t.Fatal(err)
+		}
+		back := decodePut(t, string(raw))
+		if back.MemoryPresent != !put.MemoryOmitted() || back.MemoryOmitted() != put.MemoryOmitted() || back.Policy.Memory != put.Policy.Memory {
+			t.Fatalf("round trip of %s = present %v memory %+v; want omitted %v memory %+v",
+				raw, back.MemoryPresent, back.Policy.Memory, put.MemoryOmitted(), put.Policy.Memory)
+		}
+	}
+}
+
+// policyJSON returns p as JSON with the memory section replaced by memory, or removed when it is empty.
+func policyJSON(t *testing.T, p conloomapi.GroupPolicy, memory string) string {
+	t.Helper()
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	delete(doc, "memory")
+	if memory != "" {
+		doc["memory"] = json.RawMessage(memory)
+	}
+	raw, err = json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
 func TestPolicy_OnChangeCalled(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
