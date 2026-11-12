@@ -351,7 +351,8 @@ func mentionsOthers(mentions []conloomapi.Mention) bool {
 }
 
 // repliesToSomeoneElse reports whether m replies to a message of the bot or of
-// another member, or to a message that is not stored (or cannot be loaded).
+// another member, or to a message that is not stored in m's conversation (or
+// cannot be loaded).
 func (o *Orchestrator) repliesToSomeoneElse(ctx context.Context, m store.MessageRecord, byID map[string]store.MessageRecord) bool {
 	if m.ReplyTo == "" {
 		return false
@@ -366,7 +367,7 @@ func (o *Orchestrator) repliesToSomeoneElse(ctx context.Context, m store.Message
 			return true
 		}
 	}
-	return to.FromBot || to.PlatformUserID != m.PlatformUserID
+	return to.ConversationKey != m.ConversationKey || to.FromBot || to.PlatformUserID != m.PlatformUserID
 }
 
 // errJoinMerged stops a join task that the scheduler would merge into a task

@@ -481,6 +481,8 @@ func (o *Orchestrator) decide(ctx context.Context, s *submission) (Decision, con
 	if ev.Message.ReplyTo != nil && *ev.Message.ReplyTo != "" {
 		m, err := o.st.GetMessage(ctx, s.botID, *ev.Message.ReplyTo)
 		switch {
+		case err == nil && m.ConversationKey != s.convKey:
+			// A target in another conversation is treated as not stored.
 		case err == nil:
 			in.ReplyToIsBot = m.FromBot
 			in.ReplyToOther = !m.FromBot && m.PlatformUserID != ev.Actor.PlatformUserID

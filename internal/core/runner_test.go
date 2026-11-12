@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -358,5 +360,216 @@ func TestRunner_ConcurrencyTwoBothReply(t *testing.T) {
 	}
 	if p := peak.Load(); p != 2 {
 		t.Fatalf("peak concurrent model calls = %d, want 2", p)
+	}
+}
+
+func TestRunner_EchoPrefixOnlyOutputIsNotSent(t *testing.T) {
+	echo := answer("[18:37] 小明：")
+	env := newTestOrchestrator(t, testOpts{short: echo, long: echo})
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "", mentionBot)).TaskID)
+	if task.Status != conloomapi.TaskFailed || task.Error == nil || task.Error.Code != conloomapi.CodeModelUnavailable {
+		t.Fatalf("task = %+v", task)
+	}
+	if len(task.Actions) != 1 || task.Actions[0].Content.Text != CopyUnavailable {
+		t.Fatalf("actions = %+v", task.Actions)
+	}
+	if s, l := env.short.Calls(), env.long.Calls(); s != 1 || l != 1 {
+		t.Errorf("calls short=%d long=%d, want 1 and 1", s, l)
+	}
+	if strings.Contains(env.logs.String(), "[18:37]") {
+		t.Error("model output leaked into logs")
+	}
+}
+
+func TestRunner_EchoPrefixStrippedFromReply(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{short: answer("[18:37] 织语：你好呀")})
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "你好", mentionBot)).TaskID)
+	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 || task.Actions[0].Content.Text != "你好呀" {
+		t.Fatalf("task = %+v", task)
+	}
+}
+
+func TestRunner_TurnEchoOnlyOutputSendsNothing(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: withContinuation, short: func(req map[string]any) (int, string) {
+		if strings.Contains(lastContent(req), turnDirective) {
+			return 200, "[18:37] 用户20001："
+		}
+		return 200, fakeReply
+	}})
+	env.startContinuation(t, "20001")
+	resp := env.submit(t, env.groupEvent("20001", "晚饭吃什么好呢"))
+	if resp.Disposition != conloomapi.DispositionReply || resp.TaskID == "" {
+		t.Fatalf("continuation response = %+v", resp)
+	}
+	task := env.waitTask(t, resp.TaskID)
+	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 0 || task.Error != nil {
+		t.Fatalf("task = %+v", task)
+	}
+	if task.Meta.Trigger != conloomapi.TriggerContinuation {
+		t.Errorf("meta = %+v", task.Meta)
+	}
+	if env.long.Calls() != 0 {
+		t.Errorf("long calls = %d, want 0 (a turn is not re-routed)", env.long.Calls())
+	}
+	if strings.Contains(env.logs.String(), "[18:37]") {
+		t.Error("model output leaked into logs")
+	}
+}
+
+func TestRunner_PassesReplyTargetsForHistory(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	cold := env.groupEvent("20002", "今天好冷")
+	env.submit(t, cold)
+	env.submit(t, env.groupEvent("20003", "是啊", replyTo(cold.Message.ID)))
+	env.submit(t, env.groupEvent("20003", "早就说了", replyTo("msg_gone")))
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "你怎么看", mentionBot)).TaskID)
+	if task.Status != conloomapi.TaskSucceeded {
+		t.Fatalf("task = %+v", task)
+	}
+	var all strings.Builder
+	for _, m := range requestMessages(t, env.short.Requests()[0]) {
+		c, _ := m["content"].(string)
+		all.WriteString(c + "\n")
+	}
+	for _, want := range []string{"用户20003（回复 用户20002 ", "的「今天好冷」）：是啊", "用户20003（回复了一条更早的消息）：早就说了"} {
+		if !strings.Contains(all.String(), want) {
+			t.Errorf("request lacks %q:\n%s", want, all.String())
+		}
+	}
+}
+
+// storeRecord stores m (with its stored fields defaulted) directly.
+func (e *testEnv) storeRecord(t *testing.T, m store.MessageRecord) store.MessageRecord {
+	t.Helper()
+	now := time.Now().UTC()
+	m.BotInstanceID, m.Platform, m.OccurredAt, m.CreatedAt = testBot, "qq", now, now
+	if m.ConversationKey == "" {
+		m.ConversationKey = testConvKey
+	}
+	_, err := e.st.Ingest(context.Background(), store.Ingest{
+		Event:   store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "test:" + m.ID, EventID: "evt_" + m.ID, Response: []byte("{}"), CreatedAt: now},
+		Message: &m,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+const otherConvKey = "bot_main:qq:group:group_10002"
+
+// storeForeign stores a message of another group of the bot.
+func (e *testEnv) storeForeign(t *testing.T, id string, fromBot bool, text string) {
+	t.Helper()
+	m := store.MessageRecord{ID: id, ConversationKey: otherConvKey, Text: text, FromBot: fromBot}
+	if !fromBot {
+		m.PlatformUserID, m.DisplayName = "20009", "外人"
+	}
+	e.storeRecord(t, m)
+}
+
+func requestText(t *testing.T, req map[string]any) string {
+	t.Helper()
+	var all strings.Builder
+	for _, m := range requestMessages(t, req) {
+		c, _ := m["content"].(string)
+		all.WriteString(c + "\n")
+	}
+	return all.String()
+}
+
+func TestRunner_ReplyTargetFromOtherConversationIsUnknown(t *testing.T) {
+	if store.ConversationKey(testBot, "qq", conloomapi.ConvGroup, "group_10002") != otherConvKey {
+		t.Fatal("otherConvKey does not match the store's key format")
+	}
+	env := newTestOrchestrator(t, testOpts{})
+	env.storeForeign(t, "msg_9001", false, "别处的秘密")
+	env.storeForeign(t, "msg_9002", true, "别处的回答")
+	env.submit(t, env.groupEvent("20003", "是啊", replyTo("msg_9001")))
+	ev := env.groupEvent("20001", "你怎么看", mentionBot, replyTo("msg_9002"))
+	task := env.waitTask(t, env.submit(t, ev).TaskID)
+	if task.Status != conloomapi.TaskSucceeded {
+		t.Fatalf("task = %+v", task)
+	}
+	all := requestText(t, env.short.Requests()[0])
+	for _, want := range []string{"用户20003（回复了一条更早的消息）：是啊", "【当前消息】发送者：用户20001\n（回复了一条更早的消息）\n你怎么看"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("request lacks %q:\n%s", want, all)
+		}
+	}
+	for _, leak := range []string{"别处的秘密", "别处的回答", "外人"} {
+		if strings.Contains(all, leak) {
+			t.Errorf("request leaks %q from another conversation:\n%s", leak, all)
+		}
+	}
+}
+
+func TestSubmit_ReplyToBotInOtherConversationIsNotAddressed(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	env.storeForeign(t, "msg_9002", true, "别处的回答")
+	if resp := env.submit(t, env.groupEvent("20001", "对吗", replyTo("msg_9002"))); resp.Disposition != conloomapi.DispositionObserve {
+		t.Fatalf("response = %+v, want observe (the target is not the bot's message here)", resp)
+	}
+	own := env.storeRecord(t, store.MessageRecord{ID: "msg_bot_own", Text: "我来啦", FromBot: true})
+	if resp := env.submit(t, env.groupEvent("20001", "对吗", replyTo(own.ID))); resp.Disposition != conloomapi.DispositionReply {
+		t.Fatalf("response = %+v, want reply to the bot's message in this group", resp)
+	}
+}
+
+func TestRunner_ContinuationReplyToForeignBotKeepsDirective(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{short: skipOnDirective, configure: withContinuation})
+	env.storeForeign(t, "msg_9002", true, "别处的回答")
+	env.startContinuation(t, "20001")
+	resp := env.submit(t, env.groupEvent("20001", "对吗", replyTo("msg_9002")))
+	if resp.Disposition != conloomapi.DispositionReply {
+		t.Fatalf("response = %+v", resp)
+	}
+	task := env.waitTask(t, resp.TaskID)
+	if task.Meta.Trigger != conloomapi.TriggerContinuation || len(task.Actions) != 0 || task.Meta.ReviewResult != "skipped" {
+		t.Fatalf("task = %+v, want a skipped continuation turn", task)
+	}
+	if c := lastContent(env.short.Requests()[1]); !strings.Contains(c, turnDirective) {
+		t.Errorf("turn request lacks the directive: %q", c)
+	}
+}
+
+func TestRunner_ReplyTargetsSkipBotHistory(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	env.submit(t, env.groupEvent("20002", "在吗"))
+	env.storeRecord(t, store.MessageRecord{ID: "msg_bot_1", Text: "织语：在的", FromBot: true, ReplyTo: "msg_quoted_by_bot"})
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "你好", mentionBot)).TaskID)
+	if task.Status != conloomapi.TaskSucceeded {
+		t.Fatalf("task = %+v", task)
+	}
+	if env.hooks.lookedUp("msg_quoted_by_bot") {
+		t.Error("looked up the reply target of a bot history message")
+	}
+	msgs := requestMessages(t, env.short.Requests()[0])
+	var assistant []string
+	for _, m := range msgs {
+		if m["role"] == "assistant" {
+			c, _ := m["content"].(string)
+			assistant = append(assistant, c)
+		}
+	}
+	if len(assistant) != 1 || assistant[0] != "在的" {
+		t.Errorf("assistant history = %q, want [在的] (bot name stripped)", assistant)
+	}
+}
+
+func TestRunner_EchoPrefixWithKnownSpeakerName(t *testing.T) {
+	named := func(name string) evOpt { return func(ev *conloomapi.Event) { ev.Actor.DisplayName = name } }
+	for _, c := range []struct{ output, want string }{
+		{"[18:37] Mr.X：", CopyUnavailable},
+		{"[18:37] ？？？：你好呀", "你好呀"},
+	} {
+		t.Run(c.output, func(t *testing.T) {
+			env := newTestOrchestrator(t, testOpts{short: answer(c.output), long: answer(c.output)})
+			env.submit(t, env.groupEvent("20002", "在吗", named("Mr.X")))
+			task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "你好", mentionBot, named("？？？"))).TaskID)
+			if len(task.Actions) != 1 || task.Actions[0].Content.Text != c.want {
+				t.Fatalf("task = %+v, want one action %q", task, c.want)
+			}
+		})
 	}
 }

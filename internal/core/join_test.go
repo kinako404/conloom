@@ -613,6 +613,18 @@ func TestJoin_TargetSkipsReplyToBot(t *testing.T) {
 	}
 }
 
+func TestJoin_TargetSkipsReplyToOtherConversation(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: joinConfig(time.Hour, nil)})
+	env.seedMember(t, "20001", conloomapi.ProactiveLow, time.Now().Add(-time.Hour))
+	evs := env.chat(t, line{"20001", matchText}, line{"20002", "好的"})
+	foreign := env.storeRecord(t, store.MessageRecord{ID: "msg_9003", ConversationKey: otherConvKey, PlatformUserID: "20001", Text: "别处"})
+	env.storeMessage(t, "20001", "对呀", foreign.ID)
+	task := env.requireJoin(t)
+	if len(task.Actions) != 1 || task.Actions[0].ReplyToMessageID != evs[0].Message.ID {
+		t.Fatalf("join task = %+v, want a reply to %s, not to the reply to another group's message", task, evs[0].Message.ID)
+	}
+}
+
 func TestJoin_TaskReplyingToBotKeepsProactiveGating(t *testing.T) {
 	for _, c := range []struct {
 		name  string

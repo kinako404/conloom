@@ -144,6 +144,22 @@ type hookStore struct {
 	completions map[string][]string
 	// failLog makes AppendProactiveLog fail.
 	failLog atomic.Bool
+	// lookups records the IDs of every GetMessages call.
+	lookups [][]string
+}
+
+func (h *hookStore) GetMessages(ctx context.Context, botID string, ids []string) ([]store.MessageRecord, error) {
+	h.mu.Lock()
+	h.lookups = append(h.lookups, slices.Clone(ids))
+	h.mu.Unlock()
+	return h.Store.GetMessages(ctx, botID, ids)
+}
+
+// lookedUp reports whether a GetMessages call asked for id.
+func (h *hookStore) lookedUp(id string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.ContainsFunc(h.lookups, func(ids []string) bool { return slices.Contains(ids, id) })
 }
 
 func (h *hookStore) AppendProactiveLog(ctx context.Context, e store.ProactiveLogEntry) error {

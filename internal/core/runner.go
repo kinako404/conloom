@@ -34,8 +34,13 @@ const (
 // the outbox.
 const SkipMarker = "[[SKIP]]"
 
+// errEchoOnly is a model output made only of the prompt's transcript format
+// (see contextbuilder.StripTranscriptPrefix).
+var errEchoOnly = fmt.Errorf("%w: only the transcript format", openai.ErrEmptyOutput)
+
 // outcome is the result of executing a reply task. An empty text means no
-// action is sent; skipped means the model answered SkipMarker. proactive is
+// action is sent; skipped means the model answered SkipMarker (or, for a task
+// not addressed to the bot, only echoed the transcript format). proactive is
 // set for a proactive task none of whose messages is addressed to the bot;
 // turn for a continuation task none of whose messages is; addressed for a
 // task with a message that mentions or replies to the bot. turnSession is the
@@ -236,7 +241,8 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		ConversationType: conv.Type,
 		History:          history,
 		Current:          current,
-		ReplyTarget:      o.replyTarget(ctx, task.BotInstanceID, triggers),
+		BotName:          bot.Name,
+		ReplyTargets:     o.replyTargets(ctx, task, history, triggers),
 		MaxRecent:        pol.Context.MaxRecentMessages,
 		TokenFactor:      o.tokenFactor,
 		Location:         o.loc,
@@ -257,7 +263,20 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		return fail(conloomapi.CodeModelUnavailable, CopyUnavailable, err)
 	}
 	out.meta.SelectedModelRole, out.meta.RouteReason = string(d.Profile.Role), d.Reason
-	resp, err := o.call(ctx, task, d, in)
+	// A reply to the bot made only of the transcript format fails like an
+	// empty model output; other tasks send nothing for it (see below).
+	direct := !out.proactive && !out.turn
+	speakers := in.SpeakerNames()
+	strip := func(s string) string { return contextbuilder.StripTranscriptPrefix(s, bot.Name, speakers...) }
+	call := func(d router.Decision) (openai.ChatResponse, error) {
+		resp, err := o.call(ctx, task, d, in)
+		if err == nil && direct && !isSkip(resp.Content) && strip(resp.Content) == "" {
+			o.log.Info("model output only echoed the transcript format", "task_id", task.ID, "role", d.Profile.Role, "output_len", len(resp.Content))
+			return openai.ChatResponse{}, fmt.Errorf("model %s: %w", d.Profile.Role, errEchoOnly)
+		}
+		return resp, err
+	}
+	resp, err := call(d)
 	if err != nil && ctx.Err() == nil {
 		o.log.Warn("model call failed; re-routing", "task_id", task.ID, "role", d.Profile.Role, "error", err)
 		req.Exclude = []router.Role{d.Profile.Role}
@@ -267,7 +286,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		}
 		d = d2
 		out.meta.SelectedModelRole, out.meta.RouteReason = string(d.Profile.Role), d.Reason
-		resp, err = o.call(ctx, task, d, in)
+		resp, err = call(d)
 	}
 	if ctx.Err() != nil {
 		return out
@@ -283,7 +302,14 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		out.skipped = true
 		return out
 	}
-	res := o.reviewer.Output(resp.Content, pol.Review)
+	text := strip(resp.Content)
+	if text == "" {
+		o.log.Info("model output only echoed the transcript format; not sending", "task_id", task.ID, "output_len", len(resp.Content))
+		out.meta.ReviewResult = reviewResultSkipped
+		out.skipped = true
+		return out
+	}
+	res := o.reviewer.Output(text, pol.Review)
 	o.metrics.Review.WithLabelValues("output", res.Verdict).Inc()
 	if res.Verdict == review.VerdictBlock {
 		out.meta.ReviewResult = reviewResultBlocked
@@ -315,22 +341,33 @@ func (o *Orchestrator) history(ctx context.Context, convKey string, maxRecent in
 	return history, nil
 }
 
-// replyTarget returns the message the first replying trigger points at, if stored.
-func (o *Orchestrator) replyTarget(ctx context.Context, botID string, triggers []store.MessageRecord) *store.MessageRecord {
-	for _, t := range triggers {
-		if t.ReplyTo == "" {
-			continue
+// replyTargets loads, in one query, the stored messages of the task's
+// conversation that member history and triggers reply to, keyed by ID (the
+// bot's own reply targets are never shown). Targets that are not stored, or
+// belong to another conversation, are absent; on a load error none are
+// returned.
+func (o *Orchestrator) replyTargets(ctx context.Context, task store.TaskRecord, history, triggers []store.MessageRecord) map[string]store.MessageRecord {
+	var ids []string
+	for _, m := range slices.Concat(history, triggers) {
+		if m.ReplyTo != "" && !m.FromBot && !slices.Contains(ids, m.ReplyTo) {
+			ids = append(ids, m.ReplyTo)
 		}
-		m, err := o.st.GetMessage(ctx, botID, t.ReplyTo)
-		if err != nil {
-			if !errors.Is(err, store.ErrNotFound) {
-				o.log.Warn("load reply target failed", "message_id", t.ReplyTo, "error", err)
-			}
-			return nil
-		}
-		return &m
 	}
-	return nil
+	if len(ids) == 0 {
+		return nil
+	}
+	msgs, err := o.st.GetMessages(ctx, task.BotInstanceID, ids)
+	if err != nil {
+		o.log.Warn("load reply targets failed", "count", len(ids), "error", err)
+		return nil
+	}
+	targets := make(map[string]store.MessageRecord, len(msgs))
+	for _, m := range msgs {
+		if m.ConversationKey == task.ConversationKey {
+			targets[m.ID] = m
+		}
+	}
+	return targets
 }
 
 // directive returns the hint appended to the current message of a
@@ -355,7 +392,7 @@ func (o *Orchestrator) directive(ctx context.Context, task store.TaskRecord, tri
 			continue
 		}
 		m, err := o.st.GetMessage(ctx, task.BotInstanceID, t.ReplyTo)
-		if err == nil && m.FromBot {
+		if err == nil && m.FromBot && m.ConversationKey == task.ConversationKey {
 			return ""
 		}
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
