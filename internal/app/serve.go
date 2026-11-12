@@ -20,8 +20,9 @@ const (
 )
 
 // Serve runs the core service on cfg.Server.Listen until ctx is done, then
-// shuts the HTTP server down gracefully, waiting up to 10s for in-flight
-// requests. Unfinished tasks are recovered before any request is accepted.
+// shuts the HTTP server down gracefully: in-flight requests are cancelled
+// (long polls answer with no actions) and given up to 10s to finish.
+// Unfinished tasks are recovered before any request is accepted.
 func Serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) (err error) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -44,13 +45,19 @@ func Serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) (err er
 		_ = ln.Close()
 		return err
 	}
+	// Request contexts are cancelled once shutdown begins, so outbox long
+	// polls return at once instead of holding shutdown for their full wait.
+	baseCtx, cancelBase := context.WithCancel(context.Background())
+	defer cancelBase()
 	srv := &http.Server{
 		Handler:           a.Handler(),
 		ReadHeaderTimeout: readHeaderTimeout,
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       idleTimeout,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
+		BaseContext:       func(net.Listener) context.Context { return baseCtx },
 	}
+	srv.RegisterOnShutdown(cancelBase)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ln) }()
 	logger.Info("listening", "addr", ln.Addr().String())

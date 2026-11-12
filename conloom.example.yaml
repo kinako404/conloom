@@ -41,8 +41,9 @@ bots:
     platform: qq
     name: 织语
     platform_self_id: ${CONLOOM_BOT_SELF_ID}
+    # 管理员（可使用 /pause 等命令）；每项与群号均不能为空，变量未设置时启动报错。
     admins: ["${CONLOOM_ADMIN_QQ}"]
-    # 只在这些会话中工作；未列出的群消息会被忽略。
+    # 只在这些会话中工作；未列出的群消息会被忽略。type 为 group 或 private。
     enabled_conversations:
       - {type: group, platform_id: "${CONLOOM_GROUP_ID}"}
     # 私聊策略：admins（仅管理员）| all（所有人）| off（关闭）。
@@ -66,9 +67,9 @@ model_profiles:
       reserved_output_tokens: 1024
       safety_margin_tokens: 1024
     runtime:
-      max_concurrency: 2
-      timeout: 60s
-      max_retries: 2
+      max_concurrency: 2   # >= 1
+      timeout: 60s         # 单次请求超时，须 > 0
+      max_retries: 2       # 0~5
     # 隐私：remote 表示数据会发往远端服务；allow_sensitive_content 允许发送敏感内容。
     privacy:
       data_location: remote
@@ -166,8 +167,8 @@ adapters:
     core_token: ${CONLOOM_ADAPTER_TOKEN}
     bot_instance_id: bot_main
 
-# 可观测性：日志级别、格式（json | text），默认不记录消息正文。
+# 可观测性：日志级别、格式，默认不记录消息正文。
 observability:
-  log_level: info
-  log_format: json
+  log_level: info     # debug | info | warn | error
+  log_format: json    # json | text
   log_message_content: false

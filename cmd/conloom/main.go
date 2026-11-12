@@ -74,10 +74,28 @@ var adapters = map[string]command{
 }
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signalContext()
 	code := run(ctx, os.Args[1:], stdio{in: os.Stdin, out: os.Stdout, err: os.Stderr})
 	stop()
 	os.Exit(code)
+}
+
+// signalContext is cancelled by the first SIGINT or SIGTERM. Signal handling
+// is reset before the cancellation, so a second signal during a slow shutdown
+// terminates the process.
+func signalContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		select {
+		case <-ch:
+		case <-ctx.Done():
+		}
+		signal.Stop(ch)
+		cancel()
+	}()
+	return ctx, cancel
 }
 
 func run(ctx context.Context, args []string, sio stdio) int {
@@ -262,6 +280,9 @@ func runBackup(ctx context.Context, args []string, sio stdio) error {
 	if err != nil {
 		return err
 	}
+	if _, err := os.Stat(*out); err == nil {
+		return configErr(fmt.Errorf("%s already exists", *out))
+	}
 	if _, err := os.Stat(cfg.DBPath()); err != nil {
 		return fmt.Errorf("database: %w", err)
 	}
@@ -274,6 +295,10 @@ func runBackup(ctx context.Context, args []string, sio stdio) error {
 		return err
 	}
 	if err := db.Close(); err != nil {
+		return err
+	}
+	// The backup holds chat history; VACUUM INTO creates it with the umask's mode.
+	if err := os.Chmod(*out, 0o600); err != nil {
 		return err
 	}
 	fmt.Fprintf(sio.out, "backup of %s written to %s\n", cfg.DBPath(), *out)

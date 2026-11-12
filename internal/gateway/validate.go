@@ -38,6 +38,9 @@ func validateEvent(ev conloomapi.Event, bot config.BotConfig) error {
 			fail("%s must not be empty", f.path)
 		}
 	}
+	if ev.OccurredAt.IsZero() {
+		fail("occurred_at must be set")
+	}
 	if ev.Platform != bot.Platform {
 		fail("platform must be %q for bot %q, got %q", bot.Platform, bot.ID, ev.Platform)
 	}

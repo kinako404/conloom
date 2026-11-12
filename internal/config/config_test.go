@@ -385,6 +385,56 @@ func TestValidateServe_Rules(t *testing.T) {
 			c.DefaultGroupPolicy.Concurrency.MaxInteractiveRequests = 3
 			c.DefaultGroupPolicy.Review.Action = "explode"
 		}, []string{"default_group_policy.concurrency.max_interactive_requests", "default_group_policy.review.action"}},
+		{"empty platform", func(c *Config) { c.Bots[0].Platform = " " }, []string{"bots[0].platform:"}},
+		{"empty group id", func(c *Config) {
+			c.Bots[0].EnabledConversations[0].PlatformID = ""
+			c.MissingEnv = []string{"CONLOOM_GROUP_ID"}
+		}, []string{"bots[0].enabled_conversations[0].platform_id", "CONLOOM_GROUP_ID"}},
+		{"bad conversation type", func(c *Config) { c.Bots[0].EnabledConversations[0].Type = "grop" },
+			[]string{"bots[0].enabled_conversations[0].type", `"grop"`}},
+		{"empty admin", func(c *Config) {
+			c.Bots[0].Admins = []string{"29999", ""}
+			c.MissingEnv = []string{"CONLOOM_ADMIN_QQ"}
+		}, []string{"bots[0].admins[1]", "CONLOOM_ADMIN_QQ"}},
+		{"zero max_concurrency", func(c *Config) {
+			p := c.ModelProfiles["short_context"]
+			p.Runtime.MaxConcurrency = 0
+			c.ModelProfiles["short_context"] = p
+		}, []string{"model_profiles.short_context.runtime.max_concurrency"}},
+		{"zero timeout", func(c *Config) {
+			p := c.ModelProfiles["short_context"]
+			p.Runtime.Timeout.Duration = 0
+			c.ModelProfiles["short_context"] = p
+		}, []string{"model_profiles.short_context.runtime.timeout"}},
+		{"negative timeout", func(c *Config) {
+			p := c.ModelProfiles["short_context"]
+			p.Runtime.Timeout.Duration = -time.Second
+			c.ModelProfiles["short_context"] = p
+		}, []string{"model_profiles.short_context.runtime.timeout"}},
+		{"too many retries", func(c *Config) {
+			p := c.ModelProfiles["long_context"]
+			p.Runtime.MaxRetries = 6
+			c.ModelProfiles["long_context"] = p
+		}, []string{"model_profiles.long_context.runtime.max_retries"}},
+		{"negative retries", func(c *Config) {
+			p := c.ModelProfiles["long_context"]
+			p.Runtime.MaxRetries = -1
+			c.ModelProfiles["long_context"] = p
+		}, []string{"model_profiles.long_context.runtime.max_retries"}},
+		{"negative token factor", func(c *Config) {
+			p := c.ModelProfiles["long_context"]
+			p.TokenEstimateFactor = -0.5
+			c.ModelProfiles["long_context"] = p
+		}, []string{"model_profiles.long_context.token_estimate_factor"}},
+		{"unknown log level", func(c *Config) { c.Observability.LogLevel = "verbose" }, []string{"observability.log_level", `"verbose"`}},
+		{"unknown log format", func(c *Config) { c.Observability.LogFormat = "xml" }, []string{"observability.log_format", `"xml"`}},
+		{"unknown timezone", func(c *Config) { c.Server.Timezone = "Asia/Shanghia" }, []string{"server.timezone", "Asia/Shanghia"}},
+		{"duplicate token value", func(c *Config) {
+			c.APITokens = append(c.APITokens, APIToken{Name: "second", Token: c.APITokens[0].Token, BotInstanceID: "bot_main"})
+		}, []string{"api_tokens[1].token", "duplicate"}},
+		{"duplicate token name", func(c *Config) {
+			c.APITokens = append(c.APITokens, APIToken{Name: c.APITokens[0].Name, Token: "fake-other-token", BotInstanceID: "bot_main"})
+		}, []string{"api_tokens[1].name", "duplicate"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -446,6 +496,84 @@ func TestValidateMock(t *testing.T) {
 		if !strings.Contains(err.Error(), w) {
 			t.Errorf("error %q does not contain %q", err, w)
 		}
+	}
+}
+
+func TestValidateServe_AcceptsBoundaryValues(t *testing.T) {
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	p := cfg.ModelProfiles["short_context"]
+	p.Runtime.MaxConcurrency = 1
+	p.Runtime.MaxRetries = 0
+	p.TokenEstimateFactor = 0
+	cfg.ModelProfiles["short_context"] = p
+	p = cfg.ModelProfiles["long_context"]
+	p.Runtime.MaxRetries = 5
+	cfg.ModelProfiles["long_context"] = p
+	cfg.Bots[0].Admins = nil
+	cfg.Bots[0].EnabledConversations = append(cfg.Bots[0].EnabledConversations,
+		conloomapi.ConversationRef{Type: "private", PlatformID: "20001"})
+	cfg.Server.Timezone = "UTC"
+	for _, o := range []ObservabilityConfig{
+		{LogLevel: "", LogFormat: ""},
+		{LogLevel: "debug", LogFormat: "text"},
+		{LogLevel: "WARNING", LogFormat: "JSON"},
+		{LogLevel: "warn"},
+		{LogLevel: "error"},
+	} {
+		cfg.Observability = o
+		if err := cfg.ValidateServe(); err != nil {
+			t.Errorf("observability %+v: %v", o, err)
+		}
+	}
+}
+
+func TestValidateAdapters_URLsAndLogging(t *testing.T) {
+	cases := []struct {
+		name     string
+		mutate   func(c *Config)
+		validate func(c *Config) error
+		want     []string
+	}{
+		{"napcat core_url without scheme", func(c *Config) { c.Adapters.NapCat.CoreURL = "127.0.0.1:8787" },
+			(*Config).ValidateNapCat, []string{"adapters.napcat.core_url", "http"}},
+		{"napcat core_url ws scheme", func(c *Config) { c.Adapters.NapCat.CoreURL = "ws://127.0.0.1:8787" },
+			(*Config).ValidateNapCat, []string{"adapters.napcat.core_url"}},
+		{"napcat ws_url http scheme", func(c *Config) { c.Adapters.NapCat.WSURL = "http://127.0.0.1:3001" },
+			(*Config).ValidateNapCat, []string{"adapters.napcat.ws_url", "ws"}},
+		{"napcat ws_url without host", func(c *Config) { c.Adapters.NapCat.WSURL = "ws://" },
+			(*Config).ValidateNapCat, []string{"adapters.napcat.ws_url"}},
+		{"napcat log level", func(c *Config) { c.Observability.LogLevel = "verbose" },
+			(*Config).ValidateNapCat, []string{"observability.log_level"}},
+		{"mock core_url scheme", func(c *Config) { c.Adapters.Mock.CoreURL = "ftp://127.0.0.1:8787" },
+			(*Config).ValidateMock, []string{"adapters.mock.core_url"}},
+		{"mock log format", func(c *Config) { c.Observability.LogFormat = "xml" },
+			(*Config).ValidateMock, []string{"observability.log_format"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := mustLoad(t, "testdata/valid.yaml")
+			tc.mutate(cfg)
+			err := tc.validate(cfg)
+			if err == nil {
+				t.Fatal("validation succeeded, want error")
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error %q does not contain %q", err, w)
+				}
+			}
+		})
+	}
+
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	cfg.Adapters.NapCat.WSURL = "wss://napcat.example:3001/path"
+	cfg.Adapters.NapCat.CoreURL = "https://127.0.0.1:8787"
+	cfg.Adapters.Mock.CoreURL = "HTTP://127.0.0.1:8787/"
+	if err := cfg.ValidateNapCat(); err != nil {
+		t.Errorf("ValidateNapCat: %v", err)
+	}
+	if err := cfg.ValidateMock(); err != nil {
+		t.Errorf("ValidateMock: %v", err)
 	}
 }
 

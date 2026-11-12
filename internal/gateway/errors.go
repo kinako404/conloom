@@ -14,10 +14,13 @@ import (
 )
 
 // fail maps err from a collaborator to an error response. Unrecognised errors
-// are logged and reported as 500 without their details.
+// are logged and reported as 500 without their details. A request whose
+// context was cancelled (client gone or server shutting down) gets a retryable
+// 503, so a still-connected client never mistakes it for success.
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if ctxErr := r.Context().Err(); ctxErr != nil && errors.Is(err, ctxErr) {
-		s.log.Debug("request abandoned by client", "trace_id", traceID(r.Context()), "method", r.Method, "path", r.URL.Path)
+		s.log.Debug("request cancelled", "trace_id", traceID(r.Context()), "method", r.Method, "path", r.URL.Path)
+		writeErrorBody(w, r, http.StatusServiceUnavailable, conloomapi.CodeInternal, "request cancelled; server may be shutting down", true)
 		return
 	}
 	switch {

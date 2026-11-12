@@ -147,6 +147,11 @@ func (s *Server) pollOutbox(w http.ResponseWriter, r *http.Request, tok *token) 
 		wait = d
 	}
 	actions, err := s.d.Outbox.Poll(r.Context(), tok.botID, limit, wait)
+	if ctxErr := r.Context().Err(); err != nil && ctxErr != nil && errors.Is(err, ctxErr) {
+		// Cancelled long poll (server shutting down): an empty result lets
+		// the adapter simply poll again.
+		actions, err = nil, nil
+	}
 	if err != nil {
 		s.fail(w, r, err)
 		return

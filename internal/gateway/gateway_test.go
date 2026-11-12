@@ -108,10 +108,11 @@ type serverOpts struct {
 }
 
 type testServer struct {
-	URL  string
-	st   *sqlite.DB
-	logs *syncBuffer
-	seq  atomic.Int64
+	URL     string
+	handler http.Handler
+	st      *sqlite.DB
+	logs    *syncBuffer
+	seq     atomic.Int64
 }
 
 func newTestServer(t *testing.T) *testServer {
@@ -174,12 +175,13 @@ func newTestServerWith(t *testing.T, opts serverOpts) *testServer {
 	if metricsHandler == nil {
 		metricsHandler = promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 	}
-	srv := httptest.NewServer(gateway.New(gateway.Deps{
+	handler := gateway.New(gateway.Deps{
 		Orchestrator: o, Outbox: ob, Personas: personas, Policies: policies, Store: st,
 		Config: cfg, Metrics: metricsHandler, Logger: logger,
-	}).Handler())
+	}).Handler()
+	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return &testServer{URL: srv.URL, st: st, logs: logs}
+	return &testServer{URL: srv.URL, handler: handler, st: st, logs: logs}
 }
 
 type response struct {
@@ -373,6 +375,7 @@ func TestEvents_InvalidSchemaVersion(t *testing.T) {
 		"text over 16000":   func(ev *conloomapi.Event) { ev.Message.Text = strings.Repeat("字", 16001) },
 		"blank message id":  func(ev *conloomapi.Event) { ev.Message.ID = "  " },
 		"empty platform":    func(ev *conloomapi.Event) { ev.Platform = "" },
+		"zero occurred_at":  func(ev *conloomapi.Event) { ev.OccurredAt = time.Time{} },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -483,6 +486,54 @@ func TestOutbox_PollAndAckFlow(t *testing.T) {
 	}
 	if got := s.poll(t, adapterToken, "?wait=100ms"); len(got) != 0 {
 		t.Fatalf("after ack: %+v", got)
+	}
+}
+
+// serveCancelled serves an authenticated request whose context is cancelled
+// after delay (immediately when delay is 0), as on server shutdown.
+func (s *testServer) serveCancelled(t *testing.T, method, path string, body any, delay time.Duration) *httptest.ResponseRecorder {
+	t.Helper()
+	var rd io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rd = bytes.NewReader(raw)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if delay == 0 {
+		cancel()
+	} else {
+		time.AfterFunc(delay, cancel)
+	}
+	req := httptest.NewRequestWithContext(ctx, method, path, rd)
+	req.Header.Set("Authorization", "Bearer "+adapterToken)
+	rec := httptest.NewRecorder()
+	s.handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestOutbox_PollCancelledReturnsEmptyActions(t *testing.T) {
+	s := newTestServer(t)
+	start := time.Now()
+	rec := s.serveCancelled(t, http.MethodGet, "/api/v1/outbox?wait=30s", nil, 100*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("poll returned after %v, want prompt return on cancellation", elapsed)
+	}
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"actions":[]}` {
+		t.Fatalf("cancelled poll: status %d, body %q; want 200 {\"actions\":[]}", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCancelledRequestIsRetryable503(t *testing.T) {
+	s := newTestServer(t)
+	rec := s.serveCancelled(t, http.MethodPost, "/api/v1/outbox/act_x/ack", conloomapi.AckRequest{Status: conloomapi.AckSent}, 0)
+	body := expectError(t, response{status: rec.Code, header: rec.Header(), body: rec.Body.Bytes()},
+		http.StatusServiceUnavailable, conloomapi.CodeInternal)
+	if !body.Retryable {
+		t.Fatalf("cancelled request error not retryable: %+v", body)
 	}
 }
 
