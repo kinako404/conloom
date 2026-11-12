@@ -45,6 +45,7 @@ func TestNewMetrics_RegistersOnFreshRegistry(t *testing.T) {
 	m.OutboxExpired.Inc()
 	m.Review.WithLabelValues("basic", "pass").Inc()
 	m.BreakerOpen.WithLabelValues("main").Set(1)
+	m.ContinuationExits.WithLabelValues("rule").Inc()
 
 	mfs, err := reg.Gather()
 	if err != nil {
@@ -57,11 +58,13 @@ func TestNewMetrics_RegistersOnFreshRegistry(t *testing.T) {
 		}
 		names[mf.GetName()] = true
 	}
-	if !names["conloom_events_total"] {
-		t.Fatalf("conloom_events_total missing; got %v", names)
+	for _, name := range []string{"conloom_events_total", "conloom_continuation_exits_total"} {
+		if !names[name] {
+			t.Fatalf("%s missing; got %v", name, names)
+		}
 	}
-	if len(mfs) != 13 {
-		t.Errorf("gathered %d metric families, want 13: %v", len(mfs), names)
+	if len(mfs) != 14 {
+		t.Errorf("gathered %d metric families, want 14: %v", len(mfs), names)
 	}
 }
 

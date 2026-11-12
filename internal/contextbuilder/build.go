@@ -31,6 +31,9 @@ type Input struct {
 	Budget, MaxRecent              int
 	TokenFactor                    float64
 	Location                       *time.Location
+	// Directive, when set, is appended to the current message after a blank
+	// line. It never changes the system prompt and counts toward BaseTokens.
+	Directive string
 }
 
 type Output struct {
@@ -47,7 +50,7 @@ var defaultLocation = sync.OnceValue(func() *time.Location {
 })
 
 // BaseTokens estimates the system prompt plus the current input (including
-// the reply target), which are always sent regardless of Budget.
+// the reply target and directive), which are always sent regardless of Budget.
 func BaseTokens(in Input) int {
 	n := Estimate(renderCurrent(in), in.TokenFactor) + MessageOverhead
 	if in.SystemPrompt != "" {
@@ -173,6 +176,9 @@ func renderCurrent(in Input) string {
 	}
 	for _, rec := range in.Current {
 		lines = append(lines, renderBody(rec))
+	}
+	if in.Directive != "" {
+		lines = append(lines, "", in.Directive)
 	}
 	return strings.Join(lines, "\n")
 }

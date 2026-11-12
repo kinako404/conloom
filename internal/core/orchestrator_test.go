@@ -93,6 +93,7 @@ type testEnv struct {
 	long     *fakeopenai.Server
 	notifier *memNotifier
 	logs     *syncBuffer
+	reg      *prometheus.Registry
 	seq      atomic.Int64
 }
 
@@ -256,6 +257,7 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 		limits[string(role)] = admission.Limits{MaxConcurrency: p.Runtime.MaxConcurrency}
 	}
 	env.policies = policy.NewService(st, cfg.DefaultGroupPolicy)
+	env.reg = prometheus.NewRegistry()
 	o, err := New(Deps{
 		Store:     env.hooks,
 		Router:    router.New(profiles, router.BreakerConfig{}, time.Now),
@@ -264,7 +266,7 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 		Policies:  env.policies,
 		Reviewer:  review.New(cfg.Secrets(), review.Options{}),
 		Notifier:  env.notifier,
-		Metrics:   obs.NewMetrics(prometheus.NewRegistry()),
+		Metrics:   obs.NewMetrics(env.reg),
 		Logger:    slog.New(slog.NewTextHandler(env.logs, nil)),
 		Config:    cfg,
 	})
@@ -1079,5 +1081,68 @@ func TestSubmit_FutureOccurredAtTreatedAsNow(t *testing.T) {
 		if at.Before(before.Add(-time.Second)) || at.After(after) {
 			t.Errorf("%s = %v, want between %v and %v", name, at, before, after)
 		}
+	}
+}
+
+func mentionUser(id string) evOpt {
+	return func(ev *conloomapi.Event) {
+		ev.Message.Mentions = append(ev.Message.Mentions, conloomapi.Mention{Type: "user", ID: id})
+	}
+}
+
+func replyTo(msgID string) evOpt {
+	return func(ev *conloomapi.Event) { ev.Message.ReplyTo = &msgID }
+}
+
+func TestSubmit_ContinuationRuleExit(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: withContinuation})
+	plainObserve := func(ev conloomapi.Event) {
+		t.Helper()
+		resp := env.submit(t, ev)
+		want := conloomapi.EventAccepted{EventID: ev.EventID, Disposition: conloomapi.DispositionObserve}
+		if resp != want {
+			t.Fatalf("%q: response = %+v, want %+v", ev.Message.Text, resp, want)
+		}
+		if _, err := env.st.GetMessage(context.Background(), testBot, ev.Message.ID); err != nil {
+			t.Fatalf("%q not stored: %v", ev.Message.Text, err)
+		}
+	}
+
+	env.startContinuation(t, "20001")
+	env.startContinuation(t, "20002")
+	plainObserve(env.groupEvent("20001", "你看这个", mentionUser("user_20002")))
+	if env.inContinuation("20001") {
+		t.Fatal("continuation not ended by a mention of another user")
+	}
+	if !env.inContinuation("20002") {
+		t.Fatal("another user's continuation ended")
+	}
+	if n := env.counter(t, "conloom_continuation_exits_total", "reason", "rule"); n != 1 {
+		t.Fatalf("rule exits = %v, want 1", n)
+	}
+	plainObserve(env.groupEvent("20001", "哈哈"))
+
+	other := env.groupEvent("20001", "今天好冷")
+	plainObserve(other)
+	plainObserve(env.groupEvent("20002", "是啊", replyTo(other.Message.ID)))
+	if env.inContinuation("20002") {
+		t.Fatal("continuation not ended by a reply to another member's message")
+	}
+	plainObserve(env.groupEvent("20002", "嗯嗯"))
+
+	env.startContinuation(t, "20001")
+	plainObserve(env.groupEvent("20001", "大家来看", func(ev *conloomapi.Event) {
+		ev.Message.Mentions = append(ev.Message.Mentions, conloomapi.Mention{Type: "all", ID: "all"})
+	}))
+	if env.inContinuation("20001") {
+		t.Fatal("continuation not ended by @all")
+	}
+	if n := env.counter(t, "conloom_continuation_exits_total", "reason", "rule"); n != 3 {
+		t.Fatalf("rule exits = %v, want 3", n)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if n := env.short.Calls() + env.long.Calls(); n != 3 {
+		t.Fatalf("model calls = %d, want 3 (one per mention)", n)
 	}
 }

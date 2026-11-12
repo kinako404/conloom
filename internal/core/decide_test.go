@@ -169,6 +169,62 @@ func TestDecide_MentionOfOtherBotInstanceObserves(t *testing.T) {
 	}
 }
 
+func continuationInput() DecideInput {
+	in := groupInput()
+	in.InContinuation = true
+	return in
+}
+
+func TestDecide_ContinuationEndsWhenMentioningOthers(t *testing.T) {
+	in := continuationInput()
+	in.Mentions = []conloomapi.Mention{{Type: "user", ID: "user_20002"}}
+	in.MentionsOthers = true
+	want := Decision{Disposition: conloomapi.DispositionObserve, EndContinuation: true}
+	if got := Decide(in); got != want {
+		t.Fatalf("Decide() = %+v, want %+v", got, want)
+	}
+
+	in.Mentions = []conloomapi.Mention{{Type: "all", ID: "all"}}
+	if got := Decide(in); got != want {
+		t.Fatalf("Decide(@all) = %+v, want %+v", got, want)
+	}
+}
+
+func TestDecide_ContinuationEndsWhenReplyingToOther(t *testing.T) {
+	in := continuationInput()
+	in.ReplyToOther = true
+	want := Decision{Disposition: conloomapi.DispositionObserve, EndContinuation: true}
+	if got := Decide(in); got != want {
+		t.Fatalf("Decide() = %+v, want %+v", got, want)
+	}
+}
+
+func TestDecide_ContinuationStillTriggersOtherwise(t *testing.T) {
+	in := continuationInput()
+	want := Decision{Disposition: conloomapi.DispositionReply, Trigger: conloomapi.TriggerContinuation}
+	if got := Decide(in); got != want {
+		t.Fatalf("Decide() = %+v, want %+v", got, want)
+	}
+
+	in.MentionsOthers = true
+	in.Mentions = []conloomapi.Mention{{Type: "user", ID: "user_20002"}, {Type: "bot", ID: "bot_main"}}
+	if got := Decide(in); got != (Decision{Disposition: conloomapi.DispositionReply, Trigger: conloomapi.TriggerMention}) {
+		t.Fatalf("Decide(@bot and @other) = %+v, want mention reply", got)
+	}
+
+	in = continuationInput()
+	in.ReplyToIsBot = true
+	if got := Decide(in); got != (Decision{Disposition: conloomapi.DispositionReply, Trigger: conloomapi.TriggerReply}) {
+		t.Fatalf("Decide(reply to bot) = %+v, want reply", got)
+	}
+
+	in = groupInput()
+	in.MentionsOthers, in.ReplyToOther = true, true
+	if got := Decide(in); got != (Decision{Disposition: conloomapi.DispositionObserve}) {
+		t.Fatalf("Decide(outside continuation) = %+v, want plain observe", got)
+	}
+}
+
 func TestParseCommand(t *testing.T) {
 	tests := []struct {
 		text, prefix string

@@ -386,6 +386,57 @@ func TestBuild_CurrentIncludesSpeakerAndReplyTarget(t *testing.T) {
 	}
 }
 
+func TestBuild_DirectiveAppendedToCurrent(t *testing.T) {
+	const directive = "【提示】只输出 [[SKIP]]。"
+	in := baseInput()
+	in.History = []store.MessageRecord{
+		userMsg("小明", "在吗", at(12, 0)),
+		botMsg("在", at(12, 1)),
+		{PlatformUserID: "20002", DisplayName: "小红", Text: "织语好", OccurredAt: at(12, 2)},
+	}
+	plain := Build(in)
+	in.Directive = directive
+	out := Build(in)
+
+	assertAlternates(t, in, out)
+	if len(out.Messages) != len(plain.Messages) {
+		t.Fatalf("messages = %+v, want %d messages", out.Messages, len(plain.Messages))
+	}
+	if out.Messages[0] != plain.Messages[0] {
+		t.Errorf("system prompt changed: %+v", out.Messages[0])
+	}
+	last := out.Messages[len(out.Messages)-1].Content
+	wantLast := plain.Messages[len(plain.Messages)-1].Content + "\n\n" + directive
+	if last != wantLast {
+		t.Errorf("current = %q, want %q", last, wantLast)
+	}
+	for _, m := range out.Messages[:len(out.Messages)-1] {
+		if strings.Contains(m.Content, directive) {
+			t.Errorf("directive outside the current message: %+v", m)
+		}
+	}
+
+	var sum int
+	for _, m := range out.Messages {
+		sum += Estimate(m.Content, in.TokenFactor) + MessageOverhead
+	}
+	if out.EstimatedTokens != sum || out.EstimatedTokens <= plain.EstimatedTokens {
+		t.Errorf("EstimatedTokens = %d, want %d (> %d without directive)", out.EstimatedTokens, sum, plain.EstimatedTokens)
+	}
+
+	in.History = nil
+	out = Build(in)
+	assertAlternates(t, in, out)
+	wantCurrent := "【当前消息】发送者：小明\n今天天气如何\n\n" + directive
+	if got := out.Messages[len(out.Messages)-1].Content; got != wantCurrent {
+		t.Errorf("current without history = %q, want %q", got, wantCurrent)
+	}
+	want := Estimate(in.SystemPrompt, in.TokenFactor) + Estimate(wantCurrent, in.TokenFactor) + 2*MessageOverhead
+	if got := BaseTokens(in); got != want || out.EstimatedTokens != want {
+		t.Errorf("BaseTokens = %d, EstimatedTokens = %d, want %d (directive counted)", got, out.EstimatedTokens, want)
+	}
+}
+
 func TestBuild_ImageOnlyMessageRendersPlaceholder(t *testing.T) {
 	in := baseInput()
 	img := []conloomapi.Attachment{{Type: "image", URL: "https://example.invalid/a.png"}}

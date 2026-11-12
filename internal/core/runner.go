@@ -26,14 +26,20 @@ const (
 	cancelWait    = 5 * time.Second
 
 	reviewResultBlocked = "blocked"
+	reviewResultSkipped = "skipped"
 )
 
+// SkipMarker is the model's answer for "do not reply". An output containing
+// it anywhere is dropped and never reaches the outbox.
+const SkipMarker = "[[SKIP]]"
+
 // outcome is the result of executing a reply task. An empty text means no
-// action is sent.
+// action is sent; skipped means the model answered SkipMarker.
 type outcome struct {
 	status   string
 	code     string
 	text     string
+	skipped  bool
 	meta     conloomapi.TaskMeta
 	conv     store.ConversationRecord
 	triggers []store.MessageRecord
@@ -72,7 +78,7 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 		if o.closing.Load() && !o.cancelledByUser(ow) {
 			return
 		}
-		out.status, out.code, out.text = conloomapi.TaskCancelled, conloomapi.CodeTaskCancelled, ""
+		out.status, out.code, out.text, out.skipped = conloomapi.TaskCancelled, conloomapi.CodeTaskCancelled, "", false
 	}
 	var actions []store.OutboxRecord
 	if out.text != "" {
@@ -84,6 +90,9 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 	if out.status == conloomapi.TaskSucceeded && len(actions) > 0 {
 		o.sched.MarkReplied(task.ConversationKey, task.ActorPlatformUserID, o.now())
 	}
+	if out.skipped && task.Meta.Trigger == TriggerContinuation {
+		o.endContinuation(task.ConversationKey, task.ActorPlatformUserID, continuationExitModel)
+	}
 	o.log.Info("task finished", "task_id", task.ID, "conversation", task.ConversationKey, "status", out.status,
 		"error_code", out.code, "role", out.meta.SelectedModelRole, "model", out.meta.SelectedModel,
 		"route_reason", out.meta.RouteReason, "review", out.meta.ReviewResult, "trace_id", out.meta.TraceID,
@@ -91,7 +100,7 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 }
 
 func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord) outcome {
-	out := outcome{meta: conloomapi.TaskMeta{TraceID: ids.New("trace")}}
+	out := outcome{meta: conloomapi.TaskMeta{TraceID: ids.New("trace"), Trigger: task.Meta.Trigger}}
 	fail := func(code, text string, err error) outcome {
 		if err != nil {
 			o.log.Warn("task failed", "task_id", task.ID, "error_code", code, "trace_id", out.meta.TraceID, "error", err)
@@ -142,6 +151,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord) outco
 		MaxRecent:        pol.Context.MaxRecentMessages,
 		TokenFactor:      o.tokenFactor,
 		Location:         o.loc,
+		Directive:        o.directive(ctx, task, triggers),
 	}
 	req := router.Request{
 		Sensitive:             conv.Type == conloomapi.ConvPrivate,
@@ -178,9 +188,14 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord) outco
 	}
 	out.meta.SelectedModel = resp.Model
 
+	out.status = conloomapi.TaskSucceeded
+	if strings.Contains(resp.Content, SkipMarker) {
+		out.meta.ReviewResult = reviewResultSkipped
+		out.skipped = true
+		return out
+	}
 	res := o.reviewer.Output(resp.Content, pol.Review)
 	o.metrics.Review.WithLabelValues("output", res.Verdict).Inc()
-	out.status = conloomapi.TaskSucceeded
 	if res.Verdict == review.VerdictBlock {
 		out.meta.ReviewResult = reviewResultBlocked
 		o.auditBlocked(task, res.Reasons)
@@ -227,6 +242,33 @@ func (o *Orchestrator) replyTarget(ctx context.Context, botID string, triggers [
 		return &m
 	}
 	return nil
+}
+
+// directive returns the hint appended to the current message: the
+// continuation directive for a continuation task, unless a merged trigger
+// mentions the bot or replies to it.
+func (o *Orchestrator) directive(ctx context.Context, task store.TaskRecord, triggers []store.MessageRecord) string {
+	if task.Meta.Trigger != TriggerContinuation {
+		return ""
+	}
+	for _, t := range triggers {
+		if slices.ContainsFunc(t.Mentions, func(m conloomapi.Mention) bool {
+			return m.Type == "bot" && m.ID == task.BotInstanceID
+		}) {
+			return ""
+		}
+		if t.ReplyTo == "" {
+			continue
+		}
+		m, err := o.st.GetMessage(ctx, task.BotInstanceID, t.ReplyTo)
+		if err == nil && m.FromBot {
+			return ""
+		}
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			o.log.Warn("load reply target failed", "message_id", t.ReplyTo, "error", err)
+		}
+	}
+	return CopyDirectiveContinuation
 }
 
 // call builds the context for the routed profile, waits for admission and

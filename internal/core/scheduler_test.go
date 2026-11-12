@@ -501,6 +501,29 @@ func TestScheduler_Continuation(t *testing.T) {
 	}
 }
 
+func TestScheduler_EndContinuation(t *testing.T) {
+	s := newTestScheduler(t, func(context.Context, QueuedTask) {}, fixedCfg(SessionConfig{MaxConcurrent: 1, MaxQueued: 10}))
+	at := time.Now()
+	const window = time.Minute
+
+	s.EndContinuation("group:10001", "20001")
+	s.MarkReplied("group:10001", "20001", at)
+	s.MarkReplied("group:10001", "20002", at)
+	s.EndContinuation("group:10001", "20001")
+	s.EndContinuation("group:10002", "20002")
+
+	if s.InContinuation("group:10001", "20001", window, at.Add(time.Second)) {
+		t.Fatal("20001 still in continuation after EndContinuation")
+	}
+	if !s.InContinuation("group:10001", "20002", window, at.Add(time.Second)) {
+		t.Fatal("EndContinuation of 20001 ended 20002's continuation")
+	}
+	s.MarkReplied("group:10001", "20001", at.Add(2*time.Second))
+	if !s.InContinuation("group:10001", "20001", window, at.Add(3*time.Second)) {
+		t.Fatal("a new reply did not restart 20001's continuation")
+	}
+}
+
 func TestScheduler_RestoreRunsWithGivenReadyAt(t *testing.T) {
 	rec := newSchedRecorder()
 	s := newTestScheduler(t, rec.run, fixedCfg(SessionConfig{MaxConcurrent: 1, MaxQueued: 10}))

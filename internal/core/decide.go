@@ -8,7 +8,7 @@ import (
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
-const TriggerContinuation = "continuation"
+const TriggerContinuation = conloomapi.TriggerContinuation
 
 var KnownCommands = []string{"help", "stop", "persona", "pause", "resume"}
 
@@ -50,16 +50,23 @@ type DecideInput struct {
 	IsAdmin          bool
 	ReplyToIsBot     bool
 	InContinuation   bool
+	// MentionsOthers is set when the message mentions a user or everyone.
+	MentionsOthers bool
+	// ReplyToOther is set when the message replies to a stored message not
+	// sent by the bot.
+	ReplyToOther bool
 }
 
 // Decision is the outcome of Decide. Reason is set only for ignore
-// dispositions; Trigger, Command and Args only for reply.
+// dispositions; Trigger, Command and Args only for reply. EndContinuation asks
+// the caller to end the sender's continuation window.
 type Decision struct {
-	Disposition string
-	Reason      string
-	Trigger     string
-	Command     string
-	Args        string
+	Disposition     string
+	Reason          string
+	Trigger         string
+	Command         string
+	Args            string
+	EndContinuation bool
 }
 
 // Decide classifies an incoming message as reply, observe or ignore.
@@ -89,6 +96,9 @@ func Decide(in DecideInput) Decision {
 		return reply(conloomapi.TriggerReply)
 	}
 	if in.InContinuation {
+		if in.MentionsOthers || in.ReplyToOther {
+			return Decision{Disposition: conloomapi.DispositionObserve, EndContinuation: true}
+		}
 		return reply(TriggerContinuation)
 	}
 	return Decision{Disposition: conloomapi.DispositionObserve}

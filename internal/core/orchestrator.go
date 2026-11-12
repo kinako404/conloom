@@ -354,14 +354,33 @@ func (o *Orchestrator) submit(ctx context.Context, s *submission) (conloomapi.Ev
 		if reason := o.withheld(s, pol); reason != "" {
 			return o.observeOnly(ctx, s, reason)
 		}
-		resp, err := o.admit(ctx, s, AdmitNew)
+		resp, err := o.admit(ctx, s, AdmitNew, d.Trigger)
 		if errors.Is(err, ErrQueueFull) {
 			return o.observeOnly(ctx, s, conloomapi.SuppressedQueueFull)
 		}
 		return resp, err
+	case d.EndContinuation:
+		// The message is addressed to someone else: it is only observed, never
+		// merged into a pending task of the sender.
+		resp, err := o.observeOnly(ctx, s, "")
+		if err == nil {
+			o.endContinuation(s.convKey, s.ev.Actor.PlatformUserID, continuationExitRule)
+		}
+		return resp, err
 	default:
-		return o.admit(ctx, s, AdmitMergeOnly)
+		return o.admit(ctx, s, AdmitMergeOnly, "")
 	}
+}
+
+const (
+	continuationExitRule  = "rule"
+	continuationExitModel = "model"
+)
+
+// endContinuation ends actorID's continuation window and counts the exit.
+func (o *Orchestrator) endContinuation(convKey, actorID, reason string) {
+	o.sched.EndContinuation(convKey, actorID)
+	o.metrics.ContinuationExits.WithLabelValues(reason).Inc()
 }
 
 // withheld returns why a reply trigger is not answered: the conversation is
@@ -389,6 +408,9 @@ func (o *Orchestrator) decide(ctx context.Context, s *submission) (Decision, con
 		Mentions:         ev.Message.Mentions,
 		Enabled:          enabledIn(s.bot, ev.Conversation),
 		IsAdmin:          s.isAdmin,
+		MentionsOthers: slices.ContainsFunc(ev.Message.Mentions, func(m conloomapi.Mention) bool {
+			return m.Type == "user" || m.Type == "all"
+		}),
 	}
 	// Ignore decisions do not depend on policy, so no policy is loaded (and
 	// cached) for conversations the bot does not serve.
@@ -405,7 +427,7 @@ func (o *Orchestrator) decide(ctx context.Context, s *submission) (Decision, con
 		m, err := o.st.GetMessage(ctx, s.botID, *ev.Message.ReplyTo)
 		switch {
 		case err == nil:
-			in.ReplyToIsBot = m.FromBot
+			in.ReplyToIsBot, in.ReplyToOther = m.FromBot, !m.FromBot
 		case !errors.Is(err, store.ErrNotFound):
 			return Decision{}, conloomapi.GroupPolicy{}, err
 		}
@@ -423,7 +445,7 @@ func enabledIn(bot config.BotConfig, c conloomapi.Conversation) bool {
 }
 
 func (o *Orchestrator) submitCommand(ctx context.Context, s *submission, command string) (conloomapi.EventAccepted, error) {
-	task := s.task(ids.New("task"), command)
+	task := s.task(ids.New("task"), command, conloomapi.TriggerCommand)
 	ow := o.claim(task.ID, false)
 	if ow == nil {
 		return conloomapi.EventAccepted{}, fmt.Errorf("core: new task %s is already owned", task.ID)
@@ -454,8 +476,9 @@ func (o *Orchestrator) observeOnly(ctx context.Context, s *submission, reason st
 }
 
 // admit lets the scheduler decide between a new task, a merge and plain
-// observation, storing the event with the matching response in persist.
-func (o *Orchestrator) admit(ctx context.Context, s *submission, mode AdmitMode) (conloomapi.EventAccepted, error) {
+// observation, storing the event with the matching response in persist. A new
+// task records trigger in its meta.
+func (o *Orchestrator) admit(ctx context.Context, s *submission, mode AdmitMode, trigger string) (conloomapi.EventAccepted, error) {
 	var resp conloomapi.EventAccepted
 	_, err := o.sched.Admit(s.convKey, s.ev.Actor.PlatformUserID, s.ev.Message.ID, mode, func(plan AdmitPlan) error {
 		resp = conloomapi.EventAccepted{EventID: s.ev.EventID, Disposition: conloomapi.DispositionObserve}
@@ -463,7 +486,7 @@ func (o *Orchestrator) admit(ctx context.Context, s *submission, mode AdmitMode)
 		switch {
 		case plan.NewTaskID != "":
 			resp.Disposition, resp.TaskID, resp.Status = conloomapi.DispositionReply, plan.NewTaskID, conloomapi.TaskQueued
-			t := s.task(plan.NewTaskID, "")
+			t := s.task(plan.NewTaskID, "", trigger)
 			task = &t
 		case plan.MergeIntoTaskID != "":
 			resp.Disposition, resp.TaskID, resp.Status = conloomapi.DispositionReply, plan.MergeIntoTaskID, conloomapi.TaskQueued
@@ -546,11 +569,12 @@ func (s *submission) records(resp conloomapi.EventAccepted) (store.Ingest, error
 	}, nil
 }
 
-func (s *submission) task(id, command string) store.TaskRecord {
+func (s *submission) task(id, command, trigger string) store.TaskRecord {
 	return store.TaskRecord{
 		ID: id, BotInstanceID: s.botID, ConversationKey: s.convKey, Status: conloomapi.TaskQueued,
 		ActorPlatformUserID: s.ev.Actor.PlatformUserID, Command: command,
 		TriggerMessageIDs: []string{s.ev.Message.ID}, Priority: int(admission.PriorityInteractive),
+		Meta:            conloomapi.TaskMeta{Trigger: trigger},
 		EventOccurredAt: s.occurredAt(), CreatedAt: s.now, UpdatedAt: s.now,
 	}
 }
@@ -686,8 +710,11 @@ func taskFinished(status string) bool {
 }
 
 // complete stores the task's final state and actions and notifies the bot's
-// adapter when there are actions.
+// adapter when there are actions. A meta without a trigger keeps the task's.
 func (o *Orchestrator) complete(ctx context.Context, task store.TaskRecord, status string, meta conloomapi.TaskMeta, code string, actions []store.OutboxRecord) error {
+	if meta.Trigger == "" {
+		meta.Trigger = task.Meta.Trigger
+	}
 	err := o.st.CompleteTask(ctx, store.TaskCompletion{
 		TaskID: task.ID, Status: status, Meta: meta, ErrorCode: code, Actions: actions,
 	})

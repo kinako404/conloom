@@ -19,4 +19,8 @@ const (
 	CopyResumed       = "已恢复回复。"
 	CopyTooLong       = "这段内容太长了，我一次处理不了，可以分几段发给我吗？"
 	CopyUnavailable   = "我这边暂时有点卡住了，稍后再试试吧。"
+
+	// CopyDirectiveContinuation is appended to the current message of a
+	// continuation task.
+	CopyDirectiveContinuation = "【提示】这条消息没有 @ 你，只是对方在你回复后接着说的。如果它不是在和你说话，或者话题已经转向别人，只输出 [[SKIP]]，不要输出其他内容。"
 )

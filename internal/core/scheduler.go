@@ -269,6 +269,17 @@ func (s *Scheduler) InContinuation(convKey, actorID string, window time.Duration
 	return ok && !now.After(at.Add(window))
 }
 
+// EndContinuation ends actorID's continuation window until the bot replies to
+// actorID again.
+func (s *Scheduler) EndContinuation(convKey, actorID string) {
+	sess := s.lockSession(convKey, false)
+	if sess == nil {
+		return
+	}
+	defer sess.mu.Unlock()
+	delete(sess.replied, actorID)
+}
+
 // Close cancels all running tasks and waits for every scheduler goroutine,
 // including running Runners, to return. Queued tasks are not started.
 func (s *Scheduler) Close() {
