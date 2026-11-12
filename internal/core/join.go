@@ -51,15 +51,17 @@ type lullTimers struct {
 type lullTimer struct{ t *time.Timer }
 
 // joinPlan is what a join task needs besides its stored record: the eligible
-// members in the conversation it joins, with their display names.
+// members in the conversation it joins, with their display names, and whether
+// it answers a guest question (see guestQuestion).
 type joinPlan struct {
 	users []string
 	names []string
+	guest bool
 }
 
 // joinPlans holds the plans of join tasks until they run; a plan lives in
 // memory only, so a join task recovered after a restart addresses its target
-// alone.
+// alone and is checked like any join (a guest join may then be dropped).
 type joinPlans struct {
 	mu     sync.Mutex
 	byTask map[string]joinPlan
@@ -179,6 +181,10 @@ type joinSpeaker struct {
 // addresses nobody else, records the evaluation and returns the task ID, or
 // returns "" and the reason it did not join, which it logs at info level
 // without any message text or names.
+//
+// A live session or the join cooldown does not stop a guest question (see
+// guestQuestion), which is answered with a join task targeting its sender
+// alone; all other joins wait, with joinNoSession or joinNoCooldown.
 func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 	windowSize, eligibleSpeakers := -1, -1
 	defer func() {
@@ -211,12 +217,20 @@ func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 		return "", joinNoDisabled
 	case pol.Concurrency.MaxInteractiveRequests == 0:
 		return "", joinNoPaused
-	case o.sessionActive(convKey, now, pol.Reply.ContinuationWindow.Duration):
-		return "", joinNoSession
-	case len(o.sched.Active(convKey)) > 0:
+	}
+	// guestOnly is why only a guest question may still be answered.
+	guestOnly := ""
+	if o.sessionActive(convKey, now, pol.Reply.ContinuationWindow.Duration) {
+		guestOnly = joinNoSession
+	}
+	if len(o.sched.Active(convKey)) > 0 {
+		if guestOnly != "" {
+			return "", guestOnly
+		}
 		return "", joinNoBusy
-	case now.Sub(o.lastBotSpoke(convKey)) < p.JoinCooldown.Duration:
-		return "", joinNoCooldown
+	}
+	if guestOnly == "" && now.Sub(o.lastBotSpoke(convKey)) < p.JoinCooldown.Duration {
+		guestOnly = joinNoCooldown
 	}
 
 	unlock := o.proactiveLocks.lock(convKey)
@@ -242,11 +256,26 @@ func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 		return fail(err)
 	}
 	o.seedBotSpoke(convKey, msgs, len(msgs) >= joinScanLimit)
-	if now.Sub(o.lastBotSpoke(convKey)) < p.JoinCooldown.Duration {
-		return "", joinNoCooldown
+	if guestOnly == "" && now.Sub(o.lastBotSpoke(convKey)) < p.JoinCooldown.Duration {
+		guestOnly = joinNoCooldown
 	}
 	window := joinWindow(msgs, now.Add(-p.JoinWindow.Duration), pol.Reply.CommandPrefix)
 	windowSize = len(window)
+	if guestOnly != "" {
+		guest, target, ok, err := o.guestQuestion(ctx, convKey, window, msgs, pol, now)
+		if err != nil {
+			return fail(err)
+		}
+		if !ok {
+			return "", guestOnly
+		}
+		plan := joinPlan{users: []string{guest.user}, names: []string{guest.name}, guest: true}
+		taskID, reason, err = o.startJoin(ctx, convKey, target, plan, now, len(window))
+		if err != nil {
+			return fail(err)
+		}
+		return taskID, reason
+	}
 	// A short window can only be joined for an unanswered clear question.
 	short := len(window) < p.JoinMinMessages
 	if len(window) == 0 || short && !isClearQuestion(window[len(window)-1].Text) {
@@ -281,17 +310,54 @@ func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 	for _, sp := range speakers {
 		plan.users, plan.names = append(plan.users, sp.user), append(plan.names, sp.name)
 	}
-	taskID, err = o.createJoinTask(ctx, convKey, target, plan, now)
-	if reason, ok := joinNotCreated(err); ok {
-		return "", reason
-	}
+	taskID, reason, err = o.startJoin(ctx, convKey, target, plan, now, len(window))
 	if err != nil {
 		return fail(err)
 	}
+	return taskID, reason
+}
+
+// startJoin creates the join task of plan replying to target and logs the
+// evaluation; a group that became busy meanwhile gives a reason instead.
+func (o *Orchestrator) startJoin(ctx context.Context, convKey string, target store.MessageRecord, plan joinPlan, now time.Time, windowSize int) (taskID, reason string, err error) {
+	taskID, err = o.createJoinTask(ctx, convKey, target, plan, now)
+	if reason, ok := joinNotCreated(err); ok {
+		return "", reason, nil
+	}
+	if err != nil {
+		return "", "", err
+	}
 	o.metrics.Proactive.WithLabelValues(proactiveEvaluated).Inc()
-	o.log.Info("join evaluation", "conversation", convKey, "task_id", taskID, "eligible_speakers", len(speakers),
-		"window_messages", len(window))
-	return taskID, ""
+	attrs := []any{"conversation", convKey, "task_id", taskID, "eligible_speakers", len(plan.users), "window_messages", windowSize}
+	if plan.guest {
+		attrs = append(attrs, "guest", true)
+	}
+	o.log.Info("join evaluation", attrs...)
+	return taskID, "", nil
+}
+
+// guestQuestion finds a guest question in window: its newest message, not
+// stale, is a clear question (isClearQuestion) from a member outside the
+// session whom the bot may join (see joinSpeakers), and would itself be the
+// join target. It returns that member and message.
+func (o *Orchestrator) guestQuestion(ctx context.Context, convKey string, window, msgs []store.MessageRecord, pol conloomapi.GroupPolicy, now time.Time) (joinSpeaker, store.MessageRecord, bool, error) {
+	if len(window) == 0 {
+		return joinSpeaker{}, store.MessageRecord{}, false, nil
+	}
+	newest := window[len(window)-1]
+	if !isClearQuestion(newest.Text) || now.Sub(newest.OccurredAt) >= o.staleAfter ||
+		o.inSession(convKey, newest.PlatformUserID, now, pol.Reply.ContinuationWindow.Duration) {
+		return joinSpeaker{}, store.MessageRecord{}, false, nil
+	}
+	speakers, err := o.joinSpeakers(ctx, convKey, []store.MessageRecord{newest}, pol.Proactive, now)
+	if err != nil || len(speakers) == 0 {
+		return joinSpeaker{}, store.MessageRecord{}, false, err
+	}
+	target, ok := o.joinTarget(ctx, window, msgs, speakers)
+	if !ok || target.ID != newest.ID {
+		return joinSpeaker{}, store.MessageRecord{}, false, nil
+	}
+	return speakers[0], target, true, nil
 }
 
 // joinWindow returns the member messages since since that are not commands

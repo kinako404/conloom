@@ -130,7 +130,7 @@ func (o *Orchestrator) finish(ctx context.Context, task store.TaskRecord, out *o
 	if out.proactive && out.text != "" {
 		unlock := o.proactiveLocks.lock(task.ConversationKey)
 		defer unlock()
-		ok, err := o.proactiveSendAllowed(ctx, task)
+		ok, err := o.proactiveSendAllowed(ctx, task, out.join.guest)
 		if err != nil {
 			o.log.Error("proactive send check failed; not sending", "task_id", task.ID, "error", err)
 		}
@@ -192,7 +192,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	if out.proactive {
 		// The switch, the user's level or the budget may have changed while
 		// the task was queued (or across a restart): check before any model call.
-		ok, err := o.proactiveSendAllowed(ctx, task)
+		ok, err := o.proactiveSendAllowed(ctx, task, out.join.guest)
 		if err != nil {
 			o.log.Error("proactive check failed; not evaluating", "task_id", task.ID, "error", err)
 		}
