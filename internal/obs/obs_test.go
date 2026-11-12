@@ -1,0 +1,96 @@
+package obs
+
+import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
+	"strings"
+	"testing"
+
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/kinako404/conloom/internal/config"
+)
+
+func TestMessageAttr_HidesContentByDefault(t *testing.T) {
+	text := "你好，world"
+	a := MessageAttr(config.ObservabilityConfig{}, text)
+	if a.Key != "text_len" {
+		t.Fatalf("key = %q, want text_len", a.Key)
+	}
+	if a.Value.Kind() != slog.KindInt64 || a.Value.Int64() != 8 {
+		t.Fatalf("value = %v, want 8 runes", a.Value)
+	}
+
+	a = MessageAttr(config.ObservabilityConfig{LogMessageContent: true}, text)
+	if a.Key != "text" || a.Value.String() != text {
+		t.Fatalf("attr = %v, want text=%q", a, text)
+	}
+}
+
+func TestNewMetrics_RegistersOnFreshRegistry(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+
+	m.Events.WithLabelValues("accepted").Inc()
+	m.Tasks.WithLabelValues("succeeded").Inc()
+	m.ModelLatency.WithLabelValues("main", "m1").Observe(0.5)
+	m.ModelTokens.WithLabelValues("main", "m1", "prompt").Add(10)
+	m.EstimateRatio.WithLabelValues("main").Observe(1.1)
+	m.QueueWait.Observe(0.1)
+	m.QueueDepth.Set(3)
+	m.AdmissionRejects.WithLabelValues("queue_full").Inc()
+	m.OutboxDelivered.Inc()
+	m.OutboxRedelivered.Inc()
+	m.OutboxExpired.Inc()
+	m.Review.WithLabelValues("basic", "pass").Inc()
+	m.BreakerOpen.WithLabelValues("main").Set(1)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	names := map[string]bool{}
+	for _, mf := range mfs {
+		if !strings.HasPrefix(mf.GetName(), "conloom_") {
+			t.Errorf("metric %q lacks conloom_ prefix", mf.GetName())
+		}
+		names[mf.GetName()] = true
+	}
+	if !names["conloom_events_total"] {
+		t.Fatalf("conloom_events_total missing; got %v", names)
+	}
+	if len(mfs) != 13 {
+		t.Errorf("gathered %d metric families, want 13: %v", len(mfs), names)
+	}
+}
+
+func TestNewLogger_JSONFormat(t *testing.T) {
+	var buf bytes.Buffer
+	log := NewLogger(config.ObservabilityConfig{LogLevel: "info", LogFormat: "json"}, &buf)
+	log.Debug("hidden")
+	log.Info("hello", "k", "v")
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("got %d lines, want 1 (debug filtered): %q", len(lines), buf.String())
+	}
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &rec); err != nil {
+		t.Fatalf("not JSON: %v: %q", err, lines[0])
+	}
+	if rec["msg"] != "hello" || rec["k"] != "v" || rec["level"] != "INFO" {
+		t.Fatalf("record = %v", rec)
+	}
+}
+
+func TestNewLogger_TextFormatAndDebugLevel(t *testing.T) {
+	var buf bytes.Buffer
+	log := NewLogger(config.ObservabilityConfig{LogLevel: "debug", LogFormat: "text"}, &buf)
+	log.Debug("dbg", "k", "v")
+
+	out := buf.String()
+	if !strings.Contains(out, "level=DEBUG") || !strings.Contains(out, "msg=dbg") || !strings.Contains(out, "k=v") {
+		t.Fatalf("text output = %q", out)
+	}
+}
