@@ -3,7 +3,9 @@ package app_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -33,6 +35,7 @@ var (
 	alice = mock.User{PlatformID: "20001", Name: "小明"}
 	bob   = mock.User{PlatformID: "20002", Name: "小红"}
 	admin = mock.User{PlatformID: "29999", Name: "管理员"}
+	self  = mock.User{PlatformID: "30001", Name: "织语"}
 )
 
 const configTemplate = `
@@ -269,6 +272,27 @@ func requestText(req map[string]any) string {
 	return sb.String()
 }
 
+// groupMentionEvent is a message from alice in group mentioning the bot, with
+// platform message ID pmid.
+func groupMentionEvent(pmid, text string, occurredAt time.Time) conloomapi.Event {
+	return conloomapi.Event{
+		SchemaVersion: conloomapi.SchemaVersion,
+		EventID:       "evt_" + pmid,
+		EventType:     conloomapi.EventTypeMessageCreated,
+		BotInstanceID: botID,
+		Platform:      "qq",
+		OccurredAt:    occurredAt.UTC(),
+		Conversation:  conloomapi.Conversation{Type: conloomapi.ConvGroup, ID: "group_10001", PlatformConversationID: "10001"},
+		Actor:         conloomapi.Actor{ID: "user_20001", PlatformUserID: "20001", DisplayName: "小明", Roles: []string{"member"}},
+		Trigger:       conloomapi.Trigger{Type: conloomapi.TriggerMention, RequestedResponse: true},
+		Message: conloomapi.Message{
+			ID: "msg_" + pmid, PlatformMessageID: pmid, Text: text,
+			Mentions:    []conloomapi.Mention{{Type: "bot", ID: botID}},
+			Attachments: []conloomapi.Attachment{},
+		},
+	}
+}
+
 func TestE2E_GroupMentionGetsOneReply(t *testing.T) {
 	fake := fakeopenai.New(t, answer(fakeReply))
 	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL}))
@@ -287,6 +311,56 @@ func TestE2E_GroupMentionGetsOneReply(t *testing.T) {
 	e.requireNoAction(300 * time.Millisecond)
 	if n := fake.Calls(); n != 1 {
 		t.Errorf("model calls = %d, want 1", n)
+	}
+}
+
+func TestE2E_OwnMessagesAreIgnored(t *testing.T) {
+	fake := fakeopenai.New(t, answer(fakeReply))
+	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL}))
+
+	msgID := e.mention(group, alice, "在吗？")
+	e.drainOne()
+
+	resp, _ := e.say(group, self, fakeReply, mock.SayOptions{MentionBot: true, ReplyTo: msgID})
+	if resp.Disposition != conloomapi.DispositionIgnore || resp.SuppressedReason != conloomapi.SuppressedSelfMessage || resp.TaskID != "" {
+		t.Fatalf("message from the bot itself: response %+v, want ignore/self_message", resp)
+	}
+	e.requireNoAction(500 * time.Millisecond)
+	if n := fake.Calls(); n != 1 {
+		t.Errorf("model calls = %d, want 1", n)
+	}
+}
+
+func TestE2E_ReplayedEventsAreNotAnsweredTwice(t *testing.T) {
+	fake := fakeopenai.New(t, answer(fakeReply))
+	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL}))
+	ctx := context.Background()
+
+	ev := groupMentionEvent("900002", "重复投递的问题", time.Now())
+	first, err := e.client.SubmitEvent(ctx, "test:900002", ev)
+	if err != nil || first.Disposition != conloomapi.DispositionReply || first.TaskID == "" {
+		t.Fatalf("SubmitEvent = %+v, %v; want a reply task", first, err)
+	}
+	e.drainOne()
+
+	again, err := e.client.SubmitEvent(ctx, "test:900002", ev)
+	if err != nil || again.TaskID != first.TaskID || again.Disposition != first.Disposition {
+		t.Errorf("SubmitEvent with the same key = %+v, %v; want the first response %+v", again, err, first)
+	}
+
+	_, err = e.client.SubmitEvent(ctx, "test:900002-retry", ev)
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusConflict || apiErr.Body.Code != conloomapi.CodeDuplicateEvent {
+		t.Errorf("SubmitEvent of the same message with a new key: err = %v, want 409 %s", err, conloomapi.CodeDuplicateEvent)
+	}
+
+	e.requireNoAction(500 * time.Millisecond)
+	if n := fake.Calls(); n != 1 {
+		t.Errorf("model calls = %d, want 1", n)
+	}
+	task, err := e.client.GetTask(ctx, first.TaskID)
+	if err != nil || len(task.Actions) != 1 {
+		t.Errorf("GetTask = %+v, %v; want exactly 1 action", task, err)
 	}
 }
 
@@ -407,22 +481,7 @@ func TestE2E_StaleTaskNotAnsweredAfterRestart(t *testing.T) {
 	dataDir := t.TempDir()
 	slow := blockingModel(t)
 	e1 := newEnv(t, testConfig(t, configParams{dataDir: dataDir, modelURL: slow.URL}))
-	ev := conloomapi.Event{
-		SchemaVersion: conloomapi.SchemaVersion,
-		EventID:       "evt_900001",
-		EventType:     conloomapi.EventTypeMessageCreated,
-		BotInstanceID: botID,
-		Platform:      "qq",
-		OccurredAt:    time.Now().Add(-5 * time.Minute).UTC(),
-		Conversation:  conloomapi.Conversation{Type: conloomapi.ConvGroup, ID: "group_10001", PlatformConversationID: "10001"},
-		Actor:         conloomapi.Actor{ID: "user_20001", PlatformUserID: "20001", DisplayName: "小明", Roles: []string{"member"}},
-		Trigger:       conloomapi.Trigger{Type: conloomapi.TriggerMention, RequestedResponse: true},
-		Message: conloomapi.Message{
-			ID: "msg_900001", PlatformMessageID: "900001", Text: "五分钟前的问题",
-			Mentions:    []conloomapi.Mention{{Type: "bot", ID: botID}},
-			Attachments: []conloomapi.Attachment{},
-		},
-	}
+	ev := groupMentionEvent("900001", "五分钟前的问题", time.Now().Add(-5*time.Minute))
 	resp, err := e1.client.SubmitEvent(context.Background(), "test:900001", ev)
 	if err != nil || resp.TaskID == "" {
 		t.Fatalf("SubmitEvent = %+v, %v; want a reply task", resp, err)
