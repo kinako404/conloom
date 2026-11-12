@@ -139,6 +139,16 @@ func isNumericID(s string) bool {
 	return true
 }
 
+// atName is the display name an at segment carries, without a leading "@";
+// a name that is only the QQ number is dropped.
+func atName(data map[string]any, qq string) string {
+	name := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(dataString(data, "name")), "@"))
+	if name == qq {
+		return ""
+	}
+	return name
+}
+
 // ToStandard converts a OneBot message event into a standard Event and returns its idempotency key.
 func ToStandard(ev OBEvent, botInstanceID string) (conloomapi.Event, string, error) {
 	if ev.PostType != "message" {
@@ -190,7 +200,7 @@ func ToStandard(ev OBEvent, botInstanceID string) (conloomapi.Event, string, err
 			case "all":
 				msg.Mentions = append(msg.Mentions, conloomapi.Mention{Type: "all", ID: "all"})
 			default:
-				msg.Mentions = append(msg.Mentions, conloomapi.Mention{Type: "user", ID: "user_" + qq})
+				msg.Mentions = append(msg.Mentions, conloomapi.Mention{Type: "user", ID: "user_" + qq, Name: atName(seg.Data, qq)})
 			}
 		case "reply":
 			replyTo := "msg_" + dataString(seg.Data, "id")

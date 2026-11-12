@@ -108,10 +108,12 @@ type Message struct {
 	Attachments       []Attachment `json:"attachments"`
 }
 
-// Mention.Type is one of "bot", "user" or "all".
+// Mention.Type is one of "bot", "user" or "all". Name, when the platform
+// provides it, is the mentioned user's display name.
 type Mention struct {
 	Type string `json:"type"`
 	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
 }
 
 type Attachment struct {

@@ -113,6 +113,43 @@ func TestToStandard_ReplyAndImage(t *testing.T) {
 	}
 }
 
+func TestToStandard_AtUserCarriesName(t *testing.T) {
+	raw := `{"time":1762905600,"self_id":30001,"post_type":"message","message_type":"group","sub_type":"normal",
+		"message_id":7010,"user_id":20001,"group_id":10001,"message":[
+		{"type":"at","data":{"qq":"30001","name":"织语"}},
+		{"type":"text","data":{"text":" 你能看到我@到别人么 "}},
+		{"type":"at","data":{"qq":"20002","name":"@小红"}},
+		{"type":"at","data":{"qq":"20001"}},
+		{"type":"at","data":{"qq":"20002","name":"20002"}},
+		{"type":"at","data":{"qq":"all","name":"全体成员"}}],
+		"sender":{"user_id":20001,"nickname":"小明","card":"","role":"member"}}`
+	ev, err := ParseEvent([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := ToStandard(ev, testBotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []conloomapi.Mention{
+		{Type: "bot", ID: testBotID},
+		{Type: "user", ID: "user_20002", Name: "小红"},
+		{Type: "user", ID: "user_20001"},
+		{Type: "user", ID: "user_20002"},
+		{Type: "all", ID: "all"},
+	}
+	if !reflect.DeepEqual(got.Message.Mentions, want) {
+		t.Errorf("mentions = %+v, want %+v", got.Message.Mentions, want)
+	}
+	if got.Message.Text != "你能看到我@到别人么" {
+		t.Errorf("text = %q", got.Message.Text)
+	}
+	body, err := json.Marshal(conloomapi.Mention{Type: "user", ID: "user_20001"})
+	if err != nil || string(body) != `{"type":"user","id":"user_20001"}` {
+		t.Errorf("mention without name marshals to %s (%v), want no name field", body, err)
+	}
+}
+
 func TestToStandard_CardOverNickname(t *testing.T) {
 	got, _ := standard(t, "group_card.json")
 
