@@ -352,6 +352,49 @@ func TestRecentMessages_LimitAndOrder(t *testing.T) {
 	}
 }
 
+func TestLatestDisplayNames(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	otherKey := store.ConversationKey(testBot, testPlatform, conloomapi.ConvGroup, "conv_10002")
+	for i, m := range []struct{ conv, user, name string }{
+		{testConvKey, "20001", "小明旧名"},
+		{testConvKey, "20001", "小明"},
+		{testConvKey, "20001", ""},
+		{otherKey, "20002", "别处的名字"},
+		{testConvKey, "20002", "小红"},
+		{otherKey, "20002", "别处的新名字"},
+	} {
+		in := testIngest(fmt.Sprintf("k%d", i), fmt.Sprintf("m%d", i), fmt.Sprintf("p%d", i))
+		in.Conversation, in.User = nil, nil
+		in.Message.ConversationKey, in.Message.PlatformUserID, in.Message.DisplayName = m.conv, m.user, m.name
+		in.Message.ActorID = "user_" + m.user
+		if _, err := db.Ingest(ctx, in); err != nil {
+			t.Fatalf("Ingest %d: %v", i, err)
+		}
+	}
+	got, err := db.LatestDisplayNames(ctx, testConvKey, []string{"user_20001", "user_20002", "user_29999"})
+	if err != nil {
+		t.Fatalf("LatestDisplayNames: %v", err)
+	}
+	if want := map[string]string{"user_20001": "小明", "user_20002": "小红"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("LatestDisplayNames = %v, want %v", got, want)
+	}
+	many := make([]string, 2*maxCompoundSelect+1)
+	for i := range many {
+		many[i] = fmt.Sprintf("user_%d", 40000+i)
+	}
+	many[len(many)-1] = "user_20002"
+	if got, err := db.LatestDisplayNames(ctx, testConvKey, many); err != nil || !reflect.DeepEqual(got, map[string]string{"user_20002": "小红"}) {
+		t.Errorf("LatestDisplayNames(%d ids) = %v, %v; want only user_20002", len(many), got, err)
+	}
+	if got, err := db.LatestDisplayNames(ctx, testConvKey, nil); err != nil || len(got) != 0 {
+		t.Errorf("LatestDisplayNames(nil) = %v, %v; want none", got, err)
+	}
+	if !tableExists(t, db.r, "messages_conversation_actor_seq") {
+		t.Error("index messages_conversation_actor_seq missing")
+	}
+}
+
 func TestPurgeEvents(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -213,6 +214,46 @@ func (db *DB) GetMessages(ctx context.Context, botID string, ids []string) ([]st
 	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(ids)), ", ")
 	return db.queryMessages(ctx, `SELECT `+messageCols+` FROM messages
 		WHERE bot_instance_id = ? AND id IN (`+placeholders+`) ORDER BY seq`, args...)
+}
+
+func (db *DB) LatestDisplayNames(ctx context.Context, conversationKey string, actorIDs []string) (map[string]string, error) {
+	names := map[string]string{}
+	for chunk := range slices.Chunk(actorIDs, maxCompoundSelect) {
+		if err := db.latestDisplayNames(ctx, conversationKey, chunk, names); err != nil {
+			return nil, err
+		}
+	}
+	return names, nil
+}
+
+// maxCompoundSelect stays below SQLite's default limit of 500 terms in a
+// compound SELECT.
+const maxCompoundSelect = 200
+
+// latestDisplayNames looks up each actor's newest name with its own indexed
+// LIMIT 1 query, combined into one statement.
+func (db *DB) latestDisplayNames(ctx context.Context, conversationKey string, actorIDs []string, names map[string]string) error {
+	parts := make([]string, len(actorIDs))
+	args := make([]any, 0, 2*len(actorIDs))
+	for i, id := range actorIDs {
+		parts[i] = `SELECT * FROM (SELECT actor_id, display_name FROM messages
+			WHERE conversation_key = ? AND actor_id = ? AND from_bot = 0 AND display_name <> ''
+			ORDER BY seq DESC LIMIT 1)`
+		args = append(args, conversationKey, id)
+	}
+	rows, err := db.r.QueryContext(ctx, strings.Join(parts, " UNION ALL "), args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return err
+		}
+		names[id] = name
+	}
+	return rows.Err()
 }
 
 func (db *DB) RecentMessages(ctx context.Context, conversationKey string, limit int) ([]store.MessageRecord, error) {

@@ -69,8 +69,12 @@ func TestMigration0002Applies(t *testing.T) {
 			if !tableExists(t, db.r, "conversation_members") || !tableExists(t, db.r, "proactive_log") {
 				t.Fatalf("0002 tables missing after upgrade #%d", i+1)
 			}
-			if n := countRows(t, db, "schema_migrations"); n != 2 {
-				t.Fatalf("schema_migrations rows = %d, want 2", n)
+			files, err := migrations.ReadDir("migrations")
+			if err != nil {
+				t.Fatalf("read migrations: %v", err)
+			}
+			if n := countRows(t, db, "schema_migrations"); n != len(files) {
+				t.Fatalf("schema_migrations rows = %d, want %d (all applied)", n, len(files))
 			}
 			if n := countRows(t, db, "bot_instances"); n != 1 {
 				t.Fatalf("bot_instances = %d, want existing row kept", n)

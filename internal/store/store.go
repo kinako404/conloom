@@ -33,6 +33,10 @@ type Store interface {
 	// RecentMessages returns the newest limit messages ordered by Seq ascending
 	// (none when limit <= 0).
 	RecentMessages(ctx context.Context, conversationKey string, limit int) ([]MessageRecord, error)
+	// LatestDisplayNames maps each of actorIDs to the non-empty display name of
+	// its newest member message in the conversation; actors without one are
+	// absent.
+	LatestDisplayNames(ctx context.Context, conversationKey string, actorIDs []string) (map[string]string, error)
 	GetTask(ctx context.Context, botID, taskID string) (TaskRecord, error)
 	SetTaskStatus(ctx context.Context, taskID, status string) error
 	// CompleteTask updates the task and inserts its actions in one transaction.
