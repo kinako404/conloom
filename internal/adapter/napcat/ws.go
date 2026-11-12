@@ -26,6 +26,9 @@ const (
 	defaultCallTimeout = 10 * time.Second
 )
 
+// dialTimeout bounds the TCP connect and WebSocket upgrade.
+var dialTimeout = 10 * time.Second
+
 // Conn is a OneBot 11 forward WebSocket connection. Action responses are
 // matched to Call by their echo; everything else is delivered on Events.
 type Conn struct {
@@ -68,8 +71,9 @@ func (e *callError) Error() string {
 		e.action, e.status, e.retCode, e.message, e.wording)
 }
 
-// Dial connects to the OneBot server at rawURL. A non-empty token is sent both
-// as the access_token query parameter and as a bearer Authorization header.
+// Dial connects to the OneBot server at rawURL, giving up after 10s. A
+// non-empty token is sent both as the access_token query parameter and as a
+// bearer Authorization header.
 func Dial(ctx context.Context, rawURL, token string) (*Conn, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -82,7 +86,9 @@ func Dial(ctx context.Context, rawURL, token string) (*Conn, error) {
 		u.RawQuery = q.Encode()
 		header.Set("Authorization", "Bearer "+token)
 	}
-	ws, resp, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{HTTPHeader: header})
+	dctx, cancel := context.WithTimeout(ctx, dialTimeout)
+	defer cancel()
+	ws, resp, err := websocket.Dial(dctx, u.String(), &websocket.DialOptions{HTTPHeader: header})
 	if resp != nil && resp.Body != nil {
 		resp.Body.Close()
 	}

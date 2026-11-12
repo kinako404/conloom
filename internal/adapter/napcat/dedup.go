@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -17,9 +20,42 @@ import (
 // Each line is "action_id\t<unix seconds>\t<platform_message_id>".
 type Dedup struct {
 	mu   sync.Mutex
-	f    *os.File
+	f    dedupFile
+	size int64
 	now  func() time.Time
 	sent map[string]string
+}
+
+// maxDedupLine is the longest line loaded from the log; longer lines are
+// skipped as malformed.
+const maxDedupLine = 1 << 20
+
+// dedupFile is the append handle of the log; tests substitute a failing one.
+type dedupFile interface {
+	Write(p []byte) (int, error)
+	Sync() error
+	Truncate(size int64) error
+	Close() error
+}
+
+// syncDir fsyncs dir so a rename inside it survives power loss. Windows
+// cannot fsync a directory and is skipped.
+var syncDir = func(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = f.Sync()
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if errors.Is(err, syscall.EINVAL) {
+		return nil
+	}
+	return err
 }
 
 type dedupEntry struct {
@@ -56,9 +92,16 @@ func OpenDedup(path string, retention time.Duration, now func() time.Time) (*Ded
 	if err != nil {
 		return nil, fmt.Errorf("napcat: open dedup log: %w", err)
 	}
-	return &Dedup{f: f, now: now, sent: sent}, nil
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("napcat: open dedup log: %w", err)
+	}
+	return &Dedup{f: f, size: st.Size(), now: now, sent: sent}, nil
 }
 
+// loadDedup reads the log, skipping malformed lines and lines longer than
+// maxDedupLine.
 func loadDedup(path string) ([]dedupEntry, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -70,22 +113,35 @@ func loadDedup(path string) ([]dedupEntry, error) {
 	defer f.Close()
 
 	var entries []dedupEntry
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		parts := strings.SplitN(sc.Text(), "\t", 3)
-		if len(parts) != 3 || parts[0] == "" {
-			continue
+	r := bufio.NewReaderSize(f, maxDedupLine)
+	for {
+		line, err := r.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			for errors.Is(err, bufio.ErrBufferFull) {
+				_, err = r.ReadSlice('\n')
+			}
+		} else if e, ok := parseDedupLine(line); ok {
+			entries = append(entries, e)
 		}
-		at, err := strconv.ParseInt(parts[1], 10, 64)
+		if errors.Is(err, io.EOF) {
+			return entries, nil
+		}
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("napcat: read dedup log: %w", err)
 		}
-		entries = append(entries, dedupEntry{actionID: parts[0], at: at, platformMsgID: parts[2]})
 	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("napcat: read dedup log: %w", err)
+}
+
+func parseDedupLine(line []byte) (dedupEntry, bool) {
+	parts := strings.SplitN(strings.TrimRight(string(line), "\r\n"), "\t", 3)
+	if len(parts) != 3 || parts[0] == "" {
+		return dedupEntry{}, false
 	}
-	return entries, nil
+	at, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return dedupEntry{}, false
+	}
+	return dedupEntry{actionID: parts[0], at: at, platformMsgID: parts[2]}, true
 }
 
 func rewriteDedup(path string, entries []dedupEntry) error {
@@ -109,6 +165,9 @@ func rewriteDedup(path string, entries []dedupEntry) error {
 	if err == nil {
 		err = os.Rename(tmp.Name(), path)
 	}
+	if err == nil {
+		err = syncDir(filepath.Dir(path))
+	}
 	if err != nil {
 		return fmt.Errorf("napcat: compact dedup log: %w", err)
 	}
@@ -126,23 +185,30 @@ func (d *Dedup) Seen(actionID string) (platformMsgID string, ok bool) {
 	return platformMsgID, ok
 }
 
-// Mark records actionID as sent and fsyncs the log before returning.
+// Mark records actionID as sent and fsyncs the log before returning. If
+// writing fails, the action is still remembered for the life of the process
+// and any partial line is truncated away so the next record stays intact.
 func (d *Dedup) Mark(actionID, platformMsgID string) error {
 	if actionID == "" || strings.ContainsAny(actionID, "\t\r\n") || strings.ContainsAny(platformMsgID, "\t\r\n") {
 		return fmt.Errorf("napcat: invalid dedup entry %q/%q", actionID, platformMsgID)
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.sent[actionID] = platformMsgID
 	if d.f == nil {
 		return errors.New("napcat: dedup log closed")
 	}
-	if _, err := d.f.WriteString(formatDedupLine(actionID, d.now().Unix(), platformMsgID)); err != nil {
+	n, err := d.f.Write([]byte(formatDedupLine(actionID, d.now().Unix(), platformMsgID)))
+	if err != nil {
+		if terr := d.f.Truncate(d.size); terr != nil {
+			return fmt.Errorf("napcat: write dedup log: %w (truncating the partial line also failed: %v)", err, terr)
+		}
 		return fmt.Errorf("napcat: write dedup log: %w", err)
 	}
+	d.size += int64(n)
 	if err := d.f.Sync(); err != nil {
 		return fmt.Errorf("napcat: sync dedup log: %w", err)
 	}
-	d.sent[actionID] = platformMsgID
 	return nil
 }
 

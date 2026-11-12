@@ -29,6 +29,9 @@ const (
 	ackTimeout        = 10 * time.Second
 	backoffMin        = time.Second
 	backoffMax        = 30 * time.Second
+	// stableSessionAfter is how long a session must stay up before the
+	// reconnect backoff starts again from backoffMin.
+	stableSessionAfter = 30 * time.Second
 
 	outcomeUnknown = "delivery outcome unknown; not resent to avoid a duplicate"
 )
@@ -45,6 +48,9 @@ type Adapter struct {
 	submitDelays  []time.Duration
 	retryInterval time.Duration
 	sendTimeout   time.Duration
+	reconnectMin  time.Duration
+	reconnectMax  time.Duration
+	stableSession time.Duration
 
 	dedup *Dedup
 
@@ -88,13 +94,17 @@ func New(cfg config.NapCatConfig, logger *slog.Logger) (*Adapter, error) {
 		submitDelays:  []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second},
 		retryInterval: 5 * time.Second,
 		sendTimeout:   60 * time.Second,
+		reconnectMin:  backoffMin,
+		reconnectMax:  backoffMax,
+		stableSession: stableSessionAfter,
 	}, nil
 }
 
 // Run connects to NapCat and serves until ctx is done, reconnecting with
 // exponential backoff (1s doubling up to 30s) after any connection failure.
-// It returns nil when ctx is done and an error only if the local dedup log
-// cannot be opened.
+// The backoff starts again from 1s only after a session that served for at
+// least 30s. It returns nil when ctx is done and an error only if the local
+// dedup log cannot be opened.
 func (a *Adapter) Run(ctx context.Context) error {
 	dedup, err := OpenDedup(filepath.Join(a.cfg.StateDir, dedupFileName), dedupRetention, time.Now)
 	if err != nil {
@@ -111,14 +121,14 @@ func (a *Adapter) Run(ctx context.Context) error {
 	}()
 	defer wg.Wait()
 
-	backoff := backoffMin
+	backoff := a.reconnectMin
 	for {
-		connected, err := a.session(ctx)
+		served, err := a.session(ctx)
 		if ctx.Err() != nil {
 			return nil
 		}
-		if connected {
-			backoff = backoffMin
+		if served >= a.stableSession {
+			backoff = a.reconnectMin
 		}
 		a.log.Warn("napcat connection unavailable; reconnecting", "error", err, "retry_in", backoff.String())
 		t := time.NewTimer(backoff)
@@ -128,37 +138,38 @@ func (a *Adapter) Run(ctx context.Context) error {
 			return nil
 		case <-t.C:
 		}
-		backoff = min(backoff*2, backoffMax)
+		backoff = min(backoff*2, a.reconnectMax)
 	}
 }
 
-// session runs one connection until it fails or ctx is done. connected
-// reports whether the connection got as far as serving events.
-func (a *Adapter) session(ctx context.Context) (connected bool, err error) {
+// session runs one connection until it fails or ctx is done. served is how
+// long the connection served events; it is zero if it never got that far.
+func (a *Adapter) session(ctx context.Context) (served time.Duration, err error) {
 	conn, err := Dial(ctx, a.cfg.WSURL, a.cfg.AccessToken)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	defer conn.Close()
 
 	data, err := conn.Call(ctx, "get_login_info", nil)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	var login struct {
 		UserID json.Number `json:"user_id"`
 	}
 	if err := decodeNumbers(data, &login); err != nil || !isNumericID(login.UserID.String()) {
-		return false, fmt.Errorf("napcat: get_login_info: unexpected data %s", data)
+		return 0, fmt.Errorf("napcat: get_login_info: unexpected data %s", data)
 	}
 	selfID := login.UserID.String()
 
 	caps, err := a.core.Capabilities(ctx)
 	if err != nil {
-		return false, fmt.Errorf("napcat: core capabilities: %w", err)
+		return 0, fmt.Errorf("napcat: core capabilities: %w", err)
 	}
 	a.applyCaps(caps, selfID)
 	a.log.Info("napcat connected", "ws_url", redactURL(a.cfg.WSURL), "self_id", selfID)
+	start := time.Now()
 
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -196,7 +207,7 @@ func (a *Adapter) session(ctx context.Context) (connected bool, err error) {
 	if n := conn.Dropped(); n > 0 {
 		a.log.Warn("napcat events dropped because the event buffer was full", "dropped", n)
 	}
-	return true, err
+	return time.Since(start), err
 }
 
 func decodeNumbers(data []byte, v any) error {
@@ -406,10 +417,10 @@ func (a *Adapter) deliverOutbox(ctx context.Context, conn *Conn) error {
 // deliver sends one action unless the dedup log shows it was already sent,
 // then ACKs it. The send runs under its own timeout and is not cut off when
 // ctx ends. If the request never reached the connection, the action is left
-// un-ACKed for redelivery and the error is returned. If it was written but
-// no response arrived, the action is recorded with an empty platform message
-// ID and ACKed failed, so it is never sent again; the error is returned unless
-// ctx has ended.
+// un-ACKed for redelivery and the error is returned. If NapCat rejected it,
+// or it was written but no response arrived, the action is recorded with an
+// empty platform message ID and ACKed failed, so it is never sent again; for
+// a missing response the error is returned unless ctx has ended.
 func (a *Adapter) deliver(ctx context.Context, conn *Conn, act conloomapi.Action) error {
 	log := a.log.With("action_id", act.ActionID, "conversation_id", act.ConversationID)
 	if pmid, ok := a.dedup.Seen(act.ActionID); ok {
@@ -439,6 +450,11 @@ func (a *Adapter) deliver(ctx context.Context, conn *Conn, act conloomapi.Action
 	cancel()
 	if cerr := (*callError)(nil); errors.As(err, &cerr) {
 		log.Error("NapCat rejected the message", "error", err, obs.MessageAttr(a.logCfg, act.Content.Text))
+		// NapCat reports some failures (e.g. send timeouts) for messages it
+		// actually delivered, so a rejected action is never sent again either.
+		if err := a.dedup.Mark(act.ActionID, ""); err != nil {
+			log.Error("recording the action failed", "error", err)
+		}
 		a.ack(ctx, log, act.ActionID, conloomapi.AckRequest{Status: conloomapi.AckFailed, Error: err.Error()})
 		return nil
 	}

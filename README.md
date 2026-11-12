@@ -41,6 +41,13 @@ QQ 群 ⇄ NapCat ⇄(OneBot 11 正向 WS)⇄ conloom adapter napcat ⇄(REST /a
 7. 输出经基础审查与后处理写入 Outbox，并唤醒长轮询中的 Adapter。
 8. Adapter 拉取、发送、ACK；核心记录 Bot 自己的回复及其来源关系。
 
+### 投递语义与残留风险
+
+Outbox 是至少一次投递：ACK 丢失或 Adapter 重启后，同一个动作会被再次投递。NapCat Adapter 在发送前查本地去重记录（`napcat-dedup.log`，按 `action_id`），已发送过的动作只补 ACK、不重发。仍有两种残留情况：
+
+- **可能重复一条**：Adapter 在平台发送成功之后、写入去重记录之前崩溃或断电，重启后这条动作会被重发一次。
+- **可能丢失一条**：发送结果未知时（请求已发出但没等到 NapCat 的响应，或 NapCat 返回错误——NapCat 对实际已送达的消息也可能报发送超时），这条动作会被记入去重记录并以 `failed` 确认，之后不再重发，以避免重复；代价是这条回复可能没有发出去。
+
 ## 安装
 
 **预编译二进制（推荐）**：在 [Releases](https://github.com/kinako404/conloom/releases) 下载对应平台的压缩包 `conloom_<版本>_<系统>_<架构>.tar.gz`（Windows 为 `.zip`），解压即可，不需要任何运行时。可用同页的 `checksums.txt` 校验：
@@ -128,9 +135,13 @@ conloom version                                                    显示版本�
 | `/help` | 所有人 | 简短说明 |
 | `/stop` | 发起者或管理员 | 取消本会话正在进行或排队的生成 |
 | `/persona` | 所有人 | 显示当前人格名称与版本 |
-| `/pause`、`/resume` | 管理员 | 暂停本群回复（群并发设为 0）／恢复 |
+| `/pause`、`/resume` | 管理员 | 暂停本群回复（群并发设为 0），并静默取消本群正在生成或排队的回复／恢复 |
 
 命令前缀默认为 `/`（群策略 `reply.command_prefix`）。管理员只认配置中 `bots[].admins` 列出的平台用户 ID。
+
+- 非管理员的命令与普通回复共用每用户限流（`reply.user_rate_limit_per_minute`），超出后命令只落库不回应（`suppressed_reason` 为 `rate_limited`）；群暂停期间非管理员的命令同样不回应（`paused`）。管理员的命令（包括 `/pause`、`/resume`、`/stop`）不受限流和暂停影响。
+- 通过 `/pause` 或 `PUT /api/v1/conversations/{id}/policy` 把群并发设为 0 时，该会话正在生成和排队的回复都会被静默取消（不发“已停止”提示），`/resume` 之后不会补发暂停前积压的回复。
+- 发生时间（事件的 `occurred_at`）早于 `runtime.stale_task_after`（默认 2 分钟）的 @Bot、回复 Bot 或命令消息只落库、不回复，`suppressed_reason` 为 `stale`。例如核心停机期间 NapCat Adapter 缓存的消息，在核心恢复后才提交时就是这样处理的，不会在恢复后集中回复一批旧消息。消息时间来自平台（NapCat 所在机器的时钟），所以 NapCat 与核心所在机器的时钟要保持同步（如启用 NTP）；若 NapCat 的时钟比核心慢超过这个阈值，所有消息都会被当作过时而不回复。
 
 ## 配置
 
@@ -185,11 +196,11 @@ conloom version                                                    显示版本�
 
 ### Linux（systemd）
 
-仓库的 [`deploy/systemd/`](deploy/systemd) 提供两个单元：`conloom.service`（核心）与 `conloom-napcat.service`（Adapter，依赖核心），都以 `conloom` 用户运行、崩溃 3 秒后自动重启。
+仓库的 [`deploy/systemd/`](deploy/systemd) 提供两个单元：`conloom.service`（核心）与 `conloom-napcat.service`（Adapter，依赖核心），都以 `conloom` 用户运行、崩溃 3 秒后自动重启，停止时最多等待 90 秒（Adapter 会等正在发送的消息拿到结果再退出）。单元启用了 `ProtectSystem=strict`，只有 `/opt/conloom/data` 可写：该目录必须在启动前存在；若把 `storage.data_dir` 或 `adapters.napcat.state_dir` 改到别处，要同步修改单元里的 `ReadWritePaths`。
 
 ```sh
 sudo useradd --system --home-dir /opt/conloom --shell /usr/sbin/nologin conloom
-sudo mkdir -p /opt/conloom
+sudo mkdir -p /opt/conloom/data
 sudo cp conloom conloom.yaml .env /opt/conloom/
 sudo chown -R conloom:conloom /opt/conloom
 sudo chmod 600 /opt/conloom/.env
@@ -254,8 +265,10 @@ nssm start ConLoomNapCat
 ```text
 <data_dir>/
   conloom.db         SQLite 数据库（运行时旁边还有 conloom.db-wal、conloom.db-shm）
-  napcat-dedup.log   NapCat Adapter 的已发送记录（按 action_id 去重，保留 24 小时；位置由 adapters.napcat.state_dir 决定）
+  napcat-dedup.log   NapCat Adapter 的已发送记录（按 action_id 去重，保留 24 小时）
 ```
+
+`napcat-dedup.log` 写在 `adapters.napcat.state_dir` 下，默认与 `storage.data_dir` 相同；Adapter 部署在另一台机器时，它在 Adapter 那台机器上。
 
 迁移到另一台机器：
 
@@ -266,7 +279,13 @@ nssm start ConLoomNapCat
    ```
 
 2. 在新机器下载对应平台的二进制，拷贝 `conloom.yaml`、`.env`、备份文件，以及 `napcat-dedup.log`（若 Adapter 也一起迁移）。
-3. 把备份文件放到新机器的 `<data_dir>/conloom.db`（确认该目录下没有遗留的 `conloom.db-wal`、`conloom.db-shm`）。
+3. 把备份文件放到新机器的 `<data_dir>/conloom.db`（确认该目录下没有遗留的 `conloom.db-wal`、`conloom.db-shm`），`napcat-dedup.log` 放到新机器的 `adapters.napcat.state_dir`（默认即 `<data_dir>`）。按上文 systemd 布局部署时，恢复的文件要交给服务用户：
+
+   ```sh
+   sudo chown conloom:conloom /opt/conloom/data/conloom.db /opt/conloom/data/napcat-dedup.log
+   sudo chmod 600 /opt/conloom/data/conloom.db /opt/conloom/data/napcat-dedup.log
+   ```
+
 4. 停止旧实例（先停 Adapter 再停核心），启动新实例（先启核心再启 Adapter）。
 
 备份之后到停止旧实例之前收到的消息不会出现在备份里；若要一条不丢，可以先停止旧实例再执行 `conloom backup`（服务停止时同样可用）。核心与 Adapter 可以分别迁移：Adapter 只需能访问 NapCat 与核心 API 地址。数据库的恢复方法始终是把备份文件放到 `<data_dir>/conloom.db`。

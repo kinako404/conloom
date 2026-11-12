@@ -12,7 +12,13 @@ WorkingDirectory=/opt/conloom
 ExecStart=/opt/conloom/conloom serve -c /opt/conloom/conloom.yaml
 Restart=always
 RestartSec=3
+TimeoutStopSec=90
 NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+# storage.data_dir must be writable and must exist before the service starts.
+ReadWritePaths=/opt/conloom/data
 
 [Install]
 WantedBy=multi-user.target

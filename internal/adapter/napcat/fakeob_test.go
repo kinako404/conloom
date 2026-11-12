@@ -36,6 +36,8 @@ const (
 	sendNoReply
 	// sendDelayedReply answers after the configured delay.
 	sendDelayedReply
+	// sendReject answers with a non-zero retcode, like NapCat's send timeouts.
+	sendReject
 )
 
 // fakeOB is a OneBot 11 forward WebSocket server modelled on NapCat 4.x: it
@@ -132,6 +134,9 @@ func (f *fakeOB) serve(w http.ResponseWriter, r *http.Request) {
 				continue
 			case sendDelayedReply:
 				time.Sleep(delay)
+			case sendReject:
+				resp["status"], resp["retcode"], resp["data"] = "failed", 1200, nil
+				resp["message"], resp["wording"] = "Timeout: NTEvent", "Timeout: NTEvent"
 			}
 		case "test_echo":
 			resp["data"] = req.Params

@@ -689,6 +689,137 @@ func TestAdapter_SendTimeoutIsNotResent(t *testing.T) {
 	}
 }
 
+func TestAdapter_RejectedSendIsNotResent(t *testing.T) {
+	ob := newFakeOB(t)
+	ob.SetSend(sendReject, 0)
+	c := newCore(t, "300ms")
+	c.failAcks.Store(true)
+	stateDir := t.TempDir()
+	startAdapter(t, napcatConfig(ob, c, stateDir), nil)
+	waitFor(t, 5*time.Second, "get_login_info", func() bool { return len(ob.Calls("get_login_info")) == 1 })
+
+	ob.Push(groupMessage(10001, 20001, 70001, "在吗？", true))
+	waitFor(t, 2*time.Second, "send_group_msg", func() bool { return len(ob.Calls("send_group_msg")) == 1 })
+	waitFor(t, 2*time.Second, "the failed ACK", func() bool { return len(c.ackRecords()) == 1 })
+	first := c.ackRecords()[0]
+	if first.Req.Status != conloomapi.AckFailed {
+		t.Errorf("ACK after NapCat rejected the send = %+v, want failed", first)
+	}
+	record, err := os.ReadFile(filepath.Join(stateDir, "napcat-dedup.log"))
+	if err != nil || !strings.Contains(string(record), first.ActionID+"\t") {
+		t.Errorf("dedup log = %q (err %v), want a record of %s", record, err, first.ActionID)
+	}
+	c.failAcks.Store(false)
+
+	waitFor(t, 10*time.Second, "a successful ACK after redelivery", func() bool {
+		acks := c.ackRecords()
+		return acks[len(acks)-1].Code == http.StatusOK
+	})
+	last := c.ackRecords()[len(c.ackRecords())-1]
+	if last.ActionID != first.ActionID || last.Req.Status != conloomapi.AckFailed {
+		t.Errorf("final ACK = %+v, want failed for %s", last, first.ActionID)
+	}
+	time.Sleep(800 * time.Millisecond)
+	if n := len(ob.Calls("send_group_msg")); n != 1 {
+		t.Errorf("send_group_msg calls = %d, want 1", n)
+	}
+}
+
+// reconnectGaps drops each of the first n-1 connections hold after it is
+// established and returns the time from each drop to the next connection.
+func reconnectGaps(t *testing.T, r *runningAdapter, ob *fakeOB, n int, hold time.Duration) []time.Duration {
+	t.Helper()
+	var gaps []time.Duration
+	var dropped time.Time
+	for i := 1; i <= n; i++ {
+		waitFor(t, 10*time.Second, "connection "+strconv.Itoa(i), func() bool {
+			return strings.Count(r.logs.String(), "napcat connected") >= i
+		})
+		if i > 1 {
+			gaps = append(gaps, time.Since(dropped))
+		}
+		if i == n {
+			break
+		}
+		time.Sleep(hold)
+		dropped = time.Now()
+		ob.Drop()
+	}
+	return gaps
+}
+
+func TestAdapter_BackoffGrowsAcrossShortSessions(t *testing.T) {
+	ob := newFakeOB(t)
+	c := newCore(t, "60s")
+	r := startAdapter(t, napcatConfig(ob, c, t.TempDir()), func(a *Adapter) {
+		a.reconnectMin, a.reconnectMax = 20*time.Millisecond, 10*time.Second
+	})
+	gaps := reconnectGaps(t, r, ob, 6, 0)
+	if last := gaps[len(gaps)-1]; last < 300*time.Millisecond {
+		t.Errorf("reconnect gaps = %v, want the backoff to keep doubling after short sessions", gaps)
+	}
+}
+
+func TestAdapter_BackoffResetsAfterStableSession(t *testing.T) {
+	ob := newFakeOB(t)
+	c := newCore(t, "60s")
+	r := startAdapter(t, napcatConfig(ob, c, t.TempDir()), func(a *Adapter) {
+		a.reconnectMin, a.reconnectMax, a.stableSession = 20*time.Millisecond, 10*time.Second, 100*time.Millisecond
+	})
+	gaps := reconnectGaps(t, r, ob, 6, 200*time.Millisecond)
+	for _, g := range gaps {
+		if g >= 300*time.Millisecond {
+			t.Errorf("reconnect gaps = %v, want the backoff reset after sessions longer than stableSession", gaps)
+			break
+		}
+	}
+}
+
+func TestDial_TimesOutWhenServerNeverUpgrades(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var conns []net.Conn
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			c.Close()
+		}
+	})
+	orig := dialTimeout
+	dialTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { dialTimeout = orig })
+
+	errc := make(chan error, 1)
+	go func() {
+		_, err := Dial(context.Background(), "ws://"+ln.Addr().String()+"/", "")
+		errc <- err
+	}()
+	select {
+	case err := <-errc:
+		if err == nil {
+			t.Error("Dial to a server that never upgrades succeeded")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Dial did not time out against a server that never upgrades")
+	}
+}
+
 func TestAdapter_ShutdownWaitsForInFlightSend(t *testing.T) {
 	ob := newFakeOB(t)
 	ob.SetSend(sendDelayedReply, 700*time.Millisecond)
