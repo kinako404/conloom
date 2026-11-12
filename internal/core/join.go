@@ -172,7 +172,9 @@ type joinSpeaker struct {
 // eligible member among the speakers who is not out of their own budget; and
 // the window matching such a member's interests or containing a question. An
 // unanswered question waives the minimum number of messages: the newest
-// message is a question and would itself be the join target. It then creates
+// message is a clear question (isClearQuestion) and would itself be the join
+// target; a short window whose newest clear question is not the target gives
+// joinNoTarget. It then creates
 // a join task replying to the newest message of an eligible speaker that
 // addresses nobody else, records the evaluation and returns the task ID, or
 // returns "" and the reason it did not join, which it logs at info level
@@ -245,9 +247,9 @@ func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 	}
 	window := joinWindow(msgs, now.Add(-p.JoinWindow.Duration), pol.Reply.CommandPrefix)
 	windowSize = len(window)
-	// A short window can only be joined for an unanswered question.
+	// A short window can only be joined for an unanswered clear question.
 	short := len(window) < p.JoinMinMessages
-	if len(window) == 0 || short && !isQuestion(window[len(window)-1].Text) {
+	if len(window) == 0 || short && !isClearQuestion(window[len(window)-1].Text) {
 		return "", joinNoFewMessages
 	}
 	newest := window[len(window)-1]
@@ -262,7 +264,7 @@ func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 	var target store.MessageRecord
 	if short {
 		if target, ok = o.joinTarget(ctx, window, msgs, speakers); !ok || target.ID != newest.ID {
-			return "", joinNoFewMessages
+			return "", joinNoTarget
 		}
 	} else {
 		if len(speakers) == 0 {
@@ -495,6 +497,24 @@ func isQuestion(text string) bool {
 		}
 	}
 	return slices.ContainsFunc(questionWords, func(w string) bool { return strings.Contains(text, w) })
+}
+
+// clearQuestionWords are the words that make a message a clear question.
+var clearQuestionWords = []string{"怎么", "为什么", "为啥", "有没有", "谁知道", "是不是", "能不能", "会不会", "要不要", "哪个", "哪里", "多少"}
+
+// isClearQuestion is a stricter isQuestion for the one-message join waiver:
+// text contains a question mark, ends with 吗 (ignoring trailing spaces,
+// punctuation and tildes), or contains a clear question word. Endings such as
+// 呢 and 么 and words such as 啥 and 咋 are too often not questions.
+func isClearQuestion(text string) bool {
+	if strings.ContainsAny(text, "？?") {
+		return true
+	}
+	trimmed := strings.TrimRightFunc(text, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsPunct(r) || r == '~' || r == '～'
+	})
+	return strings.HasSuffix(trimmed, "吗") ||
+		slices.ContainsFunc(clearQuestionWords, func(w string) bool { return strings.Contains(text, w) })
 }
 
 // joinNotCreated maps an error of createJoinTask that only means the group

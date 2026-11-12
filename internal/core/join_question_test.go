@@ -42,36 +42,73 @@ func TestJoin_UnansweredQuestionWaivesMinMessages(t *testing.T) {
 	}
 }
 
+func TestIsClearQuestion(t *testing.T) {
+	for text, want := range map[string]bool{
+		"猫娘可爱吗":      true,
+		"猫娘可爱吗～":     true,
+		"猫娘可爱吗~ ":    true,
+		"有人玩吗":       true,
+		"怎么打这个boss":  true,
+		"真的？":        true,
+		"what time?": true,
+		"是不是下雨了":     true,
+		"能不能带我一个":    true,
+		"会不会太晚":      true,
+		"要不要一起":      true,
+		"哪个好":        true,
+		"去哪里玩":       true,
+		"多少钱":        true,
+		"为什么这样":      true,
+		"为啥不行":       true,
+		"有没有推荐":      true,
+		"谁知道答案":      true,
+		"我在吃饭呢":      false,
+		"没啥事":        false,
+		"就这么":        false,
+		"好吧":         false,
+		"咋回事":        false,
+		"":           false,
+	} {
+		if got := isClearQuestion(text); got != want {
+			t.Errorf("isClearQuestion(%q) = %v, want %v", text, got, want)
+		}
+	}
+}
+
 func TestJoin_MinMessagesKeptWithoutUnansweredQuestion(t *testing.T) {
 	for _, c := range []struct {
 		name  string
 		setup func(t *testing.T, env *testEnv)
+		want  string
 	}{
 		{"lone non-question", func(t *testing.T, env *testEnv) {
 			env.chat(t, line{"20001", matchText})
-		}},
+		}, joinNoFewMessages},
+		{"loose question", func(t *testing.T, env *testEnv) {
+			env.chat(t, line{"20001", "我在吃饭呢"})
+		}, joinNoFewMessages},
 		{"question answered by another member", func(t *testing.T, env *testEnv) {
 			env.chat(t, line{"20001", "这个好用吗"}, line{"20002", "挺好用的"})
-		}},
+		}, joinNoFewMessages},
 		{"question from a member without eligibility", func(t *testing.T, env *testEnv) {
 			env.chat(t, line{"20003", "这个好用吗"})
-		}},
+		}, joinNoTarget},
 		{"question from a member without eligibility after an eligible one", func(t *testing.T, env *testEnv) {
 			env.chat(t, line{"20001", matchText}, line{"20003", "有人知道吗"})
-		}},
+		}, joinNoTarget},
 		{"question from a member out of budget", func(t *testing.T, env *testEnv) {
 			env.logProactive(t, "20001", store.ProactiveSent, time.Now().Add(-5*time.Minute))
 			env.chat(t, line{"20001", "这个好用吗"})
-		}},
+		}, joinNoTarget},
 		{"question addressed to another member", func(t *testing.T, env *testEnv) {
-			requireObserved(t, env, env.groupEvent("20001", "你觉得呢", mentionUser("user_20002")), "")
-		}},
+			requireObserved(t, env, env.groupEvent("20001", "你觉得好用吗", mentionUser("user_20002")), "")
+		}, joinNoTarget},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			env := newTestOrchestrator(t, testOpts{configure: questionConfig(time.Hour)})
 			env.seedMember(t, "20001", conloomapi.ProactiveHigh, time.Now().Add(-time.Hour))
 			c.setup(t, env)
-			env.requireNoJoin(t, joinNoFewMessages)
+			env.requireNoJoin(t, c.want)
 			if n := env.modelCalls(); n != 0 {
 				t.Fatalf("model calls = %d, want 0", n)
 			}
