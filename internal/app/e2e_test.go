@@ -329,13 +329,13 @@ func TestE2E_GroupMentionGetsOneReply(t *testing.T) {
 	fake := fakeopenai.New(t, answer(fakeReply))
 	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL}))
 
-	msgID := e.mention(group, alice, "在吗？")
+	e.mention(group, alice, "在吗？")
 	a := e.drainOne()
 	if a.Content.Text != fakeReply {
 		t.Errorf("reply text = %q, want %q", a.Content.Text, fakeReply)
 	}
-	if a.ReplyToMessageID != msgID {
-		t.Errorf("ReplyToMessageID = %q, want %q", a.ReplyToMessageID, msgID)
+	if a.ReplyToMessageID != "" || a.ReplyToPlatformMessageID != "" {
+		t.Errorf("reply target = %q/%q, want none in a quiet group", a.ReplyToMessageID, a.ReplyToPlatformMessageID)
 	}
 	if a.ConversationID != "group_10001" || a.PlatformConversationID != "10001" || a.Type != conloomapi.ActionMessageSend {
 		t.Errorf("action target = %+v", a)
@@ -443,8 +443,8 @@ func TestE2E_ReplyToBotTriggers(t *testing.T) {
 		t.Fatalf("reply to bot: response %+v, want a reply task", resp)
 	}
 	a := e.drainOne()
-	if a.ReplyToMessageID != msgID || a.Content.Text != fakeReply {
-		t.Errorf("action = %+v, want reply to %s", a, msgID)
+	if a.ReplyToMessageID != "" || a.Content.Text != fakeReply {
+		t.Errorf("action = %+v, want an unquoted reply", a)
 	}
 
 	resp, _ = e.say(group, bob, "回复别人的消息", mock.SayOptions{ReplyTo: msgID})
@@ -493,15 +493,15 @@ func TestE2E_RestartRecovery(t *testing.T) {
 	dataDir := t.TempDir()
 	slow := blockingModel(t)
 	e1 := newEnv(t, testConfig(t, configParams{dataDir: dataDir, modelURL: slow.URL}))
-	msgID := e1.mention(group, alice, "在吗？")
+	e1.mention(group, alice, "在吗？")
 	waitUntil(t, "the model call to start", func() bool { return slow.Calls() == 1 })
 	e1.close()
 
 	fast := fakeopenai.New(t, answer(fakeReply))
 	e2 := newEnv(t, testConfig(t, configParams{dataDir: dataDir, modelURL: fast.URL}))
 	a := e2.drainOne()
-	if a.Content.Text != fakeReply || a.ReplyToMessageID != msgID {
-		t.Errorf("recovered action = %+v, want %q replying to %s", a, fakeReply, msgID)
+	if a.Content.Text != fakeReply || a.ReplyToMessageID != "" {
+		t.Errorf("recovered action = %+v, want %q without a quote", a, fakeReply)
 	}
 	e2.requireNoAction(500 * time.Millisecond)
 	if n := fast.Calls(); n != 1 {
@@ -764,9 +764,9 @@ func TestE2E_TurnTakingDoesNotReplyEverySentence(t *testing.T) {
 
 	e.mention(group, alice, "在吗？")
 	e.drainOne()
-	var turnTask, lastMsg string
+	var turnTask string
 	for i, text := range []string{"周末去爬山了", "山上风好大", "你周末干嘛了"} {
-		resp, msgID := e.say(group, alice, text, mock.SayOptions{})
+		resp, _ := e.say(group, alice, text, mock.SayOptions{})
 		if resp.Disposition != conloomapi.DispositionReply || resp.TaskID == "" {
 			t.Fatalf("sentence %d: response %+v, want part of a turn", i, resp)
 		}
@@ -775,11 +775,10 @@ func TestE2E_TurnTakingDoesNotReplyEverySentence(t *testing.T) {
 		} else if !resp.Merged || resp.TaskID != turnTask {
 			t.Fatalf("sentence %d: response %+v, want merged into %s", i, resp, turnTask)
 		}
-		lastMsg = msgID
 	}
 	a := e.drainOne()
-	if a.Content.Text != "爬山不错呀" || a.ReplyToMessageID != lastMsg {
-		t.Fatalf("turn reply = %+v, want one reply quoting the last sentence %s", a, lastMsg)
+	if a.Content.Text != "爬山不错呀" || a.ReplyToMessageID != "" {
+		t.Fatalf("turn reply = %+v, want one unquoted reply", a)
 	}
 	if n := fake.Calls(); n != 2 {
 		t.Fatalf("model calls = %d, want 2 (mention, one turn)", n)

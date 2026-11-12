@@ -160,12 +160,20 @@ conloom version                                                    显示版本�
 
 **模型拒答与跳过标记**：在聊模式的每一轮和加入群聊的任务会在当前消息末尾附加一段固定提示，告诉模型没有人 @ 它、不需要每句都回应，不合适就只输出内部跳过标记 `[[SKIP]]`。模型输出（去掉思考段后）只要在任何位置含有这个标记（忽略大小写、空白、零宽字符，全角括号与【】视同方括号），或整条输出只是 `SKIP`／`[SKIP]`（允许前后带标点），整条输出都会被丢弃：不产生任何动作，也不进入 Outbox，标记永远不会出现在群里。这类任务的状态仍是 `succeeded`，`meta.review_result` 为 `skipped`。
 
+**回复格式**：群里的回复默认直接发出，不使用 QQ 的引用回复，只在可能弄不清是在回应谁时才引用它回应的那条消息（任务的最后一条触发消息）。由群策略 `reply.quote` 控制：
+
+- `auto`（默认）：生成回复时满足任一条件才引用——触发消息之后已有其他群友发言（触发者本人的补充和 Bot 自己的消息不算），或触发消息已超过 60 秒；查询近期消息失败时也按引用处理。直接对话、命令、在聊轮次与加入群聊都按这条规则。
+- `always`：总是引用（旧版本的行为）。
+- `never`：从不引用。
+
+私聊从不引用。
+
 ### 在聊模式
 
 群策略 `reply.continuation_window` 是在聊会话的保持时间（0~10m；0 表示不开启在聊模式，只回直接对话；示例配置为 `0s`）。每个群同时最多有一个在聊会话，只记在内存里，重启后清空（最多让一段闲聊需要重新 @Bot）。
 
 - **开始与刷新**：Bot 回复了群里 @Bot 或回复 Bot 的消息后，发起者成为在聊会话的参与者（会话不存在时随之开始）；会话中的直接对话同样把发起者加入，并把下面的未点名回复与连续跳过计数清零。Bot 以加入群聊的方式发言后（见[观望模式](#观望模式加入群聊)），也会开始一段会话，参与者是当时最近对话中的全部目标资格人，并且已计 1 次未点名回复。
-- **轮次**：参与者不 @Bot 的发言触发一轮（任务 `trigger` 为 `continuation`）。Bot 等他停顿 `turn_gap`（默认 6 秒）再处理；他一直在说时，从这一轮第一句算起最多等 `turn_max_wait`（默认 20 秒）。同一人在这期间的几句话合并为一轮，只调用一次模型，回复时引用他最后一句。模型被告知不需要每句都回应：只有对方在问它、在等它回应，或者它有明显值得说的话时才回复一两句；对方在和别人说话、话题已经转开或没必要回应时输出跳过标记。
+- **轮次**：参与者不 @Bot 的发言触发一轮（任务 `trigger` 为 `continuation`）。Bot 等他停顿 `turn_gap`（默认 6 秒）再处理；他一直在说时，从这一轮第一句算起最多等 `turn_max_wait`（默认 20 秒）。同一人在这期间的几句话合并为一轮，只调用一次模型，回复针对他最后一句（需要引用时引用这一句，见上文回复格式）。模型被告知不需要每句都回应：只有对方在问它、在等它回应，或者它有明显值得说的话时才回复一两句；对方在和别人说话、话题已经转开或没必要回应时输出跳过标记。
 - **规则退出（不调用模型）**：参与者的非 @ 消息如果 @ 了 Bot 以外的人（包括 @全体成员），或回复的是另一位群友的消息，就不回复、只落库，并把此人移出参与者；参与者都走了，会话结束。
 - **非参与者**：不在会话里的人不 @Bot 的发言只落库（会进入上下文），不触发回复。
 - **结束**：满足任一条件会话即结束——连续 `max_consecutive_skips`（默认 2）轮模型都输出跳过标记或调用失败（在聊轮次和加入群聊的任务失败时不发出错误提示）；自上次被直接点名以来，未点名的回复达到 `max_unprompted_replies`（默认 4）次；超过 `continuation_window` 既没有参与者发言也没有 Bot 回复；参与者全部规则退出。`/pause` 也会清空会话。
@@ -184,7 +192,7 @@ conloom version                                                    显示版本�
   6. 相关：窗口内的文本与某位目标资格人的兴趣画像按其档位匹配，**或者**窗口里有人提问（含“？”或“?”，以“吗”“呢”“么”结尾，或含“怎么”“为什么”“为啥”“有没有”“谁知道”“啥”“咋”）；
   7. 预算：本群最近一小时的加入评估少于 `join_evaluations_per_hour` 次（默认 4），且最近一小时的主动发言少于 `group_hourly_limit` 次（默认 4）。
 - **目标消息**：窗口内最新的一条由目标资格人发出、不是命令、没有 @ 任何人、也没有回复其他群友或 Bot 的消息（@Bot 和回复 Bot 的消息已经直接回复过）；没有这样的消息就不加入。
-- **发出**：通过检查后记一次评估，建一个 `trigger` 为 `proactive` 的任务（触发消息为目标消息），等待模型准入时排在普通回复之后。模型看到最近的对话，被告知没有人 @ 它、只有能自然接上正在聊的话题、对大家有帮助或有趣、而且不会打断别人时才说一两句，并会知道目标资格人以前常和它聊的话题（合并后的前 5 个兴趣词）。调用模型前和发出前都会重新检查总开关、暂停、目标人的档位和发言上限，已不满足就按跳过处理（不调用模型或不发送）。模型决定加入时，以引用回复目标消息的形式发出，随后开始一段在聊会话；模型输出跳过标记则不发送。
+- **发出**：通过检查后记一次评估，建一个 `trigger` 为 `proactive` 的任务（触发消息为目标消息），等待模型准入时排在普通回复之后。模型看到最近的对话，被告知没有人 @ 它、只有能自然接上正在聊的话题、对大家有帮助或有趣、而且不会打断别人时才说一两句，并会知道目标资格人以前常和它聊的话题（合并后的前 5 个兴趣词）。调用模型前和发出前都会重新检查总开关、暂停、目标人的档位和发言上限，已不满足就按跳过处理（不调用模型或不发送）。模型决定加入时，回复针对目标消息发出（是否引用按 `reply.quote`；目标消息之后通常已有别人发言，所以默认多半会引用），随后开始一段在聊会话；模型输出跳过标记则不发送。
 
 ### 资格、档位与上限
 
@@ -223,7 +231,7 @@ conloom version                                                    显示版本�
 | `bots` | Bot 实例：`id`、`platform`、`name`（显示名，默认“织语”）、`platform_self_id`（Bot 自身的平台 ID，必填，用于自回复防护）、`admins`、`enabled_conversations`（只在这些会话工作）、`private_chat`（`admins`／`all`／`off`，默认 `admins`）、`persona_template` |
 | `model_profiles` | 按角色配置模型，`short_context` 必需、`long_context` 可选：`provider`（`openai_compatible`）、`endpoint`、`model`、`api_key`、`modalities`、`context`（窗口与预算，须满足 `soft_input_budget <= configured_window <= native_window`）、`runtime`（并发、超时、重试）、`privacy`、`extra_body`（原样合并进请求体）、`token_estimate_factor` |
 | `persona_templates` | 群人格模板：`style` 各项 0~1，`behavior` 为枚举；省略 `default` 时使用内置默认人格 |
-| `default_group_policy` | 新会话的初始群策略：`concurrency`、`reply`（命令前缀、在聊会话保持时间 `continuation_window` 与轮次设置（见下）、合并窗口 `debounce`、最短回复间隔、每用户限流）、`context`、`review`、`proactive`（观望模式与主动搭话，见下）。通过 API 或命令修改后存库并版本化，库内版本优先 |
+| `default_group_policy` | 新会话的初始群策略：`concurrency`、`reply`（命令前缀、在聊会话保持时间 `continuation_window` 与轮次设置（见下）、合并窗口 `debounce`、最短回复间隔、每用户限流、引用方式 `quote`）、`context`、`review`、`proactive`（观望模式与主动搭话，见下）。通过 API 或命令修改后存库并版本化，库内版本优先 |
 | `runtime` | `action_ttl`、`outbox_lease`、`stale_task_after`、`idempotency_retention`、`max_merge_window`、`session_idle` |
 | `adapters.napcat` | `ws_url`、`access_token`、`core_url`、`core_token`、`bot_instance_id`、`state_dir`（去重记录目录，默认同 `data_dir`） |
 | `adapters.mock` | `core_url`、`core_token`、`bot_instance_id` |
@@ -241,6 +249,7 @@ default_group_policy:
     turn_max_wait: 20s          # 一轮从第一句算起最多等多久，turn_gap~2m
     max_unprompted_replies: 4   # 两次被直接点名之间最多几次未点名回复，达到后会话结束，1~20
     max_consecutive_skips: 2    # 连续几轮跳过后会话结束，1~10
+    quote: auto                 # 群里回复何时引用原消息：auto（必要时）| always | never
   proactive:
     enabled: true               # 群总开关（观望模式）
     default_level: low          # 获得资格时的默认档位：off | low | mid | high
@@ -255,7 +264,7 @@ default_group_policy:
     join_cooldown: 10m          # Bot 上次在本群发言后多久之内不加入，1m~24h
 ```
 
-YAML 配置中省略的任何字段（或省略整个 `proactive` 段）都保持上面的默认值；群策略 API 不会这样合并，不完整的 `proactive` 段会被拒绝（下面的 v2 新增字段除外，见 [API](#api)）。升级前已存库的群策略版本没有 `proactive` 段时，读取时同样按默认值补齐，即主动搭话默认开启、档位默认为低。已存库的版本或 API 请求里缺少群聊参与 v2 新增的字段（`turn_gap`、`turn_max_wait`、`max_unprompted_replies`、`max_consecutive_skips` 与 `join_*`）时，逐字段按默认值补齐；这些字段的零值本身都不合法，所以不会覆盖有意的设置。`continuation_window` 不补，旧版本里的 `0s` 仍表示不开启在聊模式。
+YAML 配置中省略的任何字段（或省略整个 `proactive` 段）都保持上面的默认值；群策略 API 不会这样合并，不完整的 `proactive` 段会被拒绝（下面的 v2 新增字段除外，见 [API](#api)）。升级前已存库的群策略版本没有 `proactive` 段时，读取时同样按默认值补齐，即主动搭话默认开启、档位默认为低。已存库的版本或 API 请求里缺少群聊参与 v2 新增的字段（`turn_gap`、`turn_max_wait`、`max_unprompted_replies`、`max_consecutive_skips` 与 `join_*`）或 `reply.quote` 时，逐字段按默认值补齐（`quote` 补为 `auto`）；这些字段的零值本身都不合法，所以不会覆盖有意的设置。`continuation_window` 不补，旧版本里的 `0s` 仍表示不开启在聊模式。
 
 `proactive.contact_cooldown` 已移除：已存库的旧版本里的这个键在读取时被忽略；但配置文件不接受未知字段，升级后要从 `conloom.yaml` 里删掉这一行，否则启动时报错。
 
@@ -278,7 +287,7 @@ YAML 配置中省略的任何字段（或省略整个 `proactive` 段）都保�
 | `GET /healthz` | 无 | 健康检查 |
 | `GET /metrics` | 无 | Prometheus 指标（`server.metrics_enabled: false` 可关闭） |
 
-群策略包含 `proactive` 段（字段同上文配置）。`PUT …/policy` 的请求体完全不含 `proactive` 段时，保留本群**当前**的主动搭话设置；只要含有 `proactive` 段，它就必须是完整且合法的一段，API 不会与当前设置或默认值合并，像 `{"enabled": false}` 这样只写部分字段的请求会被拒绝并返回校验错误。唯一的例外是群聊参与 v2 新增的字段（`reply.turn_gap`、`reply.turn_max_wait`、`reply.max_unprompted_replies`、`reply.max_consecutive_skips` 与 `proactive.join_*`）：请求里缺少时逐字段按默认值补齐，方便旧的调用方继续使用；已移除的 `proactive.contact_cooldown` 若出现在请求里会被忽略。只想关闭主动搭话时，可由管理员在群里发 `/主动 全群 关`，它以当前版本为基础写入一个新的群策略版本，且只改 `proactive.enabled`（`开` 同理），可用 `GET …/policy` 查看。任务的 `trigger` 除 `private`、`mention`、`reply`、`command` 等外，还可能是 `continuation`（在聊模式的一轮）与 `proactive`（加入群聊）。
+群策略包含 `proactive` 段（字段同上文配置）。`PUT …/policy` 的请求体完全不含 `proactive` 段时，保留本群**当前**的主动搭话设置；只要含有 `proactive` 段，它就必须是完整且合法的一段，API 不会与当前设置或默认值合并，像 `{"enabled": false}` 这样只写部分字段的请求会被拒绝并返回校验错误。唯一的例外是群聊参与 v2 新增的字段（`reply.turn_gap`、`reply.turn_max_wait`、`reply.max_unprompted_replies`、`reply.max_consecutive_skips` 与 `proactive.join_*`）及 `reply.quote`：请求里缺少时逐字段按默认值补齐，方便旧的调用方继续使用；已移除的 `proactive.contact_cooldown` 若出现在请求里会被忽略。只想关闭主动搭话时，可由管理员在群里发 `/主动 全群 关`，它以当前版本为基础写入一个新的群策略版本，且只改 `proactive.enabled`（`开` 同理），可用 `GET …/policy` 查看。任务的 `trigger` 除 `private`、`mention`、`reply`、`command` 等外，还可能是 `continuation`（在聊模式的一轮）与 `proactive`（加入群聊）。
 
 会话 `{id}` 为标准会话 ID，如 `group_<群号>`、`private_<QQ号>`。同一幂等键重放返回首次响应并带 `Idempotent-Replayed: true`，同键不同内容返回 409。错误响应统一为：
 

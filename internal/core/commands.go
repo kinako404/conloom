@@ -24,7 +24,7 @@ func (o *Orchestrator) runCommand(ctx context.Context, task store.TaskRecord, co
 		o.log.Error("command failed", "task_id", task.ID, "command", task.Command, "error", err)
 		status, code, text = conloomapi.TaskFailed, conloomapi.CodeInternal, CopyUnavailable
 	}
-	if err := o.complete(ctx, task, status, meta, code, []store.OutboxRecord{o.newAction(task, conv, triggers, text)}); err == nil {
+	if err := o.complete(ctx, task, status, meta, code, []store.OutboxRecord{o.newAction(ctx, task, conv, triggers, text)}); err == nil {
 		o.noteBotSpoke(task.ConversationKey, o.now())
 	}
 	o.log.Info("command finished", "task_id", task.ID, "conversation", task.ConversationKey,

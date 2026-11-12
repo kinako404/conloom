@@ -121,6 +121,16 @@ func (e *testEnv) storeBotMessage(t *testing.T, at time.Time) string {
 	return id
 }
 
+// joinTarget returns the message a join task answers: its single trigger.
+func joinTarget(t *testing.T, env *testEnv, taskID string) string {
+	t.Helper()
+	rec, err := env.st.GetTask(context.Background(), testBot, taskID)
+	if err != nil || len(rec.TriggerMessageIDs) != 1 {
+		t.Fatalf("join task record = %+v, %v; want one trigger", rec, err)
+	}
+	return rec.TriggerMessageIDs[0]
+}
+
 func topTerms(t *testing.T, env *testEnv, users ...string) []string {
 	t.Helper()
 	merged := map[string]float64{}
@@ -135,7 +145,7 @@ func topTerms(t *testing.T, env *testEnv, users ...string) []string {
 
 func TestCopyDirectiveJoin(t *testing.T) {
 	got := CopyDirectiveJoin("小明", []string{"小明", "小红"}, []string{"咖啡", "烘焙"})
-	want := "【提示】群里大家正在聊天（见上面的近期消息），没有人 @ 你。只有当你能自然地接上正在聊的话题、对大家有帮助或有趣，而且不会打断别人时，才说一两句（会以回复 小明 这条消息的形式发出）；不合适就只输出 [[SKIP]]，不要输出其他内容。小明、小红 以前常和你聊：咖啡、烘焙。"
+	want := "【提示】群里大家正在聊天（见上面的近期消息），没有人 @ 你。只有当你能自然地接上正在聊的话题、对大家有帮助或有趣，而且不会打断别人时，才说一两句（必要时会引用 小明 的这条消息）；不合适就只输出 [[SKIP]]，不要输出其他内容。小明、小红 以前常和你聊：咖啡、烘焙。"
 	if got != want {
 		t.Fatalf("CopyDirectiveJoin = %q\nwant %q", got, want)
 	}
@@ -395,7 +405,7 @@ func TestJoin_TargetIsLatestEligibleMessage(t *testing.T) {
 	t.Run("newest eligible message to nobody else", func(t *testing.T) {
 		env, evs := setup(t)
 		task := env.requireJoin(t)
-		if len(task.Actions) != 1 || task.Actions[0].ReplyToMessageID != evs[1].Message.ID || actor(t, env, task.TaskID) != "20002" {
+		if len(task.Actions) != 1 || joinTarget(t, env, task.TaskID) != evs[1].Message.ID || actor(t, env, task.TaskID) != "20002" {
 			t.Fatalf("join task = %+v, want a reply to %s", task, evs[1].Message.ID)
 		}
 	})
@@ -404,7 +414,7 @@ func TestJoin_TargetIsLatestEligibleMessage(t *testing.T) {
 		env, evs := setup(t)
 		env.logProactive(t, "20002", store.ProactiveSent, time.Now().Add(-5*time.Minute))
 		task := env.requireJoin(t)
-		if len(task.Actions) != 1 || task.Actions[0].ReplyToMessageID != evs[0].Message.ID || actor(t, env, task.TaskID) != "20001" {
+		if len(task.Actions) != 1 || joinTarget(t, env, task.TaskID) != evs[0].Message.ID || actor(t, env, task.TaskID) != "20001" {
 			t.Fatalf("join task = %+v, want a reply to %s", task, evs[0].Message.ID)
 		}
 	})
@@ -413,7 +423,7 @@ func TestJoin_TargetIsLatestEligibleMessage(t *testing.T) {
 		env, evs := setup(t)
 		own := env.groupEvent("20001", "补充一下", replyTo(evs[0].Message.ID))
 		env.submit(t, own)
-		if task := env.requireJoin(t); len(task.Actions) != 1 || task.Actions[0].ReplyToMessageID != own.Message.ID {
+		if task := env.requireJoin(t); len(task.Actions) != 1 || joinTarget(t, env, task.TaskID) != own.Message.ID {
 			t.Fatalf("join task = %+v, want a reply to %s", task, own.Message.ID)
 		}
 	})
@@ -475,7 +485,7 @@ func TestJoin_SentStartsSessionWithEligibleSpeakers(t *testing.T) {
 	env.seedMember(t, "20002", conloomapi.ProactiveLow, time.Now().Add(-time.Hour))
 	evs := env.chat(t, line{"20001", matchText}, line{"20003", "哈哈"}, line{"20002", "我也在研究咖啡"})
 	task := env.requireJoin(t)
-	if len(task.Actions) != 1 || task.Actions[0].ReplyToMessageID != evs[2].Message.ID {
+	if len(task.Actions) != 1 || joinTarget(t, env, task.TaskID) != evs[2].Message.ID {
 		t.Fatalf("join task = %+v, want a reply to %s", task, evs[2].Message.ID)
 	}
 	want := "我也在研究咖啡\n\n" + CopyDirectiveJoin("用户20002", []string{"用户20001", "用户20002"}, topTerms(t, env, "20001", "20002"))
@@ -608,7 +618,7 @@ func TestJoin_TargetSkipsReplyToBot(t *testing.T) {
 	bot := env.storeBotMessage(t, time.Now().Add(-11*time.Minute))
 	env.storeMessage(t, "20001", "对呀", bot)
 	task := env.requireJoin(t)
-	if len(task.Actions) != 1 || task.Actions[0].ReplyToMessageID != evs[0].Message.ID {
+	if len(task.Actions) != 1 || joinTarget(t, env, task.TaskID) != evs[0].Message.ID {
 		t.Fatalf("join task = %+v, want a reply to %s, not to the reply to the bot", task, evs[0].Message.ID)
 	}
 }
@@ -620,7 +630,7 @@ func TestJoin_TargetSkipsReplyToOtherConversation(t *testing.T) {
 	foreign := env.storeRecord(t, store.MessageRecord{ID: "msg_9003", ConversationKey: otherConvKey, PlatformUserID: "20001", Text: "别处"})
 	env.storeMessage(t, "20001", "对呀", foreign.ID)
 	task := env.requireJoin(t)
-	if len(task.Actions) != 1 || task.Actions[0].ReplyToMessageID != evs[0].Message.ID {
+	if len(task.Actions) != 1 || joinTarget(t, env, task.TaskID) != evs[0].Message.ID {
 		t.Fatalf("join task = %+v, want a reply to %s, not to the reply to another group's message", task, evs[0].Message.ID)
 	}
 }
@@ -669,7 +679,7 @@ func TestJoin_CommandsNotCountedNorTargeted(t *testing.T) {
 	env.command(t, "20001", "/help")
 	env.setBotSpoke(time.Now().Add(-time.Hour))
 	task := env.requireJoin(t)
-	if len(task.Actions) != 1 || task.Actions[0].ReplyToMessageID != evs[0].Message.ID {
+	if len(task.Actions) != 1 || joinTarget(t, env, task.TaskID) != evs[0].Message.ID {
 		t.Fatalf("join task = %+v, want a reply to %s, not to a command", task, evs[0].Message.ID)
 	}
 }

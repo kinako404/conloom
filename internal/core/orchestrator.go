@@ -805,9 +805,9 @@ func (o *Orchestrator) complete(ctx context.Context, task store.TaskRecord, stat
 	return nil
 }
 
-// newAction builds a text message action for task. Group replies quote the
-// newest trigger message; private replies quote nothing.
-func (o *Orchestrator) newAction(task store.TaskRecord, conv store.ConversationRecord, triggers []store.MessageRecord, text string) store.OutboxRecord {
+// newAction builds a text message action for task. A group reply quotes the
+// newest trigger message when shouldQuote says so; private replies quote nothing.
+func (o *Orchestrator) newAction(ctx context.Context, task store.TaskRecord, conv store.ConversationRecord, triggers []store.MessageRecord, text string) store.OutboxRecord {
 	now := o.now().UTC()
 	a := conloomapi.Action{
 		ActionID:               ids.New("act"),
@@ -819,13 +819,57 @@ func (o *Orchestrator) newAction(task store.TaskRecord, conv store.ConversationR
 		CreatedAt:              now,
 	}
 	if conv.Type == conloomapi.ConvGroup && len(triggers) > 0 {
-		last := triggers[len(triggers)-1]
-		a.ReplyToMessageID, a.ReplyToPlatformMessageID = last.ID, last.PlatformMessageID
+		if last := triggers[len(triggers)-1]; o.shouldQuote(ctx, task, last, now) {
+			a.ReplyToMessageID, a.ReplyToPlatformMessageID = last.ID, last.PlatformMessageID
+		}
 	}
 	return store.OutboxRecord{
 		Action: a, BotInstanceID: task.BotInstanceID, ConversationKey: task.ConversationKey, TaskID: task.ID,
 		Platform: conv.Platform, Status: store.OutboxPending, CreatedAt: now, ExpiresAt: now.Add(o.actionTTL),
 	}
+}
+
+const (
+	// quoteMaxAge is the trigger age after which an auto-mode reply quotes it.
+	quoteMaxAge = time.Minute
+	// quoteLookback is how many of the newest messages are searched for
+	// someone else speaking after the trigger.
+	quoteLookback = 20
+)
+
+// shouldQuote reports whether a group reply quotes last, the newest trigger
+// message, under the conversation's reply.quote mode. In auto mode it quotes
+// only when last is older than quoteMaxAge or another member spoke after it
+// (the sender's own follow-ups and bot messages do not count); with more than
+// quoteLookback messages since last it quotes too. When the policy or the
+// messages cannot be read it quotes, which keeps the reply unambiguous.
+func (o *Orchestrator) shouldQuote(ctx context.Context, task store.TaskRecord, last store.MessageRecord, now time.Time) bool {
+	pv, err := o.policies.Current(ctx, task.ConversationKey)
+	if err != nil {
+		o.log.Warn("quote check: load policy failed; quoting", "task_id", task.ID, "conversation", task.ConversationKey, "error", err)
+		return true
+	}
+	switch pv.Policy.Reply.Quote {
+	case conloomapi.QuoteNever:
+		return false
+	case conloomapi.QuoteAlways:
+		return true
+	}
+	if now.Sub(last.CreatedAt) > quoteMaxAge {
+		return true
+	}
+	recent, err := o.st.RecentMessages(ctx, task.ConversationKey, quoteLookback)
+	if err != nil {
+		o.log.Warn("quote check: load recent messages failed; quoting", "task_id", task.ID, "conversation", task.ConversationKey, "error", err)
+		return true
+	}
+	i := slices.IndexFunc(recent, func(m store.MessageRecord) bool { return m.ID == last.ID })
+	if i < 0 {
+		return true
+	}
+	return slices.ContainsFunc(recent[i+1:], func(m store.MessageRecord) bool {
+		return !m.FromBot && m.PlatformUserID != last.PlatformUserID
+	})
 }
 
 // conversation loads the stored conversation of a "bot:platform:type:id" key.

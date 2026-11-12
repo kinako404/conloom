@@ -141,7 +141,7 @@ func (o *Orchestrator) finish(ctx context.Context, task store.TaskRecord, out *o
 	}
 	var actions []store.OutboxRecord
 	if out.text != "" {
-		actions = append(actions, o.newAction(task, out.conv, out.triggers, out.text))
+		actions = append(actions, o.newAction(ctx, task, out.conv, out.triggers, out.text))
 	}
 	if err := o.complete(ctx, task, out.status, out.meta, out.code, actions); err != nil {
 		return false, err

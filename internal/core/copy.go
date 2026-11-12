@@ -43,8 +43,8 @@ func CopyDirectiveContinuation(speaker string) string {
 // eligible members in the conversation and terms their top interest terms.
 // Without terms the sentence naming them is left out.
 func CopyDirectiveJoin(target string, names, terms []string) string {
-	s := "【提示】群里大家正在聊天（见上面的近期消息），没有人 @ 你。只有当你能自然地接上正在聊的话题、对大家有帮助或有趣，而且不会打断别人时，才说一两句（会以回复 " +
-		target + " 这条消息的形式发出）；不合适就只输出 [[SKIP]]，不要输出其他内容。"
+	s := "【提示】群里大家正在聊天（见上面的近期消息），没有人 @ 你。只有当你能自然地接上正在聊的话题、对大家有帮助或有趣，而且不会打断别人时，才说一两句（必要时会引用 " +
+		target + " 的这条消息）；不合适就只输出 [[SKIP]]，不要输出其他内容。"
 	if len(terms) > 0 {
 		s += strings.Join(names, "、") + " 以前常和你聊：" + strings.Join(terms, "、") + "。"
 	}

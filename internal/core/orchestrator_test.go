@@ -81,6 +81,8 @@ type handlerFunc = func(req map[string]any) (int, string)
 type testOpts struct {
 	short, long handlerFunc
 	configure   func(*config.Config)
+	// now is the orchestrator's clock; nil means time.Now.
+	now func() time.Time
 }
 
 type testEnv struct {
@@ -144,6 +146,8 @@ type hookStore struct {
 	completions map[string][]string
 	// failLog makes AppendProactiveLog fail.
 	failLog atomic.Bool
+	// failRecent makes RecentMessages fail.
+	failRecent atomic.Bool
 	// lookups records the IDs of every GetMessages call.
 	lookups [][]string
 }
@@ -160,6 +164,13 @@ func (h *hookStore) lookedUp(id string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return slices.ContainsFunc(h.lookups, func(ids []string) bool { return slices.Contains(ids, id) })
+}
+
+func (h *hookStore) RecentMessages(ctx context.Context, convKey string, limit int) ([]store.MessageRecord, error) {
+	if h.failRecent.Load() {
+		return nil, errors.New("test: recent messages unavailable")
+	}
+	return h.Store.RecentMessages(ctx, convKey, limit)
 }
 
 func (h *hookStore) AppendProactiveLog(ctx context.Context, e store.ProactiveLogEntry) error {
@@ -294,6 +305,7 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 		Metrics:   obs.NewMetrics(env.reg),
 		Logger:    slog.New(slog.NewTextHandler(env.logs, nil)),
 		Config:    cfg,
+		Now:       opts.now,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -444,9 +456,8 @@ func TestSubmit_MentionCreatesTaskAndAction(t *testing.T) {
 	if a.Content.Text != fakeReply {
 		t.Errorf("action text = %q, want %q", a.Content.Text, fakeReply)
 	}
-	if a.ReplyToMessageID != ev.Message.ID || a.ReplyToPlatformMessageID != ev.Message.PlatformMessageID {
-		t.Errorf("reply target = %q/%q, want %q/%q", a.ReplyToMessageID, a.ReplyToPlatformMessageID,
-			ev.Message.ID, ev.Message.PlatformMessageID)
+	if a.ReplyToMessageID != "" || a.ReplyToPlatformMessageID != "" {
+		t.Errorf("reply target = %q/%q, want none in a quiet group", a.ReplyToMessageID, a.ReplyToPlatformMessageID)
 	}
 	if a.Type != conloomapi.ActionMessageSend || a.ConversationID != testConvID ||
 		a.ConversationType != conloomapi.ConvGroup || a.PlatformConversationID != "10001" || a.ActionID == "" {

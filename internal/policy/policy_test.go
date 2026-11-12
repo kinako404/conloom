@@ -360,7 +360,7 @@ func TestPolicy_UpdateAppliesPresentProactive(t *testing.T) {
 }
 
 // legacyPolicyJSON returns p as stored JSON without the participation fields
-// added in v2, as written by versions that predate them.
+// added in v2 and the reply quote mode, as written by versions that predate them.
 func legacyPolicyJSON(t *testing.T, p conloomapi.GroupPolicy, dropProactive bool) []byte {
 	t.Helper()
 	raw, err := json.Marshal(p)
@@ -371,7 +371,7 @@ func legacyPolicyJSON(t *testing.T, p conloomapi.GroupPolicy, dropProactive bool
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"turn_gap", "turn_max_wait", "max_unprompted_replies", "max_consecutive_skips"} {
+	for _, k := range []string{"turn_gap", "turn_max_wait", "max_unprompted_replies", "max_consecutive_skips", "quote"} {
 		delete(doc["reply"], k)
 	}
 	for _, k := range []string{"join_lull", "join_window", "join_min_messages", "join_evaluations_per_hour", "join_cooldown"} {
@@ -399,7 +399,7 @@ func TestPolicy_CurrentFillsParticipationDefaultsForLegacyVersion(t *testing.T) 
 	legacy := conloomapi.DefaultGroupPolicy()
 	legacy.Reply.ContinuationWindow = conloomapi.Duration{Duration: time.Minute}
 	raw := legacyPolicyJSON(t, legacy, true)
-	if strings.Contains(string(raw), "proactive") || strings.Contains(string(raw), "turn_") {
+	if strings.Contains(string(raw), "proactive") || strings.Contains(string(raw), "turn_") || strings.Contains(string(raw), "quote") {
 		t.Fatalf("legacy policy has new fields: %s", raw)
 	}
 	conn, err := sql.Open("sqlite", path)

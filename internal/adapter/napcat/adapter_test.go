@@ -453,13 +453,10 @@ func TestAdapter_GroupMentionRoundTrip(t *testing.T) {
 		t.Errorf("group_id = %v, want 10001", call.Params["group_id"])
 	}
 	segs := sentSegments(t, call)
-	if len(segs) != 2 || segs[0]["type"] != "reply" || segs[1]["type"] != "text" {
-		t.Fatalf("message = %v, want reply + text segments", segs)
+	if len(segs) != 1 || segs[0]["type"] != "text" {
+		t.Fatalf("message = %v, want a single text segment without a quote in a quiet group", segs)
 	}
-	if id := segs[0]["data"].(map[string]any)["id"]; id != "70001" {
-		t.Errorf("reply id = %v, want 70001", id)
-	}
-	if text := segs[1]["data"].(map[string]any)["text"]; text != fakeReply {
+	if text := segs[0]["data"].(map[string]any)["text"]; text != fakeReply {
 		t.Errorf("text = %v, want %q", text, fakeReply)
 	}
 
@@ -524,8 +521,8 @@ func TestAdapter_ReconnectsAfterServerDrop(t *testing.T) {
 	waitFor(t, 5*time.Second, "send_group_msg after reconnect", func() bool { return len(ob.Calls("send_group_msg")) == 2 })
 
 	segs := sentSegments(t, ob.Calls("send_group_msg")[1])
-	if id := segs[0]["data"].(map[string]any)["id"]; id != "70002" {
-		t.Errorf("reply id after reconnect = %v, want 70002", id)
+	if len(segs) != 1 || segs[0]["type"] != "text" || segs[0]["data"].(map[string]any)["text"] != fakeReply {
+		t.Errorf("message after reconnect = %v, want a single unquoted text segment", segs)
 	}
 	if ob.Accepted() != 2 {
 		t.Errorf("connections = %d, want 2", ob.Accepted())

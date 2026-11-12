@@ -65,6 +65,14 @@ func (p ProactivePolicy) DailyLimit(level string) int {
 	return 0
 }
 
+// Reply quote modes: QuoteAuto quotes the trigger message only when the reply
+// could be mistaken for an answer to something else.
+const (
+	QuoteAuto   = "auto"
+	QuoteAlways = "always"
+	QuoteNever  = "never"
+)
+
 type ConcurrencyPolicy struct {
 	MaxInteractiveRequests int    `json:"max_interactive_requests" yaml:"max_interactive_requests"`
 	MaxQueuedRequests      int    `json:"max_queued_requests" yaml:"max_queued_requests"`
@@ -90,6 +98,8 @@ type ReplyPolicy struct {
 	// MaxConsecutiveSkips ends a conversation after this many turns in a row
 	// that the model chose not to answer.
 	MaxConsecutiveSkips int `json:"max_consecutive_skips" yaml:"max_consecutive_skips"`
+	// Quote is when group replies quote the message they answer: auto, always or never.
+	Quote string `json:"quote" yaml:"quote"`
 }
 
 type ContextPolicy struct {
@@ -184,6 +194,7 @@ func DefaultGroupPolicy() GroupPolicy {
 			TurnMaxWait:            Duration{20 * time.Second},
 			MaxUnpromptedReplies:   4,
 			MaxConsecutiveSkips:    2,
+			Quote:                  QuoteAuto,
 		},
 		Context: ContextPolicy{
 			MaxRecentMessages: 50,
@@ -212,8 +223,8 @@ func DefaultGroupPolicy() GroupPolicy {
 }
 
 // WithDefaults returns p with a missing (zero) Proactive section replaced by def.Proactive,
-// and each turn-taking and join setting that is zero (missing from policies stored before
-// it existed; zero is never valid for them) taken from def.
+// and each turn-taking, quote and join setting that is zero (missing from policies stored
+// before it existed; zero is never valid for them) taken from def.
 func (p GroupPolicy) WithDefaults(def GroupPolicy) GroupPolicy {
 	if p.Proactive == (ProactivePolicy{}) {
 		p.Proactive = def.Proactive
@@ -222,6 +233,7 @@ func (p GroupPolicy) WithDefaults(def GroupPolicy) GroupPolicy {
 	fillZero(&p.Reply.TurnMaxWait, def.Reply.TurnMaxWait)
 	fillZero(&p.Reply.MaxUnpromptedReplies, def.Reply.MaxUnpromptedReplies)
 	fillZero(&p.Reply.MaxConsecutiveSkips, def.Reply.MaxConsecutiveSkips)
+	fillZero(&p.Reply.Quote, def.Reply.Quote)
 	fillZero(&p.Proactive.JoinLull, def.Proactive.JoinLull)
 	fillZero(&p.Proactive.JoinWindow, def.Proactive.JoinWindow)
 	fillZero(&p.Proactive.JoinMinMessages, def.Proactive.JoinMinMessages)
@@ -282,6 +294,9 @@ func (p GroupPolicy) Validate() error {
 	}
 	if r.MaxConsecutiveSkips < 1 || r.MaxConsecutiveSkips > 10 {
 		fail("reply.max_consecutive_skips must be in [1, 10], got %d", r.MaxConsecutiveSkips)
+	}
+	if !slices.Contains([]string{QuoteAuto, QuoteAlways, QuoteNever}, r.Quote) {
+		fail("reply.quote must be one of auto|always|never, got %q", r.Quote)
 	}
 	if p.Context.MaxRecentMessages < 0 || p.Context.MaxRecentMessages > 500 {
 		fail("context.max_recent_messages must be in [0, 500], got %d", p.Context.MaxRecentMessages)

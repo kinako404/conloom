@@ -288,6 +288,21 @@ func TestSendRequest_GroupWithReply(t *testing.T) {
 	}
 }
 
+func TestSendRequest_GroupWithoutReply(t *testing.T) {
+	_, params, err := SendRequest(conloomapi.Action{
+		Type:                   conloomapi.ActionMessageSend,
+		ConversationType:       conloomapi.ConvGroup,
+		PlatformConversationID: "10001",
+		Content:                conloomapi.ActionContent{Text: "收到"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg := messageSegments(t, params); len(msg) != 1 || msg[0]["type"] != "text" {
+		t.Errorf("message = %#v, want a single text segment", msg)
+	}
+}
+
 func TestSendRequest_PrivateWithoutReply(t *testing.T) {
 	action, params, err := SendRequest(conloomapi.Action{
 		Type:                   conloomapi.ActionMessageSend,

@@ -32,7 +32,7 @@ func TestDefaultGroupPolicyProactive(t *testing.T) {
 func TestDefaultGroupPolicyParticipationFields(t *testing.T) {
 	r := DefaultGroupPolicy().Reply
 	if r.ContinuationWindow.Duration != 0 || r.TurnGap.Duration != 6*time.Second || r.TurnMaxWait.Duration != 20*time.Second ||
-		r.MaxUnpromptedReplies != 4 || r.MaxConsecutiveSkips != 2 {
+		r.MaxUnpromptedReplies != 4 || r.MaxConsecutiveSkips != 2 || r.Quote != QuoteAuto {
 		t.Fatalf("reply = %+v", r)
 	}
 	a := DefaultGroupPolicy().Proactive
@@ -49,7 +49,7 @@ func TestDefaultGroupPolicyParticipationFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, key := range []string{`"turn_gap":"6s"`, `"turn_max_wait":"20s"`, `"max_unprompted_replies":4`, `"max_consecutive_skips":2`,
-		`"join_lull":"15s"`, `"join_window":"5m0s"`, `"join_min_messages":4`, `"join_evaluations_per_hour":4`, `"join_cooldown":"10m0s"`} {
+		`"quote":"auto"`, `"join_lull":"15s"`, `"join_window":"5m0s"`, `"join_min_messages":4`, `"join_evaluations_per_hour":4`, `"join_cooldown":"10m0s"`} {
 		if !strings.Contains(string(b), key) {
 			t.Errorf("json %s missing %s", b, key)
 		}
@@ -60,6 +60,7 @@ reply:
   turn_max_wait: 30s
   max_unprompted_replies: 5
   max_consecutive_skips: 3
+  quote: never
 proactive:
   join_lull: 20s
   join_window: 10m
@@ -72,7 +73,7 @@ proactive:
 		t.Fatal(err)
 	}
 	if y.Reply.TurnGap.Duration != 3*time.Second || y.Reply.TurnMaxWait.Duration != 30*time.Second || y.Reply.MaxUnpromptedReplies != 5 ||
-		y.Reply.MaxConsecutiveSkips != 3 {
+		y.Reply.MaxConsecutiveSkips != 3 || y.Reply.Quote != QuoteNever {
 		t.Errorf("yaml reply = %+v", y.Reply)
 	}
 	if p := y.Proactive; p.JoinLull.Duration != 20*time.Second || p.JoinWindow.Duration != 10*time.Minute || p.JoinMinMessages != 6 ||
@@ -116,6 +117,11 @@ func TestValidateParticipationFields(t *testing.T) {
 		{"max_skips 10 ok", func(p *GroupPolicy) { p.Reply.MaxConsecutiveSkips = 10 }, ""},
 		{"max_skips 0", func(p *GroupPolicy) { p.Reply.MaxConsecutiveSkips = 0 }, "reply.max_consecutive_skips"},
 		{"max_skips 11", func(p *GroupPolicy) { p.Reply.MaxConsecutiveSkips = 11 }, "reply.max_consecutive_skips"},
+		{"quote auto ok", func(p *GroupPolicy) { p.Reply.Quote = QuoteAuto }, ""},
+		{"quote always ok", func(p *GroupPolicy) { p.Reply.Quote = QuoteAlways }, ""},
+		{"quote never ok", func(p *GroupPolicy) { p.Reply.Quote = QuoteNever }, ""},
+		{"quote empty", func(p *GroupPolicy) { p.Reply.Quote = "" }, "reply.quote"},
+		{"quote bad", func(p *GroupPolicy) { p.Reply.Quote = "sometimes" }, "reply.quote"},
 
 		{"join_lull 5s ok", func(p *GroupPolicy) { p.Proactive.JoinLull = Duration{5 * time.Second} }, ""},
 		{"join_lull 5m ok", func(p *GroupPolicy) { p.Proactive.JoinLull = Duration{5 * time.Minute} }, ""},
@@ -175,7 +181,7 @@ func TestWithDefaultsFillsNewFieldsIndividually(t *testing.T) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"turn_gap", "turn_max_wait", "max_unprompted_replies", "max_consecutive_skips"} {
+	for _, k := range []string{"turn_gap", "turn_max_wait", "max_unprompted_replies", "max_consecutive_skips", "quote"} {
 		delete(doc["reply"], k)
 	}
 	for _, k := range []string{"join_lull", "join_window", "join_min_messages", "join_evaluations_per_hour", "join_cooldown"} {
@@ -185,7 +191,7 @@ func TestWithDefaultsFillsNewFieldsIndividually(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(legacy), "turn_") || strings.Contains(string(legacy), "join_") {
+	if strings.Contains(string(legacy), "turn_") || strings.Contains(string(legacy), "join_") || strings.Contains(string(legacy), "quote") {
 		t.Fatalf("legacy json still has new fields: %s", legacy)
 	}
 
@@ -204,6 +210,7 @@ func TestWithDefaultsFillsNewFieldsIndividually(t *testing.T) {
 	custom := DefaultGroupPolicy()
 	custom.Reply.TurnGap = Duration{2 * time.Second}
 	custom.Reply.MaxConsecutiveSkips = 5
+	custom.Reply.Quote = QuoteNever
 	custom.Proactive.JoinCooldown = Duration{time.Hour}
 	custom.Proactive.JoinMinMessages = 10
 	if got := custom.WithDefaults(def); !reflect.DeepEqual(got, custom) {
@@ -215,10 +222,12 @@ func TestWithDefaultsFillsNewFieldsIndividually(t *testing.T) {
 	other.Proactive.JoinLull = Duration{time.Minute}
 	partial := DefaultGroupPolicy()
 	partial.Reply.TurnMaxWait = Duration{0}
+	other.Reply.Quote = QuoteAlways
 	partial.Reply.ContinuationWindow = Duration{0}
+	partial.Reply.Quote = ""
 	partial.Proactive.JoinLull = Duration{0}
 	got = partial.WithDefaults(other)
-	if got.Reply.TurnMaxWait.Duration != time.Minute || got.Proactive.JoinLull.Duration != time.Minute {
+	if got.Reply.TurnMaxWait.Duration != time.Minute || got.Proactive.JoinLull.Duration != time.Minute || got.Reply.Quote != QuoteAlways {
 		t.Fatalf("zero fields not filled from def: %+v %+v", got.Reply, got.Proactive)
 	}
 	if got.Reply.ContinuationWindow.Duration != 0 || got.Reply.TurnGap != def.Reply.TurnGap {

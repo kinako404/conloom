@@ -359,12 +359,14 @@ func TestLoad_ConfigWithoutParticipationFieldsUsesDefaults(t *testing.T) {
 	path = writeConfig(t, `default_group_policy:
   reply:
     turn_gap: 3s
+    quote: always
   proactive:
     join_cooldown: 1h
 `)
 	gp = mustLoad(t, path).DefaultGroupPolicy
 	want = conloomapi.DefaultGroupPolicy()
 	want.Reply.TurnGap = conloomapi.Duration{Duration: 3 * time.Second}
+	want.Reply.Quote = conloomapi.QuoteAlways
 	want.Proactive.JoinCooldown = conloomapi.Duration{Duration: time.Hour}
 	if !reflect.DeepEqual(gp, want) {
 		t.Errorf("partial participation fields = %+v\nwant %+v", gp, want)
@@ -462,6 +464,8 @@ func TestValidateServe_Rules(t *testing.T) {
 			c.DefaultGroupPolicy.Concurrency.MaxInteractiveRequests = 3
 			c.DefaultGroupPolicy.Review.Action = "explode"
 		}, []string{"default_group_policy.concurrency.max_interactive_requests", "default_group_policy.review.action"}},
+		{"bad reply quote", func(c *Config) { c.DefaultGroupPolicy.Reply.Quote = "sometimes" },
+			[]string{"default_group_policy.reply.quote", `"sometimes"`}},
 		{"empty platform", func(c *Config) { c.Bots[0].Platform = " " }, []string{"bots[0].platform:"}},
 		{"empty group id", func(c *Config) {
 			c.Bots[0].EnabledConversations[0].PlatformID = ""

@@ -93,6 +93,7 @@ func TestSession_TurnMergesBurstIntoOneCall(t *testing.T) {
 		r.TurnMaxWait = conloomapi.Duration{Duration: 3 * time.Second}
 		// The mention and the turn each spend one hit; merged sentences none.
 		r.UserRateLimitPerMinute = 2
+		r.Quote = conloomapi.QuoteAlways
 	})})
 	env.startContinuation(t, "20001")
 	texts := []string{"今天去爬山了", "山上好冷", "风特别大", "还下了点雨", "你周末干嘛了"}

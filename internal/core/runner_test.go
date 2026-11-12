@@ -54,8 +54,8 @@ func TestRunner_ContextTooLargeSendsCopy(t *testing.T) {
 	if len(task.Actions) != 1 || task.Actions[0].Content.Text != CopyTooLong {
 		t.Fatalf("actions = %+v", task.Actions)
 	}
-	if task.Actions[0].ReplyToMessageID != ev.Message.ID {
-		t.Errorf("copy reply target = %q", task.Actions[0].ReplyToMessageID)
+	if task.Actions[0].ReplyToMessageID != "" {
+		t.Errorf("copy reply target = %q, want none in a quiet group", task.Actions[0].ReplyToMessageID)
 	}
 	if n := env.short.Calls() + env.long.Calls(); n != 0 {
 		t.Fatalf("model calls = %d, want 0", n)
@@ -350,9 +350,10 @@ func TestRunner_ConcurrencyTwoBothReply(t *testing.T) {
 	ev1 := env.groupEvent("20001", "问题一", mentionBot)
 	ev2 := env.groupEvent("20002", "问题二", mentionBot)
 	r1, r2 := env.submit(t, ev1), env.submit(t, ev2)
+	// The first reply quotes its trigger because 20002 spoke after it.
 	for _, c := range []struct {
 		taskID, msgID string
-	}{{r1.TaskID, ev1.Message.ID}, {r2.TaskID, ev2.Message.ID}} {
+	}{{r1.TaskID, ev1.Message.ID}, {r2.TaskID, ""}} {
 		task := env.waitTask(t, c.taskID)
 		if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 || task.Actions[0].ReplyToMessageID != c.msgID {
 			t.Fatalf("task %s = %+v", c.taskID, task)
