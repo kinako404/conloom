@@ -352,6 +352,30 @@ func TestApplyMemoryWrite_RejectsOtherConversation(t *testing.T) {
 	}
 }
 
+func TestApplyMemoryWrite_RejectsDuplicateMember(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	conflicts, err := db.ApplyMemoryWrite(ctx, store.MemoryWrite{
+		ConversationKey: testConvKey,
+		Group:           &store.GroupMemory{ConversationKey: testConvKey, Summary: "摘要"},
+		Members: []store.MemberMemory{
+			{ConversationKey: testConvKey, PlatformUserID: "20001", Note: "喜欢爬山"},
+			{ConversationKey: testConvKey, PlatformUserID: "20002", Note: "养了狗"},
+			{ConversationKey: testConvKey, PlatformUserID: "20001", Note: "喜欢游泳"},
+		},
+		Revisions: []store.MemoryRevision{{ConversationKey: testConvKey, PlatformUserID: "20001",
+			Field: store.FieldNote, NewValue: "喜欢爬山", Source: store.RevisionConsolidate}},
+	})
+	if err == nil {
+		t.Fatalf("ApplyMemoryWrite = %v, nil; want error for 20001 twice", conflicts)
+	}
+	for _, table := range []string{"group_memory", "member_memory", "memory_revisions"} {
+		if n := countRows(t, db, table); n != 0 {
+			t.Errorf("%s rows = %d, want 0", table, n)
+		}
+	}
+}
+
 func TestForgetMember_ClearsAndDeletesRevisions(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()

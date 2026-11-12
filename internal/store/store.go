@@ -77,7 +77,8 @@ type Store interface {
 	// ApplyMemoryWrite writes w in one transaction. A member is written only if
 	// its stored version equals m.Version (0 for no row) and then gets the next
 	// version; mismatched members are skipped with their revisions and returned
-	// as conflicts. Parts keyed to another conversation fail the whole write.
+	// as conflicts. Parts keyed to another conversation, or a member listed
+	// twice, fail the whole write.
 	ApplyMemoryWrite(ctx context.Context, w MemoryWrite) (conflicts []string, err error)
 	// ForgetMember clears the user's memory, marks it forgotten at at (creating
 	// the row if needed) and deletes the user's revisions in the conversation.

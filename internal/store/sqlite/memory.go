@@ -157,6 +157,7 @@ func checkMemoryWrite(w store.MemoryWrite) error {
 	if w.Group != nil && w.Group.ConversationKey != w.ConversationKey {
 		return fmt.Errorf("memory write for %s: group belongs to %s", w.ConversationKey, w.Group.ConversationKey)
 	}
+	seen := make(map[string]bool, len(w.Members))
 	for _, m := range w.Members {
 		if m.ConversationKey != w.ConversationKey {
 			return fmt.Errorf("memory write for %s: member %s belongs to %s", w.ConversationKey, m.PlatformUserID, m.ConversationKey)
@@ -164,6 +165,10 @@ func checkMemoryWrite(w store.MemoryWrite) error {
 		if m.PlatformUserID == "" {
 			return fmt.Errorf("memory write for %s: member without user ID", w.ConversationKey)
 		}
+		if seen[m.PlatformUserID] {
+			return fmt.Errorf("memory write for %s: member %s appears twice", w.ConversationKey, m.PlatformUserID)
+		}
+		seen[m.PlatformUserID] = true
 	}
 	for _, r := range w.Revisions {
 		if r.ConversationKey != w.ConversationKey {
