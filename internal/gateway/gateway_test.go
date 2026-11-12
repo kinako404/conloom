@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -585,7 +586,7 @@ func TestPersona_GetPutRollback(t *testing.T) {
 	const path = "/api/v1/conversations/group_10001/persona"
 
 	v1 := s.personaState(t, s.do(t, http.MethodGet, path, adapterToken, nil, nil))
-	if v1.Version != 1 || v1.ConversationID != "group_10001" || v1.Persona != conloomapi.DefaultPersona() {
+	if v1.Version != 1 || v1.ConversationID != "group_10001" || !reflect.DeepEqual(v1.Persona, conloomapi.DefaultPersona()) {
 		t.Fatalf("v1 = %+v", v1)
 	}
 
@@ -596,16 +597,16 @@ func TestPersona_GetPutRollback(t *testing.T) {
 	expectError(t, s.do(t, http.MethodPut, path, adapterToken, put, nil), http.StatusForbidden, conloomapi.CodeForbidden)
 
 	v2 := s.personaState(t, s.do(t, http.MethodPut, path, adminToken, put, nil))
-	if v2.Version != 2 || v2.Persona != doc || v2.UpdatedBy != "admin-main" || v2.Reason != "更安静" {
+	if v2.Version != 2 || !reflect.DeepEqual(v2.Persona, doc) || v2.UpdatedBy != "admin-main" || v2.Reason != "更安静" {
 		t.Fatalf("v2 = %+v", v2)
 	}
-	if got := s.personaState(t, s.do(t, http.MethodGet, path, adapterToken, nil, nil)); got.Version != 2 || got.Persona != doc {
+	if got := s.personaState(t, s.do(t, http.MethodGet, path, adapterToken, nil, nil)); got.Version != 2 || !reflect.DeepEqual(got.Persona, doc) {
 		t.Fatalf("GET after PUT = %+v", got)
 	}
 
 	one := 1
 	v3 := s.personaState(t, s.do(t, http.MethodPut, path, adminToken, conloomapi.PersonaPut{RollbackTo: &one}, nil))
-	if v3.Version != 3 || v3.Persona != conloomapi.DefaultPersona() {
+	if v3.Version != 3 || !reflect.DeepEqual(v3.Persona, conloomapi.DefaultPersona()) {
 		t.Fatalf("v3 = %+v", v3)
 	}
 

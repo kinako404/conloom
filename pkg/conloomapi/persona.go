@@ -6,14 +6,37 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
+// PersonaDoc is a persona. CharacterName, Description, SpeakingStyle and
+// Examples are optional; a set CharacterName is the bot's name in the
+// conversation.
 type PersonaDoc struct {
-	PersonaName     string          `json:"persona_name" yaml:"persona_name"`
-	TemplateVersion int             `json:"template_version" yaml:"template_version"`
-	Style           PersonaStyle    `json:"style" yaml:"style"`
-	Behavior        PersonaBehavior `json:"behavior" yaml:"behavior"`
+	PersonaName     string           `json:"persona_name" yaml:"persona_name"`
+	TemplateVersion int              `json:"template_version" yaml:"template_version"`
+	Style           PersonaStyle     `json:"style" yaml:"style"`
+	Behavior        PersonaBehavior  `json:"behavior" yaml:"behavior"`
+	CharacterName   string           `json:"character_name,omitempty" yaml:"character_name,omitempty"`
+	Description     string           `json:"description,omitempty" yaml:"description,omitempty"`
+	SpeakingStyle   string           `json:"speaking_style,omitempty" yaml:"speaking_style,omitempty"`
+	Examples        []PersonaExample `json:"examples,omitempty" yaml:"examples,omitempty"`
 }
+
+// PersonaExample is one example exchange: a member's message and the reply.
+type PersonaExample struct {
+	User  string `json:"user" yaml:"user"`
+	Reply string `json:"reply" yaml:"reply"`
+}
+
+// Persona text limits, counted in runes.
+const (
+	MaxCharacterNameRunes = 20
+	MaxDescriptionRunes   = 2000
+	MaxSpeakingStyleRunes = 1000
+	MaxPersonaExamples    = 8
+	MaxExampleRunes       = 200
+)
 
 type PersonaStyle struct {
 	Warmth      float64 `json:"warmth" yaml:"warmth"`
@@ -102,6 +125,30 @@ func (p PersonaDoc) Validate() error {
 	}
 	if !slices.Contains([]string{"brief", "clear_and_practical", "detailed"}, b.TechnicalExplanations) {
 		fail("behavior.technical_explanations must be one of brief|clear_and_practical|detailed, got %q", b.TechnicalExplanations)
+	}
+	maxRunes := func(path, text string, limit int) {
+		if n := utf8.RuneCountInString(strings.TrimSpace(text)); n > limit {
+			fail("%s must be at most %d characters, got %d", path, limit, n)
+		}
+	}
+	maxRunes("character_name", p.CharacterName, MaxCharacterNameRunes)
+	if strings.ContainsAny(strings.TrimSpace(p.CharacterName), "\r\n") {
+		fail("character_name must be a single line")
+	}
+	maxRunes("description", p.Description, MaxDescriptionRunes)
+	maxRunes("speaking_style", p.SpeakingStyle, MaxSpeakingStyleRunes)
+	if n := len(p.Examples); n > MaxPersonaExamples {
+		fail("examples must have at most %d items, got %d", MaxPersonaExamples, n)
+	}
+	for i, ex := range p.Examples {
+		for _, f := range []struct{ name, text string }{{"user", ex.User}, {"reply", ex.Reply}} {
+			path := fmt.Sprintf("examples[%d].%s", i, f.name)
+			if strings.TrimSpace(f.text) == "" {
+				fail("%s must not be empty", path)
+				continue
+			}
+			maxRunes(path, f.text, MaxExampleRunes)
+		}
 	}
 	return errors.Join(errs...)
 }

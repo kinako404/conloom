@@ -301,6 +301,54 @@ model_profiles:
 	}
 }
 
+const textPersonaYAML = `
+persona_templates:
+  lighthouse:
+    persona_name: 灯塔看守
+    template_version: 1
+    style: {warmth: 0.8, humor: 0.4, directness: 0.5, verbosity: 0.3, emoji_usage: 0.1, proactivity: 0.2}
+    behavior:
+      default_reply_length: short
+      allow_memes: false
+      ask_followup_questions: occasionally
+      technical_explanations: brief
+    character_name: NAME
+    description: |
+      苔灯是海边小镇的灯塔看守。
+      她喜欢收集贝壳。
+    speaking_style: >-
+      说话轻快，
+      句子短。
+    examples:
+      - user: 今天好累
+        reply: |
+          辛苦啦，
+          歇一会儿吧。
+`
+
+func TestLoad_PersonaTemplateTextFields(t *testing.T) {
+	base, err := os.ReadFile("testdata/valid.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := mustLoad(t, writeConfig(t, string(base)+strings.Replace(textPersonaYAML, "NAME", "苔灯", 1)))
+	if err := cfg.ValidateServe(); err != nil {
+		t.Fatalf("ValidateServe: %v", err)
+	}
+	p := cfg.PersonaTemplates["lighthouse"]
+	want := []conloomapi.PersonaExample{{User: "今天好累", Reply: "辛苦啦，\n歇一会儿吧。\n"}}
+	if p.CharacterName != "苔灯" || p.Description != "苔灯是海边小镇的灯塔看守。\n她喜欢收集贝壳。\n" ||
+		p.SpeakingStyle != "说话轻快， 句子短。" || !reflect.DeepEqual(p.Examples, want) {
+		t.Errorf("template = %+v", p)
+	}
+
+	cfg = mustLoad(t, writeConfig(t, string(base)+strings.Replace(textPersonaYAML, "NAME", strings.Repeat("名", 21), 1)))
+	err = cfg.ValidateServe()
+	if want := "persona_templates.lighthouse.character_name must be at most 20 characters, got 21"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("ValidateServe = %v, want an error containing %q", err, want)
+	}
+}
+
 func TestLoad_ConfigWithoutProactiveUsesDefaults(t *testing.T) {
 	path := writeConfig(t, `default_group_policy:
   reply:

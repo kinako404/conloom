@@ -67,6 +67,75 @@ func TestValidatePersona(t *testing.T) {
 	}
 }
 
+// testCharacter is an original, made-up character used only in tests.
+func testCharacter() conloomapi.PersonaDoc {
+	p := conloomapi.DefaultPersona()
+	p.PersonaName = "灯塔看守"
+	p.CharacterName = "苔灯"
+	p.Description = "苔灯是海边小镇的灯塔看守，十几岁，做事认真，喜欢收集贝壳。\n她把群友当成镇上的邻居。"
+	p.SpeakingStyle = "说话轻快，句子短，偶尔用“呐”结尾。"
+	p.Examples = []conloomapi.PersonaExample{
+		{User: "今天好累", Reply: "辛苦啦，喝口热水歇一会儿吧。"},
+		{User: "你会修电脑吗", Reply: "唔，这个我不太在行呐，你先说说是哪里不对劲？"},
+	}
+	return p
+}
+
+func TestValidatePersona_TextFields(t *testing.T) {
+	if err := Validate(testCharacter()); err != nil {
+		t.Fatalf("testCharacter: %v", err)
+	}
+	examples := func(n int) []conloomapi.PersonaExample {
+		out := make([]conloomapi.PersonaExample, n)
+		for i := range out {
+			out[i] = conloomapi.PersonaExample{User: "在吗", Reply: "在呐"}
+		}
+		return out
+	}
+	ok := []func(p *conloomapi.PersonaDoc){
+		func(p *conloomapi.PersonaDoc) { p.CharacterName = strings.Repeat("名", 20) },
+		func(p *conloomapi.PersonaDoc) { p.Description = strings.Repeat("设", 2000) },
+		func(p *conloomapi.PersonaDoc) { p.Description = strings.Repeat("设", 2000) + "\n" },
+		func(p *conloomapi.PersonaDoc) { p.SpeakingStyle = strings.Repeat("说", 1000) },
+		func(p *conloomapi.PersonaDoc) { p.Examples = examples(8) },
+		func(p *conloomapi.PersonaDoc) {
+			p.Examples = []conloomapi.PersonaExample{{User: strings.Repeat("问", 200), Reply: strings.Repeat("答", 200)}}
+		},
+		func(p *conloomapi.PersonaDoc) {
+			p.CharacterName, p.Description, p.SpeakingStyle, p.Examples = "", "", "", nil
+		},
+	}
+	for i, f := range ok {
+		p := testCharacter()
+		f(&p)
+		if err := Validate(p); err != nil {
+			t.Errorf("ok case %d: %v", i, err)
+		}
+	}
+	bad := []struct {
+		f    func(p *conloomapi.PersonaDoc)
+		want string
+	}{
+		{func(p *conloomapi.PersonaDoc) { p.CharacterName = strings.Repeat("名", 21) }, "character_name must be at most 20 characters, got 21"},
+		{func(p *conloomapi.PersonaDoc) { p.CharacterName = "苔\n灯" }, "character_name must be a single line"},
+		{func(p *conloomapi.PersonaDoc) { p.Description = strings.Repeat("设", 2001) }, "description must be at most 2000 characters, got 2001"},
+		{func(p *conloomapi.PersonaDoc) { p.SpeakingStyle = strings.Repeat("说", 1001) }, "speaking_style must be at most 1000 characters, got 1001"},
+		{func(p *conloomapi.PersonaDoc) { p.Examples = examples(9) }, "examples must have at most 8 items, got 9"},
+		{func(p *conloomapi.PersonaDoc) { p.Examples[1].User = " " }, "examples[1].user must not be empty"},
+		{func(p *conloomapi.PersonaDoc) { p.Examples[0].Reply = "" }, "examples[0].reply must not be empty"},
+		{func(p *conloomapi.PersonaDoc) { p.Examples[0].Reply = strings.Repeat("答", 201) }, "examples[0].reply must be at most 200 characters, got 201"},
+		{func(p *conloomapi.PersonaDoc) { p.Examples[1].User = strings.Repeat("问", 201) }, "examples[1].user must be at most 200 characters, got 201"},
+	}
+	for _, c := range bad {
+		p := testCharacter()
+		c.f(&p)
+		err := Validate(p)
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("err = %v, want ErrInvalid containing %q", err, c.want)
+		}
+	}
+}
+
 func TestRender_DeterministicAndVaries(t *testing.T) {
 	p := conloomapi.DefaultPersona()
 	a, b := Render(p), Render(p)
