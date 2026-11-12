@@ -368,6 +368,56 @@ func TestService_SystemPromptStablePerVersion(t *testing.T) {
 	}
 }
 
+func TestService_UpdateFromTemplate(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	rec := &auditRecorder{Store: st}
+	svc := NewService(rec, map[string]conloomapi.PersonaDoc{"lighthouse": testCharacter()})
+	if got := svc.TemplateNames(); !slices.Equal(got, []string{"default", "lighthouse"}) {
+		t.Errorf("TemplateNames = %v", got)
+	}
+	if _, err := svc.Current(ctx, testConvKey, "default"); err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+
+	v2, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Template: "lighthouse", Reason: "换人设"}, "29999")
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if v2.Version != 2 || v2.TemplateName != "lighthouse" || v2.Reason != "换人设" || v2.UpdatedBy != "29999" ||
+		!reflect.DeepEqual(v2.Persona, testCharacter()) {
+		t.Fatalf("v2 = %+v", v2)
+	}
+	v3, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Template: "default"}, "29999")
+	if err != nil || v3.Version != 3 || v3.TemplateName != "default" || v3.Reason != "template default" ||
+		!reflect.DeepEqual(v3.Persona, conloomapi.DefaultPersona()) {
+		t.Fatalf("v3 = %+v, %v", v3, err)
+	}
+
+	one := 1
+	doc := conloomapi.DefaultPersona()
+	for name, put := range map[string]conloomapi.PersonaPut{
+		"unknown":           {Template: "nope"},
+		"template+persona":  {Template: "lighthouse", Persona: &doc},
+		"template+rollback": {Template: "lighthouse", RollbackTo: &one},
+	} {
+		if _, err := svc.Update(ctx, testConvKey, "default", put, "29999"); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: err = %v, want ErrInvalid", name, err)
+		}
+	}
+	if _, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Template: "nope"}, "29999"); err == nil ||
+		!strings.Contains(err.Error(), `unknown template "nope"`) {
+		t.Errorf("unknown template error = %v", err)
+	}
+	if latest, _ := st.LatestPersona(ctx, testConvKey); latest.Version != 3 {
+		t.Errorf("failed updates appended versions: latest = %d", latest.Version)
+	}
+	events := rec.all()
+	if len(events) != 2 || !strings.Contains(events[0].Detail, `"template":"lighthouse"`) || strings.Contains(events[0].Detail, "换人设") {
+		t.Errorf("audit events = %+v", events)
+	}
+}
+
 func TestService_SystemPromptUsesCharacterName(t *testing.T) {
 	ctx := context.Background()
 	svc := NewService(newTestStore(t), nil)

@@ -84,6 +84,17 @@ default_group_policy:
   reply: {command_prefix: /, continuation_window: 0s, debounce: 30ms, min_reply_interval: 0s, user_rate_limit_per_minute: 6}
   context: {max_recent_messages: 50, max_context_tokens: 0}
   review: {level: basic, review_input: true, review_output: true, action: block}
+persona_templates:
+  lighthouse:
+    persona_name: 灯塔看守
+    template_version: 1
+    style: {warmth: 0.8, humor: 0.4, directness: 0.5, verbosity: 0.3, emoji_usage: 0.1, proactivity: 0.2}
+    behavior: {default_reply_length: short, allow_memes: false, ask_followup_questions: occasionally, technical_explanations: brief}
+    character_name: 苔灯
+    description: |
+      苔灯是海边小镇的灯塔看守。
+    examples:
+      - {user: 今天好累, reply: 辛苦啦。}
 `
 
 type syncBuffer struct {
@@ -619,6 +630,45 @@ func TestPersona_GetPutRollback(t *testing.T) {
 	nine := 9
 	expectError(t, s.do(t, http.MethodPut, path, adminToken, conloomapi.PersonaPut{RollbackTo: &nine}, nil),
 		http.StatusNotFound, conloomapi.CodeNotFound)
+}
+
+func TestPersona_PutTemplateAndTextLimits(t *testing.T) {
+	s := newTestServer(t)
+	s.accept(t, adapterToken, s.event("20001", "大家好"))
+	const path = "/api/v1/conversations/group_10001/persona"
+	if v1 := s.personaState(t, s.do(t, http.MethodGet, path, adapterToken, nil, nil)); v1.Version != 1 {
+		t.Fatalf("v1 = %+v", v1)
+	}
+
+	v2 := s.personaState(t, s.do(t, http.MethodPut, path, adminToken, map[string]any{"template": "lighthouse", "reason": "换人设"}, nil))
+	if v2.Version != 2 || v2.Persona.CharacterName != "苔灯" || v2.Persona.Description != "苔灯是海边小镇的灯塔看守。\n" ||
+		len(v2.Persona.Examples) != 1 || v2.Reason != "换人设" || v2.UpdatedBy != "admin-main" {
+		t.Fatalf("v2 = %+v", v2)
+	}
+	if got := s.personaState(t, s.do(t, http.MethodGet, path, adapterToken, nil, nil)); !reflect.DeepEqual(got.Persona, v2.Persona) {
+		t.Fatalf("GET after template = %+v", got)
+	}
+
+	er := expectError(t, s.do(t, http.MethodPut, path, adminToken, map[string]any{"template": "nope"}, nil),
+		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	if !strings.Contains(er.Message, `unknown template "nope"`) {
+		t.Errorf("unknown template message = %q", er.Message)
+	}
+	doc := conloomapi.DefaultPersona()
+	expectError(t, s.do(t, http.MethodPut, path, adminToken, conloomapi.PersonaPut{Template: "lighthouse", Persona: &doc}, nil),
+		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	doc.Description = strings.Repeat("设", conloomapi.MaxDescriptionRunes+1)
+	doc.Examples = []conloomapi.PersonaExample{{User: "在吗", Reply: ""}}
+	er = expectError(t, s.do(t, http.MethodPut, path, adminToken, conloomapi.PersonaPut{Persona: &doc}, nil),
+		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	for _, want := range []string{"description must be at most 2000 characters, got 2001", "examples[0].reply must not be empty"} {
+		if !strings.Contains(er.Message, want) {
+			t.Errorf("message %q lacks %q", er.Message, want)
+		}
+	}
+	if got := s.personaState(t, s.do(t, http.MethodGet, path, adapterToken, nil, nil)); got.Version != 2 {
+		t.Errorf("rejected PUTs stored versions: latest = %d", got.Version)
+	}
 }
 
 func TestPolicy_PutValidates(t *testing.T) {

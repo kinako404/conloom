@@ -63,10 +63,13 @@ type PersonaState struct {
 	CreatedAt      time.Time  `json:"created_at" yaml:"created_at"`
 }
 
-// PersonaPut sets a new persona (Persona) or restores an earlier version (RollbackTo).
+// PersonaPut sets a new persona (Persona), restores an earlier version
+// (RollbackTo) or copies a configured persona template (Template); exactly one
+// of them is set.
 type PersonaPut struct {
 	Persona    *PersonaDoc `json:"persona,omitempty" yaml:"persona,omitempty"`
 	RollbackTo *int        `json:"rollback_to,omitempty" yaml:"rollback_to,omitempty"`
+	Template   string      `json:"template,omitempty" yaml:"template,omitempty"`
 	Reason     string      `json:"reason" yaml:"reason"`
 }
 

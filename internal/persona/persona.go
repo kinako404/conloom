@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -77,17 +79,42 @@ func (s *Service) Current(ctx context.Context, convKey, templateName string) (st
 	})
 }
 
-// Update appends a version holding either put.Persona or the content of version put.RollbackTo.
-// Exactly one of them must be set. It records a persona.update audit event; an audit failure is
+// TemplateNames returns the names of the configured persona templates, sorted.
+func (s *Service) TemplateNames() []string {
+	return slices.Sorted(maps.Keys(s.templates))
+}
+
+// Update appends a version holding put.Persona, the content of version
+// put.RollbackTo, or a copy of template put.Template (recorded as the
+// version's template). Exactly one of them must be set; an unknown template is
+// ErrInvalid. It records a persona.update audit event; an audit failure is
 // returned together with the already stored version.
 func (s *Service) Update(ctx context.Context, convKey, templateName string, put conloomapi.PersonaPut, by string) (store.PersonaVersion, error) {
-	if (put.Persona == nil) == (put.RollbackTo == nil) {
-		return store.PersonaVersion{}, fmt.Errorf("%w: exactly one of persona and rollback_to must be set", ErrInvalid)
+	set := 0
+	for _, ok := range []bool{put.Persona != nil, put.RollbackTo != nil, put.Template != ""} {
+		if ok {
+			set++
+		}
+	}
+	if set != 1 {
+		return store.PersonaVersion{}, fmt.Errorf("%w: exactly one of persona, rollback_to and template must be set", ErrInvalid)
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	next := store.PersonaVersion{ConversationKey: convKey, TemplateName: templateName, Reason: put.Reason, UpdatedBy: by}
-	if put.RollbackTo != nil {
+	if put.Template != "" {
+		doc, ok := s.templates[put.Template]
+		if !ok {
+			return store.PersonaVersion{}, fmt.Errorf("%w: unknown template %q", ErrInvalid, put.Template)
+		}
+		if err := Validate(doc); err != nil {
+			return store.PersonaVersion{}, err
+		}
+		next.Persona, next.TemplateName = doc, put.Template
+		if next.Reason == "" {
+			next.Reason = "template " + put.Template
+		}
+	} else if put.RollbackTo != nil {
 		old, err := s.st.GetPersonaVersion(ctx, convKey, *put.RollbackTo)
 		if err != nil {
 			return store.PersonaVersion{}, fmt.Errorf("persona: rollback to v%d: %w", *put.RollbackTo, err)
@@ -107,9 +134,10 @@ func (s *Service) Update(ctx context.Context, convKey, templateName string, put 
 		return store.PersonaVersion{}, err
 	}
 	detail, _ := json.Marshal(struct {
-		Version    int  `json:"version"`
-		RollbackTo *int `json:"rollback_to,omitempty"`
-	}{pv.Version, put.RollbackTo})
+		Version    int    `json:"version"`
+		RollbackTo *int   `json:"rollback_to,omitempty"`
+		Template   string `json:"template,omitempty"`
+	}{pv.Version, put.RollbackTo, put.Template})
 	if err := s.st.InsertAudit(ctx, store.AuditEvent{
 		ID: ids.New("aud"), BotInstanceID: botID(convKey), Kind: "persona.update",
 		Actor: by, Target: convKey, Detail: string(detail), CreatedAt: time.Now().UTC(),
