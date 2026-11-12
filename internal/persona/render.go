@@ -45,8 +45,30 @@ var (
 	}
 )
 
-// Render describes p in natural Chinese. The output depends only on p.
+// Render describes p in natural Chinese: the style and behavior lines, then
+// the character description, speaking style and example exchanges when set,
+// each section after a blank line. The output depends only on p; a persona
+// without those texts renders as the three lines alone.
 func Render(p conloomapi.PersonaDoc) string {
+	var b strings.Builder
+	b.WriteString(renderLines(p))
+	if d := strings.TrimSpace(p.Description); d != "" {
+		b.WriteString("\n\n角色设定：\n" + d)
+	}
+	if s := strings.TrimSpace(p.SpeakingStyle); s != "" {
+		b.WriteString("\n\n说话方式：\n" + s)
+	}
+	if len(p.Examples) > 0 {
+		b.WriteString("\n\n示例对话（只示范语气和分寸，不要照搬内容）：")
+		for _, ex := range p.Examples {
+			b.WriteString("\n群友：" + strings.TrimSpace(ex.User) + "\n你：" + strings.TrimSpace(ex.Reply))
+		}
+	}
+	return b.String()
+}
+
+// renderLines describes p's name, style and behavior in three lines.
+func renderLines(p conloomapi.PersonaDoc) string {
 	s := p.Style
 	style := []string{
 		level(s.Warmth, "语气冷静克制，不刻意热情。", "语气友好平和。", "语气温暖亲切，乐于回应大家。"),

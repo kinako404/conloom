@@ -136,6 +136,45 @@ func TestValidatePersona_TextFields(t *testing.T) {
 	}
 }
 
+const legacyDefaultRender = "人格：默认群友人格\n" +
+	"说话风格：语气温暖亲切，乐于回应大家。偶尔可以轻松幽默一下。表达清楚，不绕弯子也不生硬。通常一两句话，尽量简短。不使用表情符号。只回应别人说的，不主动展开话题。\n" +
+	"行为习惯：默认回复简短，一两句话就好。可以适当使用网络梗。只在确实需要澄清时偶尔追问。技术问题讲清楚、讲实用，给出能直接用的做法。"
+
+func TestRender_LegacyPersonaUnchanged(t *testing.T) {
+	if got := Render(conloomapi.DefaultPersona()); got != legacyDefaultRender {
+		t.Errorf("Render(DefaultPersona) =\n%q\nwant\n%q", got, legacyDefaultRender)
+	}
+	named := conloomapi.DefaultPersona()
+	named.CharacterName = "苔灯"
+	named.Description, named.SpeakingStyle = " \n", "\t"
+	named.Examples = []conloomapi.PersonaExample{}
+	if got := Render(named); got != legacyDefaultRender {
+		t.Errorf("Render with only a character name and blank text =\n%q\nwant the legacy render", got)
+	}
+}
+
+func TestRender_TextFields(t *testing.T) {
+	want := "人格：灯塔看守\n" +
+		"说话风格：语气温暖亲切，乐于回应大家。偶尔可以轻松幽默一下。表达清楚，不绕弯子也不生硬。通常一两句话，尽量简短。不使用表情符号。只回应别人说的，不主动展开话题。\n" +
+		"行为习惯：默认回复简短，一两句话就好。可以适当使用网络梗。只在确实需要澄清时偶尔追问。技术问题讲清楚、讲实用，给出能直接用的做法。\n" +
+		"\n角色设定：\n苔灯是海边小镇的灯塔看守，十几岁，做事认真，喜欢收集贝壳。\n她把群友当成镇上的邻居。\n" +
+		"\n说话方式：\n说话轻快，句子短，偶尔用“呐”结尾。\n" +
+		"\n示例对话（只示范语气和分寸，不要照搬内容）：\n" +
+		"群友：今天好累\n你：辛苦啦，喝口热水歇一会儿吧。\n" +
+		"群友：你会修电脑吗\n你：唔，这个我不太在行呐，你先说说是哪里不对劲？"
+	p := testCharacter()
+	p.Description += "\n"
+	if got := Render(p); got != want {
+		t.Errorf("Render =\n%s\nwant\n%s", got, want)
+	}
+
+	only := conloomapi.DefaultPersona()
+	only.SpeakingStyle = "说话慢吞吞。"
+	if got, want := Render(only), legacyDefaultRender+"\n\n说话方式：\n说话慢吞吞。"; got != want {
+		t.Errorf("Render with only speaking_style = %q, want %q", got, want)
+	}
+}
+
 func TestRender_DeterministicAndVaries(t *testing.T) {
 	p := conloomapi.DefaultPersona()
 	a, b := Render(p), Render(p)
