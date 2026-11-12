@@ -87,8 +87,12 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 	if err != nil {
 		return
 	}
-	if out.status == conloomapi.TaskSucceeded && sent {
-		o.sched.MarkReplied(task.ConversationKey, task.ActorPlatformUserID, o.now())
+	if sent {
+		now := o.now()
+		o.contacts.set(memberKey(task.ConversationKey, task.ActorPlatformUserID), now)
+		if out.status == conloomapi.TaskSucceeded {
+			o.sched.MarkReplied(task.ConversationKey, task.ActorPlatformUserID, now)
+		}
 	}
 	if out.skipped && task.Meta.Trigger == TriggerContinuation {
 		o.endContinuation(task.ConversationKey, task.ActorPlatformUserID, continuationExitModel)
@@ -172,6 +176,19 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord) outco
 	directive := o.directive(ctx, task, triggers)
 	if out.proactive && directive == "" {
 		out.proactive = false
+	}
+	if out.proactive {
+		// The switch, the user's level or the budget may have changed while
+		// the task was queued (or across a restart): check before any model call.
+		ok, err := o.proactiveSendAllowed(ctx, task)
+		if err != nil {
+			o.log.Error("proactive check failed; not evaluating", "task_id", task.ID, "error", err)
+		}
+		if !ok {
+			o.log.Info("proactive evaluation dropped: no longer allowed", "task_id", task.ID, "conversation", task.ConversationKey)
+			out.status, out.skipped, out.meta.ReviewResult = conloomapi.TaskSucceeded, true, reviewResultSkipped
+			return out
+		}
 	}
 	bot, ok := o.cfg.Bot(task.BotInstanceID)
 	if !ok {
@@ -338,7 +355,7 @@ func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router
 	in.TokenFactor = p.Config.TokenEstimateFactor
 	built := contextbuilder.Build(in)
 
-	lease, err := o.acquire(ctx, task.ID, p, built.EstimatedTokens+d.MaxOutputTokens+p.Config.Context.SafetyMarginTokens)
+	lease, err := o.acquire(ctx, task, p, built.EstimatedTokens+d.MaxOutputTokens+p.Config.Context.SafetyMarginTokens)
 	if err != nil {
 		return openai.ChatResponse{}, err
 	}
@@ -372,17 +389,18 @@ func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router
 	return resp, nil
 }
 
-func (o *Orchestrator) acquire(ctx context.Context, taskID string, p *router.Profile, tokens int) (*admission.Lease, error) {
+// acquire waits for an admission lease at the task's stored priority.
+func (o *Orchestrator) acquire(ctx context.Context, task store.TaskRecord, p *router.Profile, tokens int) (*admission.Lease, error) {
 	rt := p.Config.Runtime
 	wctx, cancel := context.WithTimeout(ctx, admissionWait)
 	defer cancel()
 	o.metrics.QueueDepth.Inc()
 	start := time.Now()
 	lease, err := o.adm.Acquire(wctx, admission.Request{
-		ID:       taskID,
+		ID:       task.ID,
 		Profile:  string(p.Role),
 		Tokens:   tokens,
-		Priority: admission.PriorityInteractive,
+		Priority: admission.Priority(task.Priority),
 		TTL:      rt.Timeout.Duration*time.Duration(rt.MaxRetries+1) + leaseSlack,
 	})
 	o.metrics.QueueDepth.Dec()

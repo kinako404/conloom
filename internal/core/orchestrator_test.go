@@ -1147,6 +1147,27 @@ func TestSubmit_ContinuationRuleExit(t *testing.T) {
 	}
 }
 
+func TestSubmit_RuleExitNotMergedIntoContinuationTask(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) {
+		withContinuation(c)
+		c.DefaultGroupPolicy.Reply.Debounce = conloomapi.Duration{Duration: 400 * time.Millisecond}
+	}})
+	env.startContinuation(t, "20001")
+	cont := env.submit(t, env.groupEvent("20001", "接着说"))
+	if cont.Disposition != conloomapi.DispositionReply || cont.TaskID == "" {
+		t.Fatalf("continuation response = %+v", cont)
+	}
+	requireObserved(t, env, env.groupEvent("20001", "你看这个", mentionUser("user_20002")), "")
+	env.waitTask(t, cont.TaskID)
+	rec, err := env.st.GetTask(context.Background(), testBot, cont.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.TriggerMessageIDs) != 1 {
+		t.Fatalf("continuation task triggers = %v, want only the continuation message", rec.TriggerMessageIDs)
+	}
+}
+
 func TestSubmit_ContinuationReplyToOwnMessageContinues(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{configure: withContinuation})
 	own := env.groupEvent("20001", "今天好冷")

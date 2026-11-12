@@ -24,7 +24,9 @@ func (o *Orchestrator) runCommand(ctx context.Context, task store.TaskRecord, co
 		o.log.Error("command failed", "task_id", task.ID, "command", task.Command, "error", err)
 		status, code, text = conloomapi.TaskFailed, conloomapi.CodeInternal, CopyUnavailable
 	}
-	_ = o.complete(ctx, task, status, meta, code, []store.OutboxRecord{o.newAction(task, conv, triggers, text)})
+	if err := o.complete(ctx, task, status, meta, code, []store.OutboxRecord{o.newAction(task, conv, triggers, text)}); err == nil {
+		o.contacts.set(memberKey(task.ConversationKey, task.ActorPlatformUserID), o.now())
+	}
 	o.log.Info("command finished", "task_id", task.ID, "conversation", task.ConversationKey,
 		"command", task.Command, "status", status)
 }

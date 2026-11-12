@@ -52,8 +52,8 @@ type DecideInput struct {
 	InContinuation   bool
 	// MentionsOthers is set when the message mentions a user or everyone.
 	MentionsOthers bool
-	// ReplyToOther is set when the message replies to a stored message not
-	// sent by the bot.
+	// ReplyToOther is set when the message replies to a stored message sent
+	// by another member (neither the bot nor the sender).
 	ReplyToOther bool
 }
 

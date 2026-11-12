@@ -397,3 +397,44 @@ func TestPolicy_OnChangeCalled(t *testing.T) {
 		t.Fatalf("OnChange calls = %v, want %v", got, want)
 	}
 }
+
+func TestPolicy_SetProactiveEnabledKeepsConcurrentPause(t *testing.T) {
+	ctx := context.Background()
+	rec := &auditRecorder{Store: newTestStore(t)}
+	svc := NewService(rec, conloomapi.DefaultGroupPolicy())
+	var calls int
+	svc.OnChange(func(string) { calls++ })
+
+	if _, err := svc.Pause(ctx, testConvKey, "29999"); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	pv, changed, err := svc.SetProactiveEnabled(ctx, testConvKey, false, "command:29999")
+	if err != nil || !changed || pv.Version != 2 {
+		t.Fatalf("SetProactiveEnabled(false) = %+v, %v, %v; want version 2", pv, changed, err)
+	}
+	want := withConcurrency(conloomapi.DefaultGroupPolicy(), 0)
+	want.Proactive.Enabled = false
+	if !reflect.DeepEqual(pv.Policy, want) || pv.UpdatedBy != "command:29999" {
+		t.Fatalf("policy = %+v, want paused with proactive off", pv.Policy)
+	}
+	cur, err := svc.Current(ctx, testConvKey)
+	if err != nil || cur.Version != 2 || cur.Policy.Concurrency.MaxInteractiveRequests != 0 || cur.Policy.Proactive.Enabled {
+		t.Fatalf("Current = %+v, %v", cur, err)
+	}
+
+	again, changed, err := svc.SetProactiveEnabled(ctx, testConvKey, false, "command:29999")
+	if err != nil || changed || again.Version != 2 {
+		t.Fatalf("second SetProactiveEnabled(false) = %+v, %v, %v; want unchanged version 2", again, changed, err)
+	}
+	on, changed, err := svc.SetProactiveEnabled(ctx, testConvKey, true, "command:29999")
+	if err != nil || !changed || on.Version != 3 || !on.Policy.Proactive.Enabled || on.Policy.Concurrency.MaxInteractiveRequests != 0 {
+		t.Fatalf("SetProactiveEnabled(true) = %+v, %v, %v", on, changed, err)
+	}
+	events := rec.all()
+	if len(events) != 3 || events[1].Kind != "policy.update" || events[1].Actor != "command:29999" || !strings.Contains(events[1].Detail, "proactive") {
+		t.Fatalf("audit events = %+v, want pause and two proactive switches", events)
+	}
+	if calls != 3 {
+		t.Fatalf("OnChange calls = %d, want 3", calls)
+	}
+}

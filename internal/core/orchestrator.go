@@ -101,6 +101,9 @@ type Orchestrator struct {
 	// the evaluation and sent records they depend on.
 	memberLocks    keyedLocks
 	proactiveLocks keyedLocks
+	// contacts holds each member's last contact with the bot, which delays
+	// proactive replies by the user cooldown.
+	contacts contactTimes
 }
 
 // taskOwner is the one party in this process allowed to execute and complete
@@ -268,8 +271,10 @@ type submission struct {
 	isAdmin          bool
 	now              time.Time
 	// replyToOther is set when the message replies to a message that is not
-	// stored or was sent by another member.
-	replyToOther bool
+	// stored or was sent by another member; mentionsOthers when it mentions
+	// a user or everyone.
+	replyToOther   bool
+	mentionsOthers bool
 }
 
 // replayError reports that the idempotency key was stored concurrently.
@@ -343,7 +348,7 @@ func (o *Orchestrator) submit(ctx context.Context, s *submission) (conloomapi.Ev
 	}
 	resp, err := o.dispatch(ctx, s, d, pol)
 	if err == nil && engages(s, d) {
-		o.recordEngagement(ctx, s, pol)
+		o.recordEngagement(ctx, s, d, pol)
 	}
 	return resp, err
 }
@@ -388,6 +393,9 @@ func (o *Orchestrator) dispatch(ctx context.Context, s *submission, d Decision, 
 		return resp, err
 	case o.proactiveCandidate(s, pol):
 		return o.submitProactive(ctx, s, pol)
+	case (s.mentionsOthers || s.replyToOther) && o.hasPendingProactive(ctx, s):
+		// A message to someone else never joins the sender's proactive task.
+		return o.observeOnly(ctx, s, "")
 	default:
 		return o.admit(ctx, s, AdmitMergeOnly, "")
 	}
@@ -398,9 +406,11 @@ const (
 	continuationExitModel = "model"
 )
 
-// endContinuation ends actorID's continuation window and counts the exit.
+// endContinuation ends actorID's continuation window, counts the exit and
+// records it as the bot's last contact with actorID.
 func (o *Orchestrator) endContinuation(convKey, actorID, reason string) {
 	o.sched.EndContinuation(convKey, actorID)
+	o.contacts.set(memberKey(convKey, actorID), o.now())
 	o.metrics.ContinuationExits.WithLabelValues(reason).Inc()
 }
 
@@ -433,6 +443,7 @@ func (o *Orchestrator) decide(ctx context.Context, s *submission) (Decision, con
 			return m.Type == "user" || m.Type == "all"
 		}),
 	}
+	s.mentionsOthers = in.MentionsOthers
 	// Ignore decisions do not depend on policy, so no policy is loaded (and
 	// cached) for conversations the bot does not serve.
 	if d := Decide(in); d.Disposition == conloomapi.DispositionIgnore {
@@ -594,11 +605,17 @@ func (s *submission) records(resp conloomapi.EventAccepted) (store.Ingest, error
 	}, nil
 }
 
+// task builds a new task record. Proactive tasks get background admission
+// priority so they never delay replies to messages addressed to the bot.
 func (s *submission) task(id, command, trigger string) store.TaskRecord {
+	priority := admission.PriorityInteractive
+	if trigger == TriggerProactive {
+		priority = admission.PriorityBackground
+	}
 	return store.TaskRecord{
 		ID: id, BotInstanceID: s.botID, ConversationKey: s.convKey, Status: conloomapi.TaskQueued,
 		ActorPlatformUserID: s.ev.Actor.PlatformUserID, Command: command,
-		TriggerMessageIDs: []string{s.ev.Message.ID}, Priority: int(admission.PriorityInteractive),
+		TriggerMessageIDs: []string{s.ev.Message.ID}, Priority: int(priority),
 		Meta:            conloomapi.TaskMeta{Trigger: trigger},
 		EventOccurredAt: s.occurredAt(), CreatedAt: s.now, UpdatedAt: s.now,
 	}

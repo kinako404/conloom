@@ -72,7 +72,7 @@ default_group_policy:
 
 每个（会话, 平台用户）一行：`last_engaged_at`、`proactive_level`、`level_set_by_user`、`interests`（JSON：词 → 权重）、`updated_at`。
 
-- 群聊中触发为 `mention`、`reply`、`continuation` 的消息（不含命令）：更新 `last_engaged_at`，用该消息文本更新兴趣画像；首次建行时档位 = `default_level`。用户自己设过的档位保留不覆盖。
+- 群聊中触发为 `mention`、`reply`、`continuation` 的消息（不含命令）：用该消息文本更新兴趣画像；其中只有 `mention`、`reply` 更新 `last_engaged_at`（连续对话中的消息不续期资格）。首次建行时档位 = `default_level`；用户没设过档位时跟随群当前的 `default_level`，用户自己设过的档位保留不覆盖。
 - 资格 = `last_engaged_at` 距今 < `eligibility_ttl` 且档位 ≠ `off`。
 
 ### 6.3 兴趣画像（新包 `internal/interest`，纯函数）
@@ -90,8 +90,9 @@ default_group_policy:
 5. 兴趣匹配（§6.3）。
 6. 发言预算：今天已对该用户主动发言次数 < 档位上限；距上次对该用户主动发言 ≥ `user_cooldown`；全群最近一小时主动发言 < `group_hourly_limit`。
 7. 评估预算（限制模型调用）：今天对该用户的评估次数 < 3 × 档位上限；全群最近一小时评估次数 < 3 × `group_hourly_limit`。
+8. 距机器人与该用户的上次接触 ≥ `user_cooldown`：上次接触 = 机器人回复该用户（任何触发方式）或该用户的连续对话结束（规则或模型退出）的时间。只保存在进程内存中（重启后清空），维护任务每小时清理 24 小时前的记录。
 
-通过后：写一条 `evaluated` 记录，建 trigger 为 `proactive` 的任务（走调度器，享有合并窗口与回复间隔）。模型回复 → 引用回复对方消息发出，写一条 `sent` 记录，标记连续对话；模型输出 `[[SKIP]]` → 不发送。
+通过后：写一条 `evaluated` 记录，建 trigger 为 `proactive` 的任务（走调度器，享有合并窗口与回复间隔；模型准入优先级低于普通回复）。调用模型前与发送前都会重新检查总开关、暂停、档位与发言预算，不再满足则按跳过处理、不调用模型或不发送。模型回复 → 引用回复对方消息发出，写一条 `sent` 记录，标记连续对话；模型输出 `[[SKIP]]` → 不发送。@ 别人或回复其他群友的消息不会并入该用户待处理的主动任务。
 
 记录表 `proactive_log`：`conversation_key, platform_user_id, kind(evaluated|sent), task_id, created_at`；计数按时间窗口查询，重启后依然有效；维护任务定期清理 7 天前的记录。
 

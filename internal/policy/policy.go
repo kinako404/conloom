@@ -127,6 +127,28 @@ func (s *Service) Resume(ctx context.Context, convKey, by string) (store.PolicyV
 	})
 }
 
+// SetProactiveEnabled switches the group's proactive replies, changing only
+// proactive.enabled of the current policy under the service lock, so a
+// concurrent change such as Pause is never overwritten. changed reports
+// whether a new version was stored; switching to the current state stores
+// nothing and returns the current version.
+func (s *Service) SetProactiveEnabled(ctx context.Context, convKey string, on bool, by string) (pv store.PolicyVersion, changed bool, err error) {
+	action := "proactive_off"
+	if on {
+		action = "proactive_on"
+	}
+	pv, err = s.change(ctx, convKey, by, action, func(cur store.PolicyVersion) (conloomapi.GroupPolicy, string, bool, error) {
+		if cur.Policy.Proactive.Enabled == on {
+			return cur.Policy, "", false, nil
+		}
+		p := cur.Policy
+		p.Proactive.Enabled = on
+		changed = true
+		return p, action, true, nil
+	})
+	return pv, changed && pv.Version != 0, err
+}
+
 // change appends the policy produced by next unless it reports no change (returning the current
 // version) or an error (returning no version), then invalidates the
 // cache, records a policy.update audit event and notifies OnChange callbacks. An audit failure is

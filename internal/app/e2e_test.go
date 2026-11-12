@@ -73,6 +73,7 @@ default_group_policy:
   reply: {command_prefix: /, continuation_window: CONTINUATION, debounce: DEBOUNCE, min_reply_interval: 0s, user_rate_limit_per_minute: RATE_LIMIT}
   context: {max_recent_messages: 50, max_context_tokens: 0}
   review: {level: basic, review_input: true, review_output: true, action: block}
+  proactive: {user_cooldown: COOLDOWN}
 runtime:
   outbox_lease: LEASE
 `
@@ -86,6 +87,8 @@ type configParams struct {
 	rateLimit int
 	// continuation is the continuation window; empty means 0s.
 	continuation string
+	// cooldown is proactive.user_cooldown; empty means the default 30m.
+	cooldown string
 }
 
 // testConfig writes a config for p to a temporary directory and loads it.
@@ -110,6 +113,9 @@ func testConfig(t testing.TB, p configParams) *config.Config {
 	if p.continuation == "" {
 		p.continuation = "0s"
 	}
+	if p.cooldown == "" {
+		p.cooldown = "30m"
+	}
 	yml := strings.NewReplacer(
 		"DATA_DIR", strconv.Quote(p.dataDir),
 		"MODEL_URL", p.modelURL,
@@ -118,6 +124,7 @@ func testConfig(t testing.TB, p configParams) *config.Config {
 		"DEBOUNCE", p.debounce,
 		"RATE_LIMIT", strconv.Itoa(p.rateLimit),
 		"CONTINUATION", p.continuation,
+		"COOLDOWN", p.cooldown,
 	).Replace(configTemplate)
 	path := filepath.Join(dir, "conloom.yaml")
 	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
@@ -591,7 +598,7 @@ const proactiveDirective = "【提示】没有人 @ 你"
 
 func TestE2E_ProactiveReplyForEligibleUser(t *testing.T) {
 	fake := fakeopenai.New(t, answer(fakeReply))
-	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL}))
+	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL, cooldown: "0s"}))
 
 	e.mention(group, alice, "我在研究咖啡豆烘焙")
 	e.drainOne()
@@ -701,5 +708,21 @@ func TestE2E_ContinuationExitWhenTalkingToOthers(t *testing.T) {
 	e.requireNoAction(300 * time.Millisecond)
 	if n := fake.Calls(); n != 2 {
 		t.Fatalf("model calls = %d, want 2 (one per mention)", n)
+	}
+}
+
+func TestE2E_NoProactiveRightAfterReply(t *testing.T) {
+	fake := fakeopenai.New(t, answer(fakeReply))
+	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL}))
+
+	e.mention(group, alice, "我在研究咖啡豆烘焙")
+	e.drainOne()
+	resp, _ := e.say(group, alice, "咖啡豆烘焙真难", mock.SayOptions{})
+	if resp.Disposition != conloomapi.DispositionObserve || resp.TaskID != "" {
+		t.Fatalf("on-topic message right after a reply: response %+v, want observe", resp)
+	}
+	e.requireNoAction(300 * time.Millisecond)
+	if n := fake.Calls(); n != 1 {
+		t.Fatalf("model calls = %d, want 1 (only the mention)", n)
 	}
 }

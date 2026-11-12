@@ -264,6 +264,7 @@ func TestRunner_SkipMarkerVariantsSendNothing(t *testing.T) {
 	for _, output := range []string{
 		"[[skip]]", "[[ SKIP ]]", "［［SKIP］］", "【【SKIP】】", "［［ｓｋｉｐ］］", "好的 [[ Skip ]] 吧",
 		"SKIP", " skip\n", "[SKIP]", "【SKIP】", "［skip］", "[ S K I P ]",
+		"SKIP。", "[SKIP]!", "SKIP\u200b", "\ufeff[SKIP]", "“SKIP”", "skip…", "【SKIP】。", "S\u200dKIP",
 	} {
 		t.Run(output, func(t *testing.T) {
 			env := newTestOrchestrator(t, testOpts{short: answer(output)})
@@ -273,7 +274,7 @@ func TestRunner_SkipMarkerVariantsSendNothing(t *testing.T) {
 			}
 		})
 	}
-	for _, output := range []string{"我不想 skip 这个话题", "SKIP 是跳过的意思", "[SKIP] 这个按钮"} {
+	for _, output := range []string{"我不想 skip 这个话题", "SKIP 是跳过的意思", "[SKIP] 这个按钮", "好的。"} {
 		t.Run(output, func(t *testing.T) {
 			env := newTestOrchestrator(t, testOpts{short: answer(output)})
 			task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "你好", mentionBot)).TaskID)

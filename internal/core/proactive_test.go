@@ -5,9 +5,12 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/kinako404/conloom/internal/admission"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/interest"
 	"github.com/kinako404/conloom/internal/store"
@@ -625,4 +628,215 @@ func TestMaintenance_PurgesOldProactiveLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitUntil(t, "old proactive log purged", func() bool { return env.proactiveCount(t, "20001", store.ProactiveSent) == 1 })
+}
+
+// backdateContact sets the bot's last contact with user to d ago.
+func (e *testEnv) backdateContact(user string, d time.Duration) {
+	e.o.contacts.set(memberKey(testConvKey, user), time.Now().Add(-d))
+}
+
+func TestProactive_NoReentryRightAfterReplyOrExit(t *testing.T) {
+	t.Run("rule exit", func(t *testing.T) {
+		env := newTestOrchestrator(t, testOpts{configure: withContinuation})
+		env.engage(t, "20001", topicText)
+		waitUntil(t, "continuation", func() bool { return env.inContinuation("20001") })
+		env.requireNoProactive(t, env.groupEvent("20001", "你看这个", mentionUser("user_20002")))
+		if env.inContinuation("20001") {
+			t.Fatal("continuation not ended by the rule exit")
+		}
+		env.requireNoProactive(t, env.groupEvent("20001", matchText))
+
+		// The exit itself, not only the earlier reply, starts the cooldown.
+		env.engage(t, "20001", "在吗")
+		waitUntil(t, "continuation", func() bool { return env.inContinuation("20001") })
+		env.backdateContact("20001", 31*time.Minute)
+		env.requireNoProactive(t, env.groupEvent("20001", "你看这个", mentionUser("user_20002")))
+		env.requireNoProactive(t, env.groupEvent("20001", matchText))
+
+		env.backdateContact("20001", 31*time.Minute)
+		env.requireProactive(t, env.groupEvent("20001", matchText))
+		if n := env.modelCalls(); n != 3 {
+			t.Fatalf("model calls = %d, want 3 (two mentions, one proactive)", n)
+		}
+	})
+
+	t.Run("window lapse", func(t *testing.T) {
+		window := 200 * time.Millisecond
+		env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) {
+			c.DefaultGroupPolicy.Reply.ContinuationWindow = conloomapi.Duration{Duration: window}
+		}})
+		env.engage(t, "20001", topicText)
+		time.Sleep(window + 100*time.Millisecond)
+		env.requireNoProactive(t, env.groupEvent("20001", matchText))
+		if n := env.modelCalls(); n != 1 {
+			t.Fatalf("model calls = %d, want 1", n)
+		}
+		env.backdateContact("20001", 31*time.Minute)
+		env.requireProactive(t, env.groupEvent("20001", matchText))
+	})
+
+	t.Run("cooldown setting", func(t *testing.T) {
+		env := newTestOrchestrator(t, testOpts{configure: withProactive(func(p *conloomapi.ProactivePolicy) {
+			p.UserCooldown = conloomapi.Duration{Duration: 10 * time.Minute}
+		})})
+		env.engage(t, "20001", topicText)
+		env.backdateContact("20001", 9*time.Minute)
+		env.requireNoProactive(t, env.groupEvent("20001", matchText))
+		env.backdateContact("20001", 10*time.Minute)
+		env.requireProactive(t, env.groupEvent("20001", matchText))
+	})
+}
+
+func TestProactive_RecheckedBeforeModelCall(t *testing.T) {
+	queued := func(c *config.Config) {
+		c.DefaultGroupPolicy.Reply.Debounce = conloomapi.Duration{Duration: 300 * time.Millisecond}
+		c.DefaultGroupPolicy.Proactive.UserCooldown = conloomapi.Duration{}
+	}
+	for _, c := range []struct{ name, user, command string }{
+		{"level off", "20001", "/主动 关"},
+		{"group switch off", "29999", "/主动 全群 关"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env := newTestOrchestrator(t, testOpts{configure: queued})
+			env.seedMember(t, "20001", conloomapi.ProactiveHigh, time.Now().Add(-time.Hour))
+			resp := env.submit(t, env.groupEvent("20001", matchText))
+			if resp.TaskID == "" {
+				t.Fatalf("response = %+v, want a proactive task", resp)
+			}
+			env.command(t, c.user, c.command)
+			task := env.waitTask(t, resp.TaskID)
+			if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 0 || task.Meta.ReviewResult != "skipped" {
+				t.Fatalf("task = %+v, want skipped without action", task)
+			}
+			if n := env.modelCalls(); n != 0 {
+				t.Fatalf("model calls = %d, want 0", n)
+			}
+			if n := env.counter(t, "conloom_proactive_total", "result", "skipped"); n != 1 {
+				t.Errorf("skipped metric = %v, want 1", n)
+			}
+		})
+	}
+}
+
+func TestProactive_MessageToOthersNotMergedIntoProactiveTask(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) {
+		c.DefaultGroupPolicy.Reply.Debounce = conloomapi.Duration{Duration: 400 * time.Millisecond}
+	}})
+	env.seedMember(t, "20001", conloomapi.ProactiveHigh, time.Now().Add(-time.Hour))
+	other := env.groupEvent("20002", "随便说一句")
+	env.submit(t, other)
+	resp := env.submit(t, env.groupEvent("20001", matchText))
+	if resp.TaskID == "" {
+		t.Fatalf("response = %+v, want a proactive task", resp)
+	}
+	requireObserved(t, env, env.groupEvent("20001", "小红你说呢", mentionUser("user_20002")), "")
+	requireObserved(t, env, env.groupEvent("20001", "我也觉得", replyTo(other.Message.ID)), "")
+	if plain := env.submit(t, env.groupEvent("20001", "顺便说一句")); !plain.Merged || plain.TaskID != resp.TaskID {
+		t.Fatalf("plain follow-up = %+v, want merged into %s", plain, resp.TaskID)
+	}
+	env.waitTask(t, resp.TaskID)
+	rec, err := env.st.GetTask(context.Background(), testBot, resp.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.TriggerMessageIDs) != 2 {
+		t.Fatalf("proactive task triggers = %v, want the candidate and the plain follow-up", rec.TriggerMessageIDs)
+	}
+}
+
+func TestEngagement_ContinuationKeepsEligibilityTime(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: withContinuation})
+	engaged := time.Now().Add(-100 * time.Hour).UTC()
+	env.seedMember(t, "20001", conloomapi.ProactiveLow, engaged)
+	env.o.sched.MarkReplied(testConvKey, "20001", time.Now())
+	resp := env.submit(t, env.groupEvent("20001", "我们聊聊拿铁"))
+	if task := env.waitTask(t, resp.TaskID); task.Meta.Trigger != conloomapi.TriggerContinuation {
+		t.Fatalf("task = %+v, want a continuation task", task)
+	}
+	m, _ := env.member(t, "20001")
+	if !m.LastEngagedAt.Equal(engaged) {
+		t.Errorf("last engaged at %v after a continuation message, want unchanged %v", m.LastEngagedAt, engaged)
+	}
+	if m.Interests["拿铁"] != 1 {
+		t.Errorf("interests = %v, want the continuation message's terms", m.Interests)
+	}
+	env.engage(t, "20001", "你好")
+	if m, _ := env.member(t, "20001"); time.Since(m.LastEngagedAt) > time.Minute {
+		t.Errorf("last engaged at %v after a mention, want about now", m.LastEngagedAt)
+	}
+}
+
+func (e *testEnv) gauge(t *testing.T, name string) float64 {
+	t.Helper()
+	mfs, err := e.reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == name && len(mf.GetMetric()) > 0 {
+			return mf.GetMetric()[0].GetGauge().GetValue()
+		}
+	}
+	return 0
+}
+
+func TestProactive_LowerAdmissionPriorityThanReplies(t *testing.T) {
+	release := make(chan struct{})
+	var calls atomic.Int32
+	var mu sync.Mutex
+	var order []string
+	handler := func(req map[string]any) (int, string) {
+		if calls.Add(1) == 1 {
+			<-release
+		}
+		mu.Lock()
+		order = append(order, lastContent(req))
+		mu.Unlock()
+		return 200, fakeReply
+	}
+	env := newTestOrchestrator(t, testOpts{short: handler, long: handler, configure: func(c *config.Config) {
+		for _, name := range []string{"short_context", "long_context"} {
+			p := c.ModelProfiles[name]
+			p.Runtime.MaxConcurrency = 1
+			c.ModelProfiles[name] = p
+		}
+		c.DefaultGroupPolicy.Concurrency.MaxInteractiveRequests = 2
+	}})
+	env.seedMember(t, "20001", conloomapi.ProactiveHigh, time.Now().Add(-time.Hour))
+
+	hold := env.submit(t, env.event(conloomapi.ConvPrivate, "29999", "29999", "先占住模型"))
+	waitUntil(t, "the first model call", func() bool { return calls.Load() == 1 })
+	pro := env.submit(t, env.groupEvent("20001", matchText))
+	waitUntil(t, "the proactive task to wait for admission", func() bool { return env.gauge(t, "conloom_queue_depth") == 1 })
+	mention := env.submit(t, env.groupEvent("20002", "你好呀", mentionBot))
+	waitUntil(t, "the mention to wait for admission", func() bool { return env.gauge(t, "conloom_queue_depth") == 2 })
+	close(release)
+	for _, id := range []string{hold.TaskID, pro.TaskID, mention.TaskID} {
+		env.waitTask(t, id)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 3 || !strings.Contains(order[1], "你好呀") || !strings.Contains(order[2], matchText) {
+		t.Fatalf("model call order = %q, want the mention before the proactive task", order)
+	}
+	rec, err := env.st.GetTask(context.Background(), testBot, pro.TaskID)
+	if err != nil || rec.Priority != int(admission.PriorityBackground) {
+		t.Fatalf("proactive task priority = %d, %v; want background", rec.Priority, err)
+	}
+}
+
+func TestMaintenance_PrunesOldContacts(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	env.backdateContact("20001", 25*time.Hour)
+	env.backdateContact("20002", 23*time.Hour)
+	if err := env.o.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "old contact pruned", func() bool {
+		_, ok := env.o.contacts.get(memberKey(testConvKey, "20001"))
+		return !ok
+	})
+	if _, ok := env.o.contacts.get(memberKey(testConvKey, "20002")); !ok {
+		t.Fatal("a contact younger than 24h was pruned")
+	}
 }

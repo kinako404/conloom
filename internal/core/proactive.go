@@ -26,6 +26,8 @@ const (
 	// and per group per hour are this many times the matching send limit.
 	proactiveEvalFactor   = 3
 	proactiveLogRetention = 7 * 24 * time.Hour
+	// contactRetention is the longest user cooldown policy validation allows.
+	contactRetention = 24 * time.Hour
 
 	proactiveEvaluated = "evaluated"
 	proactiveSent      = "sent"
@@ -46,9 +48,47 @@ func (l *keyedLocks) lock(key string) (unlock func()) {
 
 func memberKey(convKey, userID string) string { return convKey + "\x00" + userID }
 
+// contactTimes remembers, per conversation member, when the bot last replied
+// to them or their continuation ended. It lives in memory only.
+type contactTimes struct {
+	mu sync.Mutex
+	at map[string]time.Time
+}
+
+func (c *contactTimes) set(key string, at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.at == nil {
+		c.at = map[string]time.Time{}
+	}
+	c.at[key] = at
+}
+
+func (c *contactTimes) get(key string) (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	at, ok := c.at[key]
+	return at, ok
+}
+
+// prune forgets contacts before cutoff and returns how many it forgot.
+func (c *contactTimes) prune(cutoff time.Time) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for k, at := range c.at {
+		if at.Before(cutoff) {
+			delete(c.at, k)
+			n++
+		}
+	}
+	return n
+}
+
 // engages reports whether the accepted message counts as the sender engaging
 // the bot: a group message that mentions or replies to the bot, or continues a
-// conversation with it. Commands never count.
+// conversation with it. Commands never count. Only mentions and replies renew
+// eligibility (see recordEngagement).
 func engages(s *submission, d Decision) bool {
 	if s.ev.Conversation.Type != conloomapi.ConvGroup || d.Disposition != conloomapi.DispositionReply || d.Command != "" {
 		return false
@@ -60,10 +100,11 @@ func engages(s *submission, d Decision) bool {
 	return false
 }
 
-// recordEngagement refreshes the sender's eligibility and interest profile. A
+// recordEngagement updates the sender's interest profile and, for a mention
+// or a reply to the bot (not a continuation), renews their eligibility. A
 // new member gets the group's default level, which also replaces the level
 // of a member who never chose one; a level the member set is kept.
-func (o *Orchestrator) recordEngagement(ctx context.Context, s *submission, pol conloomapi.GroupPolicy) {
+func (o *Orchestrator) recordEngagement(ctx context.Context, s *submission, d Decision, pol conloomapi.GroupPolicy) {
 	user := s.ev.Actor.PlatformUserID
 	unlock := o.memberLocks.lock(memberKey(s.convKey, user))
 	defer unlock()
@@ -78,7 +119,7 @@ func (o *Orchestrator) recordEngagement(ctx context.Context, s *submission, pol 
 	if !m.LevelSetByUser {
 		m.ProactiveLevel = pol.Proactive.DefaultLevel
 	}
-	if at := s.occurredAt(); at.After(m.LastEngagedAt) {
+	if at := s.occurredAt(); d.Trigger != TriggerContinuation && at.After(m.LastEngagedAt) {
 		m.LastEngagedAt = at
 	}
 	m.Interests = interest.Update(m.Interests, s.ev.Message.Text)
@@ -91,7 +132,9 @@ func (o *Orchestrator) recordEngagement(ctx context.Context, s *submission, pol 
 // proactiveCandidate applies the in-memory proactive filters to an observed
 // message: a fresh group message long enough, not a command, mentioning
 // nobody, not replying to another member, in an unpaused group with proactive
-// replies on, from a sender with no unfinished task.
+// replies on, from a sender with no unfinished task whose last contact with
+// the bot (a reply or the end of a continuation) is at least the user
+// cooldown ago.
 func (o *Orchestrator) proactiveCandidate(s *submission, pol conloomapi.GroupPolicy) bool {
 	text := strings.TrimSpace(s.ev.Message.Text)
 	switch {
@@ -105,7 +148,30 @@ func (o *Orchestrator) proactiveCandidate(s *submission, pol conloomapi.GroupPol
 		return false
 	}
 	user := s.ev.Actor.PlatformUserID
+	if at, ok := o.contacts.get(memberKey(s.convKey, user)); ok && s.now.Sub(at) < pol.Proactive.UserCooldown.Duration {
+		return false
+	}
 	return !slices.ContainsFunc(o.sched.Active(s.convKey), func(t QueuedTask) bool { return t.ActorID == user })
+}
+
+// hasPendingProactive reports whether the sender has an unfinished proactive
+// task in the conversation.
+func (o *Orchestrator) hasPendingProactive(ctx context.Context, s *submission) bool {
+	user := s.ev.Actor.PlatformUserID
+	for _, t := range o.sched.Active(s.convKey) {
+		if t.ActorID != user {
+			continue
+		}
+		rec, err := o.st.GetTask(ctx, s.botID, t.TaskID)
+		if err != nil {
+			o.log.Warn("load task failed", "task_id", t.TaskID, "error", err)
+			continue
+		}
+		if rec.Meta.Trigger == TriggerProactive {
+			return true
+		}
+	}
+	return false
 }
 
 // submitProactive handles an observed proactive candidate: if the sender is
@@ -261,14 +327,18 @@ func (o *Orchestrator) proactiveDirective(ctx context.Context, task store.TaskRe
 	return CopyDirectiveProactive(interest.Top(m.Interests, proactiveDirectiveTerm))
 }
 
+// skipTrim is the punctuation allowed around a bare "SKIP" or "[SKIP]".
+const skipTrim = `。．.!！?？、,，~～…：:；;"'“”‘’`
+
 // isSkip reports whether a model output is the skip marker: after removing
-// whitespace, upper-casing and mapping full-width characters and 【】 to
-// ASCII brackets, it contains SkipMarker or is exactly "SKIP" or "[SKIP]".
+// whitespace and zero-width characters, upper-casing and mapping full-width
+// characters and 【】 to ASCII brackets, it contains SkipMarker or, with
+// surrounding punctuation trimmed, is exactly "SKIP" or "[SKIP]".
 func isSkip(content string) bool {
 	var b strings.Builder
 	for _, r := range content {
 		switch {
-		case unicode.IsSpace(r):
+		case unicode.IsSpace(r), r >= '\u200b' && r <= '\u200d', r == '\u2060', r == '\ufeff':
 			continue
 		case r == '【':
 			r = '['
@@ -280,7 +350,11 @@ func isSkip(content string) bool {
 		b.WriteRune(unicode.ToUpper(r))
 	}
 	s := b.String()
-	return strings.Contains(s, SkipMarker) || s == "SKIP" || s == "[SKIP]"
+	if strings.Contains(s, SkipMarker) {
+		return true
+	}
+	s = strings.Trim(s, skipTrim)
+	return s == "SKIP" || s == "[SKIP]"
 }
 
 var proactiveLevelArgs = map[string]string{
@@ -317,7 +391,7 @@ func (o *Orchestrator) proactiveCommand(ctx context.Context, task store.TaskReco
 		if !ok {
 			return CopyProactiveUsage, nil
 		}
-		return o.switchProactive(ctx, task, pv.Policy, on)
+		return o.switchProactive(ctx, task, on)
 	case len(fields) == 1:
 		if level, ok := proactiveLevelArgs[fields[0]]; ok {
 			return o.setProactiveLevel(ctx, task, pv.Policy.Proactive, level)
@@ -363,28 +437,18 @@ func (o *Orchestrator) setProactiveLevel(ctx context.Context, task store.TaskRec
 	return CopyProactiveSet(level), nil
 }
 
-// switchProactive stores a new policy version with only proactive.enabled
-// changed; switching to the current state stores nothing.
-func (o *Orchestrator) switchProactive(ctx context.Context, task store.TaskRecord, pol conloomapi.GroupPolicy, on bool) (string, error) {
-	reply := CopyProactiveGroupOff
-	if on {
-		reply = CopyProactiveGroupOn
-	}
-	if pol.Proactive.Enabled == on {
-		return reply, nil
-	}
-	pol.Proactive.Enabled = on
-	reason := "proactive group off"
-	if on {
-		reason = "proactive group on"
-	}
-	pv, err := o.policies.Update(ctx, task.ConversationKey,
-		conloomapi.PolicyPut{Policy: pol, Reason: reason, ProactivePresent: true}, "command:"+task.ActorPlatformUserID)
-	if err != nil && pv.Version == 0 {
+// switchProactive switches the group's proactive replies; switching to the
+// current state stores nothing.
+func (o *Orchestrator) switchProactive(ctx context.Context, task store.TaskRecord, on bool) (string, error) {
+	_, changed, err := o.policies.SetProactiveEnabled(ctx, task.ConversationKey, on, "command:"+task.ActorPlatformUserID)
+	if err != nil && !changed {
 		return "", err
 	}
 	o.logPolicyAuditError(task, err)
-	return reply, nil
+	if on {
+		return CopyProactiveGroupOn, nil
+	}
+	return CopyProactiveGroupOff, nil
 }
 
 // convType returns the type part of a "bot:platform:type:id" conversation key.
@@ -394,6 +458,13 @@ func convType(convKey string) string {
 		return ""
 	}
 	return parts[2]
+}
+
+// pruneContacts forgets last contacts older than any user cooldown can be.
+func (o *Orchestrator) pruneContacts() {
+	if n := o.contacts.prune(o.now().Add(-contactRetention)); n > 0 {
+		o.log.Debug("pruned last contacts", "count", n)
+	}
 }
 
 func (o *Orchestrator) purgeProactiveLog() {
