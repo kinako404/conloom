@@ -128,6 +128,33 @@ type AuditEvent struct {
 	CreatedAt     time.Time
 }
 
+// MemberRecord is a user's engagement state in one conversation. Interests
+// maps profile terms to weights.
+type MemberRecord struct {
+	ConversationKey string
+	PlatformUserID  string
+	LastEngagedAt   time.Time
+	ProactiveLevel  string
+	LevelSetByUser  bool
+	Interests       map[string]float64
+	UpdatedAt       time.Time
+}
+
+const (
+	ProactiveEvaluated = "evaluated"
+	ProactiveSent      = "sent"
+)
+
+// ProactiveLogEntry records one proactive evaluation or sent reply. Kind is
+// one of the Proactive* constants.
+type ProactiveLogEntry struct {
+	ConversationKey string
+	PlatformUserID  string
+	Kind            string
+	TaskID          string
+	CreatedAt       time.Time
+}
+
 // Ingest is everything written for one incoming event. Nil parts are skipped.
 // MergeIntoTaskID, when set, appends Message.ID to that task's trigger messages.
 type Ingest struct {

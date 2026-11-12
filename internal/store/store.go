@@ -54,6 +54,14 @@ type Store interface {
 	ListPolicyVersions(ctx context.Context, convKey string) ([]PolicyVersion, error)
 	AppendPolicyVersion(ctx context.Context, pv PolicyVersion) (PolicyVersion, error)
 	InsertAudit(ctx context.Context, a AuditEvent) error
+	GetMember(ctx context.Context, convKey, userID string) (MemberRecord, error)
+	// PutMember inserts m or replaces the stored row with the same conversation and user.
+	PutMember(ctx context.Context, m MemberRecord) error
+	AppendProactiveLog(ctx context.Context, e ProactiveLogEntry) error
+	// CountProactive counts kind entries created at or after since; an empty
+	// userID counts every user in the conversation.
+	CountProactive(ctx context.Context, convKey, userID, kind string, since time.Time) (int, error)
+	PurgeProactiveLog(ctx context.Context, before time.Time) (int, error)
 	Backup(ctx context.Context, path string) error
 	Close() error
 }

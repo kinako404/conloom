@@ -99,8 +99,12 @@ func TestOpen_MigratesAndIsIdempotent(t *testing.T) {
 		t.Fatalf("second Open: %v", err)
 	}
 	defer db.Close()
-	if n := countRows(t, db, "schema_migrations"); n != 1 {
-		t.Fatalf("schema_migrations rows = %d, want 1", n)
+	files, err := migrations.ReadDir("migrations")
+	if err != nil {
+		t.Fatalf("read migrations: %v", err)
+	}
+	if n := countRows(t, db, "schema_migrations"); n != len(files) {
+		t.Fatalf("schema_migrations rows = %d, want %d", n, len(files))
 	}
 	var mode string
 	if err := db.r.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
