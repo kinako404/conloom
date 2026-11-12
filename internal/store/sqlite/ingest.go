@@ -188,13 +188,17 @@ func (db *DB) GetEvent(ctx context.Context, botID, key string) (store.EventRecor
 		WHERE bot_instance_id = ? AND idempotency_key = ?`, botID, key))
 }
 
-func (db *DB) GetConversation(ctx context.Context, botID, conversationID string) (store.ConversationRecord, error) {
+const conversationCols = `bot_instance_id, id, key, type, platform, platform_conversation_id`
+
+func scanConversation(row scanner) (store.ConversationRecord, error) {
 	var c store.ConversationRecord
-	err := db.r.QueryRowContext(ctx, `
-		SELECT bot_instance_id, id, key, type, platform, platform_conversation_id FROM conversations
-		WHERE bot_instance_id = ? AND id = ?`, botID, conversationID).
-		Scan(&c.BotInstanceID, &c.ID, &c.Key, &c.Type, &c.Platform, &c.PlatformConversationID)
+	err := row.Scan(&c.BotInstanceID, &c.ID, &c.Key, &c.Type, &c.Platform, &c.PlatformConversationID)
 	return c, notFound(err)
+}
+
+func (db *DB) GetConversation(ctx context.Context, botID, conversationID string) (store.ConversationRecord, error) {
+	return scanConversation(db.r.QueryRowContext(ctx, `SELECT `+conversationCols+` FROM conversations
+		WHERE bot_instance_id = ? AND id = ?`, botID, conversationID))
 }
 
 func (db *DB) GetMessage(ctx context.Context, botID, id string) (store.MessageRecord, error) {
@@ -217,27 +221,34 @@ func (db *DB) GetMessages(ctx context.Context, botID string, ids []string) ([]st
 }
 
 func (db *DB) LatestDisplayNames(ctx context.Context, conversationKey string, actorIDs []string) (map[string]string, error) {
-	names := map[string]string{}
-	for chunk := range slices.Chunk(actorIDs, maxCompoundSelect) {
-		if err := db.latestDisplayNames(ctx, conversationKey, chunk, names); err != nil {
-			return nil, err
-		}
-	}
-	return names, nil
+	return db.latestPerActor(ctx, conversationKey, actorIDs, "display_name")
 }
 
 // maxCompoundSelect stays below SQLite's default limit of 500 terms in a
 // compound SELECT.
 const maxCompoundSelect = 200
 
-// latestDisplayNames looks up each actor's newest name with its own indexed
+// latestPerActor maps each of actorIDs to the non-empty messages column col
+// of its newest member message in the conversation; actors without one are
+// absent.
+func (db *DB) latestPerActor(ctx context.Context, conversationKey string, actorIDs []string, col string) (map[string]string, error) {
+	out := map[string]string{}
+	for chunk := range slices.Chunk(actorIDs, maxCompoundSelect) {
+		if err := db.latestPerActorChunk(ctx, conversationKey, chunk, col, out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// latestPerActorChunk looks up each actor's newest value with its own indexed
 // LIMIT 1 query, combined into one statement.
-func (db *DB) latestDisplayNames(ctx context.Context, conversationKey string, actorIDs []string, names map[string]string) error {
+func (db *DB) latestPerActorChunk(ctx context.Context, conversationKey string, actorIDs []string, col string, out map[string]string) error {
 	parts := make([]string, len(actorIDs))
 	args := make([]any, 0, 2*len(actorIDs))
 	for i, id := range actorIDs {
-		parts[i] = `SELECT * FROM (SELECT actor_id, display_name FROM messages
-			WHERE conversation_key = ? AND actor_id = ? AND from_bot = 0 AND display_name <> ''
+		parts[i] = `SELECT * FROM (SELECT actor_id, ` + col + ` FROM messages
+			WHERE conversation_key = ? AND actor_id = ? AND from_bot = 0 AND ` + col + ` <> ''
 			ORDER BY seq DESC LIMIT 1)`
 		args = append(args, conversationKey, id)
 	}
@@ -247,11 +258,11 @@ func (db *DB) latestDisplayNames(ctx context.Context, conversationKey string, ac
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id, name string
-		if err := rows.Scan(&id, &name); err != nil {
+		var id, value string
+		if err := rows.Scan(&id, &value); err != nil {
 			return err
 		}
-		names[id] = name
+		out[id] = value
 	}
 	return rows.Err()
 }
