@@ -77,6 +77,7 @@ func (c *Config) ValidateServe() error {
 			p.addf(path+".id", "duplicate bot id %q", b.ID)
 		}
 		botIDs[b.ID] = true
+		p.required(path+".platform_self_id", b.PlatformSelfID)
 		if !slices.Contains([]string{"admins", "all", "off"}, b.PrivateChat) {
 			p.addf(path+".private_chat", "must be one of admins|all|off, got %q", b.PrivateChat)
 		}
@@ -91,6 +92,9 @@ func (c *Config) ValidateServe() error {
 	for _, name := range slices.Sorted(maps.Keys(c.ModelProfiles)) {
 		mp := c.ModelProfiles[name]
 		path := "model_profiles." + name
+		if mp.Provider != ProviderOpenAICompatible {
+			p.addf(path+".provider", "must be %s, got %q", ProviderOpenAICompatible, mp.Provider)
+		}
 		p.required(path+".endpoint", mp.Endpoint)
 		p.required(path+".model", mp.Model)
 		ctx := mp.Context

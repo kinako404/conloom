@@ -63,6 +63,9 @@ type BotConfig struct {
 	PersonaTemplate      string                       `yaml:"persona_template"`
 }
 
+// ProviderOpenAICompatible is the only supported ModelProfile.Provider and the default.
+const ProviderOpenAICompatible = "openai_compatible"
+
 type ModelProfile struct {
 	Provider            string         `yaml:"provider"`
 	Endpoint            string         `yaml:"endpoint"`
@@ -216,6 +219,12 @@ func Load(path string) (*Config, error) {
 	}
 	if _, ok := cfg.PersonaTemplates["default"]; !ok {
 		cfg.PersonaTemplates["default"] = conloomapi.DefaultPersona()
+	}
+	for name, p := range cfg.ModelProfiles {
+		if p.Provider == "" {
+			p.Provider = ProviderOpenAICompatible
+			cfg.ModelProfiles[name] = p
+		}
 	}
 	if cfg.Storage.DataDir == "" {
 		cfg.Storage.DataDir = "./data"

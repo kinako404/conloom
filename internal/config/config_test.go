@@ -113,7 +113,7 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 	}
 
 	short := cfg.ModelProfiles["short_context"]
-	if short.Endpoint != "http://127.0.0.1:9/v1" || short.Model != "fake-short" || short.APIKey != "fake-short-key" {
+	if short.Provider != "openai_compatible" || short.Endpoint != "http://127.0.0.1:9/v1" || short.Model != "fake-short" || short.APIKey != "fake-short-key" {
 		t.Errorf("short_context = %+v", short)
 	}
 	wantShortCtx := ContextLimits{NativeWindow: 32768, ConfiguredWindow: 32768, SoftInputBudget: 16000, ReservedOutputTokens: 1024, SafetyMarginTokens: 1024}
@@ -230,8 +230,8 @@ func TestLoad_DefaultsApplied(t *testing.T) {
 
 	p := cfg.ModelProfiles["short_context"]
 	wantRT := ProfileRuntime{MaxConcurrency: 2, Timeout: conloomapi.Duration{Duration: 60 * time.Second}, MaxRetries: 2}
-	if p.Runtime != wantRT || p.TokenEstimateFactor != 1.0 {
-		t.Errorf("profile defaults = %+v factor=%v", p.Runtime, p.TokenEstimateFactor)
+	if p.Runtime != wantRT || p.TokenEstimateFactor != 1.0 || p.Provider != "openai_compatible" {
+		t.Errorf("profile defaults = %+v factor=%v provider=%q", p.Runtime, p.TokenEstimateFactor, p.Provider)
 	}
 
 	if cfg.Observability != (ObservabilityConfig{LogLevel: "info", LogFormat: "json"}) {
@@ -257,6 +257,7 @@ model_profiles:
   short_context:
     endpoint: http://127.0.0.1:9/v1
     model: fake-short
+    provider: ${CONLOOM_TEST_UNSET_PROVIDER:-}
     api_key: ${CONLOOM_TEST_KEY}
     context:
       native_window: ${CONLOOM_TEST_WINDOW}
@@ -281,6 +282,9 @@ model_profiles:
 	p := cfg.ModelProfiles["short_context"]
 	if p.Runtime.MaxRetries != 0 || p.Runtime.Timeout.Duration != 5*time.Second || p.Runtime.MaxConcurrency != 2 {
 		t.Errorf("profile runtime = %+v", p.Runtime)
+	}
+	if p.Provider != "openai_compatible" {
+		t.Errorf("provider = %q, want empty value to default to openai_compatible", p.Provider)
 	}
 	if p.APIKey != "null" {
 		t.Errorf("api_key = %q, want the literal expanded value", p.APIKey)
@@ -349,7 +353,16 @@ func TestValidateServe_Rules(t *testing.T) {
 		{"duplicate bot id", func(c *Config) { c.Bots = append(c.Bots, c.Bots[0]) }, []string{"bots[1].id", "duplicate"}},
 		{"bad private_chat", func(c *Config) { c.Bots[0].PrivateChat = "everyone" }, []string{"bots[0].private_chat"}},
 		{"unknown persona template", func(c *Config) { c.Bots[0].PersonaTemplate = "nope" }, []string{"bots[0].persona_template", "nope"}},
+		{"empty platform_self_id", func(c *Config) {
+			c.Bots[0].PlatformSelfID = ""
+			c.MissingEnv = []string{"CONLOOM_BOT_SELF_ID"}
+		}, []string{"bots[0].platform_self_id", "CONLOOM_BOT_SELF_ID"}},
 		{"no short_context", func(c *Config) { delete(c.ModelProfiles, "short_context") }, []string{"model_profiles.short_context"}},
+		{"unsupported provider", func(c *Config) {
+			p := c.ModelProfiles["long_context"]
+			p.Provider = "openai"
+			c.ModelProfiles["long_context"] = p
+		}, []string{"model_profiles.long_context.provider", `"openai"`}},
 		{"empty endpoint and model", func(c *Config) {
 			p := c.ModelProfiles["long_context"]
 			p.Endpoint, p.Model = "", ""

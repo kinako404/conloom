@@ -53,7 +53,7 @@ bots:
 model_profiles:
   # 短上下文模型：日常群聊回复。
   short_context:
-    provider: openai  # OpenAI 兼容接口
+    provider: openai_compatible  # OpenAI 兼容接口（目前唯一支持的值，省略时默认）
     endpoint: ${CONLOOM_SHORT_MODEL_ENDPOINT}
     model: ${CONLOOM_SHORT_MODEL_NAME}
     api_key: ${CONLOOM_SHORT_MODEL_KEY}
@@ -79,7 +79,7 @@ model_profiles:
     token_estimate_factor: 1.0
   # 长上下文模型：短模型装不下时使用。
   long_context:
-    provider: openai  # OpenAI 兼容接口
+    provider: openai_compatible  # OpenAI 兼容接口（目前唯一支持的值，省略时默认）
     endpoint: ${CONLOOM_LONG_MODEL_ENDPOINT}
     model: ${CONLOOM_LONG_MODEL_NAME}
     api_key: ${CONLOOM_LONG_MODEL_KEY}
