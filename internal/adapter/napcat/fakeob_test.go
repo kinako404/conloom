@@ -25,6 +25,19 @@ type obCall struct {
 	Params map[string]any
 }
 
+// sendMode controls how the fake answers send_group_msg and send_private_msg.
+type sendMode int
+
+const (
+	sendReply sendMode = iota
+	// sendReplyThenDrop answers, then closes the connection without a handshake.
+	sendReplyThenDrop
+	// sendNoReply never answers.
+	sendNoReply
+	// sendDelayedReply answers after the configured delay.
+	sendDelayedReply
+)
+
 // fakeOB is a OneBot 11 forward WebSocket server modelled on NapCat 4.x: it
 // requires the access token as query parameter and bearer header, pushes a
 // lifecycle meta event on connect, answers get_login_info, send_group_msg and
@@ -40,6 +53,8 @@ type fakeOB struct {
 	accepted  int
 	calls     []obCall
 	nextMsgID int64
+	sendMode  sendMode
+	sendDelay time.Duration
 }
 
 func newFakeOB(t *testing.T) *fakeOB {
@@ -107,7 +122,17 @@ func (f *fakeOB) serve(w http.ResponseWriter, r *http.Request) {
 			f.mu.Lock()
 			f.nextMsgID++
 			resp["data"] = map[string]any{"message_id": f.nextMsgID}
+			mode, delay := f.sendMode, f.sendDelay
 			f.mu.Unlock()
+			switch mode {
+			case sendReplyThenDrop:
+				f.write(c, resp)
+				return
+			case sendNoReply:
+				continue
+			case sendDelayedReply:
+				time.Sleep(delay)
+			}
 		case "test_echo":
 			resp["data"] = req.Params
 			held = append(held, resp)
@@ -161,6 +186,14 @@ func (f *fakeOB) Drop() {
 	for c := range f.conns {
 		_ = c.CloseNow()
 	}
+}
+
+// SetSend sets how later send requests are answered; delay applies to
+// sendDelayedReply.
+func (f *fakeOB) SetSend(mode sendMode, delay time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sendMode, f.sendDelay = mode, delay
 }
 
 func (f *fakeOB) Accepted() int {

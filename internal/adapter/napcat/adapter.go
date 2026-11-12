@@ -29,6 +29,8 @@ const (
 	ackTimeout        = 10 * time.Second
 	backoffMin        = time.Second
 	backoffMax        = 30 * time.Second
+
+	outcomeUnknown = "delivery outcome unknown; not resent to avoid a duplicate"
 )
 
 // Adapter connects one NapCat instance to the ConLoom core: it forwards
@@ -42,6 +44,7 @@ type Adapter struct {
 
 	submitDelays  []time.Duration
 	retryInterval time.Duration
+	sendTimeout   time.Duration
 
 	dedup *Dedup
 
@@ -84,6 +87,7 @@ func New(cfg config.NapCatConfig, logger *slog.Logger) (*Adapter, error) {
 		core:          client.New(cfg.CoreURL, cfg.CoreToken, nil),
 		submitDelays:  []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second},
 		retryInterval: 5 * time.Second,
+		sendTimeout:   60 * time.Second,
 	}, nil
 }
 
@@ -159,14 +163,15 @@ func (a *Adapter) session(ctx context.Context) (connected bool, err error) {
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	sendFailed := make(chan error, 1)
+	outboxDone := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		a.forwardEvents(sctx, conn, selfID)
 	}()
 	go func() {
-		defer wg.Done()
+		defer close(outboxDone)
 		if err := a.deliverOutbox(sctx, conn); err != nil {
 			sendFailed <- err
 		}
@@ -183,6 +188,9 @@ func (a *Adapter) session(ctx context.Context) (connected bool, err error) {
 	case <-ctx.Done():
 	}
 	cancel()
+	// A send in flight gets its response (or times out) before the
+	// connection is closed, so its outcome is recorded.
+	<-outboxDone
 	_ = conn.Close()
 	wg.Wait()
 	if n := conn.Dropped(); n > 0 {
@@ -385,6 +393,9 @@ func (a *Adapter) deliverOutbox(ctx context.Context, conn *Conn) error {
 			continue
 		}
 		for _, act := range actions {
+			if ctx.Err() != nil {
+				return nil
+			}
 			if err := a.deliver(ctx, conn, act); err != nil {
 				return err
 			}
@@ -393,11 +404,20 @@ func (a *Adapter) deliverOutbox(ctx context.Context, conn *Conn) error {
 }
 
 // deliver sends one action unless the dedup log shows it was already sent,
-// then ACKs it. Only a failure to send over the WebSocket is returned; the
-// action is left un-ACKed so it is redelivered when its lease expires.
+// then ACKs it. The send runs under its own timeout and is not cut off when
+// ctx ends. If the request never reached the connection, the action is left
+// un-ACKed for redelivery and the error is returned. If it was written but
+// no response arrived, the action is recorded with an empty platform message
+// ID and ACKed failed, so it is never sent again; the error is returned unless
+// ctx has ended.
 func (a *Adapter) deliver(ctx context.Context, conn *Conn, act conloomapi.Action) error {
 	log := a.log.With("action_id", act.ActionID, "conversation_id", act.ConversationID)
 	if pmid, ok := a.dedup.Seen(act.ActionID); ok {
+		if pmid == "" {
+			log.Warn("action may already have been sent; acknowledging it as failed without resending")
+			a.ack(ctx, log, act.ActionID, conloomapi.AckRequest{Status: conloomapi.AckFailed, Error: outcomeUnknown})
+			return nil
+		}
 		log.Info("action already sent; acknowledging again", "platform_message_id", pmid)
 		a.ack(ctx, log, act.ActionID, conloomapi.AckRequest{Status: conloomapi.AckSent, PlatformMessageID: pmid})
 		return nil
@@ -414,17 +434,31 @@ func (a *Adapter) deliver(ctx context.Context, conn *Conn, act conloomapi.Action
 		return nil
 	}
 
-	data, err := conn.Call(ctx, action, params)
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.sendTimeout)
+	data, err := conn.Call(sendCtx, action, params)
+	cancel()
 	if cerr := (*callError)(nil); errors.As(err, &cerr) {
 		log.Error("NapCat rejected the message", "error", err, obs.MessageAttr(a.logCfg, act.Content.Text))
 		a.ack(ctx, log, act.ActionID, conloomapi.AckRequest{Status: conloomapi.AckFailed, Error: err.Error()})
 		return nil
 	}
-	if err != nil {
+	if errors.Is(err, errNotSent) {
 		if ctx.Err() != nil {
 			return nil
 		}
 		log.Warn("sending over the NapCat connection failed; leaving the action for redelivery", "error", err)
+		return err
+	}
+	if err != nil {
+		log.Error("message delivery outcome unknown; it will not be sent again", "error", err,
+			obs.MessageAttr(a.logCfg, act.Content.Text))
+		if err := a.dedup.Mark(act.ActionID, ""); err != nil {
+			log.Error("recording the action failed", "error", err)
+		}
+		a.ack(ctx, log, act.ActionID, conloomapi.AckRequest{Status: conloomapi.AckFailed, Error: outcomeUnknown + ": " + err.Error()})
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
 	}
 	var sent struct {

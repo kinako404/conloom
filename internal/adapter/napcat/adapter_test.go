@@ -594,6 +594,138 @@ func TestAdapter_RestartWithDedupDoesNotResend(t *testing.T) {
 	}
 }
 
+func TestConn_CallReportsWhetherTheRequestWasSent(t *testing.T) {
+	ob := newFakeOB(t)
+	ob.SetSend(sendReplyThenDrop, 0)
+	ctx := context.Background()
+	for i := range 20 {
+		conn, err := Dial(ctx, ob.URL, fakeOBToken)
+		if err != nil {
+			t.Fatalf("Dial: %v", err)
+		}
+		data, err := conn.Call(ctx, "send_group_msg", map[string]any{"group_id": 10001})
+		if err != nil || !strings.Contains(string(data), "message_id") {
+			t.Fatalf("attempt %d: response followed by a drop: data = %s, err = %v, want the response", i, data, err)
+		}
+		select {
+		case <-conn.Done():
+		case <-time.After(2 * time.Second):
+			t.Fatal("connection not done after the server dropped it")
+		}
+		if _, err := conn.Call(ctx, "send_group_msg", nil); !errors.Is(err, errNotSent) {
+			t.Errorf("Call on a closed connection: err = %v, want errNotSent", err)
+		}
+		_ = conn.Close()
+	}
+
+	ob.SetSend(sendNoReply, 0)
+	conn, err := Dial(ctx, ob.URL, fakeOBToken)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+	tctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	if _, err := conn.Call(tctx, "send_group_msg", map[string]any{"group_id": 10001}); err == nil || errors.Is(err, errNotSent) {
+		t.Errorf("unanswered Call: err = %v, want an error other than errNotSent", err)
+	}
+}
+
+func TestAdapter_ResponseThenDropDoesNotResend(t *testing.T) {
+	ob := newFakeOB(t)
+	ob.SetSend(sendReplyThenDrop, 0)
+	c := newCore(t, "300ms")
+	startAdapter(t, napcatConfig(ob, c, t.TempDir()), nil)
+	waitFor(t, 5*time.Second, "get_login_info", func() bool { return len(ob.Calls("get_login_info")) == 1 })
+
+	ob.Push(groupMessage(10001, 20001, 70001, "在吗？", true))
+	waitFor(t, 2*time.Second, "send_group_msg", func() bool { return len(ob.Calls("send_group_msg")) == 1 })
+	waitFor(t, 2*time.Second, "the ACK", func() bool { return len(c.ackRecords()) == 1 })
+	waitFor(t, 10*time.Second, "reconnect", func() bool { return len(ob.Calls("get_login_info")) == 2 })
+	time.Sleep(800 * time.Millisecond)
+
+	if n := len(ob.Calls("send_group_msg")); n != 1 {
+		t.Errorf("send_group_msg calls = %d, want 1", n)
+	}
+	acks := c.ackRecords()
+	if len(acks) != 1 || acks[0].Code != http.StatusOK || acks[0].Req.Status != conloomapi.AckSent || acks[0].Req.PlatformMessageID != "50001" {
+		t.Errorf("acks = %+v, want one 200 sent with platform message 50001", acks)
+	}
+}
+
+func TestAdapter_SendTimeoutIsNotResent(t *testing.T) {
+	ob := newFakeOB(t)
+	ob.SetSend(sendNoReply, 0)
+	c := newCore(t, "300ms")
+	c.failAcks.Store(true)
+	stateDir := t.TempDir()
+	startAdapter(t, napcatConfig(ob, c, stateDir), func(a *Adapter) { a.sendTimeout = 200 * time.Millisecond })
+	waitFor(t, 5*time.Second, "get_login_info", func() bool { return len(ob.Calls("get_login_info")) == 1 })
+
+	ob.Push(groupMessage(10001, 20001, 70001, "在吗？", true))
+	waitFor(t, 2*time.Second, "send_group_msg", func() bool { return len(ob.Calls("send_group_msg")) == 1 })
+	waitFor(t, 2*time.Second, "the failed ACK", func() bool { return len(c.ackRecords()) == 1 })
+	first := c.ackRecords()[0]
+	if first.Req.Status != conloomapi.AckFailed {
+		t.Errorf("ACK after the send timed out = %+v, want failed", first)
+	}
+	c.failAcks.Store(false)
+
+	waitFor(t, 10*time.Second, "a successful ACK after redelivery", func() bool {
+		acks := c.ackRecords()
+		return acks[len(acks)-1].Code == http.StatusOK
+	})
+	last := c.ackRecords()[len(c.ackRecords())-1]
+	if last.ActionID != first.ActionID || last.Req.Status != conloomapi.AckFailed || last.Req.PlatformMessageID != "" {
+		t.Errorf("final ACK = %+v, want failed for %s", last, first.ActionID)
+	}
+	time.Sleep(800 * time.Millisecond)
+	if n := len(ob.Calls("send_group_msg")); n != 1 {
+		t.Errorf("send_group_msg calls = %d, want 1", n)
+	}
+	record, err := os.ReadFile(filepath.Join(stateDir, "napcat-dedup.log"))
+	if err != nil || !strings.Contains(string(record), first.ActionID+"\t") {
+		t.Errorf("dedup log = %q (err %v), want a record of %s", record, err, first.ActionID)
+	}
+}
+
+func TestAdapter_ShutdownWaitsForInFlightSend(t *testing.T) {
+	ob := newFakeOB(t)
+	ob.SetSend(sendDelayedReply, 700*time.Millisecond)
+	c := newCore(t, "300ms")
+	c.failAcks.Store(true)
+	stateDir := t.TempDir()
+	r1 := startAdapter(t, napcatConfig(ob, c, stateDir), nil)
+	waitFor(t, 5*time.Second, "get_login_info", func() bool { return len(ob.Calls("get_login_info")) == 1 })
+
+	ob.Push(groupMessage(10001, 20001, 70001, "在吗？", true))
+	waitFor(t, 2*time.Second, "send_group_msg", func() bool { return len(ob.Calls("send_group_msg")) == 1 })
+	r1.stop(t)
+	acks := c.ackRecords()
+	if len(acks) != 1 || acks[0].Req.Status != conloomapi.AckSent || acks[0].Req.PlatformMessageID != "50001" {
+		t.Fatalf("ACKs during shutdown = %+v, want one sent with platform message 50001", acks)
+	}
+	record, err := os.ReadFile(filepath.Join(stateDir, "napcat-dedup.log"))
+	if err != nil || !strings.Contains(string(record), acks[0].ActionID+"\t") || !strings.Contains(string(record), "\t50001\n") {
+		t.Errorf("dedup log = %q (err %v), want %s recorded with 50001", record, err, acks[0].ActionID)
+	}
+
+	ob.SetSend(sendReply, 0)
+	c.failAcks.Store(false)
+	startAdapter(t, napcatConfig(ob, c, stateDir), nil)
+	waitFor(t, 10*time.Second, "a successful ACK from the new adapter", func() bool {
+		acks := c.ackRecords()
+		return acks[len(acks)-1].Code == http.StatusOK
+	})
+	last := c.ackRecords()[len(c.ackRecords())-1]
+	if last.ActionID != acks[0].ActionID || last.Req.Status != conloomapi.AckSent || last.Req.PlatformMessageID != "50001" {
+		t.Errorf("final ACK = %+v, want sent for %s with platform message 50001", last, acks[0].ActionID)
+	}
+	if n := len(ob.Calls("send_group_msg")); n != 1 {
+		t.Errorf("send_group_msg calls = %d, want 1", n)
+	}
+}
+
 func TestAdapter_BuffersEventsWhileCoreUnavailable(t *testing.T) {
 	ob := newFakeOB(t)
 	c := newCore(t, "60s")

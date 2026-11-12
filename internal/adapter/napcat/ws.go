@@ -52,6 +52,10 @@ type obResponse struct {
 	Echo    json.RawMessage `json:"echo"`
 }
 
+// errNotSent marks a Call error returned before the request reached the
+// connection, so the server cannot have acted on it.
+var errNotSent = errors.New("request not sent")
+
 // callError is a response with status other than "ok" or a non-zero retcode.
 type callError struct {
 	action, status   string
@@ -190,7 +194,9 @@ func (c *Conn) pingLoop() {
 
 // Call sends an action and waits for its response, by default for at most
 // 10s. It returns the response data, or an error if the connection fails, the
-// wait ends, or the server reports a failure.
+// wait ends, or the server reports a failure. Errors wrapping errNotSent mean
+// the request was never written; after any other error the server may have
+// acted on it.
 func (c *Conn) Call(ctx context.Context, action string, params any) (json.RawMessage, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -218,23 +224,33 @@ func (c *Conn) Call(ctx context.Context, action string, params any) (json.RawMes
 
 	select {
 	case <-c.done:
-		return nil, fmt.Errorf("napcat: %s: connection closed", action)
+		return nil, fmt.Errorf("napcat: %s: %w: connection closed", action, errNotSent)
 	default:
 	}
 	if err := c.ws.Write(ctx, websocket.MessageText, req); err != nil {
-		return nil, fmt.Errorf("napcat: send %s: %w", action, err)
+		return nil, fmt.Errorf("napcat: send %s: %w: %w", action, errNotSent, err)
 	}
+	var resp obResponse
 	select {
-	case resp := <-ch:
-		if resp.Status != "ok" || resp.RetCode != 0 {
-			return nil, &callError{action: action, status: resp.Status, retCode: resp.RetCode, message: resp.Message, wording: resp.Wording}
-		}
-		return resp.Data, nil
+	case resp = <-ch:
 	case <-c.done:
-		return nil, fmt.Errorf("napcat: %s: connection closed", action)
+		// The read loop hands over a response before it closes done.
+		select {
+		case resp = <-ch:
+		default:
+			return nil, fmt.Errorf("napcat: %s: connection closed before the response", action)
+		}
 	case <-ctx.Done():
-		return nil, fmt.Errorf("napcat: %s: %w", action, ctx.Err())
+		select {
+		case resp = <-ch:
+		default:
+			return nil, fmt.Errorf("napcat: %s: no response: %w", action, ctx.Err())
+		}
 	}
+	if resp.Status != "ok" || resp.RetCode != 0 {
+		return nil, &callError{action: action, status: resp.Status, retCode: resp.RetCode, message: resp.Message, wording: resp.Wording}
+	}
+	return resp.Data, nil
 }
 
 // Events delivers pushed messages (events, meta events) in arrival order. When
