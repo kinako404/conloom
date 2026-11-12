@@ -150,8 +150,9 @@ func (o *Orchestrator) dayStart(now time.Time) time.Time {
 // speak in the group since the task was created nor within the join cooldown
 // (looked up in the store first if this process does not know it yet, as for
 // a task recovered after a restart). A guest join skips the session and bot
-// speaking checks, as considerJoin did. The caller of the send-time check
-// holds the conversation's proactive lock.
+// speaking checks, as considerJoin did, but is not allowed once its target
+// takes part in the session (a direct reply to them added them meanwhile).
+// The caller of the send-time check holds the conversation's proactive lock.
 func (o *Orchestrator) proactiveSendAllowed(ctx context.Context, task store.TaskRecord, guest bool) (bool, error) {
 	pv, err := o.policies.Current(ctx, task.ConversationKey)
 	if err != nil {
@@ -166,8 +167,12 @@ func (o *Orchestrator) proactiveSendAllowed(ctx context.Context, task store.Task
 	if pol.Concurrency.MaxInteractiveRequests == 0 {
 		return false, nil
 	}
-	if !guest && (o.sessionActive(task.ConversationKey, now, pol.Reply.ContinuationWindow.Duration) ||
-		spoke.After(task.CreatedAt) || now.Sub(spoke) < p.JoinCooldown.Duration) {
+	window := pol.Reply.ContinuationWindow.Duration
+	if guest {
+		if o.inSession(task.ConversationKey, task.ActorPlatformUserID, now, window) {
+			return false, nil
+		}
+	} else if o.sessionActive(task.ConversationKey, now, window) || spoke.After(task.CreatedAt) || now.Sub(spoke) < p.JoinCooldown.Duration {
 		return false, nil
 	}
 	m, ok, err := o.proactiveTarget(ctx, task.ConversationKey, task.ActorPlatformUserID, p, now)

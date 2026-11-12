@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -129,15 +130,58 @@ func TestJoin_ParticipantQuestionIsATurn(t *testing.T) {
 	}
 }
 
-func TestJoin_GuestQuestionDuringCooldown(t *testing.T) {
-	env := newTestOrchestrator(t, testOpts{configure: joinConfig(time.Hour, nil)})
-	env.seedMember(t, "20002", conloomapi.ProactiveHigh, time.Now().Add(-time.Hour))
-	env.engage(t, "20001", "在吗")
-	env.waitIdle(t)
-	env.chat(t, line{"20002", "猫娘可爱"})
-	env.requireNoJoin(t, joinNoCooldown)
-	q := env.chat(t, line{"20002", "猫娘可爱吗"})[0]
-	if task := env.requireJoin(t); joinTarget(t, env, task.TaskID) != q.Message.ID {
-		t.Fatalf("guest join task = %+v, want a reply to %s", task, q.Message.ID)
+func TestJoin_GuestQuestionWithoutSessionWaitsForCooldown(t *testing.T) {
+	t.Run("sessions off", func(t *testing.T) {
+		env := newTestOrchestrator(t, testOpts{configure: joinConfig(time.Hour, nil)})
+		env.seedMember(t, "20002", conloomapi.ProactiveHigh, time.Now().Add(-time.Hour))
+		env.engage(t, "20001", "在吗")
+		env.waitIdle(t)
+		env.chat(t, line{"20002", "猫娘可爱吗"})
+		env.requireNoJoin(t, joinNoCooldown)
+		if n := env.modelCalls(); n != 1 {
+			t.Fatalf("model calls = %d, want 1 (the mention)", n)
+		}
+	})
+	t.Run("session ended", func(t *testing.T) {
+		env := guestSession(t, nil)
+		env.o.endSession(testConvKey, sessionExitLimit)
+		env.chat(t, line{"20001", "这个好用吗"})
+		env.requireNoJoin(t, joinNoCooldown)
+		env.chat(t, line{"20002", "猫娘可爱吗"})
+		env.requireNoJoin(t, joinNoCooldown)
+		if n := env.modelCalls(); n != 1 {
+			t.Fatalf("model calls = %d, want 1 (the mention)", n)
+		}
+	})
+}
+
+func TestJoin_GuestJoinDroppedOnceGuestIsParticipant(t *testing.T) {
+	env := guestSession(t, nil)
+	ctx := context.Background()
+	task := store.TaskRecord{
+		ID: "task_guest", BotInstanceID: testBot, ConversationKey: testConvKey, ActorPlatformUserID: "20002",
+		CreatedAt: time.Now(),
+	}
+	if ok, err := env.o.proactiveSendAllowed(ctx, task, true); err != nil || !ok {
+		t.Fatalf("guest join of a member outside the session: allowed %v, %v; want allowed", ok, err)
+	}
+	env.o.directReplied(testConvKey, "20002", time.Now())
+	if ok, err := env.o.proactiveSendAllowed(ctx, task, true); err != nil || ok {
+		t.Fatalf("guest join of a member answered directly meanwhile: allowed %v, %v; want not allowed", ok, err)
+	}
+}
+
+func TestJoin_GuestKeepsHigherUnpromptedCount(t *testing.T) {
+	env := guestSession(t, nil)
+	env.o.sessions.mu.Lock()
+	env.o.sessions.byConv[testConvKey].unprompted = 2
+	env.o.sessions.mu.Unlock()
+	env.chat(t, line{"20002", "猫娘可爱吗"})
+	if task := env.requireJoin(t); len(task.Actions) != 1 {
+		t.Fatalf("guest join task = %+v", task)
+	}
+	waitUntil(t, "the guest joining the session", func() bool { return env.inContinuation("20002") })
+	if u, _, _ := env.sessionCounts(); u != 2 {
+		t.Fatalf("session unprompted = %d, want kept 2", u)
 	}
 }

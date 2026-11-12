@@ -182,9 +182,10 @@ type joinSpeaker struct {
 // returns "" and the reason it did not join, which it logs at info level
 // without any message text or names.
 //
-// A live session or the join cooldown does not stop a guest question (see
-// guestQuestion), which is answered with a join task targeting its sender
-// alone; all other joins wait, with joinNoSession or joinNoCooldown.
+// A live session, and the join cooldown while it lasts, do not stop a guest
+// question (see guestQuestion), which is answered with a join task targeting
+// its sender alone; all other joins wait with joinNoSession. Without a live
+// session the join cooldown applies to every join.
 func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 	windowSize, eligibleSpeakers := -1, -1
 	defer func() {
@@ -218,7 +219,8 @@ func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 	case pol.Concurrency.MaxInteractiveRequests == 0:
 		return "", joinNoPaused
 	}
-	// guestOnly is why only a guest question may still be answered.
+	// guestOnly is set while a session is live: only a guest question may
+	// then be answered.
 	guestOnly := ""
 	if o.sessionActive(convKey, now, pol.Reply.ContinuationWindow.Duration) {
 		guestOnly = joinNoSession
@@ -230,7 +232,7 @@ func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 		return "", joinNoBusy
 	}
 	if guestOnly == "" && now.Sub(o.lastBotSpoke(convKey)) < p.JoinCooldown.Duration {
-		guestOnly = joinNoCooldown
+		return "", joinNoCooldown
 	}
 
 	unlock := o.proactiveLocks.lock(convKey)
@@ -257,7 +259,7 @@ func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 	}
 	o.seedBotSpoke(convKey, msgs, len(msgs) >= joinScanLimit)
 	if guestOnly == "" && now.Sub(o.lastBotSpoke(convKey)) < p.JoinCooldown.Duration {
-		guestOnly = joinNoCooldown
+		return "", joinNoCooldown
 	}
 	window := joinWindow(msgs, now.Add(-p.JoinWindow.Duration), pol.Reply.CommandPrefix)
 	windowSize = len(window)
