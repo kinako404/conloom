@@ -2,7 +2,7 @@
 
 ConLoom 是一个用 Go 编写的群聊对话智能体框架：平台适配器把聊天消息交给核心，核心决定什么时候说话、说什么，再可靠地把回复送回平台。目前接入的真实平台是 QQ（通过 NapCat）。
 
-本文描述仓库当前代码的实际行为，以代码为准。使用方法与配置示例见 [README](../README.md)，设计过程与分期见 `docs/superpowers/specs/` 下的设计文档。
+本文描述仓库当前代码的实际行为，以代码为准。使用方法见 [使用指南](usage.md)，配置字段见 [配置参考](configuration.md)，设计过程与分期见 `docs/superpowers/specs/` 下的设计文档。
 
 ```text
    QQ 群 / 私聊
@@ -48,7 +48,7 @@ ConLoom 是一个用 Go 编写的群聊对话智能体框架：平台适配器�
 - 数据目录 `storage.data_dir`（默认 `./data`，相对路径按配置文件所在目录解析）下只有 `conloom.db` 及其 WAL 文件。适配器的去重日志放在 `adapters.napcat.state_dir`，默认与数据目录相同。
 - 每个机器人实例只能运行**一个**适配器进程，核心也只能运行**一个**进程（原因见第 6 节）。
 - 构建：`CGO_ENABLED=0`，纯 Go 的 SQLite 驱动（`modernc.org/sqlite`），不需要 C 编译器、数据库服务或 Docker。CI 交叉编译 Linux / macOS / Windows × amd64 / arm64 共 6 个目标，打 `v*` tag 时由 GoReleaser 发布（`.goreleaser.yaml`）。
-- 服务化：`deploy/systemd/` 下有核心和适配器两个单元，适配器单元依赖核心单元；macOS（launchd）和 Windows（NSSM）的做法见 README。
+- 服务化：`deploy/systemd/` 下有核心和适配器两个单元，适配器单元依赖核心单元；macOS（launchd）和 Windows（NSSM）的做法见 [部署与运维](deployment.md)。
 
 ## 2. 一条群消息的完整往返
 
@@ -239,8 +239,6 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 | 观望加入和会话外提问 | 每群每小时最多 `join_evaluations_per_hour` 次（4），与消息量无关；实际发出最多 `group_hourly_limit` 次（4） |
 | 命令 | 不调用模型 |
 
-上表按处理次数计；每次处理调用模型失败时会换一个模型重试一次，所以一次处理最多两次模型请求。
-
 在聊会话的上界这样来：两次回复之间最多连续跳过 `max_consecutive_skips − 1` 轮，再跳一轮会话就结束；未点名回复到 `max_unprompted_replies` 次会话也结束。
 
 上表按“评估次数”计。一次评估在调用失败时会换一个角色再试一次（第 5.3 节），每次调用内部还有 HTTP 层重试，所以实际 HTTP 请求数可能更多。
@@ -381,7 +379,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - 超过 `runtime.action_ttl`（10m）还没发出的动作标成 `expired`，不再发送过时的回复。
 - 适配器发送前查去重日志：已成功的只补 ACK，不重发。日志每次写入后 fsync。
 
-**残留风险**（README“投递语义与残留风险”一节也有说明）：
+**残留风险**：
 
 - **可能重复一条**：平台已发送成功、去重日志还没写完时崩溃，重启后会重发一次。
 - **可能丢失一条**：发送结果未知（请求已写出但没等到响应，或 NapCat 报错——它对实际已送达的消息也可能报超时）时，记入去重日志并以 `failed` 确认，以后不再重发。这条回复可能没发出去；即使实际送达，也不会进入机器人的消息历史。
@@ -425,10 +423,10 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - 准入没有防饥饿：后台优先级的加入群聊任务可能被持续的直接对话压住，统一等 60 秒后失败。
 - `messages`、`tasks`、`outbox_actions` 等表没有清理机制，库会一直增长。数据库文件以 0644 创建，权限依赖 umask。
 - 文档与代码的主要出入（以代码为准）：
-  - README“架构”一节和 P1 设计 §5.3 写“Gateway 丢弃机器人自身消息”“消息先落库，再判定”。实际是适配器和核心 `Decide` 过滤自身消息，先判定再在一个事务里写入，`ignore` 的消息正文不落库。
+  - P1 设计 §5.3 写“Gateway 丢弃机器人自身消息”“消息先落库，再判定”。实际是适配器和核心 `Decide` 过滤自身消息，先判定再在一个事务里写入，`ignore` 的消息正文不落库。
   - `continuation_exits_total` 的 Help 文本写的是 `(rule|model)`，实际还有 `limit`、`idle`（`internal/obs/metrics.go:70`）。
   - `concurrency.priority`、`review.review_input` / `review_output`、`runtime.prefix_caching` 能配置但不生效；审查级别 standard / strict 等同 basic。
   - P1 设计 §9.3 的“熔断该 Profile 后降级”实际是按角色熔断，任何一次失败都重新路由一次；图片筛选（`NeedsImage`）没有调用方。
   - ambient-chat 设计 v1 的 §5、§6.4 已被 group-participation 设计 v2 取代。
 
-后续方向只列一句：P2 长期记忆与人格演化，P3 工具层，P4 加固与多平台。分期和范围见 README“路线”一节和 `docs/superpowers/specs/` 下的各设计文档。
+后续方向：长期记忆与人格演化、工具层、加固与多平台，见 README 的 [路线图](../README.md#路线图)；分期和范围见 `docs/superpowers/specs/` 下的各设计文档。
