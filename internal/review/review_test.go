@@ -54,6 +54,30 @@ func TestOutput_RedactsSecrets(t *testing.T) {
 	}
 }
 
+func TestOutput_RedactsBase64Tokens(t *testing.T) {
+	r := New(nil, Options{})
+	cases := []struct{ in, want string }{
+		{"key: QWxhZGRpbjpvcGVuIHNlc2FtZQ9xYm9vbGVhbg1+/Z== ok", "key: [已隐藏] ok"},
+		{"auth Bearer ab+cdefghijklmnopqrstuv done", "auth [已隐藏] done"},
+		{"word " + strings.Repeat("quick", 10) + " end", "word " + strings.Repeat("quick", 10) + " end"},
+		{"今天天气很好，我们一起去公园散步吧，顺便买点水果回来。", "今天天气很好，我们一起去公园散步吧，顺便买点水果回来。"},
+		{"The quick brown fox jumps over the lazy dog 42 times today.", "The quick brown fox jumps over the lazy dog 42 times today."},
+	}
+	for _, c := range cases {
+		got := r.Output(c.in, basicPolicy())
+		if got.Text != c.want {
+			t.Errorf("Output(%q).Text = %q, want %q", c.in, got.Text, c.want)
+		}
+		wantVerdict := VerdictAllow
+		if c.in != c.want {
+			wantVerdict = VerdictSanitize
+		}
+		if got.Verdict != wantVerdict {
+			t.Errorf("Output(%q).Verdict = %q, want %q", c.in, got.Verdict, wantVerdict)
+		}
+	}
+}
+
 func TestOutput_BlockedWordBlock(t *testing.T) {
 	pol := basicPolicy()
 	pol.Action = "block"

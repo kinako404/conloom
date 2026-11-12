@@ -39,9 +39,10 @@ var (
 	cqCodePattern  = regexp.MustCompile(`\[CQ:[^\]]*\]`)
 	secretPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`sk-[A-Za-z0-9_-]{16,}`),
-		regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._-]{16,}`),
+		regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._+/=-]{16,}`),
 		regexp.MustCompile(`[0-9A-Fa-f]{32,}`),
 	}
+	base64Pattern = regexp.MustCompile(`[A-Za-z0-9+/_-]{40,}={0,2}`)
 )
 
 type Result struct {
@@ -127,6 +128,12 @@ func (r *Reviewer) Output(text string, pol conloomapi.ReviewPolicy) Result {
 	for _, p := range secretPatterns {
 		out = p.ReplaceAllString(out, redacted)
 	}
+	out = base64Pattern.ReplaceAllStringFunc(out, func(m string) string {
+		if strings.ContainsAny(m, "0123456789") && strings.IndexFunc(m, isASCIILetter) >= 0 {
+			return redacted
+		}
+		return m
+	})
 	if out != before {
 		reasons = append(reasons, reasonSecret)
 	}
@@ -186,4 +193,8 @@ func truncateRunes(s string, limit int) (string, bool) {
 		i += size
 	}
 	return s[:i], true
+}
+
+func isASCIILetter(c rune) bool {
+	return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
 }
