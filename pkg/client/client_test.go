@@ -3,10 +3,12 @@ package client_test
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -265,5 +267,83 @@ func TestIsRetryable(t *testing.T) {
 	}
 	if client.IsRetryable(nil) {
 		t.Fatal("nil error must not be retryable")
+	}
+}
+
+func TestClient_MemoryMethods(t *testing.T) {
+	type request struct {
+		method, path, auth string
+		body               string
+	}
+	var got []request
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		got = append(got, request{r.Method, r.URL.EscapedPath(), r.Header.Get("Authorization"), string(raw)})
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet:
+			_, _ = io.WriteString(w, `{"conversation_id":"group_10001","enabled":true,"summary":"大家在聊咖啡。","cursor_seq":7,
+				"last_run_at":"2026-11-12T01:02:03Z","last_error":"","members":[{"user_id":"20001","name":"小明","note":"喜欢咖啡",
+				"affinity":52,"tier":"熟悉","updated_at":"2026-11-12T01:02:03Z"}]}`)
+		case r.Method == http.MethodPut:
+			_, _ = io.WriteString(w, `{"user_id":"20001","name":"小明","note":"喜欢茶","affinity":52,"tier":"熟悉","updated_at":"2026-11-12T01:02:03Z"}`)
+		case r.Method == http.MethodDelete:
+			_, _ = io.WriteString(w, `{"ok":true}`)
+		default:
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(w, `{"accepted":true}`)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	ctx := context.Background()
+	c := client.New(srv.URL, "test-memory-token", nil)
+
+	state, err := c.GetMemory(ctx, "group_10001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ConversationID != "group_10001" || !state.Enabled || state.CursorSeq != 7 || state.LastRunAt == nil ||
+		len(state.Members) != 1 || state.Members[0].Affinity == nil || *state.Members[0].Affinity != 52 || state.Members[0].Tier != "熟悉" {
+		t.Fatalf("GetMemory = %+v", state)
+	}
+	note := "喜欢茶"
+	member, err := c.PutMemberMemory(ctx, "group_10001", "20001", conloomapi.MemberMemoryPut{Note: &note, Reason: "更正"})
+	if err != nil || member.UserID != "20001" || member.Note != "喜欢茶" {
+		t.Fatalf("PutMemberMemory = %+v, %v", member, err)
+	}
+	if err := c.DeleteMemberMemory(ctx, "group_10001", "20001"); err != nil {
+		t.Fatalf("DeleteMemberMemory: %v", err)
+	}
+	if err := c.ConsolidateMemory(ctx, "group_10001"); err != nil {
+		t.Fatalf("ConsolidateMemory: %v", err)
+	}
+
+	want := []request{
+		{http.MethodGet, "/api/v1/conversations/group_10001/memory", "Bearer test-memory-token", ""},
+		{http.MethodPut, "/api/v1/conversations/group_10001/memory/members/20001", "Bearer test-memory-token", `{"note":"喜欢茶","reason":"更正"}`},
+		{http.MethodDelete, "/api/v1/conversations/group_10001/memory/members/20001", "Bearer test-memory-token", ""},
+		{http.MethodPost, "/api/v1/conversations/group_10001/memory/consolidate", "Bearer test-memory-token", ""},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("requests =\n%+v\nwant\n%+v", got, want)
+	}
+
+	if _, err := c.PutMemberMemory(ctx, "group_10001", "20001", conloomapi.MemberMemoryPut{Affinity: new(int)}); err != nil {
+		t.Fatal(err)
+	}
+	if body := got[len(got)-1].body; body != `{"affinity":0,"reason":""}` {
+		t.Fatalf("affinity-only body = %s", body)
+	}
+
+	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"error":{"code":"MEMORY_DISABLED","message":"memory is off","retryable":false,"retry_after_ms":0,"trace_id":"trace_x"}}`)
+	}))
+	t.Cleanup(errSrv.Close)
+	var apiErr *client.APIError
+	if err := client.New(errSrv.URL, "t", nil).ConsolidateMemory(ctx, "group_10001"); !errors.As(err, &apiErr) ||
+		apiErr.Status != http.StatusConflict || apiErr.Body.Code != conloomapi.CodeMemoryDisabled {
+		t.Fatalf("ConsolidateMemory on a disabled group: err = %v", err)
 	}
 }

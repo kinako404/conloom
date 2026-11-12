@@ -206,3 +206,31 @@ func (c *Client) PutPolicy(ctx context.Context, convID string, put conloomapi.Po
 	var out conloomapi.PolicyState
 	return out, c.call(ctx, http.MethodPut, conversationPath(convID, "policy"), put, &out)
 }
+
+func (c *Client) GetMemory(ctx context.Context, convID string) (conloomapi.MemoryState, error) {
+	var out conloomapi.MemoryState
+	return out, c.call(ctx, http.MethodGet, conversationPath(convID, "memory"), nil, &out)
+}
+
+func memberMemoryPath(convID, userID string) string {
+	return conversationPath(convID, "memory/members/"+url.PathEscape(userID))
+}
+
+// PutMemberMemory changes the note, the affinity or both of the member with
+// platform user ID userID.
+func (c *Client) PutMemberMemory(ctx context.Context, convID, userID string, put conloomapi.MemberMemoryPut) (conloomapi.MemberMemoryState, error) {
+	var out conloomapi.MemberMemoryState
+	return out, c.call(ctx, http.MethodPut, memberMemoryPath(convID, userID), put, &out)
+}
+
+// DeleteMemberMemory forgets the member with platform user ID userID, as the
+// member's own /忘记我 does.
+func (c *Client) DeleteMemberMemory(ctx context.Context, convID, userID string) error {
+	return c.call(ctx, http.MethodDelete, memberMemoryPath(convID, userID), nil, nil)
+}
+
+// ConsolidateMemory asks for a consolidation of the conversation's memory; it
+// fails with MEMORY_DISABLED when memory is off.
+func (c *Client) ConsolidateMemory(ctx context.Context, convID string) error {
+	return c.call(ctx, http.MethodPost, conversationPath(convID, "memory/consolidate"), nil, nil)
+}

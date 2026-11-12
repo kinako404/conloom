@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/kinako404/conloom/internal/core"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/internal/policy"
 	"github.com/kinako404/conloom/internal/store"
@@ -36,6 +37,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		s.writeError(w, r, http.StatusNotFound, conloomapi.CodeNotFound, "not found", false, err)
 	case errors.Is(err, persona.ErrInvalid), errors.Is(err, policy.ErrInvalid):
 		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, err.Error(), false, err)
+	case errors.Is(err, memory.ErrUpdateConflict):
+		s.writeError(w, r, http.StatusServiceUnavailable, conloomapi.CodeInternal, "member memory kept changing; try again", true, err)
 	default:
 		s.writeError(w, r, http.StatusInternalServerError, conloomapi.CodeInternal, "internal error", false, err)
 	}

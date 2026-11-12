@@ -8,7 +8,7 @@ import (
 )
 
 func CopyHelp(botName string) string {
-	return "我是" + botName + "。在群里 @我 或回复我的消息就能和我聊天。\n命令：/help 帮助，/stop 停止当前回复，/persona 查看人格，/主动 查看或设置主动搭话；管理员：/pause 暂停，/resume 恢复，/persona list 列出人格模板，/persona use <模板名> 切换人格模板。"
+	return "我是" + botName + "。在群里 @我 或回复我的消息就能和我聊天。\n命令：/help 帮助，/stop 停止当前回复，/persona 查看人格，/主动 查看或设置主动搭话，/好感度 查看好感度，/记忆 查看我记得的你，/忘记我 清空你的记忆；管理员：/pause 暂停，/resume 恢复，/persona list 列出人格模板，/persona use <模板名> 切换人格模板，/记忆 整理 立即整理记忆，/记忆 群 查看群聊摘要。"
 }
 
 // CopyPersonaInfo describes the current persona: its name and version, and
@@ -54,7 +54,38 @@ const (
 	CopyProactiveGroupOn     = "已开启本群的主动搭话。"
 	CopyProactiveGroupOff    = "已关闭本群的主动搭话。"
 	CopyProactiveUsage       = "用法：/主动 查看档位；/主动 关|低|中|高 设置档位；管理员：/主动 全群 开|关。"
+
+	CopyMemoryDisabled      = "这个群没有开启记忆。"
+	CopyMemoryGroupOnly     = "记忆只在群聊里使用。"
+	CopyAffinityOff         = "这个群没有开启好感度。"
+	CopyMemoryNoNote        = "我还没有记下关于你的事。"
+	CopyMemoryForgotten     = "好的，已清空关于你的笔记和好感度。群聊摘要是大家共同的记录，不会逐人删除，会在之后的整理中慢慢被覆盖。"
+	CopyMemoryConsolidating = "已开始整理记忆，完成后不另外通知。"
+	CopyMemoryNoSummary     = "还没有群聊摘要。"
+	CopyMemoryUsage         = "用法：/记忆 查看我记得的关于你的事；/好感度 查看好感度；/忘记我 清空你的记忆；管理员：/记忆 整理，/记忆 群。"
 )
+
+// CopyAffinity tells a member how name, the bot, feels about them: the tier
+// and the value out of 100.
+func CopyAffinity(name, tier string, v int) string {
+	return name + "对你的好感：" + tier + "（" + strconv.Itoa(v) + "/100）"
+}
+
+// CopyAffinityNone tells a member without an affinity that name, the bot,
+// does not know them yet.
+func CopyAffinityNone(name string) string {
+	return name + "和你还不熟。"
+}
+
+// CopyMemoryNote shows a member the bot's note about them.
+func CopyMemoryNote(note string) string {
+	return "我记得关于你的：" + note
+}
+
+// CopyMemoryGroupSummary shows the group's summary.
+func CopyMemoryGroupSummary(s string) string {
+	return "群聊摘要：" + s
+}
 
 // CopyDirectiveContinuation is appended to the current message of a turn in
 // the bot's conversation with speaker.
