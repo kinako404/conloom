@@ -10,7 +10,7 @@
 sha256sum -c checksums.txt --ignore-missing
 ```
 
-压缩包内含 `conloom` 二进制、`README.md`、`LICENSE`、`conloom.example.yaml` 和 `deploy/`。macOS 首次运行如果被拦截，可以执行 `xattr -d com.apple.quarantine ./conloom`。
+压缩包内含 `conloom` 二进制、`README.md`、`LICENSE`、`conloom.example.yaml`、`deploy/` 和 `docs/`。macOS 首次运行如果被拦截，可以执行 `xattr -d com.apple.quarantine ./conloom`。
 
 **从源码安装**：需要 Go 1.26 或更高版本（由纯 Go 的 SQLite 驱动决定）。
 

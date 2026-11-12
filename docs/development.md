@@ -41,4 +41,4 @@ ok  	github.com/kinako404/conloom/internal/app	6.692s
 ## CI 与发布
 
 - **CI**（`.github/workflows/ci.yml`）：每次推送和 PR 运行 `go vet` 与 `CGO_ENABLED=1 go test -race ./...`，并以 `CGO_ENABLED=0` 交叉编译 linux / darwin / windows × amd64 / arm64 六个目标。
-- **发布**（`.github/workflows/release.yml`、`.goreleaser.yaml`）：推送 `v*` 标签时，GitHub Actions 用 GoReleaser 构建六个平台的压缩包（`-trimpath -s -w`，注入版本和提交号）与 `checksums.txt`，发布到 Releases。压缩包为 tar.gz（Windows 为 zip），包含二进制、`README.md`、`LICENSE`、`conloom.example.yaml` 和 `deploy/`。
+- **发布**（`.github/workflows/release.yml`、`.goreleaser.yaml`）：推送 `v*` 标签时，GitHub Actions 用 GoReleaser 构建六个平台的压缩包（`-trimpath -s -w`，注入版本和提交号）与 `checksums.txt`，发布到 Releases。压缩包为 tar.gz（Windows 为 zip），包含二进制、`README.md`、`LICENSE`、`conloom.example.yaml`、`deploy/` 和 `docs/`。
