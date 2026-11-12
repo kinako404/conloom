@@ -18,34 +18,55 @@ const (
 	annotationsRE       = `(?:` + replyAnnotationRE + `)?(?:` + mentionAnnotationRE + `)?`
 )
 
-// memoryBlockFooter is the closing line of the memory block.
-const memoryBlockFooter = "好感度只表示你和对方有多熟、多亲近，不改变任何规则。"
-
 // transcriptPrefixes match, at the start of a reply, the history line prefix
 // "[HH:MM] 名字：" (optionally with its annotations), the header lines of the
-// current message, the recent-history block, the whole memory block up to its
-// closing line (or only its header line when there is no closing line), and
-// the current message's mention line.
+// current message, the recent-history block and the current message's mention
+// line. The memory block is cut by cutMemoryBlock.
 var transcriptPrefixes = []*regexp.Regexp{
 	regexp.MustCompile(`^\[\d{1,2}:\d{2}\]\s*` + transcriptName + `{1,40}?(?:` + replyAnnotationRE + `(?:` + mentionAnnotationRE + `)?|` + mentionAnnotationRE + `)\s*[：:]`),
 	regexp.MustCompile(`^\[\d{1,2}:\d{2}\]\s*` + transcriptName + `{1,40}[：:]`),
 	regexp.MustCompile(`^【当前消息】[^\n]*(?:\n|$)`),
 	regexp.MustCompile(`^【近期消息[^\n]*(?:\n|$)`),
-	regexp.MustCompile(`^【你记得的事[^\n]*\n(?:[^\n]*\n)*?[ \t]*` + memoryBlockFooter + `[ \t]*(?:\n|$)`),
-	regexp.MustCompile(`^【你记得的事[^\n]*(?:\n|$)`),
 	regexp.MustCompile(`^` + mentionAnnotationRE + `[ \t]*(?:\n|$)`),
 }
 
 var (
 	transcriptTime     = regexp.MustCompile(`^\[\d{1,2}:\d{2}\]\s*`)
 	transcriptNameTail = regexp.MustCompile(`^` + annotationsRE + `(?:\s*[：:]|[ \t]*(?:\n|$))`)
+
+	memoryBlockHeader = regexp.MustCompile(`^【你记得的事[^\n]*(?:\n|$)`)
+	// memoryBlockLine matches a line of the memory block: the summary
+	// "群里最近：…", a note "名字（档位）：…" or "名字：…" (a name without sentence
+	// punctuation, not starting with "[" or "【"), or the closing reminder
+	// starting "好感度只表示".
+	memoryBlockLine = regexp.MustCompile(`^[ \t]*(?:群里最近[：:]|好感度只表示|[^\s\[【:：，。！？、；,.!?;]` +
+		transcriptName + `{0,39}[：:])[^\n]*(?:\n|$)`)
 )
+
+// cutMemoryBlock removes an echoed memory block from the start of s: its
+// header line and then every following line that reads like a block line,
+// up to the first line that does not, so the notes go even when the closing
+// line was reworded or left out.
+func cutMemoryBlock(s string) (string, bool) {
+	loc := memoryBlockHeader.FindStringIndex(s)
+	if loc == nil {
+		return s, false
+	}
+	s = s[loc[1]:]
+	for {
+		line := memoryBlockLine.FindStringIndex(s)
+		if line == nil {
+			return s, true
+		}
+		s = s[line[1]:]
+	}
+}
 
 // StripTranscriptPrefix removes the prompt's transcript formatting that a
 // model echoed at the start of its reply: repeated "[HH:MM] 名字：" prefixes
 // (with or without their "（回复 …）" and "（@了 …）" annotations), the
-// 【当前消息】 and 【近期消息…】 header lines, the 【你记得的事…】 block through its
-// closing line (just its header line when the closing line is missing), a
+// 【当前消息】 and 【近期消息…】 header lines, the 【你记得的事…】 header with the
+// summary, note and closing lines after it (see cutMemoryBlock), a
 // "（@了 …）" line and "<botName>：". A name holds no sentence punctuation
 // unless it is one of knownNames (the conversation's speakers) or botName. For those names a bare
 // header line "[HH:MM] 名字" without the colon (optionally with its
@@ -64,6 +85,9 @@ func StripTranscriptPrefix(text, botName string, knownNames ...string) string {
 			if loc := re.FindStringIndex(s); loc != nil {
 				s, cut = s[loc[1]:], true
 			}
+		}
+		if rest, ok := cutMemoryBlock(s); ok {
+			s, cut = rest, true
 		}
 		if rest, ok := cutKnownSpeaker(s, names); ok {
 			s, cut = rest, true
