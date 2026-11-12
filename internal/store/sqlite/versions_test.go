@@ -59,6 +59,32 @@ func TestPersonaVersions_AppendAndGet(t *testing.T) {
 	}
 }
 
+func TestPersonaVersions_TemplatePerVersion(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	for _, name := range []string{"default", "lighthouse", "default"} {
+		if _, err := db.AppendPersonaVersion(ctx, store.PersonaVersion{
+			ConversationKey: testConvKey, TemplateName: name, Persona: conloomapi.DefaultPersona(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for version, want := range map[int]string{1: "default", 2: "lighthouse", 3: "default"} {
+		if pv, err := db.GetPersonaVersion(ctx, testConvKey, version); err != nil || pv.TemplateName != want {
+			t.Errorf("version %d template = %q, %v; want %q", version, pv.TemplateName, err, want)
+		}
+	}
+
+	// Versions stored before templates were recorded per version fall back
+	// to the conversation's first template.
+	if _, err := db.w.ExecContext(ctx, `UPDATE persona_versions SET template_name = '' WHERE version = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if pv, err := db.GetPersonaVersion(ctx, testConvKey, 2); err != nil || pv.TemplateName != "default" {
+		t.Errorf("legacy version template = %q, %v; want default", pv.TemplateName, err)
+	}
+}
+
 func TestPolicyVersions_ListNewestFirst(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()

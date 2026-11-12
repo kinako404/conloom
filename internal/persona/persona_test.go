@@ -394,6 +394,15 @@ func TestService_UpdateFromTemplate(t *testing.T) {
 		t.Fatalf("v3 = %+v, %v", v3, err)
 	}
 
+	two := 2
+	v4, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{RollbackTo: &two}, "29999")
+	if err != nil || v4.Version != 4 || v4.TemplateName != "lighthouse" {
+		t.Fatalf("rollback to the template version = %+v, %v; want template lighthouse", v4, err)
+	}
+	if latest, _ := st.LatestPersona(ctx, testConvKey); latest.TemplateName != "lighthouse" {
+		t.Errorf("stored rollback template = %q", latest.TemplateName)
+	}
+
 	one := 1
 	doc := conloomapi.DefaultPersona()
 	for name, put := range map[string]conloomapi.PersonaPut{
@@ -409,11 +418,11 @@ func TestService_UpdateFromTemplate(t *testing.T) {
 		!strings.Contains(err.Error(), `unknown template "nope"`) {
 		t.Errorf("unknown template error = %v", err)
 	}
-	if latest, _ := st.LatestPersona(ctx, testConvKey); latest.Version != 3 {
+	if latest, _ := st.LatestPersona(ctx, testConvKey); latest.Version != 4 {
 		t.Errorf("failed updates appended versions: latest = %d", latest.Version)
 	}
 	events := rec.all()
-	if len(events) != 2 || !strings.Contains(events[0].Detail, `"template":"lighthouse"`) || strings.Contains(events[0].Detail, "换人设") {
+	if len(events) != 3 || !strings.Contains(events[0].Detail, `"template":"lighthouse"`) || strings.Contains(events[0].Detail, "换人设") {
 		t.Errorf("audit events = %+v", events)
 	}
 }

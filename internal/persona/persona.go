@@ -84,10 +84,10 @@ func (s *Service) TemplateNames() []string {
 	return slices.Sorted(maps.Keys(s.templates))
 }
 
-// Update appends a version holding put.Persona, the content of version
-// put.RollbackTo, or a copy of template put.Template (recorded as the
-// version's template). Exactly one of them must be set; an unknown template is
-// ErrInvalid. It records a persona.update audit event; an audit failure is
+// Update appends a version holding put.Persona (recorded with templateName),
+// the content and template of version put.RollbackTo, or a copy of template
+// put.Template (recorded as the version's template). Exactly one of them must
+// be set; an unknown template is ErrInvalid. It records a persona.update audit event; an audit failure is
 // returned together with the already stored version.
 func (s *Service) Update(ctx context.Context, convKey, templateName string, put conloomapi.PersonaPut, by string) (store.PersonaVersion, error) {
 	set := 0
@@ -119,7 +119,7 @@ func (s *Service) Update(ctx context.Context, convKey, templateName string, put 
 		if err != nil {
 			return store.PersonaVersion{}, fmt.Errorf("persona: rollback to v%d: %w", *put.RollbackTo, err)
 		}
-		next.Persona = old.Persona
+		next.Persona, next.TemplateName = old.Persona, old.TemplateName
 		if next.Reason == "" {
 			next.Reason = fmt.Sprintf("rollback to v%d", *put.RollbackTo)
 		}

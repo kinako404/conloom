@@ -8,7 +8,10 @@ import (
 	"github.com/kinako404/conloom/internal/store"
 )
 
-const personaVersionCols = `v.conversation_key, i.template_name, v.version, v.persona, v.reason, v.updated_by, v.created_at`
+// personaVersionCols reads a version's template, falling back to the
+// conversation's first template for versions stored without one.
+const personaVersionCols = `v.conversation_key, COALESCE(NULLIF(v.template_name, ''), i.template_name), v.version, v.persona,
+	v.reason, v.updated_by, v.created_at`
 
 const personaVersionFrom = ` FROM persona_versions v JOIN persona_instances i ON i.conversation_key = v.conversation_key`
 
@@ -36,8 +39,8 @@ func (db *DB) GetPersonaVersion(ctx context.Context, convKey string, version int
 		WHERE v.conversation_key = ? AND v.version = ?`, convKey, version))
 }
 
-// AppendPersonaVersion stores pv as the next version; version 1 also creates
-// the conversation's persona instance with pv.TemplateName.
+// AppendPersonaVersion stores pv as the next version with its TemplateName;
+// version 1 also creates the conversation's persona instance with it.
 func (db *DB) AppendPersonaVersion(ctx context.Context, pv store.PersonaVersion) (store.PersonaVersion, error) {
 	persona, err := json.Marshal(pv.Persona)
 	if err != nil {
@@ -57,8 +60,8 @@ func (db *DB) AppendPersonaVersion(ctx context.Context, pv store.PersonaVersion)
 			}
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO persona_versions
-			(conversation_key, version, persona, reason, updated_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			pv.ConversationKey, pv.Version, string(persona), pv.Reason, pv.UpdatedBy, fmtTime(pv.CreatedAt))
+			(conversation_key, version, persona, reason, updated_by, created_at, template_name) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			pv.ConversationKey, pv.Version, string(persona), pv.Reason, pv.UpdatedBy, fmtTime(pv.CreatedAt), pv.TemplateName)
 		return err
 	})
 	if err != nil {
