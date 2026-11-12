@@ -18,6 +18,10 @@ type Metrics struct {
 	BreakerOpen       *prometheus.GaugeVec   // role
 	ContinuationExits *prometheus.CounterVec // reason: rule|model|limit|idle
 	Proactive         *prometheus.CounterVec // result: evaluated|sent|skipped
+
+	MemoryConsolidations       *prometheus.CounterVec // result: ok|error|skipped
+	MemoryConsolidationSeconds prometheus.Histogram
+	MemoryAffinityChanges      *prometheus.CounterVec // source
 }
 
 // NewMetrics creates all ConLoom metrics and registers them on reg; it panics
@@ -72,12 +76,23 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		Proactive: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "conloom_proactive_total", Help: "Proactive replies by result (evaluated|sent|skipped).",
 		}, []string{"result"}),
+		MemoryConsolidations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "conloom_memory_consolidations_total", Help: "Memory consolidation runs by result (ok|error|skipped).",
+		}, []string{"result"}),
+		MemoryConsolidationSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name: "conloom_memory_consolidation_seconds", Help: "Memory consolidation run duration.",
+			Buckets: []float64{1, 2, 5, 10, 20, 30, 60, 120, 300, 600},
+		}),
+		MemoryAffinityChanges: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "conloom_memory_affinity_changes_total", Help: "Affinity changes by source.",
+		}, []string{"source"}),
 	}
 	reg.MustRegister(
 		m.Events, m.Tasks, m.ModelLatency, m.ModelTokens, m.EstimateRatio,
 		m.QueueWait, m.QueueDepth, m.AdmissionRejects,
 		m.OutboxDelivered, m.OutboxRedelivered, m.OutboxExpired,
 		m.Review, m.BreakerOpen, m.ContinuationExits, m.Proactive,
+		m.MemoryConsolidations, m.MemoryConsolidationSeconds, m.MemoryAffinityChanges,
 	)
 	return m
 }

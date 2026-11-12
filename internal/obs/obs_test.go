@@ -47,6 +47,9 @@ func TestNewMetrics_RegistersOnFreshRegistry(t *testing.T) {
 	m.BreakerOpen.WithLabelValues("main").Set(1)
 	m.ContinuationExits.WithLabelValues("rule").Inc()
 	m.Proactive.WithLabelValues("evaluated").Inc()
+	m.MemoryConsolidations.WithLabelValues("ok").Inc()
+	m.MemoryConsolidationSeconds.Observe(12)
+	m.MemoryAffinityChanges.WithLabelValues("rule").Inc()
 
 	mfs, err := reg.Gather()
 	if err != nil {
@@ -64,8 +67,31 @@ func TestNewMetrics_RegistersOnFreshRegistry(t *testing.T) {
 			t.Fatalf("%s missing; got %v", name, names)
 		}
 	}
-	if len(mfs) != 15 {
-		t.Errorf("gathered %d metric families, want 15: %v", len(mfs), names)
+	if len(mfs) != 18 {
+		t.Errorf("gathered %d metric families, want 18: %v", len(mfs), names)
+	}
+}
+
+func TestMetrics_MemoryRegistered(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+	m.MemoryConsolidations.WithLabelValues("skipped").Inc()
+	m.MemoryConsolidationSeconds.Observe(600)
+	m.MemoryAffinityChanges.WithLabelValues("consolidate").Inc()
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	names := map[string]bool{}
+	for _, mf := range mfs {
+		names[mf.GetName()] = true
+	}
+	for _, name := range []string{"conloom_memory_consolidations_total", "conloom_memory_consolidation_seconds",
+		"conloom_memory_affinity_changes_total"} {
+		if !names[name] {
+			t.Errorf("%s missing; got %v", name, names)
+		}
 	}
 }
 
