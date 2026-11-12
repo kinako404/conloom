@@ -47,6 +47,18 @@ func TestCleanOutput(t *testing.T) {
 		{"前<think>a</think>中<think>b</think>后  ", "前中后"},
 		{"答案<think>没有结束\n还在想", "答案"},
 		{"  普通回复 ", "普通回复"},
+		{"用户在问天气…系统提示说我是织语\n</think>\n\n今天晴。", "今天晴。"},
+		{"想一想</think>先<think>再想</think>后", "先后"},
+		{"推理</think>假答案</think>真答案", "真答案"},
+		{"<THINK>大写推理</THINK>答", "答"},
+		{"<Think>混合大小写\n</Think>答", "答"},
+		{"大写裸推理</THINK>答", "答"},
+		{"<thinking>思考中</thinking>答", "答"},
+		{"<THINKING>思考中</Thinking> 答 ", "答"},
+		{"裸思考</thinking>\n答", "答"},
+		{"答案<thinking>没有结束", "答案"},
+		{"推理</think>答<think>没有结束", "答"},
+		{"只有推理</think>", ""},
 	}
 	for _, c := range cases {
 		if got := CleanOutput(c.in); got != c.want {
@@ -209,7 +221,7 @@ func TestChat_StatusErrorBodyTruncated(t *testing.T) {
 	}
 }
 
-func TestChat_RetriesOnAttemptTimeout(t *testing.T) {
+func TestChat_NoRetryOnAttemptTimeout(t *testing.T) {
 	release := make(chan struct{})
 	var n atomic.Int32
 	fake := fakeopenai.New(t, func(map[string]any) (int, string) {
@@ -221,12 +233,80 @@ func TestChat_RetriesOnAttemptTimeout(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 	p := testProfile(fake.URL)
 	p.Runtime.Timeout = conloomapi.Duration{Duration: 100 * time.Millisecond}
-	resp, err := newTestClient(p).Chat(context.Background(), userRequest())
+	_, err := newTestClient(p).Chat(context.Background(), userRequest())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if fake.Calls() != 1 {
+		t.Errorf("Calls() = %d, want 1 (attempt timeout is not retried)", fake.Calls())
+	}
+}
+
+func TestChat_NoRetryOnAttemptTimeoutDuringBody(t *testing.T) {
+	release := make(chan struct{})
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"choices":[`)
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+	p := testProfile(srv.URL)
+	p.Runtime.Timeout = conloomapi.Duration{Duration: 100 * time.Millisecond}
+	_, err := newTestClient(p).Chat(context.Background(), userRequest())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if got := n.Load(); got != 1 {
+		t.Errorf("calls = %d, want 1 (attempt timeout is not retried)", got)
+	}
+}
+
+func TestChat_RetriesOnConnectionError(t *testing.T) {
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if n.Add(1) == 1 {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = io.WriteString(w, `{"model":"m1","choices":[{"message":{"role":"assistant","content":"好"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	resp, err := newTestClient(testProfile(srv.URL)).Chat(context.Background(), userRequest())
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
-	if resp.Content != "好" || fake.Calls() != 2 {
-		t.Errorf("Content = %q, Calls() = %d; want 好, 2", resp.Content, fake.Calls())
+	if resp.Content != "好" || n.Load() != 2 {
+		t.Errorf("Content = %q, calls = %d; want 好, 2", resp.Content, n.Load())
+	}
+}
+
+func TestChat_ParentDeadlineReturnsContextError(t *testing.T) {
+	release := make(chan struct{})
+	fake := fakeopenai.New(t, func(map[string]any) (int, string) {
+		<-release
+		return http.StatusOK, "好"
+	})
+	t.Cleanup(func() { close(release) })
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := newTestClient(testProfile(fake.URL)).Chat(ctx, userRequest())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if fake.Calls() != 1 {
+		t.Errorf("Calls() = %d, want 1", fake.Calls())
 	}
 }
 

@@ -78,7 +78,8 @@ func New(p config.ModelProfile, hc *http.Client) *Client {
 
 // Chat sends a non-streaming chat completion request. Each attempt is bounded
 // by Runtime.Timeout; network errors, 429 and 5xx responses are retried up to
-// Runtime.MaxRetries times with exponential backoff starting at 500ms.
+// Runtime.MaxRetries times with exponential backoff starting at 500ms. An
+// attempt that hits its own timeout is not retried.
 func (c *Client) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	body, err := c.requestBody(req)
 	if err != nil {
@@ -139,13 +140,20 @@ type completionResponse struct {
 	} `json:"usage"`
 }
 
+// attempt performs one request bounded by Runtime.Timeout. A transport error
+// is retryable unless the attempt's own deadline caused it: a model that hung
+// for the whole timeout is not worth waiting on again.
 func (c *Client) attempt(ctx context.Context, body []byte) (ChatResponse, bool, error) {
+	actx := ctx
 	if d := c.profile.Runtime.Timeout.Duration; d > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, d)
+		actx, cancel = context.WithTimeout(ctx, d)
 		defer cancel()
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
+	timedOut := func() bool {
+		return ctx.Err() == nil && errors.Is(actx.Err(), context.DeadlineExceeded)
+	}
+	httpReq, err := http.NewRequestWithContext(actx, http.MethodPost, c.url, bytes.NewReader(body))
 	if err != nil {
 		return ChatResponse{}, false, fmt.Errorf("openai: build request: %w", err)
 	}
@@ -154,11 +162,17 @@ func (c *Client) attempt(ctx context.Context, body []byte) (ChatResponse, bool, 
 
 	resp, err := c.hc.Do(httpReq)
 	if err != nil {
-		return ChatResponse{}, true, fmt.Errorf("openai: %w", err)
+		return ChatResponse{}, !timedOut(), fmt.Errorf("openai: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
+		if timedOut() {
+			if !errors.Is(err, context.DeadlineExceeded) {
+				err = fmt.Errorf("%w (%w)", context.DeadlineExceeded, err)
+			}
+			return ChatResponse{}, false, fmt.Errorf("openai: read response: %w", err)
+		}
 		return ChatResponse{}, true, fmt.Errorf("openai: read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
