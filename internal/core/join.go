@@ -401,7 +401,7 @@ func (o *Orchestrator) joinSpeakers(ctx context.Context, convKey string, window 
 			return nil, err
 		}
 		if ok {
-			speakers = append(speakers, joinSpeaker{user: user, name: directiveName(names[user], user), member: m})
+			speakers = append(speakers, joinSpeaker{user: user, name: directiveName(names[user]), member: m})
 		}
 	}
 	return speakers, nil
@@ -599,11 +599,14 @@ func joinNotCreated(err error) (string, bool) {
 // maxDirectiveName bounds a display name quoted in a directive.
 const maxDirectiveName = 20
 
+// unnamedMember stands for a member without a usable display name; their
+// platform ID is never shown to the model.
+const unnamedMember = "一位群友"
+
 // directiveName makes a member's display name safe to quote in a directive:
 // without brackets, line breaks and control characters, trimmed and at most
-// maxDirectiveName characters; fallback (the platform user ID) when nothing
-// is left.
-func directiveName(name, fallback string) string {
+// maxDirectiveName characters; unnamedMember when nothing is left.
+func directiveName(name string) string {
 	var b strings.Builder
 	for _, r := range name {
 		switch {
@@ -617,7 +620,7 @@ func directiveName(name, fallback string) string {
 		out = []rune(strings.TrimSpace(string(out[:maxDirectiveName])))
 	}
 	if len(out) == 0 {
-		return fallback
+		return unnamedMember
 	}
 	return string(out)
 }
