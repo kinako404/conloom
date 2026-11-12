@@ -92,7 +92,7 @@ v1 上线后观察到：
 
 以下按“处理次数”计：每次处理调用一次模型，调用失败时换一个模型重试一次，所以一次处理最多两次模型请求。
 
-- 在聊模式：每轮只处理一次，两次未点名回复之间至少隔 `turn_cooldown`；两次被直接点名之间，一段会话最多 `max_unprompted_replies` 次未点名回复，每两次回复之间最多连续跳过 `max_consecutive_skips − 1` 轮，所以最多处理 `max_unprompted_replies × max_consecutive_skips` 轮（默认 4 × 2 = 8），之后必须重新 @。
+- 在聊模式：每轮只处理一次，两次未点名回复之间至少隔 `turn_cooldown`（含明确提问的一轮除外，最短只隔 `turn_gap`）；两次被直接点名之间，一段会话最多 `max_unprompted_replies` 次未点名回复，每两次回复之间最多连续跳过 `max_consecutive_skips − 1` 轮，所以最多处理 `max_unprompted_replies × max_consecutive_skips` 轮（默认 4 × 2 = 8），之后必须重新 @。
 - 观望模式：每群每小时至多 `join_evaluations_per_hour` 次加入评估，与群消息数量无关。
 
 ## 8. 测试与验收

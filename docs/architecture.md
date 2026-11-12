@@ -235,7 +235,7 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 | 方式 | 上界（默认值） |
 |---|---|
 | 直接对话 | 每个任务（合并后）一次；每人每分钟最多 6 次触发 |
-| 在聊会话 | 两次被直接点名之间最多 `max_unprompted_replies × max_consecutive_skips` 次（4 × 2 = 8），两次未点名回复之间至少隔 `turn_cooldown` |
+| 在聊会话 | 两次被直接点名之间最多 `max_unprompted_replies × max_consecutive_skips` 次（4 × 2 = 8），两次未点名回复之间至少隔 `turn_cooldown`（含明确提问的一轮除外，最短只隔 `turn_gap`） |
 | 观望加入和会话外提问 | 每群每小时最多 `join_evaluations_per_hour` 次（4），与消息量无关；实际发出最多 `group_hourly_limit` 次（4） |
 | 命令 | 不调用模型 |
 

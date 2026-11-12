@@ -213,7 +213,7 @@ conloom version                                                    显示版本�
 以下按“处理次数”计：每次处理调用一次模型，调用失败时会换一个模型重试一次，所以一次处理最多发出两次模型请求。
 
 - **直接对话**：每次触发（合并后）只处理一次，受每用户限流约束。
-- **在聊模式**：每轮只处理一次，对方连发几句也只算一轮；两次未点名回复之间至少隔 `turn_cooldown`。两次被直接点名之间，一段会话最多有 `max_unprompted_replies` 次未点名回复，两次回复之间最多连续跳过 `max_consecutive_skips − 1` 轮（再多一轮会话就结束），所以最多处理 `max_unprompted_replies × max_consecutive_skips` 轮（默认 4 × 2 = 8 轮），之后必须重新 @Bot。
+- **在聊模式**：每轮只处理一次，对方连发几句也只算一轮；两次未点名回复之间至少隔 `turn_cooldown`（含明确提问的一轮除外，最短只隔 `turn_gap`）。两次被直接点名之间，一段会话最多有 `max_unprompted_replies` 次未点名回复，两次回复之间最多连续跳过 `max_consecutive_skips − 1` 轮（再多一轮会话就结束），所以最多处理 `max_unprompted_replies × max_consecutive_skips` 轮（默认 4 × 2 = 8 轮），之后必须重新 @Bot。
 - **观望模式**：每群每小时至多 `join_evaluations_per_hour` 次加入评估（默认 4），与群消息数量无关；有人刷屏时，停顿只会更少。
 
 ### 指标
