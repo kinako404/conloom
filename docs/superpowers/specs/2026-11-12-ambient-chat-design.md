@@ -61,12 +61,13 @@ default_group_policy:
     default_level: low       # 获得资格时的默认档位：off|low|mid|high
     eligibility_ttl: 720h    # 多久没 @ 失去资格（30 天）
     user_cooldown: 30m       # 对同一人两次主动搭话的最短间隔
+    contact_cooldown: 0s     # 机器人回复该人或其连续对话结束后多久之内不主动搭话；0 = 不等待
     group_hourly_limit: 4    # 全群每小时主动发言上限
     daily_limits: {low: 2, mid: 4, high: 8}   # 每人每天主动发言上限
 ```
 
-- 校验：`default_level ∈ {off, low, mid, high}`；`eligibility_ttl ∈ [1h, 8760h]`；`user_cooldown ∈ [0, 24h]`；`group_hourly_limit ∈ [0, 60]`；各 `daily_limits ∈ [0, 100]` 且 `low ≤ mid ≤ high`。
-- 兼容：库中已有的群策略版本没有 `proactive` 段，读取时用默认值补齐（零值 `ProactivePolicy{}` 视为缺失）。
+- 校验：`default_level ∈ {off, low, mid, high}`；`eligibility_ttl ∈ [1h, 8760h]`；`user_cooldown ∈ [0, 24h]`；`contact_cooldown ∈ [0, 24h]`；`group_hourly_limit ∈ [0, 60]`；各 `daily_limits ∈ [0, 100]` 且 `low ≤ mid ≤ high`。
+- 兼容：库中已有的群策略版本没有 `proactive` 段，读取时用默认值补齐（零值 `ProactivePolicy{}` 视为缺失）；已有 `proactive` 段但没有 `contact_cooldown` 时按 0（不等待）处理，这就是默认值。
 
 ### 6.2 资格与档位（新表 `conversation_members`）
 
@@ -90,7 +91,7 @@ default_group_policy:
 5. 兴趣匹配（§6.3）。
 6. 发言预算：今天已对该用户主动发言次数 < 档位上限；距上次对该用户主动发言 ≥ `user_cooldown`；全群最近一小时主动发言 < `group_hourly_limit`。
 7. 评估预算（限制模型调用）：今天对该用户的评估次数 < 3 × 档位上限；全群最近一小时评估次数 < 3 × `group_hourly_limit`。
-8. 距机器人与该用户的上次接触 ≥ `user_cooldown`：上次接触 = 机器人回复该用户（任何触发方式）或该用户的连续对话结束（规则或模型退出）的时间。只保存在进程内存中（重启后清空），维护任务每小时清理 24 小时前的记录。
+8. 仅当 `contact_cooldown` > 0 时：距机器人与该用户的上次接触 ≥ `contact_cooldown`（默认 0，即刚聊完、连续对话窗口结束或识趣退出后即可主动搭话；两次主动搭话之间仍受 6 中的 `user_cooldown` 约束）。上次接触 = 机器人回复该用户（任何触发方式）或该用户的连续对话结束（规则或模型退出）的时间。只保存在进程内存中（重启后清空），维护任务每小时清理 24 小时前的记录。
 
 通过后：写一条 `evaluated` 记录，建 trigger 为 `proactive` 的任务（走调度器，享有合并窗口与回复间隔；模型准入优先级低于普通回复）。调用模型前与发送前都会重新检查总开关、暂停、档位与发言预算，不再满足则按跳过处理、不调用模型或不发送。模型回复 → 引用回复对方消息发出，写一条 `sent` 记录，标记连续对话；模型输出 `[[SKIP]]` → 不发送。@ 别人或回复其他群友的消息不会并入该用户待处理的主动任务。
 

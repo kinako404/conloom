@@ -635,9 +635,16 @@ func (e *testEnv) backdateContact(user string, d time.Duration) {
 	e.o.contacts.set(memberKey(testConvKey, user), time.Now().Add(-d))
 }
 
-func TestProactive_NoReentryRightAfterReplyOrExit(t *testing.T) {
+func withContactCooldown(d time.Duration) func(*conloomapi.ProactivePolicy) {
+	return func(p *conloomapi.ProactivePolicy) { p.ContactCooldown = conloomapi.Duration{Duration: d} }
+}
+
+func TestProactive_ContactCooldownDelaysProactive(t *testing.T) {
 	t.Run("rule exit", func(t *testing.T) {
-		env := newTestOrchestrator(t, testOpts{configure: withContinuation})
+		env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) {
+			withContinuation(c)
+			withContactCooldown(30 * time.Minute)(&c.DefaultGroupPolicy.Proactive)
+		}})
 		env.engage(t, "20001", topicText)
 		waitUntil(t, "continuation", func() bool { return env.inContinuation("20001") })
 		env.requireNoProactive(t, env.groupEvent("20001", "你看这个", mentionUser("user_20002")))
@@ -664,6 +671,7 @@ func TestProactive_NoReentryRightAfterReplyOrExit(t *testing.T) {
 		window := 200 * time.Millisecond
 		env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) {
 			c.DefaultGroupPolicy.Reply.ContinuationWindow = conloomapi.Duration{Duration: window}
+			withContactCooldown(30 * time.Minute)(&c.DefaultGroupPolicy.Proactive)
 		}})
 		env.engage(t, "20001", topicText)
 		time.Sleep(window + 100*time.Millisecond)
@@ -675,15 +683,56 @@ func TestProactive_NoReentryRightAfterReplyOrExit(t *testing.T) {
 		env.requireProactive(t, env.groupEvent("20001", matchText))
 	})
 
-	t.Run("cooldown setting", func(t *testing.T) {
+	t.Run("contact cooldown, not user cooldown", func(t *testing.T) {
 		env := newTestOrchestrator(t, testOpts{configure: withProactive(func(p *conloomapi.ProactivePolicy) {
-			p.UserCooldown = conloomapi.Duration{Duration: 10 * time.Minute}
+			p.UserCooldown = conloomapi.Duration{Duration: 30 * time.Minute}
+			p.ContactCooldown = conloomapi.Duration{Duration: 10 * time.Minute}
 		})})
 		env.engage(t, "20001", topicText)
 		env.backdateContact("20001", 9*time.Minute)
 		env.requireNoProactive(t, env.groupEvent("20001", matchText))
 		env.backdateContact("20001", 10*time.Minute)
 		env.requireProactive(t, env.groupEvent("20001", matchText))
+	})
+}
+
+func TestProactive_DefaultsAllowProactiveRightAfterConversation(t *testing.T) {
+	if cd := conloomapi.DefaultGroupPolicy().Proactive.ContactCooldown.Duration; cd != 0 {
+		t.Fatalf("default contact_cooldown = %v, want 0", cd)
+	}
+
+	t.Run("window lapse", func(t *testing.T) {
+		window := 200 * time.Millisecond
+		env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) {
+			c.DefaultGroupPolicy.Reply.ContinuationWindow = conloomapi.Duration{Duration: window}
+		}})
+		env.engage(t, "20001", topicText)
+		time.Sleep(window + 100*time.Millisecond)
+		task := env.requireProactive(t, env.groupEvent("20001", matchText))
+		if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 {
+			t.Fatalf("proactive task = %+v, want one reply", task)
+		}
+		if n := env.modelCalls(); n != 2 {
+			t.Fatalf("model calls = %d, want 2 (mention, proactive)", n)
+		}
+	})
+
+	t.Run("rule exit", func(t *testing.T) {
+		env := newTestOrchestrator(t, testOpts{configure: withContinuation})
+		env.engage(t, "20001", topicText)
+		waitUntil(t, "continuation", func() bool { return env.inContinuation("20001") })
+		env.requireNoProactive(t, env.groupEvent("20001", "你看这个", mentionUser("user_20002")))
+		task := env.requireProactive(t, env.groupEvent("20001", matchText))
+		if len(task.Actions) != 1 {
+			t.Fatalf("proactive task = %+v, want one reply", task)
+		}
+	})
+
+	t.Run("user cooldown still spaces proactive replies", func(t *testing.T) {
+		env := newTestOrchestrator(t, testOpts{})
+		env.engage(t, "20001", topicText)
+		env.requireProactive(t, env.groupEvent("20001", matchText))
+		env.requireNoProactive(t, env.groupEvent("20001", matchText))
 	})
 }
 

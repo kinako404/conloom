@@ -26,10 +26,15 @@ const (
 // ProactivePolicy controls unprompted replies to members who have engaged the bot.
 // The zero value means the section is missing and is replaced by WithDefaults.
 type ProactivePolicy struct {
-	Enabled          bool                 `json:"enabled" yaml:"enabled"`
-	DefaultLevel     string               `json:"default_level" yaml:"default_level"`
-	EligibilityTTL   Duration             `json:"eligibility_ttl" yaml:"eligibility_ttl"`
-	UserCooldown     Duration             `json:"user_cooldown" yaml:"user_cooldown"`
+	Enabled        bool     `json:"enabled" yaml:"enabled"`
+	DefaultLevel   string   `json:"default_level" yaml:"default_level"`
+	EligibilityTTL Duration `json:"eligibility_ttl" yaml:"eligibility_ttl"`
+	UserCooldown   Duration `json:"user_cooldown" yaml:"user_cooldown"`
+	// ContactCooldown is how long after the bot last replied to a member, or
+	// their continuation ended, before it may speak up to them; 0 (the
+	// default, also for stored sections written before the field existed)
+	// means no wait.
+	ContactCooldown  Duration             `json:"contact_cooldown" yaml:"contact_cooldown"`
 	GroupHourlyLimit int                  `json:"group_hourly_limit" yaml:"group_hourly_limit"`
 	DailyLimits      ProactiveDailyLimits `json:"daily_limits" yaml:"daily_limits"`
 }
@@ -172,6 +177,7 @@ func DefaultGroupPolicy() GroupPolicy {
 			DefaultLevel:     ProactiveLow,
 			EligibilityTTL:   Duration{720 * time.Hour},
 			UserCooldown:     Duration{30 * time.Minute},
+			ContactCooldown:  Duration{0},
 			GroupHourlyLimit: 4,
 			DailyLimits:      ProactiveDailyLimits{Low: 2, Mid: 4, High: 8},
 		},
@@ -239,6 +245,9 @@ func (p GroupPolicy) Validate() error {
 	}
 	if a.UserCooldown.Duration < 0 || a.UserCooldown.Duration > 24*time.Hour {
 		fail("proactive.user_cooldown must be in [0, 24h], got %s", a.UserCooldown)
+	}
+	if a.ContactCooldown.Duration < 0 || a.ContactCooldown.Duration > 24*time.Hour {
+		fail("proactive.contact_cooldown must be in [0, 24h], got %s", a.ContactCooldown)
 	}
 	if a.GroupHourlyLimit < 0 || a.GroupHourlyLimit > 60 {
 		fail("proactive.group_hourly_limit must be in [0, 60], got %d", a.GroupHourlyLimit)

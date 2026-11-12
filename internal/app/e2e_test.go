@@ -73,7 +73,7 @@ default_group_policy:
   reply: {command_prefix: /, continuation_window: CONTINUATION, debounce: DEBOUNCE, min_reply_interval: 0s, user_rate_limit_per_minute: RATE_LIMIT}
   context: {max_recent_messages: 50, max_context_tokens: 0}
   review: {level: basic, review_input: true, review_output: true, action: block}
-  proactive: {user_cooldown: COOLDOWN}
+  proactive: {user_cooldown: COOLDOWN, contact_cooldown: CONTACT}
 runtime:
   outbox_lease: LEASE
 `
@@ -89,6 +89,8 @@ type configParams struct {
 	continuation string
 	// cooldown is proactive.user_cooldown; empty means the default 30m.
 	cooldown string
+	// contact is proactive.contact_cooldown; empty means the default 0s.
+	contact string
 }
 
 // testConfig writes a config for p to a temporary directory and loads it.
@@ -116,6 +118,9 @@ func testConfig(t testing.TB, p configParams) *config.Config {
 	if p.cooldown == "" {
 		p.cooldown = "30m"
 	}
+	if p.contact == "" {
+		p.contact = "0s"
+	}
 	yml := strings.NewReplacer(
 		"DATA_DIR", strconv.Quote(p.dataDir),
 		"MODEL_URL", p.modelURL,
@@ -125,6 +130,7 @@ func testConfig(t testing.TB, p configParams) *config.Config {
 		"RATE_LIMIT", strconv.Itoa(p.rateLimit),
 		"CONTINUATION", p.continuation,
 		"COOLDOWN", p.cooldown,
+		"CONTACT", p.contact,
 	).Replace(configTemplate)
 	path := filepath.Join(dir, "conloom.yaml")
 	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
@@ -711,9 +717,9 @@ func TestE2E_ContinuationExitWhenTalkingToOthers(t *testing.T) {
 	}
 }
 
-func TestE2E_NoProactiveRightAfterReply(t *testing.T) {
+func TestE2E_NoProactiveRightAfterReplyWithContactCooldown(t *testing.T) {
 	fake := fakeopenai.New(t, answer(fakeReply))
-	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL}))
+	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL, contact: "30m"}))
 
 	e.mention(group, alice, "我在研究咖啡豆烘焙")
 	e.drainOne()
@@ -724,5 +730,29 @@ func TestE2E_NoProactiveRightAfterReply(t *testing.T) {
 	e.requireNoAction(300 * time.Millisecond)
 	if n := fake.Calls(); n != 1 {
 		t.Fatalf("model calls = %d, want 1 (only the mention)", n)
+	}
+}
+
+func TestE2E_ProactiveShortlyAfterConversationByDefault(t *testing.T) {
+	fake := fakeopenai.New(t, answer(fakeReply))
+	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL, continuation: "1s"}))
+
+	e.mention(group, alice, "我在研究咖啡豆烘焙")
+	e.drainOne()
+	time.Sleep(1200 * time.Millisecond)
+	resp, msgID := e.say(group, alice, "咖啡豆烘焙真难", mock.SayOptions{})
+	if resp.Disposition != conloomapi.DispositionReply || resp.TaskID == "" {
+		t.Fatalf("on-topic message after the continuation window: response %+v, want a proactive task", resp)
+	}
+	a := e.drainOne()
+	if a.Content.Text != fakeReply || a.ReplyToMessageID != msgID {
+		t.Errorf("proactive action = %+v, want %q quoting %s", a, fakeReply, msgID)
+	}
+	task, err := e.client.GetTask(context.Background(), resp.TaskID)
+	if err != nil || task.Meta.Trigger != conloomapi.TriggerProactive {
+		t.Errorf("GetTask = %+v, %v; want trigger proactive", task, err)
+	}
+	if n := fake.Calls(); n != 2 {
+		t.Errorf("model calls = %d, want 2", n)
 	}
 }

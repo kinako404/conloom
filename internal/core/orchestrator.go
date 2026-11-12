@@ -102,7 +102,7 @@ type Orchestrator struct {
 	memberLocks    keyedLocks
 	proactiveLocks keyedLocks
 	// contacts holds each member's last contact with the bot, which delays
-	// proactive replies by the user cooldown.
+	// proactive replies by the contact cooldown.
 	contacts contactTimes
 }
 

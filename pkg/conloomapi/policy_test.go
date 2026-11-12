@@ -16,6 +16,7 @@ func TestDefaultGroupPolicyProactive(t *testing.T) {
 		DefaultLevel:     ProactiveLow,
 		EligibilityTTL:   Duration{720 * time.Hour},
 		UserCooldown:     Duration{30 * time.Minute},
+		ContactCooldown:  Duration{0},
 		GroupHourlyLimit: 4,
 		DailyLimits:      ProactiveDailyLimits{Low: 2, Mid: 4, High: 8},
 	}
@@ -66,6 +67,10 @@ func TestGroupPolicyValidateProactive(t *testing.T) {
 		{"cooldown 24h ok", func(p *ProactivePolicy) { p.UserCooldown = Duration{24 * time.Hour} }, ""},
 		{"cooldown negative", func(p *ProactivePolicy) { p.UserCooldown = Duration{-time.Second} }, "proactive.user_cooldown"},
 		{"cooldown over", func(p *ProactivePolicy) { p.UserCooldown = Duration{24*time.Hour + time.Second} }, "proactive.user_cooldown"},
+		{"contact cooldown zero ok", func(p *ProactivePolicy) { p.ContactCooldown = Duration{0} }, ""},
+		{"contact cooldown 24h ok", func(p *ProactivePolicy) { p.ContactCooldown = Duration{24 * time.Hour} }, ""},
+		{"contact cooldown negative", func(p *ProactivePolicy) { p.ContactCooldown = Duration{-time.Second} }, "proactive.contact_cooldown"},
+		{"contact cooldown over", func(p *ProactivePolicy) { p.ContactCooldown = Duration{24*time.Hour + time.Second} }, "proactive.contact_cooldown"},
 		{"hourly zero ok", func(p *ProactivePolicy) { p.GroupHourlyLimit = 0 }, ""},
 		{"hourly 60 ok", func(p *ProactivePolicy) { p.GroupHourlyLimit = 60 }, ""},
 		{"hourly negative", func(p *ProactivePolicy) { p.GroupHourlyLimit = -1 }, "proactive.group_hourly_limit"},
@@ -132,12 +137,13 @@ proactive:
   default_level: mid
   eligibility_ttl: 48h
   user_cooldown: 10m
+  contact_cooldown: 5m
   group_hourly_limit: 3
   daily_limits: {low: 1, mid: 2, high: 3}
 `
 	want := ProactivePolicy{
 		Enabled: true, DefaultLevel: ProactiveMid, EligibilityTTL: Duration{48 * time.Hour},
-		UserCooldown: Duration{10 * time.Minute}, GroupHourlyLimit: 3, DailyLimits: ProactiveDailyLimits{1, 2, 3},
+		UserCooldown: Duration{10 * time.Minute}, ContactCooldown: Duration{5 * time.Minute}, GroupHourlyLimit: 3, DailyLimits: ProactiveDailyLimits{1, 2, 3},
 	}
 	var y GroupPolicy
 	if err := yaml.Unmarshal([]byte(src), &y); err != nil {
@@ -152,7 +158,7 @@ proactive:
 		t.Fatal(err)
 	}
 	for _, key := range []string{`"proactive":{`, `"enabled":true`, `"default_level":"mid"`, `"eligibility_ttl":"48h0m0s"`,
-		`"user_cooldown":"10m0s"`, `"group_hourly_limit":3`, `"daily_limits":{"low":1,"mid":2,"high":3}`} {
+		`"user_cooldown":"10m0s"`, `"contact_cooldown":"5m0s"`, `"group_hourly_limit":3`, `"daily_limits":{"low":1,"mid":2,"high":3}`} {
 		if !strings.Contains(string(b), key) {
 			t.Errorf("json %s missing %s", b, key)
 		}
@@ -160,6 +166,23 @@ proactive:
 	var j GroupPolicy
 	if err := json.Unmarshal(b, &j); err != nil || j.Proactive != want {
 		t.Fatalf("json round trip = %+v, %v", j.Proactive, err)
+	}
+}
+
+func TestProactiveSectionWithoutContactCooldownDecodesToZero(t *testing.T) {
+	legacy := `{"proactive":{"enabled":true,"default_level":"low","eligibility_ttl":"720h","user_cooldown":"30m",` +
+		`"group_hourly_limit":4,"daily_limits":{"low":2,"mid":4,"high":8}}}`
+	var p GroupPolicy
+	if err := json.Unmarshal([]byte(legacy), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Proactive != DefaultGroupPolicy().Proactive || p.Proactive.ContactCooldown.Duration != 0 {
+		t.Fatalf("legacy proactive = %+v, want defaults with contact_cooldown 0", p.Proactive)
+	}
+	full := DefaultGroupPolicy()
+	full.Proactive = p.Proactive
+	if err := full.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 

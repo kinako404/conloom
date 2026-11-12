@@ -26,7 +26,7 @@ const (
 	// and per group per hour are this many times the matching send limit.
 	proactiveEvalFactor   = 3
 	proactiveLogRetention = 7 * 24 * time.Hour
-	// contactRetention is the longest user cooldown policy validation allows.
+	// contactRetention is the longest contact cooldown policy validation allows.
 	contactRetention = 24 * time.Hour
 
 	proactiveEvaluated = "evaluated"
@@ -132,9 +132,9 @@ func (o *Orchestrator) recordEngagement(ctx context.Context, s *submission, d De
 // proactiveCandidate applies the in-memory proactive filters to an observed
 // message: a fresh group message long enough, not a command, mentioning
 // nobody, not replying to another member, in an unpaused group with proactive
-// replies on, from a sender with no unfinished task whose last contact with
-// the bot (a reply or the end of a continuation) is at least the user
-// cooldown ago.
+// replies on, from a sender with no unfinished task. With a non-zero contact
+// cooldown, the sender's last contact with the bot (a reply or the end of a
+// continuation) must also be at least that long ago.
 func (o *Orchestrator) proactiveCandidate(s *submission, pol conloomapi.GroupPolicy) bool {
 	text := strings.TrimSpace(s.ev.Message.Text)
 	switch {
@@ -148,8 +148,10 @@ func (o *Orchestrator) proactiveCandidate(s *submission, pol conloomapi.GroupPol
 		return false
 	}
 	user := s.ev.Actor.PlatformUserID
-	if at, ok := o.contacts.get(memberKey(s.convKey, user)); ok && s.now.Sub(at) < pol.Proactive.UserCooldown.Duration {
-		return false
+	if cd := pol.Proactive.ContactCooldown.Duration; cd > 0 {
+		if at, ok := o.contacts.get(memberKey(s.convKey, user)); ok && s.now.Sub(at) < cd {
+			return false
+		}
 	}
 	return !slices.ContainsFunc(o.sched.Active(s.convKey), func(t QueuedTask) bool { return t.ActorID == user })
 }
@@ -460,7 +462,7 @@ func convType(convKey string) string {
 	return parts[2]
 }
 
-// pruneContacts forgets last contacts older than any user cooldown can be.
+// pruneContacts forgets last contacts older than any contact cooldown can be.
 func (o *Orchestrator) pruneContacts() {
 	if n := o.contacts.prune(o.now().Add(-contactRetention)); n > 0 {
 		o.log.Debug("pruned last contacts", "count", n)
