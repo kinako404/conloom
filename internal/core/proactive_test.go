@@ -81,8 +81,8 @@ func (e *testEnv) proactiveCount(t *testing.T, user, kind string) int {
 
 func (e *testEnv) modelCalls() int { return e.short.Calls() + e.long.Calls() }
 
-// joinDirective is the start of the hint appended to join requests.
-const joinDirective = "【提示】群里大家正在聊天"
+// joinDirective is part of the hint appended to join requests at every level.
+const joinDirective = "（见上面的近期消息），没有人 @ 你。"
 
 func skipOnProactive(req map[string]any) (int, string) {
 	if strings.Contains(lastContent(req), joinDirective) {

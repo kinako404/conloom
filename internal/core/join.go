@@ -422,14 +422,17 @@ func (o *Orchestrator) createJoinTask(ctx context.Context, convKey string, targe
 	return taskID, err
 }
 
-// joinDirective is the hint for a join task: the target's name, and the
-// eligible members' names and merged top interest terms.
+// joinDirective is the hint for a join task: the target's name and proactive
+// level, and the eligible members' names and merged top interest terms. The
+// target is one of the eligible members, or the only one without a plan; a
+// target whose member record cannot be loaded gets the low wording.
 func (o *Orchestrator) joinDirective(ctx context.Context, task store.TaskRecord, triggers []store.MessageRecord, plan joinPlan) string {
 	target := speaker(triggers)
 	users, names := plan.users, plan.names
 	if len(users) == 0 {
 		users, names = []string{task.ActorPlatformUserID}, []string{target}
 	}
+	level := conloomapi.ProactiveLow
 	merged := map[string]float64{}
 	for _, u := range users {
 		m, err := o.st.GetMember(ctx, task.ConversationKey, u)
@@ -439,11 +442,14 @@ func (o *Orchestrator) joinDirective(ctx context.Context, task store.TaskRecord,
 			}
 			continue
 		}
+		if u == task.ActorPlatformUserID {
+			level = m.ProactiveLevel
+		}
 		for term, w := range m.Interests {
 			merged[term] += w
 		}
 	}
-	return CopyDirectiveJoin(target, names, interest.Top(merged, proactiveDirectiveTerms))
+	return CopyDirectiveJoin(level, target, names, interest.Top(merged, proactiveDirectiveTerms))
 }
 
 // questionWords are the words that make a message a question (design §4.2).

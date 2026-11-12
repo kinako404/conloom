@@ -606,8 +606,8 @@ func TestE2E_PrivateChatAdminOnly(t *testing.T) {
 	}
 }
 
-// joinDirective is the start of the hint appended to join requests.
-const joinDirective = "【提示】群里大家正在聊天"
+// joinDirective is part of the hint appended to join requests at every level.
+const joinDirective = "（见上面的近期消息），没有人 @ 你。"
 
 // joinTestConfig is testConfig with a join lull and cooldown far shorter than
 // validation allows, so joins happen within a test.

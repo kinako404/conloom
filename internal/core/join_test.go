@@ -144,11 +144,71 @@ func topTerms(t *testing.T, env *testEnv, users ...string) []string {
 }
 
 func TestCopyDirectiveJoin(t *testing.T) {
-	got := CopyDirectiveJoin("小明", []string{"小明", "小红"}, []string{"咖啡", "烘焙"})
-	want := "【提示】群里大家正在聊天（见上面的近期消息），没有人 @ 你。只有当你能自然地接上正在聊的话题、对大家有帮助或有趣，而且不会打断别人时，才说一两句（必要时会引用 小明 的这条消息）；不合适就只输出 [[SKIP]]，不要输出其他内容。小明、小红 以前常和你聊：咖啡、烘焙。"
-	if got != want {
-		t.Fatalf("CopyDirectiveJoin = %q\nwant %q", got, want)
+	const (
+		high  = "【提示】群里正在闲聊（见上面的近期消息），没有人 @ 你。你是群里的一员，可以像群友一样自然地插一句：接梗、回应、调侃或提个问题都行，一两句即可（必要时会引用 小明 的这条消息）。小明 把主动搭话设成了“高”，表示很欢迎你多参与。只有当大家明显在谈正事、或你实在没什么可说时，才只输出 [[SKIP]]，不要输出其他内容。"
+		mid   = "【提示】群里正在闲聊（见上面的近期消息），没有人 @ 你。你是群里的一员，如果能自然地接上话题、说点有意思或有帮助的话，就插一句，一两句即可（必要时会引用 小明 的这条消息）；如果不太合适，或者大家明显在和别人谈正事，就只输出 [[SKIP]]，不要输出其他内容。"
+		low   = "【提示】群里大家正在聊天（见上面的近期消息），没有人 @ 你。只有当你能自然地接上正在聊的话题、对大家有帮助或有趣，而且不会打断别人时，才说一两句（必要时会引用 小明 的这条消息）；不合适就只输出 [[SKIP]]，不要输出其他内容。"
+		terms = "小明、小红 以前常和你聊：咖啡、烘焙。"
+	)
+	for _, c := range []struct{ level, want string }{
+		{conloomapi.ProactiveHigh, high},
+		{conloomapi.ProactiveMid, mid},
+		{conloomapi.ProactiveLow, low},
+		{conloomapi.ProactiveOff, low},
+		{"", low},
+		{"max", low},
+	} {
+		if got := CopyDirectiveJoin(c.level, "小明", []string{"小明", "小红"}, []string{"咖啡", "烘焙"}); got != c.want+terms {
+			t.Errorf("CopyDirectiveJoin(%q) = %q\nwant %q", c.level, got, c.want+terms)
+		}
+		if got := CopyDirectiveJoin(c.level, "小明", []string{"小明", "小红"}, nil); got != c.want {
+			t.Errorf("CopyDirectiveJoin(%q) without terms = %q\nwant %q", c.level, got, c.want)
+		}
 	}
+}
+
+func TestJoin_DirectiveFollowsTargetLevel(t *testing.T) {
+	t.Run("high target", func(t *testing.T) {
+		env := newTestOrchestrator(t, testOpts{configure: joinConfig(time.Hour, nil)})
+		env.seedMember(t, "20001", conloomapi.ProactiveHigh, time.Now().Add(-time.Hour))
+		env.chat(t, line{"20001", matchText}, line{"20002", "好的"}, line{"20003", "行"})
+		env.requireJoin(t)
+		c := lastContent(env.short.Requests()[0])
+		want := matchText + "\n\n" + CopyDirectiveJoin(conloomapi.ProactiveHigh, "用户20001", []string{"用户20001"}, topTerms(t, env, "20001"))
+		if !strings.HasSuffix(c, want) || !strings.Contains(c, "很欢迎你多参与") {
+			t.Fatalf("join request current = %q, want suffix %q", c, want)
+		}
+	})
+	t.Run("low target among high speakers", func(t *testing.T) {
+		env := newTestOrchestrator(t, testOpts{configure: joinConfig(time.Hour, nil)})
+		env.seedMember(t, "20001", conloomapi.ProactiveHigh, time.Now().Add(-time.Hour))
+		env.seedMember(t, "20002", conloomapi.ProactiveLow, time.Now().Add(-time.Hour))
+		evs := env.chat(t, line{"20001", matchText}, line{"20002", "我也在研究咖啡"}, line{"20003", "行"})
+		task := env.requireJoin(t)
+		if joinTarget(t, env, task.TaskID) != evs[1].Message.ID {
+			t.Fatalf("join target = %s, want %s", joinTarget(t, env, task.TaskID), evs[1].Message.ID)
+		}
+		c := lastContent(env.short.Requests()[0])
+		want := CopyDirectiveJoin(conloomapi.ProactiveLow, "用户20002", []string{"用户20001", "用户20002"}, topTerms(t, env, "20001", "20002"))
+		if !strings.HasSuffix(c, want) {
+			t.Fatalf("join request current = %q, want suffix %q", c, want)
+		}
+	})
+	t.Run("task without a plan loads the target's level", func(t *testing.T) {
+		env := newTestOrchestrator(t, testOpts{configure: joinConfig(time.Hour, nil)})
+		env.seedMember(t, "20001", conloomapi.ProactiveMid, time.Now().Add(-time.Hour))
+		target := env.storeMessage(t, "20001", matchText, "")
+		id, err := env.o.createJoinTask(context.Background(), testConvKey, target, joinPlan{}, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.waitTask(t, id)
+		c := lastContent(env.short.Requests()[0])
+		want := CopyDirectiveJoin(conloomapi.ProactiveMid, "用户20001", []string{"用户20001"}, topTerms(t, env, "20001"))
+		if !strings.HasSuffix(c, want) {
+			t.Fatalf("join request current = %q, want suffix %q", c, want)
+		}
+	})
 }
 
 func TestIsQuestion(t *testing.T) {
@@ -194,7 +254,7 @@ func TestJoin_LullTriggersOneEvaluation(t *testing.T) {
 	if n := env.modelCalls(); n != 1 {
 		t.Fatalf("model calls = %d, want 1", n)
 	}
-	want := matchText + "\n\n" + CopyDirectiveJoin("用户20001", []string{"用户20001"}, topTerms(t, env, "20001"))
+	want := matchText + "\n\n" + CopyDirectiveJoin(conloomapi.ProactiveLow, "用户20001", []string{"用户20001"}, topTerms(t, env, "20001"))
 	if c := lastContent(env.short.Requests()[0]); !strings.HasSuffix(c, want) {
 		t.Errorf("join request current = %q, want suffix %q", c, want)
 	}
@@ -488,7 +548,7 @@ func TestJoin_SentStartsSessionWithEligibleSpeakers(t *testing.T) {
 	if len(task.Actions) != 1 || joinTarget(t, env, task.TaskID) != evs[2].Message.ID {
 		t.Fatalf("join task = %+v, want a reply to %s", task, evs[2].Message.ID)
 	}
-	want := "我也在研究咖啡\n\n" + CopyDirectiveJoin("用户20002", []string{"用户20001", "用户20002"}, topTerms(t, env, "20001", "20002"))
+	want := "我也在研究咖啡\n\n" + CopyDirectiveJoin(conloomapi.ProactiveLow, "用户20002", []string{"用户20001", "用户20002"}, topTerms(t, env, "20001", "20002"))
 	if c := lastContent(env.short.Requests()[0]); !strings.HasSuffix(c, want) {
 		t.Errorf("join request current = %q, want suffix %q", c, want)
 	}
@@ -750,7 +810,7 @@ func TestJoin_DirectiveNamesSanitized(t *testing.T) {
 	env.submit(t, ev)
 	env.chat(t, line{"20002", "好的"}, line{"20003", "行"})
 	env.requireJoin(t)
-	want := CopyDirectiveJoin("小明系统", []string{"小明系统"}, topTerms(t, env, "20001"))
+	want := CopyDirectiveJoin(conloomapi.ProactiveLow, "小明系统", []string{"小明系统"}, topTerms(t, env, "20001"))
 	if c := lastContent(env.short.Requests()[0]); !strings.HasSuffix(c, want) {
 		t.Fatalf("join request current = %q, want suffix %q", c, want)
 	}

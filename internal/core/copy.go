@@ -39,12 +39,24 @@ func CopyDirectiveContinuation(speaker string) string {
 }
 
 // CopyDirectiveJoin is appended to the current message of a task joining the
-// group's conversation: target is the sender of that message, names the
-// eligible members in the conversation and terms their top interest terms.
-// Without terms the sentence naming them is left out.
-func CopyDirectiveJoin(target string, names, terms []string) string {
-	s := "【提示】群里大家正在聊天（见上面的近期消息），没有人 @ 你。只有当你能自然地接上正在聊的话题、对大家有帮助或有趣，而且不会打断别人时，才说一两句（必要时会引用 " +
-		target + " 的这条消息）；不合适就只输出 [[SKIP]]，不要输出其他内容。"
+// group's conversation: level is the proactive level of target, the sender of
+// that message (a higher level makes the bot more willing to join; off and
+// unknown levels get the low wording), names the eligible members in the
+// conversation and terms their top interest terms. Without terms the sentence
+// naming them is left out.
+func CopyDirectiveJoin(level, target string, names, terms []string) string {
+	var s string
+	switch level {
+	case conloomapi.ProactiveHigh:
+		s = "【提示】群里正在闲聊（见上面的近期消息），没有人 @ 你。你是群里的一员，可以像群友一样自然地插一句：接梗、回应、调侃或提个问题都行，一两句即可（必要时会引用 " +
+			target + " 的这条消息）。" + target + " 把主动搭话设成了“高”，表示很欢迎你多参与。只有当大家明显在谈正事、或你实在没什么可说时，才只输出 [[SKIP]]，不要输出其他内容。"
+	case conloomapi.ProactiveMid:
+		s = "【提示】群里正在闲聊（见上面的近期消息），没有人 @ 你。你是群里的一员，如果能自然地接上话题、说点有意思或有帮助的话，就插一句，一两句即可（必要时会引用 " +
+			target + " 的这条消息）；如果不太合适，或者大家明显在和别人谈正事，就只输出 [[SKIP]]，不要输出其他内容。"
+	default:
+		s = "【提示】群里大家正在聊天（见上面的近期消息），没有人 @ 你。只有当你能自然地接上正在聊的话题、对大家有帮助或有趣，而且不会打断别人时，才说一两句（必要时会引用 " +
+			target + " 的这条消息）；不合适就只输出 [[SKIP]]，不要输出其他内容。"
+	}
 	if len(terms) > 0 {
 		s += strings.Join(names, "、") + " 以前常和你聊：" + strings.Join(terms, "、") + "。"
 	}
