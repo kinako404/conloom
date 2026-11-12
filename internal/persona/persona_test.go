@@ -44,7 +44,7 @@ func TestCorePrompt_InsertsBotName(t *testing.T) {
 
 func TestCorePrompt_ForbidsPretendingToAct(t *testing.T) {
 	got := CorePrompt("织语")
-	for _, want := range []string{"8. 操作：", "/help", "不要假装已经做了"} {
+	for _, want := range []string{"8. 操作：", "/help", "不要假装已经做了", "不要编造不存在的命令"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("CorePrompt missing %q: %q", want, got)
 		}
