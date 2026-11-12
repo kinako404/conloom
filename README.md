@@ -138,7 +138,7 @@ conloom version                                                    显示版本�
 | `/persona` | 所有人 | 显示当前人格名称与版本 |
 | `/pause`、`/resume` | 管理员 | 暂停本群回复（群并发设为 0），并静默取消本群正在生成或排队的回复／恢复；暂停期间也不会主动搭话 |
 | `/主动`、`/proactive` | 所有人 | 查看自己的主动搭话档位、是否有资格、今天已被主动搭话的次数 |
-| `/主动 关`／`低`／`中`／`高`，`/proactive off`／`low`／`mid`／`high` | 有资格的人 | 设置自己的主动搭话档位（中英文档位等价） |
+| `/主动 关`／`低`／`中`／`高`，`/proactive off`／`low`／`mid`／`high` | `eligibility_ttl` 内 @ 过或回复过 Bot 的人 | 设置自己的主动搭话档位（中英文档位等价），任意档位都可设置，包括从“关”重新打开 |
 | `/主动 全群 开`／`关`，`/proactive group on`／`off` | 管理员 | 本群主动搭话总开关（生成新的群策略版本） |
 
 命令前缀默认为 `/`（群策略 `reply.command_prefix`）。管理员只认配置中 `bots[].admins` 列出的平台用户 ID。
@@ -165,15 +165,16 @@ conloom version                                                    显示版本�
 
 ### 主动搭话
 
-- **资格**：在本群 @ 过 Bot 或回复过 Bot 的消息（只发命令不算；连续对话中的消息也会刷新资格）。超过 `eligibility_ttl`（默认 30 天）没有再这样做，资格失效。从没 @ 过 Bot 的人永远不会被主动搭话；档位为“关”的人也不会。
+- **资格**：在本群 @ 过 Bot 或回复过 Bot 的消息（只发命令不算；连续对话中的消息也会刷新资格）。超过 `eligibility_ttl`（默认 30 天）没有再这样做，资格失效。有资格的人可以用 `/主动` 设置任意档位，包括把“关”重新打开；但只有有资格且档位不是“关”的人才会被主动搭话。从没 @ 过 Bot 的人永远不会被主动搭话。
 - **档位**：`关`／`低`／`中`／`高`（`off`／`low`／`mid`／`high`）。首次获得资格时为 `default_level`（默认“低”）；用 `/主动` 自己设过的档位之后一直保留，不会被默认值覆盖。
 - **兴趣话题**：核心从每人 @Bot、回复 Bot 以及连续对话中的消息里提取关键词（英文单词与连续汉字的二字词组，去掉常见虚词与口头禅），形成带衰减的兴趣画像，每人最多保留 50 个词。群友平时没 @Bot 的发言与他的画像足够重合时才算“聊到了常聊的话题”：低档需与前 20 个词至少重合 2 个，中档与前 30 个词至少重合 1 个，高档与前 50 个词至少重合 1 个。
 - **候选条件**（全部满足才调用模型）：本群主动搭话总开关打开、群未暂停、消息不过时；发言者有资格且档位不是“关”；消息至少 4 个字、不是命令、没有 @ 任何人、没有回复其他群友；此人在本会话没有排队或运行中的任务；话题匹配；且未超出下面的上限。
 - **发言上限**：每人每天最多被主动搭话 低 2 次、中 4 次、高 8 次（`daily_limits`）；对同一人两次主动搭话至少间隔 `user_cooldown`（默认 30 分钟）；全群每小时最多主动发言 `group_hourly_limit` 次（默认 4）。
 - **模型调用上限**：每人每天的评估（即调用模型判断要不要接话）次数不超过其档位每日上限的 3 倍，全群每小时的评估次数不超过 `group_hourly_limit` 的 3 倍。所以有人刷屏时，模型调用次数也不会随消息数增长。
+- **“每天”的界定**：每人每天的发言上限和评估次数上限都按 `server.timezone`（默认 `Asia/Shanghai`）的自然日计数，从当地 00:00 开始，到下一个当地午夜清零。
 - **发出**：通过筛选后建一个 `trigger` 为 `proactive` 的任务，和普通回复一样经过合并窗口与最短回复间隔。模型决定接话时，以引用回复对方那条消息的形式发出，随后对方进入连续对话窗口，按识趣退出处理；模型输出跳过标记则不发送。
 - **计数持久化**：评估与发出的记录存在数据库里，按时间窗口计数，重启后依然有效；7 天前的记录会被定期清理。
-- **总开关**：管理员用 `/主动 全群 开`／`关` 或通过群策略 API 修改 `proactive.enabled`；`/pause` 期间同样不会主动搭话。
+- **总开关**：管理员用 `/主动 全群 开`／`关`（只改 `proactive.enabled`，其余设置不变），或通过群策略 API 写入完整的 `proactive` 段（见 [API](#api)）；`/pause` 期间同样不会主动搭话。
 
 ### 指标
 
@@ -190,7 +191,7 @@ conloom version                                                    显示版本�
 
 | 段落 | 说明 |
 |---|---|
-| `server` | `listen`（默认 `127.0.0.1:8787`）、`timezone`（展示用时区，默认 `Asia/Shanghai`）、`metrics_enabled`（是否开放 `/metrics`，默认开） |
+| `server` | `listen`（默认 `127.0.0.1:8787`）、`timezone`（展示用时区，也是主动搭话每人每日上限的日界线，默认 `Asia/Shanghai`）、`metrics_enabled`（是否开放 `/metrics`，默认开） |
 | `storage` | `data_dir`：数据目录，默认 `./data`，相对路径按配置文件所在目录解析 |
 | `api_tokens` | API 令牌列表：`name`、`token`、绑定的 `bot_instance_id`、`scopes`。Adapter 令牌通常只需 `events:write tasks:read outbox:read outbox:ack persona:read`；管理令牌另加 `memory:read memory:write policy:write admin:read` |
 | `bots` | Bot 实例：`id`、`platform`、`name`（显示名，默认“织语”）、`platform_self_id`（Bot 自身的平台 ID，必填，用于自回复防护）、`admins`、`enabled_conversations`（只在这些会话工作）、`private_chat`（`admins`／`all`／`off`，默认 `admins`）、`persona_template` |
@@ -217,7 +218,7 @@ default_group_policy:
     daily_limits: {low: 2, mid: 4, high: 8}   # 每人每天主动发言上限，各 0~100，且 low ≤ mid ≤ high
 ```
 
-省略整个 `proactive` 段时使用上面的默认值；升级前已存库的群策略版本没有这一段，读取时同样按默认值补齐，即主动搭话默认开启、档位默认为低。识趣退出没有单独的开关，由 `reply.continuation_window` 决定是否有连续对话。
+YAML 配置中 `proactive` 段里省略的任何字段（或省略整个段）都保持上面的默认值；这种逐字段补默认值只适用于配置文件，群策略 API 不会合并不完整的 `proactive` 段（见 [API](#api)）。升级前已存库的群策略版本没有这一段，读取时同样按默认值补齐，即主动搭话默认开启、档位默认为低。识趣退出没有单独的开关，由 `reply.continuation_window` 决定是否有连续对话。
 
 ## API
 
@@ -238,7 +239,7 @@ default_group_policy:
 | `GET /healthz` | 无 | 健康检查 |
 | `GET /metrics` | 无 | Prometheus 指标（`server.metrics_enabled: false` 可关闭） |
 
-群策略包含 `proactive` 段（字段同上文配置）。`PUT …/policy` 的请求体里没有 `proactive` 段（或该段为空）时按默认值补齐；要修改时请写出完整的 `proactive` 段，否则会因缺少 `default_level` 等字段校验失败。管理员的 `/主动 全群 开`／`关` 也是以当前版本为基础写入一个新的群策略版本，可用 `GET …/policy` 查看。任务的 `trigger` 除 `private`、`mention`、`reply`、`command` 等外，还可能是 `continuation`（连续对话）与 `proactive`（主动搭话）。
+群策略包含 `proactive` 段（字段同上文配置）。`PUT …/policy` 的请求体完全不含 `proactive` 段时，保留本群**当前**的主动搭话设置；只要含有 `proactive` 段，它就必须是完整且合法的一段，API 不会与当前设置或默认值合并，像 `{"enabled": false}` 这样只写部分字段的请求会被拒绝并返回校验错误。只想关闭主动搭话时，可由管理员在群里发 `/主动 全群 关`，它以当前版本为基础写入一个新的群策略版本，且只改 `proactive.enabled`（`开` 同理），可用 `GET …/policy` 查看。任务的 `trigger` 除 `private`、`mention`、`reply`、`command` 等外，还可能是 `continuation`（连续对话）与 `proactive`（主动搭话）。
 
 会话 `{id}` 为标准会话 ID，如 `group_<群号>`、`private_<QQ号>`。同一幂等键重放返回首次响应并带 `Idempotent-Replayed: true`，同键不同内容返回 409。错误响应统一为：
 
