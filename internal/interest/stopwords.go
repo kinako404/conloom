@@ -14,6 +14,9 @@ var stopBigrams = setOf(
 	"一起", "东西", "事情", "问题", "地方", "刚才", "刚刚", "马上", "一般", "比较",
 	"非常", "特别", "肯定", "当然", "好的", "好吧", "谢谢", "厉害", "牛逼", "卧槽",
 	"出来", "起来", "过来", "回来", "下来", "上来", "看看", "试试", "说说", "想想",
+	// Media placeholders written into message text by the adapter and the
+	// context builder.
+	"表情", "语音", "视频", "文件", "图片",
 )
 
 // stopChars are single-character Chinese function words. Any bigram that
@@ -25,7 +28,9 @@ var stopChars = runeSetOf(
 	"的了是在我你他她它吗呢吧啊哦呀和也都就还又这那有不个很要会能给把被让对们得么",
 )
 
-// stopWords are common English function words and chat fillers.
+// stopWords are common English function words and chat fillers, including
+// Chinese-internet ASCII slang. Words made of one repeated letter ("hhh",
+// "www") are dropped separately in Terms.
 var stopWords = setOf(
 	"the", "and", "you", "this", "that", "what", "with", "for", "are", "was",
 	"have", "just", "like", "lol", "is", "it", "in", "on", "to", "of",
@@ -38,6 +43,9 @@ var stopWords = setOf(
 	"some", "how", "why", "who", "when", "where", "which", "were", "has", "had",
 	"am", "us", "up", "out", "into", "also", "now", "one", "more", "much",
 	"thanks", "thx", "pls", "please", "hi", "hello", "hey", "xd", "omg", "wtf",
+	"nb", "xswl", "yyds", "awsl", "emm", "emmm", "emmmm", "qwq", "qaq", "orz",
+	"ggs", "hah", "hahah", "lmfao", "rofl", "nmsl", "tql",
+	"zqsg", "plz", "sry", "idk", "btw", "ty", "np", "ez", "wc", "cnm",
 )
 
 func setOf(words ...string) map[string]struct{} {

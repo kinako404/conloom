@@ -45,6 +45,43 @@ func TestTerms_EmptyAndPunctuation(t *testing.T) {
 	}
 }
 
+func TestTerms_DropsMediaPlaceholders(t *testing.T) {
+	if got := Terms("[表情][语音][视频][文件][图片]"); len(got) != 0 {
+		t.Fatalf("Terms(placeholders) = %v, want empty", got)
+	}
+	got := Terms("[表情]原神[图片]")
+	if want := []string{"原神"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Terms() = %v, want %v", got, want)
+	}
+}
+
+func TestMatch_IgnoresMediaPlaceholders(t *testing.T) {
+	p := map[string]float64{"表情": 10, "语音": 9, "视频": 8, "文件": 7, "图片": 6}
+	for _, lvl := range []string{"low", "mid", "high"} {
+		if m, ok := Match(p, "[表情]", lvl); ok || m != nil {
+			t.Errorf("Match(%s, [表情]) = %v,%v, want nil,false", lvl, m, ok)
+		}
+	}
+	p = Update(nil, "[表情]")
+	if len(p) != 0 {
+		t.Fatalf("Update with sticker only = %v, want empty", p)
+	}
+}
+
+func TestTerms_DropsChatFillers(t *testing.T) {
+	in := "hhh hhhh HHHHH nb xswl yyds awsl emm emmm qwq QAQ orz www wwwww gg ok lol wtf omg aaaa zzz xx"
+	if got := Terms(in); len(got) != 0 {
+		t.Fatalf("Terms(fillers) = %v, want empty", got)
+	}
+	got := Terms("hhh 打apex吗 www")
+	if want := []string{"apex"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Terms() = %v, want %v", got, want)
+	}
+	if got, want := Terms("ggg ff7 rpg abab"), []string{"rpg", "abab"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Terms() = %v, want %v", got, want)
+	}
+}
+
 func TestUpdate_DecaysAndCaps(t *testing.T) {
 	p := Update(nil, "原神")
 	if p["原神"] != 1 {

@@ -21,7 +21,9 @@ const (
 // Terms extracts the distinct terms of text in order of first appearance.
 // A term is either a maximal run of ASCII letters (at least 2, lowercased)
 // or a bigram of two adjacent Han characters. Stopwords from stopwords.go
-// are dropped, as is any bigram containing a single-character function word.
+// (including media placeholders such as "[表情]") are dropped, as is any
+// bigram containing a single-character function word and any ASCII word made
+// of one repeated letter ("hhh", "www").
 func Terms(text string) []string {
 	var terms []string
 	seen := map[string]struct{}{}
@@ -37,7 +39,7 @@ func Terms(text string) []string {
 	flushWord := func() {
 		if word.Len() >= 2 {
 			w := word.String()
-			if _, stop := stopWords[w]; !stop {
+			if _, stop := stopWords[w]; !stop && !repeatedLetter(w) {
 				add(w)
 			}
 		}
@@ -79,6 +81,10 @@ func bigram(a, b rune) (string, bool) {
 		return "", false
 	}
 	return s, true
+}
+
+func repeatedLetter(w string) bool {
+	return strings.Count(w, w[:1]) == len(w)
 }
 
 func isASCIILetter(r rune) bool {
