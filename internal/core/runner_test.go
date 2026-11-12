@@ -666,3 +666,46 @@ func TestRunner_MentionNameLookupFailureFallsBack(t *testing.T) {
 		t.Errorf("request lacks the fallback name:\n%s", all)
 	}
 }
+
+// setCharacter stores a persona version for the test group whose character
+// is the made-up 苔灯.
+func (e *testEnv) setCharacter(t *testing.T) {
+	t.Helper()
+	p := conloomapi.DefaultPersona()
+	p.PersonaName, p.CharacterName = "灯塔看守", "苔灯"
+	p.Description = "苔灯是海边小镇的灯塔看守。"
+	if _, err := e.o.personas.Update(context.Background(), testConvKey, "default", conloomapi.PersonaPut{Persona: &p}, "test"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunner_CharacterNameIsBotName(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{short: answer("[18:37] 苔灯：好呀")})
+	env.setCharacter(t)
+	own := env.storeRecord(t, store.MessageRecord{ID: "msg_bot_1", Text: "早上好", FromBot: true})
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "在吗", withName("小明"), mentionBot, replyTo(own.ID))).TaskID)
+	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 || task.Actions[0].Content.Text != "好呀" {
+		t.Fatalf("task = %+v, want the reply with the character's name stripped", task)
+	}
+	msgs := requestMessages(t, env.short.Requests()[0])
+	if sys, _ := msgs[0]["content"].(string); !strings.HasPrefix(sys, "你是苔灯，") || !strings.Contains(sys, "角色设定：\n苔灯是海边小镇的灯塔看守。") {
+		t.Errorf("system prompt = %.80q", sys)
+	}
+	if last := lastContent(env.short.Requests()[0]); !strings.Contains(last, "（回复 你（苔灯） 在 ") {
+		t.Errorf("current = %q, want the bot's message labelled with the character name", last)
+	}
+	if strings.Contains(requestText(t, env.short.Requests()[0]), "织语") {
+		t.Error("request still names the bot 织语")
+	}
+}
+
+func TestRunner_BotNameWithoutCharacter(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{short: answer("织语：好呀")})
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "在吗", mentionBot)).TaskID)
+	if len(task.Actions) != 1 || task.Actions[0].Content.Text != "好呀" {
+		t.Fatalf("task = %+v", task)
+	}
+	if sys, _ := requestMessages(t, env.short.Requests()[0])[0]["content"].(string); !strings.HasPrefix(sys, "你是织语，") {
+		t.Errorf("system prompt = %.40q", sys)
+	}
+}

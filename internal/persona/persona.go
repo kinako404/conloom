@@ -29,7 +29,7 @@ func Validate(p conloomapi.PersonaDoc) error {
 type cachedPrompt struct {
 	version int
 	botName string
-	prompt  string
+	prompt  Prompt
 }
 
 type Service struct {
@@ -119,21 +119,41 @@ func (s *Service) Update(ctx context.Context, convKey, templateName string, put 
 	return pv, nil
 }
 
-// SystemPrompt returns CorePrompt(botName) followed by the rendered current persona. The prompt is
-// cached per conversation and version, so one version always yields byte-identical output.
-func (s *Service) SystemPrompt(ctx context.Context, convKey, templateName, botName string) (prompt string, version int, err error) {
+// Prompt is a conversation's system prompt: Text built from persona version
+// Version, in which the bot is called BotName.
+type Prompt struct {
+	Text    string
+	Version int
+	BotName string
+}
+
+// BotName is the bot's name under persona p: its character name when set,
+// otherwise botName (the configured bot name).
+func BotName(p conloomapi.PersonaDoc, botName string) string {
+	if name := strings.TrimSpace(p.CharacterName); name != "" {
+		return name
+	}
+	return botName
+}
+
+// SystemPrompt returns CorePrompt of the bot's name under the current persona
+// (see BotName) followed by the rendered persona. The prompt is cached per
+// conversation, version and configured bot name, so one version always yields
+// byte-identical output.
+func (s *Service) SystemPrompt(ctx context.Context, convKey, templateName, botName string) (Prompt, error) {
 	pv, err := s.Current(ctx, convKey, templateName)
 	if err != nil {
-		return "", 0, err
+		return Prompt{}, err
 	}
 	s.promptMu.Lock()
 	defer s.promptMu.Unlock()
 	if c, ok := s.prompts[convKey]; ok && c.version == pv.Version && c.botName == botName {
-		return c.prompt, c.version, nil
+		return c.prompt, nil
 	}
-	prompt = CorePrompt(botName) + "\n\n" + Render(pv.Persona)
-	s.prompts[convKey] = cachedPrompt{version: pv.Version, botName: botName, prompt: prompt}
-	return prompt, pv.Version, nil
+	name := BotName(pv.Persona, botName)
+	p := Prompt{Text: CorePrompt(name) + "\n\n" + Render(pv.Persona), Version: pv.Version, BotName: name}
+	s.prompts[convKey] = cachedPrompt{version: pv.Version, botName: botName, prompt: p}
+	return p, nil
 }
 
 // botID returns the bot instance part of a "bot:platform:type:id" conversation key.

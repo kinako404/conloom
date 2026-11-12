@@ -339,19 +339,19 @@ func TestService_SystemPromptStablePerVersion(t *testing.T) {
 	st := newTestStore(t)
 	svc := NewService(st, nil)
 
-	a, va, err := svc.SystemPrompt(ctx, testConvKey, "default", "织语")
+	a, err := svc.SystemPrompt(ctx, testConvKey, "default", "织语")
 	if err != nil {
 		t.Fatalf("SystemPrompt: %v", err)
 	}
-	b, vb, err := svc.SystemPrompt(ctx, testConvKey, "default", "织语")
+	b, err := svc.SystemPrompt(ctx, testConvKey, "default", "织语")
 	if err != nil {
 		t.Fatalf("SystemPrompt: %v", err)
 	}
-	if a != b || va != 1 || vb != 1 {
-		t.Fatalf("same version differs: v%d %q / v%d %q", va, a, vb, b)
+	if a != b || a.Version != 1 || a.BotName != "织语" {
+		t.Fatalf("same version differs: %+v / %+v", a, b)
 	}
-	if want := CorePrompt("织语") + "\n\n" + Render(conloomapi.DefaultPersona()); a != want {
-		t.Fatalf("prompt = %q, want %q", a, want)
+	if want := CorePrompt("织语") + "\n\n" + Render(conloomapi.DefaultPersona()); a.Text != want {
+		t.Fatalf("prompt = %q, want %q", a.Text, want)
 	}
 
 	edited := conloomapi.DefaultPersona()
@@ -359,12 +359,47 @@ func TestService_SystemPromptStablePerVersion(t *testing.T) {
 	if _, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Persona: &edited}, "29999"); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	c, vc, err := svc.SystemPrompt(ctx, testConvKey, "default", "织语")
+	c, err := svc.SystemPrompt(ctx, testConvKey, "default", "织语")
 	if err != nil {
 		t.Fatalf("SystemPrompt: %v", err)
 	}
-	if vc != 2 || c == a {
-		t.Fatalf("after update: version %d, prompt unchanged = %v", vc, c == a)
+	if c.Version != 2 || c.Text == a.Text {
+		t.Fatalf("after update: version %d, prompt unchanged = %v", c.Version, c.Text == a.Text)
+	}
+}
+
+func TestService_SystemPromptUsesCharacterName(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newTestStore(t), nil)
+	check := func(wantVersion int, wantName string) {
+		t.Helper()
+		p, err := svc.SystemPrompt(ctx, testConvKey, "default", "织语")
+		if err != nil {
+			t.Fatalf("SystemPrompt: %v", err)
+		}
+		if p.Version != wantVersion || p.BotName != wantName || !strings.HasPrefix(p.Text, "你是"+wantName+"，") {
+			t.Fatalf("prompt v%d name %q text %.40q, want v%d named %q", p.Version, p.BotName, p.Text, wantVersion, wantName)
+		}
+	}
+	check(1, "织语")
+	character := testCharacter()
+	if _, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Persona: &character}, "29999"); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	check(2, "苔灯")
+	check(2, "苔灯")
+	one := 1
+	if _, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{RollbackTo: &one}, "29999"); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	check(3, "织语")
+
+	if got := BotName(character, "织语"); got != "苔灯" {
+		t.Errorf("BotName = %q, want 苔灯", got)
+	}
+	character.CharacterName = "  "
+	if got := BotName(character, "织语"); got != "织语" {
+		t.Errorf("BotName with a blank character name = %q, want 织语", got)
 	}
 }
 

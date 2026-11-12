@@ -233,16 +233,16 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		o.metrics.Review.WithLabelValues("input", res.Verdict).Inc()
 		current[i].Text = res.Text
 	}
-	system, _, err := o.personas.SystemPrompt(ctx, task.ConversationKey, bot.PersonaTemplate, bot.Name)
+	system, err := o.personas.SystemPrompt(ctx, task.ConversationKey, bot.PersonaTemplate, bot.Name)
 	if err != nil {
 		return fail(conloomapi.CodeInternal, CopyUnavailable, err)
 	}
 	in := contextbuilder.Input{
-		SystemPrompt:     system,
+		SystemPrompt:     system.Text,
 		ConversationType: conv.Type,
 		History:          history,
 		Current:          current,
-		BotName:          bot.Name,
+		BotName:          system.BotName,
 		ReplyTargets:     o.replyTargets(ctx, task, history, triggers),
 		MentionNames:     o.mentionNames(ctx, task, history, triggers),
 		MaxRecent:        pol.Context.MaxRecentMessages,
@@ -268,8 +268,10 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	// A reply to the bot made only of the transcript format fails like an
 	// empty model output; other tasks send nothing for it (see below).
 	direct := !out.proactive && !out.turn
-	speakers := in.SpeakerNames()
-	strip := func(s string) string { return contextbuilder.StripTranscriptPrefix(s, bot.Name, speakers...) }
+	// The configured name stays a known speaker: replies stored before a
+	// character was set may have echoed it.
+	speakers := append(in.SpeakerNames(), bot.Name)
+	strip := func(s string) string { return contextbuilder.StripTranscriptPrefix(s, system.BotName, speakers...) }
 	call := func(d router.Decision) (openai.ChatResponse, error) {
 		resp, err := o.call(ctx, task, d, in)
 		if err == nil && direct && !isSkip(resp.Content) && strip(resp.Content) == "" {
