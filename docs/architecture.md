@@ -359,7 +359,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - `member_memory`：每群每人一行，显示名、笔记（≤200 字）、好感度（0..100，空表示还没有）、最近直接互动的当地日期、当天模型调整累计、衰减步数、`forgotten_at` 和乐观并发用的 `version`；
 - `memory_revisions`：只追加的修改记录（字段、旧值、新值、来源 consolidate / rule / command / api、原因），保留 30 天。
 
-**整理的触发**（`Scheduler`，`internal/memory/scheduler.go`）：一个后台协程每 2 分钟检查一次所有群，跳过记忆关闭和暂停（`max_interactive_requests: 0`）的群。新消息达到 `consolidate_every` 条就整理；不足时，距上次整理超过 `consolidate_interval`（从没整理过也算）且至少有 20 条新消息也整理。管理员用 `/记忆 整理` 或 `POST …/memory/consolidate` 手动触发时排进同一个协程，同一个群的重复请求合并，不受失败退避限制。所有整理都在这一个协程里串行执行，全局同时只有一个。
+**整理的触发**（`Scheduler`，`internal/memory/scheduler.go`）：一个后台协程每 2 分钟检查一次所有群，跳过记忆关闭和暂停（`max_interactive_requests: 0`）的群。新消息达到 `consolidate_every` 条就整理；不足时，距上次整理超过 `consolidate_interval`（从没整理过也算）且至少有 20 条新消息也整理。管理员用 `/记忆 整理` 或 `POST …/memory/consolidate` 手动触发时排进同一个协程（群暂停时命令回复“群里暂停中…”、接口返回 409 `PAUSED`，不排队），同一个群的重复请求合并，不受失败退避限制。所有整理都在这一个协程里串行执行，全局同时只有一个。
 
 **游标和积压**：一个群第一次整理时建行，游标放在“本群倒数第 `backlog` 条消息之前”（按本群自己的消息条数算，不按全库 `seq`）。记忆从关闭（或从没有 `memory` 段）变成开启时，`PolicyChanged` 给这个群打上跳转标记，下一次整理前把游标往前挪到同样的位置，积压太多的旧消息就跳过；`backlog: 0` 表示只整理开启之后的新消息。关闭期间已有数据冻结，重新开启从原游标继续（受上面的跳转限制）。
 

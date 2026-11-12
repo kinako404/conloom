@@ -188,19 +188,24 @@ func (s *Server) deleteMemberMemory(w http.ResponseWriter, r *http.Request, tok 
 }
 
 // consolidateMemory asks for a consolidation of the conversation; it is
-// refused with 409 MEMORY_DISABLED while memory is off.
+// refused with 409 MEMORY_DISABLED while memory is off and 409 PAUSED while
+// the conversation is paused.
 func (s *Server) consolidateMemory(w http.ResponseWriter, r *http.Request, tok *token) {
 	conv, ok := s.memoryConversation(w, r, tok)
 	if !ok {
 		return
 	}
-	enabled, err := s.memoryEnabled(r.Context(), conv.Key)
+	pv, err := s.d.Policies.Current(r.Context(), conv.Key)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	if !enabled {
+	if p := pv.Policy; !p.Memory.Enabled || !p.Concurrency.AllowLongRequests {
 		s.writeError(w, r, http.StatusConflict, conloomapi.CodeMemoryDisabled, "memory is not enabled for this conversation", false, nil)
+		return
+	}
+	if pv.Policy.Concurrency.MaxInteractiveRequests == 0 {
+		s.writeError(w, r, http.StatusConflict, conloomapi.CodePaused, "the conversation is paused; memory is not consolidated", false, nil)
 		return
 	}
 	if s.d.Memory != nil {

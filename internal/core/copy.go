@@ -61,6 +61,7 @@ const (
 	CopyMemoryNoNote        = "我还没有记下关于你的事。"
 	CopyMemoryForgotten     = "好的，已清空关于你的笔记和好感度。群聊摘要是大家共同的记录，不会逐人删除，会在之后的整理中慢慢被覆盖。"
 	CopyMemoryConsolidating = "已开始整理记忆，完成后不另外通知。"
+	CopyMemoryPaused        = "群里暂停中，现在不会整理记忆。管理员发送 /resume 恢复后再整理。"
 	CopyMemoryNoSummary     = "还没有群聊摘要。"
 	CopyMemoryUsage         = "用法：/记忆 查看我记得的关于你的事；/好感度 查看好感度；/忘记我 清空你的记忆；管理员：/记忆 整理，/记忆 群。"
 )

@@ -396,6 +396,35 @@ func TestMemoryAPI_ConsolidateDisabledAndAccepted(t *testing.T) {
 	}
 }
 
+func TestMemoryAPI_ConsolidatePausedConflict(t *testing.T) {
+	s := newMemServer(t, true)
+	s.accept(t, adapterToken, s.event("20001", "大家好"))
+	const policyPath = "/api/v1/conversations/group_10001/policy"
+	setInteractive := func(n int) {
+		t.Helper()
+		var cur conloomapi.PolicyState
+		decode(t, s.do(t, http.MethodGet, policyPath, adminToken, nil, nil).body, &cur)
+		p := cur.Policy
+		p.Concurrency.MaxInteractiveRequests = n
+		if r := s.do(t, http.MethodPut, policyPath, adminToken, conloomapi.PolicyPut{Policy: p, Reason: "暂停"}, nil); r.status != http.StatusOK {
+			t.Fatalf("set max_interactive_requests %d: status %d, body %s", n, r.status, r.body)
+		}
+	}
+	setInteractive(0)
+	path := memoryPath + "/consolidate"
+	expectError(t, s.do(t, http.MethodPost, path, memoryToken, nil, nil), http.StatusConflict, conloomapi.CodePaused)
+	if calls := s.trigger.calls(); len(calls) != 0 {
+		t.Fatalf("paused consolidate triggered %v", calls)
+	}
+	setInteractive(1)
+	if r := s.do(t, http.MethodPost, path, memoryToken, nil, nil); r.status != http.StatusAccepted {
+		t.Fatalf("POST consolidate after resuming: status %d, body %s", r.status, r.body)
+	}
+	if calls := s.trigger.calls(); !slices.Equal(calls, []string{memGroupKey}) {
+		t.Fatalf("trigger calls = %v, want [%s]", calls, memGroupKey)
+	}
+}
+
 func TestMemoryAPI_ConsolidateWithoutTrigger(t *testing.T) {
 	s := newTestServerWith(t, serverOpts{configure: func(c *config.Config) {
 		c.APITokens = append(c.APITokens, config.APIToken{Name: "memory-main", Token: memoryToken,

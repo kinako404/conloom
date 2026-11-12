@@ -20,7 +20,8 @@ type MemoryTrigger interface {
 // memCmd runs the memory commands /好感度, /记忆 and /忘记我 (and their
 // English forms) in a group. /忘记我 works whether or not memory is on; the
 // others need it on, and /好感度 also needs affinity. Admins can also start a
-// consolidation (/记忆 整理) and see the group summary (/记忆 群).
+// consolidation (/记忆 整理, refused while the group is paused) and see the
+// group summary (/记忆 群).
 func (o *Orchestrator) memCmd(ctx context.Context, task store.TaskRecord, isAdmin bool, command, args string) (string, error) {
 	if convType(task.ConversationKey) != conloomapi.ConvGroup {
 		return CopyMemoryGroupOnly, nil
@@ -58,6 +59,9 @@ func (o *Orchestrator) memCmd(ctx context.Context, task store.TaskRecord, isAdmi
 	case fields[0] == "整理" || fields[0] == "consolidate":
 		if !isAdmin {
 			return CopyAdminOnly, nil
+		}
+		if pol.Concurrency.MaxInteractiveRequests == 0 {
+			return CopyMemoryPaused, nil
 		}
 		if o.memTrigger != nil {
 			o.memTrigger.Trigger(task.ConversationKey)

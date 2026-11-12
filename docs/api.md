@@ -115,7 +115,7 @@
 
 `DELETE …/memory/members/{user_id}` 等同于这位群友发 `/忘记我`：清空笔记和好感度，删除他的修改记录，记下忘记的时间，写审计 `memory.forget`，返回 `{"ok":true}`。记忆关闭时同样可用；群聊摘要不会逐人删除。
 
-`POST …/memory/consolidate` 请求立即整理一次，返回 202 `{"accepted":true}`，整理在后台执行，结果可以用 `GET …/memory` 查看。本群没有开启记忆时返回 409 `MEMORY_DISABLED`，不会整理。
+`POST …/memory/consolidate` 请求立即整理一次，返回 202 `{"accepted":true}`，整理在后台执行，结果可以用 `GET …/memory` 查看。本群没有开启记忆时返回 409 `MEMORY_DISABLED`；本群暂停中（`concurrency.max_interactive_requests: 0`）时返回 409 `PAUSED`。两种情况都不会整理。
 
 ## 错误格式
 
@@ -133,6 +133,7 @@
 | 404 | `NOT_FOUND` | 任务、动作或会话不存在 |
 | 409 | `DUPLICATE_EVENT` | 幂等键重复但请求体不同，或平台消息已经提交过 |
 | 409 | `MEMORY_DISABLED` | 请求整理记忆，但本群没有开启记忆 |
+| 409 | `PAUSED` | 请求整理记忆，但本群暂停中 |
 | 503 | `INTERNAL_ERROR`，`retryable: true` | 服务正在关闭，或记忆修改反复冲突，可以稍后重试 |
 | 500 | `INTERNAL_ERROR` | 其他内部错误，细节只写日志，可用 `trace_id` 查找 |
 

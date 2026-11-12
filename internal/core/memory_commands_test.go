@@ -235,6 +235,32 @@ func TestMemoryCommand_AdminSubcommands(t *testing.T) {
 	}
 }
 
+func TestMemoryCommand_ConsolidateWhilePaused(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: memCmdConfig(true, true)})
+	trig := &memCmdTrigger{}
+	env.o.memTrigger = trig
+	if got := env.command(t, "29999", "/pause"); got != CopyPaused {
+		t.Fatalf("/pause = %q", got)
+	}
+	for _, text := range []string{"/记忆 整理", "/memory consolidate"} {
+		if got := env.command(t, "29999", text); got != CopyMemoryPaused {
+			t.Fatalf("%s while paused = %q, want %q", text, got, CopyMemoryPaused)
+		}
+	}
+	if calls := trig.calls(); len(calls) != 0 {
+		t.Fatalf("paused consolidation triggered %v", calls)
+	}
+	if got := env.command(t, "29999", "/resume"); got != CopyResumed {
+		t.Fatalf("/resume = %q", got)
+	}
+	if got := env.command(t, "29999", "/记忆 整理"); got != CopyMemoryConsolidating {
+		t.Fatalf("/记忆 整理 after resuming = %q", got)
+	}
+	if calls := trig.calls(); len(calls) != 1 {
+		t.Fatalf("trigger calls after resuming = %v, want 1", calls)
+	}
+}
+
 func TestMemoryCommand_NilTriggerStillReplies(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{configure: memCmdConfig(true, true)})
 	if got := env.command(t, "29999", "/记忆 整理"); got != CopyMemoryConsolidating {
