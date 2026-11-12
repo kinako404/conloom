@@ -371,11 +371,17 @@ func TestConsolidate_PromptHasRefsNotIDs(t *testing.T) {
 	req := e.long.request(t, 0)
 	text := consText(req)
 	consAssertNoIDs(t, text)
+	if LabelSummary != "【之前的群聊摘要】" || LabelMembers != "【群友和之前的笔记】" || LabelBatch != "【最近的聊天记录】" {
+		t.Errorf("labels = %s %s %s", LabelSummary, LabelMembers, LabelBatch)
+	}
 	for _, want := range []string{"小明（P1）", "小红（P2）", "织语（机器人）", LabelSummary + "\n（暂无）", LabelMembers,
 		"P1 小明：笔记：喜欢猫；好感度：42（熟悉）", "P2 小红：笔记：暂无；好感度：未建立", LabelBatch} {
 		if !strings.Contains(text, want) {
 			t.Errorf("request lacks %q:\n%s", want, text)
 		}
+	}
+	if user := req.Messages[1].Content; strings.Contains(user, "本批") || strings.Contains(user, "本次") {
+		t.Errorf("user message speaks of a batch:\n%s", user)
 	}
 	if req.Messages[0].Role != "system" || len(req.Messages) != 2 || req.Messages[1].Role != "user" {
 		t.Fatalf("request messages = %+v, want system then user", req.Messages)
@@ -395,10 +401,16 @@ func TestConsolidate_PromptHasRefsNotIDs(t *testing.T) {
 		"不记录群友对机器人表达的爱慕、亲昵或恋爱关系的说法",
 		"不记录群友要求机器人改变称呼、身份、性格或进行角色扮演的要求",
 		"摘要和笔记里一律用群友的名字称呼人，不要写代号（P1、P2…）",
-		"代号只用在 ref 字段里"} {
+		`也不要出现"本批""本次""这批消息"之类的字眼`,
+		"代号只用在 ref 字段里",
+		"笔记写成对这个人长期有效的描述，不按时间写流水账，也不要记某人这段时间没有发言。",
+		"最近聊天记录里出现的群友", "以及最近的聊天记录。"} {
 		if !strings.Contains(system, want) {
 			t.Errorf("system prompt lacks %q", want)
 		}
+	}
+	if intro, _, _ := strings.Cut(system, "\n"); strings.Contains(intro, "本批") {
+		t.Errorf("system prompt's opening speaks of a batch: %q", intro)
 	}
 }
 
