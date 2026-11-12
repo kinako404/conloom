@@ -36,16 +36,21 @@ func TestParseOutput_ClampsAndTruncates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseOutput: %v", err)
 	}
-	if n := utf8.RuneCountInString(out.Summary); n != SummaryMaxRunes {
-		t.Errorf("summary runes = %d, want %d", n, SummaryMaxRunes)
+	if n := utf8.RuneCountInString(out.Summary); n != consRawMaxRunes {
+		t.Errorf("summary runes = %d, want %d (only the wide raw limit)", n, consRawMaxRunes)
 	}
 	if len(out.Members) != 6 {
 		t.Fatalf("members = %+v, want 6 (duplicate P1 dropped, unknown P9 kept)", out.Members)
 	}
 	first := out.Members[0]
-	if first.Ref != "P1" || utf8.RuneCountInString(first.Note) != NoteMaxRunes || utf8.RuneCountInString(first.Reason) != 200 || first.Delta != 3 {
-		t.Errorf("P1 = note %d runes, reason %d runes, delta %d; want 200, 200, 3 (first P1 wins)",
+	if first.Ref != "P1" || utf8.RuneCountInString(first.Note) != 250 || utf8.RuneCountInString(first.Reason) != 250 || first.Delta != 3 {
+		t.Errorf("P1 = note %d runes, reason %d runes, delta %d; want 250, 250 (not cut yet), 3 (first P1 wins)",
 			utf8.RuneCountInString(first.Note), utf8.RuneCountInString(first.Reason), first.Delta)
+	}
+	stored := consResolveRefs(out, nil, nil)
+	if s, n, r := utf8.RuneCountInString(stored.Summary), utf8.RuneCountInString(stored.Members[0].Note),
+		utf8.RuneCountInString(stored.Members[0].Reason); s != SummaryMaxRunes || n != NoteMaxRunes || r != consReasonMaxRunes {
+		t.Errorf("resolved = summary %d, note %d, reason %d runes; want %d, %d, %d", s, n, r, SummaryMaxRunes, NoteMaxRunes, consReasonMaxRunes)
 	}
 	for i, want := range []struct {
 		ref   string
@@ -79,6 +84,10 @@ func TestConsTruncate_PrefersSentenceEnd(t *testing.T) {
 		{"没有句末标点的一长串字", 5, "没有句末标"},
 		{"逗号，不算，句末", 6, "逗号，不算，"},
 		{"a.b.c.d", 3, "a.b"},
+		{"一二三四五六。七八九十甲乙", 12, "一二三四五六。"},
+		{"嗯。" + strings.Repeat("长", 250), 200, "嗯。" + strings.Repeat("长", 198)},
+		{"一二。三四五六七八九十", 7, "一二。三四五六"},
+		{"一二。三四五六七八九十", 6, "一二。"},
 	} {
 		if got := consTruncate(c.in, c.max); got != c.want {
 			t.Errorf("consTruncate(%q, %d) = %q, want %q", c.in, c.max, got, c.want)
@@ -89,6 +98,8 @@ func TestConsTruncate_PrefersSentenceEnd(t *testing.T) {
 func TestConsReplaceRefs(t *testing.T) {
 	names := map[string]string{"P1": "小明", "P2": "小红", "P3": "一位群友"}
 	for _, c := range []struct{ in, want string }{
+		{"小明 （P1）喜欢猫", "小明喜欢猫"},
+		{"小明\u3000(P1)喜欢猫", "小明喜欢猫"},
 		{"小明（P1）喜欢猫", "小明喜欢猫"},
 		{"小明(P1)喜欢猫", "小明喜欢猫"},
 		{"小明（ P1 ）喜欢猫", "小明喜欢猫"},
@@ -107,9 +118,33 @@ func TestConsReplaceRefs(t *testing.T) {
 		{"没有代号", "没有代号"},
 		{"", ""},
 	} {
-		if got := consReplaceRefs(c.in, names); got != c.want {
+		if got := consReplaceRefs(c.in, names, nil); got != c.want {
 			t.Errorf("consReplaceRefs(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestConsReplaceRefs_LeavesCodesSeenInTheInput(t *testing.T) {
+	names := map[string]string{"P1": "小明", "P2": "小红", "P5": "一位群友"}
+	literal := consLiteralCodes("小红最近在玩P5，很喜欢", "P1 级别的bug", "1P和P2对战", "P12 不算")
+	if want := map[string]bool{"P5": true, "P1": true, "P2": true, "P12": true}; len(literal) != len(want) ||
+		!literal["P5"] || !literal["P1"] || !literal["P2"] || !literal["P12"] {
+		t.Fatalf("consLiteralCodes = %v, want %v", literal, want)
+	}
+	for _, c := range []struct{ in, want string }{
+		{"小红最近在玩P5，很喜欢", "小红最近在玩P5，很喜欢"},
+		{"P1 级别的bug", "P1 级别的bug"},
+		{"1P和P2对战", "1P和P2对战"},
+		{"小明（P1）修了P1 级别的bug", "小明修了P1 级别的bug"},
+		{"P2（小红）在玩P5", "小红在玩P5"},
+		{"他（P2）说", "他（小红）说"},
+	} {
+		if got := consReplaceRefs(c.in, names, literal); got != c.want {
+			t.Errorf("consReplaceRefs(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	if got := consReplaceRefs("P1和P2", names, map[string]bool{"P1": true}); got != "P1和小红" {
+		t.Errorf("only P1 seen in the input: %q, want P2 still replaced", got)
 	}
 }
 
@@ -120,7 +155,7 @@ func TestConsResolveRefs_TruncatesAfterReplacing(t *testing.T) {
 	out := consResolveRefs(modelOutput{Summary: summary, Members: []modelMember{
 		{Ref: "P1", Note: note, Reason: "P1 很友善"},
 		{Ref: "P9", Note: "P1 和 P9"},
-	}}, names)
+	}}, names, nil)
 	if want := strings.Repeat("猫", 180) + "。"; out.Members[0].Note != want {
 		t.Errorf("note = %q (%d runes), want cut at the sentence end", out.Members[0].Note, utf8.RuneCountInString(out.Members[0].Note))
 	}

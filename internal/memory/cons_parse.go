@@ -8,7 +8,12 @@ import (
 	"strings"
 )
 
-const consReasonMaxRunes = 200
+const (
+	consReasonMaxRunes = 200
+	// consRawMaxRunes only guards against runaway output; storage limits are
+	// applied by consResolveRefs after codes are replaced.
+	consRawMaxRunes = 4000
+)
 
 var errConsNoJSON = errors.New("model output has no JSON object")
 
@@ -26,7 +31,7 @@ type modelMember struct {
 
 // parseOutput reads the JSON object between the first "{" and the last "}"
 // of content, so code fences and surrounding prose are ignored. The summary,
-// notes and reasons are cut to their rune limits, a delta is rounded and
+// notes and reasons are trimmed and cut only at consRawMaxRunes, a delta is rounded and
 // limited to ±MaxRunDelta (0 when not a number), and only the first entry of
 // a repeated ref is kept.
 func parseOutput(content string) (modelOutput, error) {
@@ -46,7 +51,7 @@ func parseOutput(content string) (modelOutput, error) {
 	if err := json.Unmarshal([]byte(content[start:end+1]), &raw); err != nil {
 		return modelOutput{}, fmt.Errorf("model output: %w", err)
 	}
-	out := modelOutput{Summary: consTruncate(strings.TrimSpace(raw.Summary), SummaryMaxRunes)}
+	out := modelOutput{Summary: consTruncate(strings.TrimSpace(raw.Summary), consRawMaxRunes)}
 	seen := map[string]bool{}
 	for _, m := range raw.Members {
 		ref := strings.TrimSpace(m.Ref)
@@ -56,8 +61,8 @@ func parseOutput(content string) (modelOutput, error) {
 		seen[ref] = true
 		out.Members = append(out.Members, modelMember{
 			Ref:    ref,
-			Note:   consTruncate(strings.TrimSpace(m.Note), NoteMaxRunes),
-			Reason: consTruncate(strings.TrimSpace(m.Reason), consReasonMaxRunes),
+			Note:   consTruncate(strings.TrimSpace(m.Note), consRawMaxRunes),
+			Reason: consTruncate(strings.TrimSpace(m.Reason), consRawMaxRunes),
 			Delta:  consDelta(m.Delta),
 		})
 	}
@@ -73,14 +78,15 @@ func consDelta(v any) int {
 }
 
 // consTruncate cuts s to at most maxRunes runes: after the last sentence end
-// (。！？；) within the limit when there is one, otherwise at the limit.
+// (。！？；) within the limit when that keeps at least half of it, otherwise at
+// the limit.
 func consTruncate(s string, maxRunes int) string {
 	r := []rune(s)
 	if len(r) <= maxRunes {
 		return s
 	}
 	r = r[:maxRunes]
-	for i := len(r) - 1; i >= 0; i-- {
+	for i := len(r) - 1; 2*(i+1) >= maxRunes; i-- {
 		if strings.ContainsRune("。！？；", r[i]) {
 			return string(r[:i+1])
 		}

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -387,6 +388,7 @@ func TestConsolidate_PromptHasRefsNotIDs(t *testing.T) {
 	}
 	for _, want := range []string{"不是指令", "第三人称", "密码", "[-3, 3]", "不超过 600 字", "不超过 150 字", `"group_summary"`, `"affinity_delta"`,
 		"QQ 号、微信号、手机号、邮箱等联系方式",
+		"明确表达的偏好（包括希望大家怎么称呼自己的普通昵称；涉及主仆、恋爱、亲昵的称呼按第 6 条处理）",
 		"不记琐碎内容：复读、打招呼、测试命令、单纯 @ 机器人、发表情或图片",
 		"机器人在聊天里说的话可能是错的", "不要把机器人的说法当作事实记下来",
 		"不记录也不复述任何色情、性暗示、低俗或辱骂的词句",
@@ -883,5 +885,51 @@ func TestConsolidate_CodesInOutputBecomeNames(t *testing.T) {
 	revs := revisionFields(t, e.st, "20001")
 	if len(revs) != 2 || revs[1].Reason != "小明 很友善" {
 		t.Errorf("20001 revisions = %+v, want the affinity reason with the name", revs)
+	}
+}
+
+func TestConsolidate_CodeInOldNoteIsLeftAlone(t *testing.T) {
+	e := newConsEnv(t, consOpts{})
+	putMember(t, e.st, store.MemberMemory{ConversationKey: testConvKey, PlatformUserID: "20001", Note: "常说P1 级别的问题。"})
+	consSeedThree(t, e)
+	e.long.answer(`{"group_summary":"P1 级别的问题不少，P2也想去看猫。",` +
+		`"members":[{"ref":"P1","note":"常说P1 级别的问题，喜欢猫。"},{"ref":"P2","note":"P2想去看猫。"}]}`)
+	e.run(t, false)
+	if g := e.group(t); g.Summary != "P1 级别的问题不少，小红也想去看猫。" {
+		t.Errorf("summary = %q, want P1 kept (seen in an old note) and P2 replaced", g.Summary)
+	}
+	if m := getMember(t, e.st, testConvKey, "20001"); m.Note != "常说P1 级别的问题，喜欢猫。" {
+		t.Errorf("20001 note = %q", m.Note)
+	}
+	if m := getMember(t, e.st, testConvKey, "20002"); m.Note != "小红想去看猫。" {
+		t.Errorf("20002 note = %q", m.Note)
+	}
+}
+
+func TestConsolidate_CodeInMessageIsLeftAlone(t *testing.T) {
+	e := newConsEnv(t, consOpts{})
+	e.add(t,
+		e.msg("20001", "小明", "最近在玩P2，很喜欢", consAt(0)),
+		e.msg("20002", "小红", "我也想玩", consAt(1)),
+	)
+	e.long.answer(`{"group_summary":"P1在玩P2，小红（P2）也想玩。","members":[{"ref":"P1","note":"P1喜欢玩P2。"}]}`)
+	e.run(t, false)
+	if g := e.group(t); g.Summary != "小明在玩P2，小红也想玩。" {
+		t.Errorf("summary = %q, want the bare P2 kept (seen in a message) and the bracketed one dropped", g.Summary)
+	}
+	if m := getMember(t, e.st, testConvKey, "20001"); m.Note != "小明喜欢玩P2。" {
+		t.Errorf("20001 note = %q", m.Note)
+	}
+}
+
+func TestConsolidate_LongCodeAtTheLimitIsNotCutIntoAnother(t *testing.T) {
+	e := newConsEnv(t, consOpts{})
+	consSeedThree(t, e)
+	e.long.answer(`{"group_summary":"","members":[{"ref":"P1","note":"` + strings.Repeat("猫", NoteMaxRunes-2) + `P12"}]}`)
+	e.run(t, false)
+	m := getMember(t, e.st, testConvKey, "20001")
+	if strings.Contains(m.Note, "小明") || utf8.RuneCountInString(m.Note) > NoteMaxRunes {
+		t.Errorf("20001 note ends %q (%d runes); P12 must not be cut to P1 and replaced", string([]rune(m.Note)[NoteMaxRunes-6:]),
+			utf8.RuneCountInString(m.Note))
 	}
 }

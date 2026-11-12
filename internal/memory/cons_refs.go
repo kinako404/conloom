@@ -8,30 +8,36 @@ const consMaxParenName = 40
 // consResolveRefs replaces the batch codes in the summary, notes and reasons
 // of out with the members' names (see consReplaceRefs) and cuts them to
 // their storage limits again.
-func consResolveRefs(out modelOutput, names map[string]string) modelOutput {
-	resolved := modelOutput{Summary: consTruncate(consReplaceRefs(out.Summary, names), SummaryMaxRunes)}
+func consResolveRefs(out modelOutput, names map[string]string, literal map[string]bool) modelOutput {
+	resolved := modelOutput{Summary: consTruncate(consReplaceRefs(out.Summary, names, literal), SummaryMaxRunes)}
 	for _, m := range out.Members {
-		m.Note = consTruncate(consReplaceRefs(m.Note, names), NoteMaxRunes)
-		m.Reason = consTruncate(consReplaceRefs(m.Reason, names), consReasonMaxRunes)
+		m.Note = consTruncate(consReplaceRefs(m.Note, names, literal), NoteMaxRunes)
+		m.Reason = consTruncate(consReplaceRefs(m.Reason, names, literal), consReasonMaxRunes)
 		resolved.Members = append(resolved.Members, m)
 	}
 	return resolved
 }
 
 // consReplaceRefs replaces each code of names in s (such as "P1") with its
-// name: "名字（P1）" keeps just the name, "P1（名字）" becomes the name, a code
-// in brackets after anything else becomes the name in brackets, and a bare
-// code becomes the name. Full- and half-width brackets both count. A code
-// matches only whole, so "P1" never matches in "P12" or "MP1"; codes missing
-// from names are left as they are.
-func consReplaceRefs(s string, names map[string]string) string {
+// name: "名字（P1）" and "名字 （P1）" keep just the name, "P1（名字）" becomes
+// the name, a code in brackets after anything else becomes the name in
+// brackets, and a bare code becomes the name unless it is in literal (codes
+// written in the batch's own input, such as a game called P5, which are kept
+// as written). Full- and half-width brackets both count. A code matches only
+// whole, so "P1" never matches in "P12" or "MP1"; codes missing from names
+// are left as they are.
+func consReplaceRefs(s string, names map[string]string, literal map[string]bool) string {
 	r := []rune(s)
 	var b strings.Builder
 	for i := 0; i < len(r); {
 		if consOpenBracket(r[i]) {
 			if ref, end, ok := consBracketedCode(r, i); ok {
 				if name, known := names[ref]; known {
-					if !strings.HasSuffix(b.String(), name) {
+					before := strings.TrimRight(b.String(), " \u3000")
+					if strings.HasSuffix(before, name) {
+						b.Reset()
+						b.WriteString(before)
+					} else {
 						b.WriteRune(r[i])
 						b.WriteString(name)
 						b.WriteRune(r[end-1])
@@ -53,11 +59,17 @@ func consReplaceRefs(s string, names map[string]string) string {
 			i = end
 			continue
 		}
-		b.WriteString(name)
-		i = end
-		if inner, after, ok := consBracketed(r, i); ok && strings.TrimSpace(inner) == name {
+		if inner, after, ok := consBracketed(r, end); ok && strings.TrimSpace(inner) == name {
+			b.WriteString(name)
 			i = after
+			continue
 		}
+		if literal[ref] {
+			b.WriteString(ref)
+		} else {
+			b.WriteString(name)
+		}
+		i = end
 	}
 	return b.String()
 }
@@ -125,4 +137,19 @@ func consCloseBracket(c rune) bool { return c == '）' || c == ')' }
 
 func consWordRune(c rune) bool {
 	return c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// consLiteralCodes returns the codes ("P" and digits, whole) written in texts.
+func consLiteralCodes(texts ...string) map[string]bool {
+	codes := map[string]bool{}
+	for _, t := range texts {
+		r := []rune(t)
+		for i := 0; i < len(r); i++ {
+			if ref, end := consCodeAt(r, i); ref != "" {
+				codes[ref] = true
+				i = end - 1
+			}
+		}
+	}
+	return codes
 }

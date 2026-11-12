@@ -275,10 +275,18 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 		return consOutcome{}, c.fail(ctx, *g, consErrParse, err, resp)
 	}
 	names := make(map[string]string, len(members))
+	written := []string{g.Summary}
 	for _, m := range members {
 		names[m.Ref] = m.Name
+		written = append(written, m.Name, m.Note)
 	}
-	out = consResolveRefs(out, names)
+	for _, m := range msgs[:b.Messages] {
+		written = append(written, m.Text)
+	}
+	for _, t := range in.ReplyTargets {
+		written = append(written, t.Text)
+	}
+	out = consResolveRefs(out, names, consLiteralCodes(written...))
 
 	day := LocalDay(now, c.d.Location)
 	w, entries := c.compose(*g, b, out, mp.Affinity, day, now)
