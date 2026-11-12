@@ -7,7 +7,9 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/ids"
+	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -55,13 +57,13 @@ func (o *Orchestrator) execCommand(ctx context.Context, task store.TaskRecord, t
 	by := "command:" + task.ActorPlatformUserID
 	switch task.Command {
 	case "help":
-		return CopyHelp(bot.Name), nil
-	case "persona":
 		pv, err := o.personas.Current(ctx, task.ConversationKey, bot.PersonaTemplate)
 		if err != nil {
 			return "", err
 		}
-		return CopyPersonaInfo(pv.Persona.PersonaName, pv.Version), nil
+		return CopyHelp(persona.BotName(pv.Persona, bot.Name)), nil
+	case "persona":
+		return o.personaCommand(ctx, task, bot, isAdmin, by, commandArgs(triggers))
 	case "stop":
 		return o.stop(ctx, task, isAdmin)
 	case "pause":
@@ -95,6 +97,46 @@ func (o *Orchestrator) execCommand(ctx context.Context, task store.TaskRecord, t
 		return o.proactiveCommand(ctx, task, isAdmin, commandArgs(triggers))
 	}
 	return "", fmt.Errorf("core: unknown command %q", task.Command)
+}
+
+// personaCommand shows the current persona to anyone; admins can also list
+// the persona templates ("list") and apply one ("use <name>").
+func (o *Orchestrator) personaCommand(ctx context.Context, task store.TaskRecord, bot config.BotConfig, isAdmin bool, by, args string) (string, error) {
+	fields := strings.Fields(args)
+	if len(fields) == 0 {
+		pv, err := o.personas.Current(ctx, task.ConversationKey, bot.PersonaTemplate)
+		if err != nil {
+			return "", err
+		}
+		return CopyPersonaInfo(pv.Persona.PersonaName, pv.Version, strings.TrimSpace(pv.Persona.CharacterName)), nil
+	}
+	sub := strings.ToLower(fields[0])
+	if sub != "list" && sub != "use" {
+		return CopyPersonaUsage, nil
+	}
+	if !isAdmin {
+		return CopyAdminOnly, nil
+	}
+	names := o.personas.TemplateNames()
+	switch {
+	case sub == "list" && len(fields) == 1:
+		return CopyPersonaTemplates(names), nil
+	case sub == "use" && len(fields) == 2:
+		name := fields[1]
+		if !slices.Contains(names, name) {
+			return CopyPersonaUnknownTemplate(name, names), nil
+		}
+		pv, err := o.personas.Update(ctx, task.ConversationKey, bot.PersonaTemplate,
+			conloomapi.PersonaPut{Template: name, Reason: "command"}, by)
+		if err != nil && pv.Version == 0 {
+			return "", err
+		}
+		if err != nil {
+			o.log.Error("persona changed but audit failed", "task_id", task.ID, "conversation", task.ConversationKey, "error", err)
+		}
+		return CopyPersonaApplied(name, pv.Version), nil
+	}
+	return CopyPersonaUsage, nil
 }
 
 // commandArgs returns the arguments of the command message: the trimmed text

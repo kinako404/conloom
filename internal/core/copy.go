@@ -8,11 +8,35 @@ import (
 )
 
 func CopyHelp(botName string) string {
-	return "我是" + botName + "。在群里 @我 或回复我的消息就能和我聊天。\n命令：/help 帮助，/stop 停止当前回复，/persona 查看人格，/主动 查看或设置主动搭话；管理员：/pause 暂停，/resume 恢复。"
+	return "我是" + botName + "。在群里 @我 或回复我的消息就能和我聊天。\n命令：/help 帮助，/stop 停止当前回复，/persona 查看人格，/主动 查看或设置主动搭话；管理员：/pause 暂停，/resume 恢复，/persona list 列出人格模板，/persona use <模板名> 切换人格模板。"
 }
 
-func CopyPersonaInfo(name string, version int) string {
-	return "当前人格：" + name + "（第 " + strconv.Itoa(version) + " 版）"
+// CopyPersonaInfo describes the current persona: its name and version, and
+// its character name when it has one.
+func CopyPersonaInfo(name string, version int, character string) string {
+	s := "当前人格：" + name + "（第 " + strconv.Itoa(version) + " 版）"
+	if character != "" {
+		s += "，角色名：" + character
+	}
+	return s
+}
+
+const CopyPersonaUsage = "用法：/persona 查看当前人格；管理员：/persona list 列出人格模板，/persona use <模板名> 切换人格模板。"
+
+// CopyPersonaTemplates lists the persona templates an admin can apply.
+func CopyPersonaTemplates(names []string) string {
+	return "可用的人格模板：" + strings.Join(names, "、") + "。发送 /persona use <模板名> 切换。"
+}
+
+// CopyPersonaUnknownTemplate answers /persona use with a template that does
+// not exist.
+func CopyPersonaUnknownTemplate(name string, names []string) string {
+	return "没有名为 " + name + " 的人格模板。可用的人格模板：" + strings.Join(names, "、") + "。"
+}
+
+// CopyPersonaApplied confirms that template is now the persona, as version.
+func CopyPersonaApplied(template string, version int) string {
+	return "已切换到人格模板 " + template + "（第 " + strconv.Itoa(version) + " 版）。"
 }
 
 const (

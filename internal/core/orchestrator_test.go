@@ -720,8 +720,75 @@ func TestCommand_Help(t *testing.T) {
 
 func TestCommand_Persona(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{})
-	if got, want := env.command(t, "20001", "/persona"), CopyPersonaInfo("默认群友人格", 1); got != want {
+	if got, want := env.command(t, "20001", "/persona"), CopyPersonaInfo("默认群友人格", 1, ""); got != want {
 		t.Fatalf("persona = %q, want %q", got, want)
+	}
+}
+
+func TestCommand_PersonaTemplates(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) {
+		p := conloomapi.DefaultPersona()
+		p.PersonaName, p.CharacterName = "灯塔看守", "苔灯"
+		p.Description = "苔灯是海边小镇的灯塔看守。"
+		c.PersonaTemplates["lighthouse"] = p
+	}})
+	names := []string{"default", "lighthouse"}
+	version := func() store.PersonaVersion {
+		t.Helper()
+		pv, err := env.st.LatestPersona(context.Background(), testConvKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pv
+	}
+
+	if got, want := env.command(t, "20001", "/persona"), CopyPersonaInfo("默认群友人格", 1, ""); got != want {
+		t.Fatalf("/persona = %q, want %q", got, want)
+	}
+	for _, text := range []string{"/persona list", "/persona use lighthouse", "/persona use"} {
+		if got := env.command(t, "20001", text); got != CopyAdminOnly {
+			t.Fatalf("non-admin %s = %q", text, got)
+		}
+	}
+	if got := env.command(t, "20002", "/persona foo"); got != CopyPersonaUsage {
+		t.Fatalf("/persona foo = %q", got)
+	}
+	if got, want := env.command(t, "29999", "/persona list"), CopyPersonaTemplates(names); got != want {
+		t.Fatalf("/persona list = %q, want %q", got, want)
+	}
+	if got, want := env.command(t, "29999", "/persona use nope"), CopyPersonaUnknownTemplate("nope", names); got != want {
+		t.Fatalf("/persona use nope = %q, want %q", got, want)
+	}
+	for _, text := range []string{"/persona use", "/persona use a b"} {
+		if got := env.command(t, "29999", text); got != CopyPersonaUsage {
+			t.Fatalf("%s = %q", text, got)
+		}
+	}
+	if pv := version(); pv.Version != 1 {
+		t.Fatalf("rejected commands stored version %d", pv.Version)
+	}
+
+	if got, want := env.command(t, "29999", "/persona USE lighthouse"), CopyPersonaApplied("lighthouse", 2); got != want {
+		t.Fatalf("/persona use lighthouse = %q, want %q", got, want)
+	}
+	pv := version()
+	if pv.Version != 2 || pv.TemplateName != "lighthouse" || pv.Reason != "command" || pv.UpdatedBy != "command:29999" ||
+		pv.Persona.CharacterName != "苔灯" {
+		t.Fatalf("stored version = %+v", pv)
+	}
+	if got, want := env.command(t, "20002", "/persona"), CopyPersonaInfo("灯塔看守", 2, "苔灯"); got != want {
+		t.Fatalf("/persona = %q, want %q", got, want)
+	}
+	if got := env.command(t, "20002", "/help"); got != CopyHelp("苔灯") {
+		t.Fatalf("/help = %q, want it to introduce 苔灯", got)
+	}
+	for _, want := range []string{"/persona 查看人格", "/persona list", "/persona use <模板名>"} {
+		if !strings.Contains(CopyHelp("织语"), want) {
+			t.Errorf("help lacks %q: %q", want, CopyHelp("织语"))
+		}
+	}
+	if got := CopyPersonaInfo("灯塔看守", 2, "苔灯"); got != "当前人格：灯塔看守（第 2 版），角色名：苔灯" {
+		t.Errorf("CopyPersonaInfo = %q", got)
 	}
 }
 
