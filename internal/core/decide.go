@@ -1,0 +1,103 @@
+// Package core implements ConLoom's message handling pipeline.
+package core
+
+import (
+	"strings"
+	"unicode"
+
+	"github.com/kinako404/conloom/pkg/conloomapi"
+)
+
+const TriggerContinuation = "continuation"
+
+var KnownCommands = []string{"help", "stop", "persona", "pause", "resume"}
+
+// ParseCommand reports whether text (after trimming) starts with prefix
+// immediately followed by a known command word. cmd is lower-cased and args
+// is the trimmed remainder after the command word.
+func ParseCommand(text, prefix string) (cmd, args string, ok bool) {
+	if prefix == "" {
+		return "", "", false
+	}
+	text = strings.TrimSpace(text)
+	rest, found := strings.CutPrefix(text, prefix)
+	if !found {
+		return "", "", false
+	}
+	word := rest
+	if i := strings.IndexFunc(rest, unicode.IsSpace); i >= 0 {
+		word, args = rest[:i], strings.TrimSpace(rest[i:])
+	}
+	word = strings.ToLower(word)
+	for _, known := range KnownCommands {
+		if word == known {
+			return word, args, true
+		}
+	}
+	return "", "", false
+}
+
+type DecideInput struct {
+	BotInstanceID    string
+	SelfPlatformID   string
+	ConversationType string
+	PlatformUserID   string
+	Text             string
+	CommandPrefix    string
+	PrivateChat      string // "off", "admins" or "all"
+	Mentions         []conloomapi.Mention
+	Enabled          bool
+	IsAdmin          bool
+	ReplyToIsBot     bool
+	InContinuation   bool
+}
+
+// Decision is the outcome of Decide. Reason is set only for ignore
+// dispositions; Trigger, Command and Args only for reply.
+type Decision struct {
+	Disposition string
+	Reason      string
+	Trigger     string
+	Command     string
+	Args        string
+}
+
+// Decide classifies an incoming message as reply, observe or ignore.
+func Decide(in DecideInput) Decision {
+	if in.SelfPlatformID != "" && in.PlatformUserID == in.SelfPlatformID {
+		return ignore(conloomapi.SuppressedSelfMessage)
+	}
+	private := in.ConversationType == conloomapi.ConvPrivate
+	if !private && !in.Enabled {
+		return ignore(conloomapi.SuppressedNotEnabled)
+	}
+	if private && (in.PrivateChat == "off" || (in.PrivateChat == "admins" && !in.IsAdmin)) {
+		return ignore(conloomapi.SuppressedPrivateNotAllowed)
+	}
+	if cmd, args, ok := ParseCommand(in.Text, in.CommandPrefix); ok {
+		return Decision{Disposition: conloomapi.DispositionReply, Trigger: conloomapi.TriggerCommand, Command: cmd, Args: args}
+	}
+	if private {
+		return reply(conloomapi.TriggerPrivate)
+	}
+	for _, m := range in.Mentions {
+		if m.Type == "bot" && m.ID == in.BotInstanceID {
+			return reply(conloomapi.TriggerMention)
+		}
+	}
+	if in.ReplyToIsBot {
+		return reply(conloomapi.TriggerReply)
+	}
+	if in.InContinuation {
+		return reply(TriggerContinuation)
+	}
+	return Decision{Disposition: conloomapi.DispositionObserve}
+}
+
+func ignore(reason string) Decision {
+	return Decision{Disposition: conloomapi.DispositionIgnore, Reason: reason}
+}
+
+func reply(trigger string) Decision {
+	return Decision{Disposition: conloomapi.DispositionReply, Trigger: trigger}
+}
