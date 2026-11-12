@@ -118,7 +118,8 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 // the send budget; otherwise it ends as skipped. A sent proactive reply is
 // recorded under the same lock.
 func (o *Orchestrator) finish(ctx context.Context, task store.TaskRecord, out *outcome) (sent bool, err error) {
-	if out.proactive && out.status != conloomapi.TaskSucceeded {
+	// Error copy only answers messages addressed to the bot.
+	if (out.proactive || out.turn) && out.status != conloomapi.TaskSucceeded {
 		out.text = ""
 	}
 	if out.proactive && out.text != "" {
@@ -179,10 +180,9 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	switch task.Meta.Trigger {
 	case conloomapi.TriggerMention, conloomapi.TriggerReply:
 		out.addressed = true
-	case TriggerContinuation, TriggerProactive:
+	case TriggerContinuation:
 		out.addressed = directive == ""
 	}
-	out.proactive = out.proactive && !out.addressed
 	out.turn = task.Meta.Trigger == TriggerContinuation && !out.addressed
 	if out.proactive {
 		// The switch, the user's level or the budget may have changed while
@@ -334,10 +334,15 @@ func (o *Orchestrator) replyTarget(ctx context.Context, botID string, triggers [
 }
 
 // directive returns the hint appended to the current message of a
-// continuation or join task (plan is the join task's), or "" when a merged
-// trigger mentions the bot or replies to it.
+// continuation or join task (plan is the join task's). A continuation task
+// with a trigger that mentions the bot or replies to it gets none; a join task
+// always gets its hint, so it stays under the proactive checks.
 func (o *Orchestrator) directive(ctx context.Context, task store.TaskRecord, triggers []store.MessageRecord, plan joinPlan) string {
-	if task.Meta.Trigger != TriggerContinuation && task.Meta.Trigger != TriggerProactive {
+	switch task.Meta.Trigger {
+	case TriggerProactive:
+		return o.joinDirective(ctx, task, triggers, plan)
+	case TriggerContinuation:
+	default:
 		return ""
 	}
 	for _, t := range triggers {
@@ -357,19 +362,13 @@ func (o *Orchestrator) directive(ctx context.Context, task store.TaskRecord, tri
 			o.log.Warn("load reply target failed", "message_id", t.ReplyTo, "error", err)
 		}
 	}
-	if task.Meta.Trigger == TriggerProactive {
-		return o.joinDirective(ctx, task, triggers, plan)
-	}
 	return CopyDirectiveContinuation(speaker(triggers))
 }
 
-// speaker names the sender of the newest trigger message.
+// speaker names the sender of the newest trigger message for a directive.
 func speaker(triggers []store.MessageRecord) string {
 	last := triggers[len(triggers)-1]
-	if last.DisplayName != "" {
-		return last.DisplayName
-	}
-	return last.PlatformUserID
+	return directiveName(last.DisplayName, last.PlatformUserID)
 }
 
 // call builds the context for the routed profile, waits for admission and

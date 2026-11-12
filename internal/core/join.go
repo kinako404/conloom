@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/kinako404/conloom/internal/admission"
 	"github.com/kinako404/conloom/internal/interest"
@@ -227,7 +228,7 @@ func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 	if now.Sub(o.lastBotSpoke(convKey)) < p.JoinCooldown.Duration {
 		return "", joinNoCooldown
 	}
-	window := joinWindow(msgs, now.Add(-p.JoinWindow.Duration))
+	window := joinWindow(msgs, now.Add(-p.JoinWindow.Duration), pol.Reply.CommandPrefix)
 	if len(window) < p.JoinMinMessages {
 		return "", joinNoFewMessages
 	}
@@ -253,21 +254,11 @@ func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 		plan.users, plan.names = append(plan.users, sp.user), append(plan.names, sp.name)
 	}
 	taskID, err = o.createJoinTask(ctx, convKey, target, plan, now)
+	if reason, ok := joinNotCreated(err); ok {
+		return "", reason
+	}
 	if err != nil {
 		return fail(err)
-	}
-	if err := o.st.AppendProactiveLog(ctx, store.ProactiveLogEntry{
-		ConversationKey: convKey, PlatformUserID: target.PlatformUserID, Kind: store.ProactiveEvaluated,
-		TaskID: taskID, CreatedAt: now.UTC(),
-	}); err != nil {
-		// Without the record the evaluation budget cannot hold, so the
-		// evaluation does not happen.
-		o.log.Error("record join evaluation failed; cancelling the task", "task_id", taskID, "error", err)
-		botID, _, _ := strings.Cut(convKey, ":")
-		if _, cerr := o.cancel(ctx, botID, convKey, taskID); cerr != nil {
-			o.log.Error("cancel unrecorded join task failed", "task_id", taskID, "error", cerr)
-		}
-		return "", joinNoError
 	}
 	o.metrics.Proactive.WithLabelValues(proactiveEvaluated).Inc()
 	o.log.Info("join evaluation", "conversation", convKey, "task_id", taskID, "eligible_speakers", len(speakers),
@@ -275,11 +266,12 @@ func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 	return taskID, ""
 }
 
-// joinWindow returns the member messages since since, oldest first.
-func joinWindow(msgs []store.MessageRecord, since time.Time) []store.MessageRecord {
+// joinWindow returns the member messages since since that are not commands
+// (with commandPrefix), oldest first.
+func joinWindow(msgs []store.MessageRecord, since time.Time, commandPrefix string) []store.MessageRecord {
 	var window []store.MessageRecord
 	for _, m := range msgs {
-		if !m.FromBot && !m.OccurredAt.Before(since) {
+		if _, _, cmd := ParseCommand(m.Text, commandPrefix); !cmd && !m.FromBot && !m.OccurredAt.Before(since) {
 			window = append(window, m)
 		}
 	}
@@ -311,11 +303,7 @@ func (o *Orchestrator) joinSpeakers(ctx context.Context, convKey string, window 
 			return nil, err
 		}
 		if ok {
-			name := names[user]
-			if name == "" {
-				name = user
-			}
-			speakers = append(speakers, joinSpeaker{user: user, name: name, member: m})
+			speakers = append(speakers, joinSpeaker{user: user, name: directiveName(names[user], user), member: m})
 		}
 	}
 	return speakers, nil
@@ -339,8 +327,9 @@ func joinRelevant(window []store.MessageRecord, speakers []joinSpeaker) bool {
 }
 
 // joinTarget returns the newest message of window sent by one of speakers
-// that mentions nobody (the bot already answered a mention of it) and replies
-// to no other member. msgs are the messages window was taken from.
+// that mentions nobody and replies to nobody but its sender (the bot already
+// answered mentions of it and replies to it). msgs are the messages window was
+// taken from.
 func (o *Orchestrator) joinTarget(ctx context.Context, window, msgs []store.MessageRecord, speakers []joinSpeaker) (store.MessageRecord, bool) {
 	byID := make(map[string]store.MessageRecord, len(msgs))
 	for _, m := range msgs {
@@ -349,7 +338,7 @@ func (o *Orchestrator) joinTarget(ctx context.Context, window, msgs []store.Mess
 	for i := len(window) - 1; i >= 0; i-- {
 		m := window[i]
 		if !slices.ContainsFunc(speakers, func(sp joinSpeaker) bool { return sp.user == m.PlatformUserID }) ||
-			len(m.Mentions) > 0 || o.repliesToOther(ctx, m, byID) {
+			len(m.Mentions) > 0 || o.repliesToSomeoneElse(ctx, m, byID) {
 			continue
 		}
 		return m, true
@@ -361,9 +350,9 @@ func mentionsOthers(mentions []conloomapi.Mention) bool {
 	return slices.ContainsFunc(mentions, func(m conloomapi.Mention) bool { return m.Type == "user" || m.Type == "all" })
 }
 
-// repliesToOther reports whether m replies to a message of another member or
-// to a message that is not stored (or cannot be loaded).
-func (o *Orchestrator) repliesToOther(ctx context.Context, m store.MessageRecord, byID map[string]store.MessageRecord) bool {
+// repliesToSomeoneElse reports whether m replies to a message of the bot or of
+// another member, or to a message that is not stored (or cannot be loaded).
+func (o *Orchestrator) repliesToSomeoneElse(ctx context.Context, m store.MessageRecord, byID map[string]store.MessageRecord) bool {
 	if m.ReplyTo == "" {
 		return false
 	}
@@ -377,16 +366,19 @@ func (o *Orchestrator) repliesToOther(ctx context.Context, m store.MessageRecord
 			return true
 		}
 	}
-	return !to.FromBot && to.PlatformUserID != m.PlatformUserID
+	return to.FromBot || to.PlatformUserID != m.PlatformUserID
 }
 
 // errJoinMerged stops a join task that the scheduler would merge into a task
 // of its target created meanwhile.
 var errJoinMerged = errors.New("core: a task of the join target appeared")
 
-// createJoinTask stores and schedules a join task replying to target with
-// background admission priority. Its merge window closes at once, so no later
-// message joins it.
+// createJoinTask records a join evaluation for target and stores and
+// schedules a join task replying to it with background admission priority.
+// The evaluation is recorded first, so no model call escapes the hourly
+// budget (a task that then fails to be stored leaves an extra record, which
+// only tightens the budget). The merge window closes at once, so no later
+// message joins the task.
 func (o *Orchestrator) createJoinTask(ctx context.Context, convKey string, target store.MessageRecord, plan joinPlan, now time.Time) (string, error) {
 	var taskID string
 	closed := MergeOptions{Debounce: time.Nanosecond, MaxMergeWindow: time.Nanosecond}
@@ -405,6 +397,12 @@ func (o *Orchestrator) createJoinTask(ctx context.Context, convKey string, targe
 			Disposition: conloomapi.DispositionReply, TaskID: id, Status: conloomapi.TaskQueued,
 		})
 		if err != nil {
+			return err
+		}
+		if err := o.st.AppendProactiveLog(ctx, store.ProactiveLogEntry{
+			ConversationKey: convKey, PlatformUserID: target.PlatformUserID, Kind: store.ProactiveEvaluated,
+			TaskID: id, CreatedAt: now.UTC(),
+		}); err != nil {
 			return err
 		}
 		// The store keeps every task with the event that created it; a join
@@ -464,4 +462,39 @@ func isQuestion(text string) bool {
 		}
 	}
 	return slices.ContainsFunc(questionWords, func(w string) bool { return strings.Contains(text, w) })
+}
+
+// joinNotCreated maps an error of createJoinTask that only means the group
+// became busy meanwhile to the reason for not joining.
+func joinNotCreated(err error) (string, bool) {
+	if errors.Is(err, errJoinMerged) || errors.Is(err, ErrQueueFull) {
+		return joinNoBusy, true
+	}
+	return "", false
+}
+
+// maxDirectiveName bounds a display name quoted in a directive.
+const maxDirectiveName = 20
+
+// directiveName makes a member's display name safe to quote in a directive:
+// without brackets, line breaks and control characters, trimmed and at most
+// maxDirectiveName characters; fallback (the platform user ID) when nothing
+// is left.
+func directiveName(name, fallback string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case strings.ContainsRune("【】[]", r), unicode.IsControl(r), unicode.In(r, unicode.Zl, unicode.Zp):
+			continue
+		}
+		b.WriteRune(r)
+	}
+	out := []rune(strings.TrimSpace(b.String()))
+	if len(out) > maxDirectiveName {
+		out = []rune(strings.TrimSpace(string(out[:maxDirectiveName])))
+	}
+	if len(out) == 0 {
+		return fallback
+	}
+	return string(out)
 }

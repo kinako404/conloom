@@ -84,7 +84,7 @@ v1 上线后观察到：
 
 ## 7. 成本上界
 
-- 在聊模式：每轮至多 1 次模型调用；一段会话最多 `max_unprompted_replies` 次未点名回复加 `max_consecutive_skips` 次跳过，之后必须重新 @。
+- 在聊模式：每轮至多 1 次模型调用；两次被直接点名之间，一段会话最多 `max_unprompted_replies` 次未点名回复，每两次回复之间最多连续跳过 `max_consecutive_skips − 1` 轮，所以最多 `max_unprompted_replies × max_consecutive_skips` 次模型调用（默认 4 × 2 = 8），之后必须重新 @。
 - 观望模式：每群每小时至多 `join_evaluations_per_hour` 次模型调用，与群消息数量无关。
 
 ## 8. 测试与验收

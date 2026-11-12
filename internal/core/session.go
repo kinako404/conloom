@@ -257,6 +257,26 @@ func (o *Orchestrator) noteBotSpoke(convKey string, at time.Time) {
 	}
 }
 
+// botSpokeSeeded reports whether the group's last bot message was looked up.
+func (o *Orchestrator) botSpokeSeeded(convKey string) bool {
+	o.sessions.mu.Lock()
+	defer o.sessions.mu.Unlock()
+	return o.sessions.seeded[convKey]
+}
+
+// ensureBotSpokeSeeded looks up the group's last bot message unless it was.
+func (o *Orchestrator) ensureBotSpokeSeeded(ctx context.Context, convKey string) error {
+	if o.botSpokeSeeded(convKey) {
+		return nil
+	}
+	msgs, err := o.st.RecentMessages(ctx, convKey, joinScanLimit)
+	if err != nil {
+		return err
+	}
+	o.seedBotSpoke(convKey, msgs, len(msgs) >= joinScanLimit)
+	return nil
+}
+
 // seedBotSpoke learns, once per group, when the bot last spoke there before
 // this process started: from the newest bot message among msgs (the group's
 // newest messages) or, when there is none and full reports that more
@@ -292,8 +312,9 @@ func (o *Orchestrator) seedBotSpoke(convKey string, msgs []store.MessageRecord, 
 
 // updateSession applies a finished group reply task to the conversation's
 // session: a reply to the bot's addressee makes them a participant, a turn
-// answered or skipped by the model counts towards the limits of the session
-// it was reserved in (a turn dropped before the model call counts nowhere),
+// answered, or skipped by the model or failed, counts towards the limits of
+// the session it was reserved in (a turn dropped before the model call counts
+// nowhere),
 // and a join reply starts a session with the eligible members it addressed
 // (its target alone without a plan). Nothing changes while the conversation
 // is paused or sessions are off (continuation window 0).
@@ -329,7 +350,7 @@ func (o *Orchestrator) updateSession(ctx context.Context, task store.TaskRecord,
 		case out.turnSession == nil:
 		case sent:
 			o.turnReplied(key, out.turnSession, now, r.MaxUnpromptedReplies)
-		case out.status == conloomapi.TaskSucceeded:
+		case out.status == conloomapi.TaskSucceeded, out.status == conloomapi.TaskFailed:
 			o.turnSkipped(key, out.turnSession, r.MaxConsecutiveSkips)
 		}
 	case out.proactive:

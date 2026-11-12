@@ -142,6 +142,15 @@ type hookStore struct {
 	mu          sync.Mutex
 	onComplete  func(store.TaskCompletion)
 	completions map[string][]string
+	// failLog makes AppendProactiveLog fail.
+	failLog atomic.Bool
+}
+
+func (h *hookStore) AppendProactiveLog(ctx context.Context, e store.ProactiveLogEntry) error {
+	if h.failLog.Load() {
+		return errors.New("test: proactive log unavailable")
+	}
+	return h.Store.AppendProactiveLog(ctx, e)
 }
 
 func (h *hookStore) setOnComplete(f func(store.TaskCompletion)) {

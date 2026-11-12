@@ -146,21 +146,27 @@ func (o *Orchestrator) dayStart(now time.Time) time.Time {
 // proactiveSendAllowed re-checks, before a join task calls the model and
 // just before its reply is stored, that the bot may still speak up: the group
 // is not paused, proactive replies are on, the task's target is still a
-// target within the send budget, no session started and the bot did not speak
-// in the group since the task was created. The caller of the send-time check
-// holds the conversation's proactive lock.
+// target within the send budget, no session started, and the bot did not
+// speak in the group since the task was created nor within the join cooldown
+// (looked up in the store first if this process does not know it yet, as for
+// a task recovered after a restart). The caller of the send-time check holds
+// the conversation's proactive lock.
 func (o *Orchestrator) proactiveSendAllowed(ctx context.Context, task store.TaskRecord) (bool, error) {
 	pv, err := o.policies.Current(ctx, task.ConversationKey)
 	if err != nil {
 		return false, err
 	}
 	pol, now := pv.Policy, o.now()
-	if pol.Concurrency.MaxInteractiveRequests == 0 ||
-		o.sessionActive(task.ConversationKey, now, pol.Reply.ContinuationWindow.Duration) ||
-		o.lastBotSpoke(task.ConversationKey).After(task.CreatedAt) {
-		return false, nil
+	if err := o.ensureBotSpokeSeeded(ctx, task.ConversationKey); err != nil {
+		return false, err
 	}
 	p := pol.Proactive
+	spoke := o.lastBotSpoke(task.ConversationKey)
+	if pol.Concurrency.MaxInteractiveRequests == 0 ||
+		o.sessionActive(task.ConversationKey, now, pol.Reply.ContinuationWindow.Duration) ||
+		spoke.After(task.CreatedAt) || now.Sub(spoke) < p.JoinCooldown.Duration {
+		return false, nil
+	}
 	m, ok, err := o.proactiveTarget(ctx, task.ConversationKey, task.ActorPlatformUserID, p, now)
 	if err != nil || !ok {
 		return false, err
