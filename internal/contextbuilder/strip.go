@@ -10,29 +10,40 @@ import (
 // real content.
 const transcriptName = `[^\n:：，。！？、；,.!?;]`
 
+// Annotations after the speaker's name in a history line: what it replies to
+// and who it mentions, in that order.
+const (
+	replyAnnotationRE   = `（回复[^\n]{0,80}?）`
+	mentionAnnotationRE = `（@了[^\n]{0,200}?）`
+	annotationsRE       = `(?:` + replyAnnotationRE + `)?(?:` + mentionAnnotationRE + `)?`
+)
+
 // transcriptPrefixes match, at the start of a reply, the history line prefix
-// "[HH:MM] 名字：" (optionally with its reply annotation) and the header lines
-// of the current message and the recent-history block.
+// "[HH:MM] 名字：" (optionally with its annotations), the header lines of the
+// current message and the recent-history block, and the current message's
+// mention line.
 var transcriptPrefixes = []*regexp.Regexp{
-	regexp.MustCompile(`^\[\d{1,2}:\d{2}\]\s*` + transcriptName + `{1,40}?（回复[^\n]{0,80}?）\s*[：:]`),
+	regexp.MustCompile(`^\[\d{1,2}:\d{2}\]\s*` + transcriptName + `{1,40}?(?:` + replyAnnotationRE + `(?:` + mentionAnnotationRE + `)?|` + mentionAnnotationRE + `)\s*[：:]`),
 	regexp.MustCompile(`^\[\d{1,2}:\d{2}\]\s*` + transcriptName + `{1,40}[：:]`),
 	regexp.MustCompile(`^【当前消息】[^\n]*(?:\n|$)`),
 	regexp.MustCompile(`^【近期消息[^\n]*(?:\n|$)`),
+	regexp.MustCompile(`^` + mentionAnnotationRE + `[ \t]*(?:\n|$)`),
 }
 
 var (
 	transcriptTime     = regexp.MustCompile(`^\[\d{1,2}:\d{2}\]\s*`)
-	transcriptNameTail = regexp.MustCompile(`^(?:（回复[^\n]{0,80}?）)?(?:\s*[：:]|[ \t]*(?:\n|$))`)
+	transcriptNameTail = regexp.MustCompile(`^` + annotationsRE + `(?:\s*[：:]|[ \t]*(?:\n|$))`)
 )
 
 // StripTranscriptPrefix removes the prompt's transcript formatting that a
-// model echoed at the start of its reply: repeated "[HH:MM] 名字：" prefixes,
-// the 【当前消息】 and 【近期消息…】 header lines and "<botName>：". A name
-// holds no sentence punctuation unless it is one of knownNames (the
-// conversation's speakers) or botName. For those names a bare header line
-// "[HH:MM] 名字" without the colon (optionally with its reply annotation) is
-// removed too. Text that does not start with such a prefix is returned
-// unchanged.
+// model echoed at the start of its reply: repeated "[HH:MM] 名字：" prefixes
+// (with or without their "（回复 …）" and "（@了 …）" annotations), the
+// 【当前消息】 and 【近期消息…】 header lines, a "（@了 …）" line and
+// "<botName>：". A name holds no sentence punctuation unless it is one of
+// knownNames (the conversation's speakers) or botName. For those names a bare
+// header line "[HH:MM] 名字" without the colon (optionally with its
+// annotations) is removed too. Text that does not start with such a prefix is
+// returned unchanged.
 func StripTranscriptPrefix(text, botName string, knownNames ...string) string {
 	s := strings.TrimSpace(text)
 	names := knownNames
@@ -70,8 +81,8 @@ func StripTranscriptPrefix(text, botName string, knownNames ...string) string {
 
 // cutKnownSpeaker removes a "[HH:MM] <name>：" prefix, or a bare
 // "[HH:MM] <name>" line ending in a newline or the end of s, optionally with
-// its reply annotation, whose name is exactly one of names, preferring the
-// longest such name.
+// its reply and mention annotations, whose name is exactly one of names,
+// preferring the longest such name.
 func cutKnownSpeaker(s string, names []string) (string, bool) {
 	loc := transcriptTime.FindStringIndex(s)
 	if loc == nil {

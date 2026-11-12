@@ -517,7 +517,7 @@ func TestRunner_ReplyTargetFromOtherConversationIsUnknown(t *testing.T) {
 		t.Fatalf("task = %+v", task)
 	}
 	all := requestText(t, env.short.Requests()[0])
-	for _, want := range []string{"用户20003（回复了一条更早的消息）：是啊", "【当前消息】发送者：用户20001\n（回复了一条更早的消息）\n你怎么看"} {
+	for _, want := range []string{"用户20003（回复了一条更早的消息）：是啊", "【当前消息】发送者：用户20001\n（回复了一条更早的消息）\n（@了 你）\n你怎么看"} {
 		if !strings.Contains(all, want) {
 			t.Errorf("request lacks %q:\n%s", want, all)
 		}
