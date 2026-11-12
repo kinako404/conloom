@@ -97,6 +97,7 @@ CREATE TABLE outbox_actions (
     acked_at            TEXT NOT NULL
 );
 CREATE INDEX outbox_actions_lease ON outbox_actions (bot_instance_id, status, conversation_key, seq);
+CREATE INDEX outbox_actions_task ON outbox_actions (task_id);
 
 CREATE TABLE persona_instances (
     conversation_key TEXT PRIMARY KEY,

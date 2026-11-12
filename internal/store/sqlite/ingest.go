@@ -108,6 +108,20 @@ const messageCols = `seq, bot_instance_id, id, conversation_key, platform, platf
 	platform_user_id, display_name, text, reply_to, mentions, attachments, from_bot, occurred_at, created_at`
 
 func insertMessage(ctx context.Context, tx *sql.Tx, m store.MessageRecord) error {
+	err := execInsertMessage(ctx, tx, m, "")
+	if isUniqueViolation(err) {
+		return fmt.Errorf("%w: %v", store.ErrDuplicateMessage, err)
+	}
+	return err
+}
+
+// insertMessageIfAbsent inserts m unless it clashes with an existing message's
+// ID or platform message ID, in which case the existing row is kept.
+func insertMessageIfAbsent(ctx context.Context, tx *sql.Tx, m store.MessageRecord) error {
+	return execInsertMessage(ctx, tx, m, " ON CONFLICT DO NOTHING")
+}
+
+func execInsertMessage(ctx context.Context, tx *sql.Tx, m store.MessageRecord, onConflict string) error {
 	mentions, err := json.Marshal(m.Mentions)
 	if err != nil {
 		return err
@@ -119,13 +133,10 @@ func insertMessage(ctx context.Context, tx *sql.Tx, m store.MessageRecord) error
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO messages (bot_instance_id, id, conversation_key, platform, platform_message_id, actor_id,
 			platform_user_id, display_name, text, reply_to, mentions, attachments, from_bot, occurred_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`+onConflict,
 		m.BotInstanceID, m.ID, m.ConversationKey, m.Platform, m.PlatformMessageID, m.ActorID,
 		m.PlatformUserID, m.DisplayName, m.Text, m.ReplyTo, string(mentions), string(attachments), m.FromBot,
 		fmtTime(m.OccurredAt), fmtTime(nowIfZero(m.CreatedAt)))
-	if isUniqueViolation(err) {
-		return fmt.Errorf("%w: %v", store.ErrDuplicateMessage, err)
-	}
 	return err
 }
 
@@ -205,6 +216,9 @@ func (db *DB) GetMessages(ctx context.Context, botID string, ids []string) ([]st
 }
 
 func (db *DB) RecentMessages(ctx context.Context, conversationKey string, limit int) ([]store.MessageRecord, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
 	return db.queryMessages(ctx, `SELECT * FROM (
 		SELECT `+messageCols+` FROM messages WHERE conversation_key = ? ORDER BY seq DESC LIMIT ?
 	) ORDER BY seq`, conversationKey, limit)

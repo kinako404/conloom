@@ -30,7 +30,8 @@ type Store interface {
 	GetMessage(ctx context.Context, botID, id string) (MessageRecord, error)
 	// GetMessages returns the found messages ordered by Seq ascending.
 	GetMessages(ctx context.Context, botID string, ids []string) ([]MessageRecord, error)
-	// RecentMessages returns the newest limit messages ordered by Seq ascending.
+	// RecentMessages returns the newest limit messages ordered by Seq ascending
+	// (none when limit <= 0).
 	RecentMessages(ctx context.Context, conversationKey string, limit int) ([]MessageRecord, error)
 	GetTask(ctx context.Context, botID, taskID string) (TaskRecord, error)
 	SetTaskStatus(ctx context.Context, taskID, status string) error

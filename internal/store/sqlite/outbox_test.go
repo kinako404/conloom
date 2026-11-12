@@ -294,3 +294,89 @@ func TestExpireOutbox(t *testing.T) {
 		}
 	}
 }
+
+func TestAckOutbox_BotMessageConflictStillAcks(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		botID      string
+		platformID string
+	}{
+		{name: "same message and platform id", botID: "msg_777", platformID: "777"},
+		{name: "same message id only", botID: "msg_777", platformID: "888"},
+		{name: "same platform message id only", botID: "msg_bot_a1", platformID: "777"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newTestDB(t)
+			ctx := context.Background()
+			if _, err := db.Ingest(ctx, testIngest("k1", "msg_777", "777")); err != nil {
+				t.Fatalf("Ingest: %v", err)
+			}
+			now := time.Now().UTC()
+			insertActions(t, db, convAction("a1", testConvKey, now), convAction("a2", testConvKey, now))
+			if ids := actionIDs(lease(t, db, 10, now)); !reflect.DeepEqual(ids, []string{"a1"}) {
+				t.Fatalf("first lease = %v, want [a1]", ids)
+			}
+
+			botMsg := &store.MessageRecord{
+				ID:                tc.botID,
+				BotInstanceID:     testBot,
+				ConversationKey:   testConvKey,
+				Platform:          testPlatform,
+				PlatformMessageID: tc.platformID,
+				ActorID:           "bot",
+				PlatformUserID:    "30001",
+				Text:              "hi there",
+				FromBot:           true,
+				OccurredAt:        now,
+				CreatedAt:         now,
+			}
+			req := conloomapi.AckRequest{Status: conloomapi.AckSent, PlatformMessageID: tc.platformID}
+			already, err := db.AckOutbox(ctx, testBot, "a1", req, botMsg, now)
+			if err != nil || already {
+				t.Fatalf("AckOutbox = %v, %v; want false, nil", already, err)
+			}
+			if status, _ := outboxStatus(t, db, "a1"); status != store.OutboxAcked {
+				t.Fatalf("a1 status = %s, want acked", status)
+			}
+			if n := countRows(t, db, "messages"); n != 1 {
+				t.Fatalf("messages = %d, want 1", n)
+			}
+			msg, err := db.GetMessage(ctx, testBot, "msg_777")
+			if err != nil || msg.FromBot || msg.Text != "hello msg_777" {
+				t.Fatalf("original message = %+v, %v; want unchanged", msg, err)
+			}
+			if ids := actionIDs(lease(t, db, 10, now)); !reflect.DeepEqual(ids, []string{"a2"}) {
+				t.Fatalf("lease after ack a1 = %v, want [a2]", ids)
+			}
+		})
+	}
+}
+
+func TestLeaseOutbox_NonPositiveLimitLeasesNothing(t *testing.T) {
+	for _, limit := range []int{0, -1} {
+		db := newTestDB(t)
+		now := time.Now().UTC()
+		insertActions(t, db, convAction("a1", testConvKey, now), convAction("b1", testConvKeyB, now))
+		if ids := actionIDs(lease(t, db, limit, now)); len(ids) != 0 {
+			t.Fatalf("lease limit %d = %v, want none", limit, ids)
+		}
+		for _, id := range []string{"a1", "b1"} {
+			if status, attempts := outboxStatus(t, db, id); status != store.OutboxPending || attempts != 0 {
+				t.Fatalf("limit %d: %s = %s/%d, want pending/0", limit, id, status, attempts)
+			}
+		}
+	}
+}
+
+func TestMigrations_OutboxTaskIndex(t *testing.T) {
+	db := newTestDB(t)
+	var detail string
+	err := db.r.QueryRow(`EXPLAIN QUERY PLAN SELECT * FROM outbox_actions WHERE task_id = ?`, "task_1").
+		Scan(new(int), new(int), new(int), &detail)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	if detail != "SEARCH outbox_actions USING INDEX outbox_actions_task (task_id=?)" {
+		t.Fatalf("query plan = %q, want search using outbox_actions_task", detail)
+	}
+}

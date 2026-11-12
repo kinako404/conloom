@@ -37,6 +37,9 @@ func scanOutbox(row scanner) (store.OutboxRecord, error) {
 // LeaseOutbox hands out, per conversation, the oldest live action if it is
 // pending or its lease has run out, and marks the handed-out actions leased.
 func (db *DB) LeaseOutbox(ctx context.Context, botID string, limit int, now time.Time, lease time.Duration) ([]store.OutboxRecord, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
 	nowStr := fmtTime(now)
 	until := now.Add(lease).UTC()
 	var out []store.OutboxRecord
@@ -93,7 +96,9 @@ func (db *DB) GetOutbox(ctx context.Context, botID, actionID string) (store.Outb
 }
 
 // AckOutbox marks an action acked (including an expired one, since it was sent)
-// and stores botMsg in the same transaction. Re-acking reports alreadyAcked.
+// and stores botMsg in the same transaction. A botMsg whose ID or platform
+// message ID is already taken is skipped so the ack still commits. Re-acking
+// reports alreadyAcked.
 func (db *DB) AckOutbox(ctx context.Context, botID, actionID string, ack conloomapi.AckRequest, botMsg *store.MessageRecord, now time.Time) (bool, error) {
 	var alreadyAcked bool
 	err := db.inTx(ctx, func(tx *sql.Tx) error {
@@ -113,7 +118,7 @@ func (db *DB) AckOutbox(ctx context.Context, botID, actionID string, ack conloom
 			return err
 		}
 		if botMsg != nil {
-			return insertMessage(ctx, tx, *botMsg)
+			return insertMessageIfAbsent(ctx, tx, *botMsg)
 		}
 		return nil
 	})

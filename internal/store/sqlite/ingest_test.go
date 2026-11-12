@@ -332,6 +332,12 @@ func TestRecentMessages_LimitAndOrder(t *testing.T) {
 	if !reflect.DeepEqual(got, []string{"m3", "m4", "m5"}) {
 		t.Fatalf("RecentMessages = %v, want [m3 m4 m5]", got)
 	}
+	for _, limit := range []int{0, -1} {
+		msgs, err := db.RecentMessages(ctx, testConvKey, limit)
+		if err != nil || len(msgs) != 0 {
+			t.Fatalf("RecentMessages limit %d = %d messages, %v; want none", limit, len(msgs), err)
+		}
+	}
 
 	byID, err := db.GetMessages(ctx, testBot, []string{"m4", "m1", "missing"})
 	if err != nil {
