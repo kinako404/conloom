@@ -14,6 +14,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/kinako404/conloom/internal/adapter/mock"
+	"github.com/kinako404/conloom/internal/adapter/napcat"
 	"github.com/kinako404/conloom/internal/app"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/obs"
@@ -158,8 +159,26 @@ func runAdapter(ctx context.Context, args []string, sio stdio) error {
 	return adapter(ctx, args[1:], sio)
 }
 
-func runNapCat(context.Context, []string, stdio) error {
-	return configErr(errors.New("napcat: not implemented"))
+func runNapCat(ctx context.Context, args []string, sio stdio) error {
+	fs := flag.NewFlagSet("adapter napcat", flag.ContinueOnError)
+	cfgPath := fs.String("c", "conloom.yaml", "config file")
+	if err := parseFlags(fs, args, sio); err != nil {
+		return err
+	}
+	cfg, err := loadConfig(*cfgPath)
+	if err != nil {
+		return err
+	}
+	if err := cfg.ValidateNapCat(); err != nil {
+		return configErr(err)
+	}
+	logger := obs.NewLogger(cfg.Observability, sio.err)
+	a, err := napcat.New(cfg.Adapters.NapCat, logger)
+	if err != nil {
+		return configErr(err)
+	}
+	logger.Info("starting napcat adapter", "version", version, "commit", commit, "config", cfg.Path)
+	return a.Run(ctx)
 }
 
 func runMock(ctx context.Context, args []string, sio stdio) error {
