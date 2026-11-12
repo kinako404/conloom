@@ -11,7 +11,7 @@ ConLoom 是一个用 Go 编写的聊天机器人核心：平台适配器（Adapt
 - 可靠投递：幂等事件、持久化 Outbox、至少一次投递 + Adapter 端按 `action_id` 本地去重；重启后恢复未完成任务，过时的回复不再发送。
 - 回复策略：私聊、@Bot、回复 Bot、命令触发；同一发送者连续短消息合并为一次回复；每用户限流、每会话最短回复间隔；核心与 Adapter 两层自回复防护。
 - 群聊参与：Bot 在和人聊时，对方不 @ 的后续发言**按轮次**处理，不句句都回，对方转头和别人聊时**识趣退出**；Bot 没在聊时，只在群聊**自然停顿**、在场有 @ 过 Bot 的群友且话题相关或有人提问时，才**主动加入**一两句。主动频率由每人用 `/主动` 自己调，管理员有群总开关（见[群聊参与](#群聊参与)）。
-- 人格：内置不可变核心人格 + 可配置的群人格模板，人格与群策略都有版本，可修改、可回滚。
+- 人格：内置不可变核心规则 + 可配置的群人格模板（风格数值、行为偏好，以及可选的角色名、角色设定、说话方式和示例对话），可由管理员按群应用；人格与群策略都有版本，可修改、可回滚。
 - 模型：任意 OpenAI 兼容接口，按 `short_context`／`long_context` 角色路由，换模型只改配置；熔断与降级。
 - 并发准入：模型全局并发、群并发（0／1／2）、token 预留预算、优先级队列与队列上限。
 - 基础审查（不可关闭）：控制字符清理、平台控制码剥离、密钥打码、屏蔽词。
@@ -137,7 +137,9 @@ conloom version                                                    显示版本�
 |---|---|---|
 | `/help` | 所有人 | 简短说明 |
 | `/stop` | 发起者或管理员 | 取消本会话正在进行或排队的生成 |
-| `/persona` | 所有人 | 显示当前人格名称与版本 |
+| `/persona` | 所有人 | 显示当前人格名称与版本，人格设置了角色名时一并显示 |
+| `/persona list` | 管理员 | 列出配置里可用的人格模板名 |
+| `/persona use <模板名>` | 管理员 | 把该模板复制成本群的新人格版本（原因记为 `command`），立即生效 |
 | `/pause`、`/resume` | 管理员 | 暂停本群回复（群并发设为 0），并静默取消本群正在生成或排队的回复、清空在聊会话与停顿计时器／恢复；暂停期间也不会主动加入群聊 |
 | `/主动`、`/proactive` | 所有人 | 查看自己的主动搭话档位、是否有资格、今天已被主动搭话的次数 |
 | `/主动 关`／`低`／`中`／`高`，`/proactive off`／`low`／`mid`／`high` | `eligibility_ttl` 内 @ 过或回复过 Bot 的人 | 设置自己的主动搭话档位（中英文档位等价），任意档位都可设置，包括从“关”重新打开 |
@@ -148,6 +150,7 @@ conloom version                                                    显示版本�
 - 非管理员的命令与普通回复共用每用户限流（`reply.user_rate_limit_per_minute`），超出后命令只落库不回应（`suppressed_reason` 为 `rate_limited`）；群暂停期间非管理员的命令同样不回应（`paused`）。管理员的命令（包括 `/pause`、`/resume`、`/stop`）不受限流和暂停影响。
 - 通过 `/pause` 或 `PUT /api/v1/conversations/{id}/policy` 把群并发设为 0 时，该会话正在生成和排队的回复都会被静默取消（不发“已停止”提示），`/resume` 之后不会补发暂停前积压的回复。
 - 发生时间（事件的 `occurred_at`）早于 `runtime.stale_task_after`（默认 2 分钟）的 @Bot、回复 Bot 或命令消息只落库、不回复，`suppressed_reason` 为 `stale`。例如核心停机期间 NapCat Adapter 缓存的消息，在核心恢复后才提交时就是这样处理的，不会在恢复后集中回复一批旧消息。消息时间来自平台（NapCat 所在机器的时钟），所以 NapCat 与核心所在机器的时钟要保持同步（如启用 NTP）；若 NapCat 的时钟比核心慢超过这个阈值，所有消息都会被当作过时而不回复。
+- 非管理员使用 `/persona list`、`/persona use` 时回复“只有管理员可以这样做。”，不会生效；`/persona` 后跟其他内容时回复用法。模板名不存在时回复可用的模板名，不写入新版本。
 - `/主动` 系列命令只在群聊中使用，私聊中回复“主动搭话只在群聊里使用。”。还没有资格的人设置档位时回复“先 @ 我聊几句，才能开启主动搭话。”；非管理员使用 `全群`／`group` 子命令不会生效。
 
 ## 群聊参与
@@ -236,7 +239,7 @@ conloom version                                                    显示版本�
 | `api_tokens` | API 令牌列表：`name`、`token`、绑定的 `bot_instance_id`、`scopes`。Adapter 令牌通常只需 `events:write tasks:read outbox:read outbox:ack persona:read`；管理令牌另加 `memory:read memory:write policy:write admin:read` |
 | `bots` | Bot 实例：`id`、`platform`、`name`（显示名，默认“织语”）、`platform_self_id`（Bot 自身的平台 ID，必填，用于自回复防护）、`admins`、`enabled_conversations`（只在这些会话工作）、`private_chat`（`admins`／`all`／`off`，默认 `admins`）、`persona_template` |
 | `model_profiles` | 按角色配置模型，`short_context` 必需、`long_context` 可选：`provider`（`openai_compatible`）、`endpoint`、`model`、`api_key`、`modalities`、`context`（窗口与预算，须满足 `soft_input_budget <= configured_window <= native_window`）、`runtime`（并发、超时、重试）、`privacy`、`extra_body`（原样合并进请求体）、`token_estimate_factor` |
-| `persona_templates` | 群人格模板：`style` 各项 0~1，`behavior` 为枚举；省略 `default` 时使用内置默认人格 |
+| `persona_templates` | 群人格模板：`style` 各项 0~1，`behavior` 为枚举；可选的文本字段见下文“人格模板”；省略 `default` 时使用内置默认人格 |
 | `default_group_policy` | 新会话的初始群策略：`concurrency`、`reply`（命令前缀、在聊会话保持时间 `continuation_window` 与轮次设置（见下）、合并窗口 `debounce`、最短回复间隔、每用户限流、引用方式 `quote`）、`context`、`review`、`proactive`（观望模式与主动搭话，见下）。通过 API 或命令修改后存库并版本化，库内版本优先 |
 | `runtime` | `action_ttl`、`outbox_lease`、`stale_task_after`、`idempotency_retention`、`max_merge_window`、`session_idle` |
 | `adapters.napcat` | `ws_url`、`access_token`、`core_url`、`core_token`、`bot_instance_id`、`state_dir`（去重记录目录，默认同 `data_dir`） |
@@ -244,6 +247,19 @@ conloom version                                                    显示版本�
 | `observability` | `log_level`、`log_format`（`json`／`text`）、`log_message_content`（默认 `false`） |
 
 配置中的群号、QQ 号一律写平台原始 ID。
+
+### 人格模板
+
+`persona_templates.<名字>` 除了 `persona_name`、`template_version`、`style`、`behavior`，还可以写以下可选字段（字数按字符计，超出时启动校验、`PUT …/persona` 都会拒绝并指出字段）：
+
+| 字段 | 限制 | 说明 |
+|---|---|---|
+| `character_name` | ≤20 字，单行 | 角色名。设置后就是 Bot 在使用这个人格的会话里的名字：system prompt 的“你是{名字}”、上下文里的“你（名字）”、回复的回声清洗和 `/help` 都改用它；不设时用 `bots[].name` |
+| `description` | ≤2000 字 | 角色设定，渲染为“角色设定：”一段 |
+| `speaking_style` | ≤1000 字 | 说话方式，渲染为“说话方式：”一段 |
+| `examples` | ≤8 组；每组 `user`、`reply` 非空且各 ≤200 字 | 示例对话，渲染为“群友：…／你：…”，并注明只示范语气和分寸、不要照搬 |
+
+文本可以用 YAML 多行块（`|`）书写，示例见 `conloom.example.yaml` 中的原创角色模板 `librarian`。会话第一次用到人格时按 `bots[].persona_template` 初始化，之后以库内版本为准；修改配置里的模板不会影响已有会话，要用 `/persona use <模板名>` 或 `PUT …/persona {"template":"<模板名>"}` 把模板应用到某个群。核心规则始终在人格之前，人设不能改变它们（例如被认真问到是不是 AI 时会如实承认）。
 
 群策略中与[群聊参与](#群聊参与)有关的字段及其默认值（`reply` 段的其他字段见示例配置）：
 
@@ -288,7 +304,7 @@ YAML 配置中省略的任何字段（或省略整个 `proactive` 段）都保�
 | `POST /api/v1/outbox/{action_id}/ack` | `outbox:ack` | 确认动作：`{"status":"sent|unsupported|failed","platform_message_id":"…"}` |
 | `GET /api/v1/capabilities` | 任意有效令牌 | 能力协商 |
 | `GET /api/v1/conversations/{id}/persona` | `persona:read` | 当前人格版本 |
-| `PUT /api/v1/conversations/{id}/persona` | `policy:write` | 写入新人格版本：`{"persona":{…},"reason":"…"}` 或 `{"rollback_to":n,"reason":"…"}` |
+| `PUT /api/v1/conversations/{id}/persona` | `policy:write` | 写入新人格版本，三选一：`{"persona":{…},"reason":"…"}`、`{"rollback_to":n,"reason":"…"}` 或 `{"template":"<模板名>","reason":"…"}`（复制配置里的同名模板，版本记下模板名；未知模板返回 400）。人格文本字段的字数限制见[人格模板](#人格模板)，超限返回 400 |
 | `GET /api/v1/conversations/{id}/policy` | `admin:read` | 当前群策略版本 |
 | `PUT /api/v1/conversations/{id}/policy` | `policy:write` | 写入新群策略版本：`{"policy":{…},"reason":"…"}` |
 | `GET /healthz` | 无 | 健康检查 |
