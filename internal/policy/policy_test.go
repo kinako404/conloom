@@ -371,7 +371,7 @@ func legacyPolicyJSON(t *testing.T, p conloomapi.GroupPolicy, dropProactive bool
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"turn_gap", "turn_max_wait", "max_unprompted_replies", "max_consecutive_skips", "quote"} {
+	for _, k := range []string{"turn_gap", "turn_max_wait", "turn_cooldown", "max_unprompted_replies", "max_consecutive_skips", "quote"} {
 		delete(doc["reply"], k)
 	}
 	for _, k := range []string{"join_lull", "join_window", "join_min_messages", "join_evaluations_per_hour", "join_cooldown"} {
@@ -421,6 +421,9 @@ func TestPolicy_CurrentFillsParticipationDefaultsForLegacyVersion(t *testing.T) 
 	}
 	if err := Validate(pv.Policy); err != nil {
 		t.Fatalf("filled policy invalid: %v", err)
+	}
+	if got := pv.Policy.Reply.TurnCooldown.Duration; got != 45*time.Second {
+		t.Fatalf("legacy policy turn_cooldown = %s, want the 45s default", got)
 	}
 	paused, err := svc.Pause(ctx, testConvKey, "29999")
 	want := withConcurrency(legacy, 0)

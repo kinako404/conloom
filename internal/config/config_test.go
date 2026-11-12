@@ -359,6 +359,7 @@ func TestLoad_ConfigWithoutParticipationFieldsUsesDefaults(t *testing.T) {
 	path = writeConfig(t, `default_group_policy:
   reply:
     turn_gap: 3s
+    turn_cooldown: 2m
     quote: always
   proactive:
     join_cooldown: 1h
@@ -366,6 +367,7 @@ func TestLoad_ConfigWithoutParticipationFieldsUsesDefaults(t *testing.T) {
 	gp = mustLoad(t, path).DefaultGroupPolicy
 	want = conloomapi.DefaultGroupPolicy()
 	want.Reply.TurnGap = conloomapi.Duration{Duration: 3 * time.Second}
+	want.Reply.TurnCooldown = conloomapi.Duration{Duration: 2 * time.Minute}
 	want.Reply.Quote = conloomapi.QuoteAlways
 	want.Proactive.JoinCooldown = conloomapi.Duration{Duration: time.Hour}
 	if !reflect.DeepEqual(gp, want) {

@@ -32,6 +32,7 @@ func TestDefaultGroupPolicyProactive(t *testing.T) {
 func TestDefaultGroupPolicyParticipationFields(t *testing.T) {
 	r := DefaultGroupPolicy().Reply
 	if r.ContinuationWindow.Duration != 0 || r.TurnGap.Duration != 6*time.Second || r.TurnMaxWait.Duration != 20*time.Second ||
+		r.TurnCooldown.Duration != 45*time.Second ||
 		r.MaxUnpromptedReplies != 4 || r.MaxConsecutiveSkips != 2 || r.Quote != QuoteAuto {
 		t.Fatalf("reply = %+v", r)
 	}
@@ -48,7 +49,7 @@ func TestDefaultGroupPolicyParticipationFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{`"turn_gap":"6s"`, `"turn_max_wait":"20s"`, `"max_unprompted_replies":4`, `"max_consecutive_skips":2`,
+	for _, key := range []string{`"turn_gap":"6s"`, `"turn_max_wait":"20s"`, `"turn_cooldown":"45s"`, `"max_unprompted_replies":4`, `"max_consecutive_skips":2`,
 		`"quote":"auto"`, `"join_lull":"15s"`, `"join_window":"5m0s"`, `"join_min_messages":4`, `"join_evaluations_per_hour":4`, `"join_cooldown":"10m0s"`} {
 		if !strings.Contains(string(b), key) {
 			t.Errorf("json %s missing %s", b, key)
@@ -57,6 +58,7 @@ func TestDefaultGroupPolicyParticipationFields(t *testing.T) {
 	src := `
 reply:
   turn_gap: 3s
+  turn_cooldown: 90s
   turn_max_wait: 30s
   max_unprompted_replies: 5
   max_consecutive_skips: 3
@@ -73,6 +75,7 @@ proactive:
 		t.Fatal(err)
 	}
 	if y.Reply.TurnGap.Duration != 3*time.Second || y.Reply.TurnMaxWait.Duration != 30*time.Second || y.Reply.MaxUnpromptedReplies != 5 ||
+		y.Reply.TurnCooldown.Duration != 90*time.Second ||
 		y.Reply.MaxConsecutiveSkips != 3 || y.Reply.Quote != QuoteNever {
 		t.Errorf("yaml reply = %+v", y.Reply)
 	}
@@ -105,6 +108,11 @@ func TestValidateParticipationFields(t *testing.T) {
 			p.Reply.TurnGap = Duration{time.Minute + time.Second}
 			p.Reply.TurnMaxWait = Duration{2 * time.Minute}
 		}, "reply.turn_gap"},
+		{"turn_cooldown 1s ok", func(p *GroupPolicy) { p.Reply.TurnCooldown = Duration{time.Second} }, ""},
+		{"turn_cooldown 10m ok", func(p *GroupPolicy) { p.Reply.TurnCooldown = Duration{10 * time.Minute} }, ""},
+		{"turn_cooldown under", func(p *GroupPolicy) { p.Reply.TurnCooldown = Duration{time.Second - time.Millisecond} }, "reply.turn_cooldown"},
+		{"turn_cooldown zero", func(p *GroupPolicy) { p.Reply.TurnCooldown = Duration{0} }, "reply.turn_cooldown"},
+		{"turn_cooldown over", func(p *GroupPolicy) { p.Reply.TurnCooldown = Duration{10*time.Minute + time.Second} }, "reply.turn_cooldown"},
 		{"turn_max_wait equals gap ok", func(p *GroupPolicy) { p.Reply.TurnMaxWait = p.Reply.TurnGap }, ""},
 		{"turn_max_wait 2m ok", func(p *GroupPolicy) { p.Reply.TurnMaxWait = Duration{2 * time.Minute} }, ""},
 		{"turn_max_wait below gap", func(p *GroupPolicy) { p.Reply.TurnMaxWait = Duration{p.Reply.TurnGap.Duration - time.Millisecond} }, "reply.turn_max_wait"},
@@ -181,7 +189,7 @@ func TestWithDefaultsFillsNewFieldsIndividually(t *testing.T) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"turn_gap", "turn_max_wait", "max_unprompted_replies", "max_consecutive_skips", "quote"} {
+	for _, k := range []string{"turn_gap", "turn_max_wait", "turn_cooldown", "max_unprompted_replies", "max_consecutive_skips", "quote"} {
 		delete(doc["reply"], k)
 	}
 	for _, k := range []string{"join_lull", "join_window", "join_min_messages", "join_evaluations_per_hour", "join_cooldown"} {
@@ -209,6 +217,7 @@ func TestWithDefaultsFillsNewFieldsIndividually(t *testing.T) {
 
 	custom := DefaultGroupPolicy()
 	custom.Reply.TurnGap = Duration{2 * time.Second}
+	custom.Reply.TurnCooldown = Duration{2 * time.Minute}
 	custom.Reply.MaxConsecutiveSkips = 5
 	custom.Reply.Quote = QuoteNever
 	custom.Proactive.JoinCooldown = Duration{time.Hour}

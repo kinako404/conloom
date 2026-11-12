@@ -92,6 +92,9 @@ type ReplyPolicy struct {
 	// how long a turn may keep growing.
 	TurnGap     Duration `json:"turn_gap" yaml:"turn_gap"`
 	TurnMaxWait Duration `json:"turn_max_wait" yaml:"turn_max_wait"`
+	// TurnCooldown is how long after the bot last spoke in the group a turn
+	// nobody addressed to the bot waits before it is answered.
+	TurnCooldown Duration `json:"turn_cooldown" yaml:"turn_cooldown"`
 	// MaxUnpromptedReplies ends a conversation after this many replies since
 	// the bot was last addressed directly.
 	MaxUnpromptedReplies int `json:"max_unprompted_replies" yaml:"max_unprompted_replies"`
@@ -192,6 +195,7 @@ func DefaultGroupPolicy() GroupPolicy {
 			UserRateLimitPerMinute: 6,
 			TurnGap:                Duration{6 * time.Second},
 			TurnMaxWait:            Duration{20 * time.Second},
+			TurnCooldown:           Duration{45 * time.Second},
 			MaxUnpromptedReplies:   4,
 			MaxConsecutiveSkips:    2,
 			Quote:                  QuoteAuto,
@@ -231,6 +235,7 @@ func (p GroupPolicy) WithDefaults(def GroupPolicy) GroupPolicy {
 	}
 	fillZero(&p.Reply.TurnGap, def.Reply.TurnGap)
 	fillZero(&p.Reply.TurnMaxWait, def.Reply.TurnMaxWait)
+	fillZero(&p.Reply.TurnCooldown, def.Reply.TurnCooldown)
 	fillZero(&p.Reply.MaxUnpromptedReplies, def.Reply.MaxUnpromptedReplies)
 	fillZero(&p.Reply.MaxConsecutiveSkips, def.Reply.MaxConsecutiveSkips)
 	fillZero(&p.Reply.Quote, def.Reply.Quote)
@@ -288,6 +293,9 @@ func (p GroupPolicy) Validate() error {
 	}
 	if r.TurnMaxWait.Duration < r.TurnGap.Duration || r.TurnMaxWait.Duration > 2*time.Minute {
 		fail("reply.turn_max_wait must be in [reply.turn_gap (%s), 2m], got %s", r.TurnGap, r.TurnMaxWait)
+	}
+	if r.TurnCooldown.Duration < time.Second || r.TurnCooldown.Duration > 10*time.Minute {
+		fail("reply.turn_cooldown must be in [1s, 10m], got %s", r.TurnCooldown)
 	}
 	if r.MaxUnpromptedReplies < 1 || r.MaxUnpromptedReplies > 20 {
 		fail("reply.max_unprompted_replies must be in [1, 20], got %d", r.MaxUnpromptedReplies)
