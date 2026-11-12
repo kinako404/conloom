@@ -18,15 +18,20 @@ const (
 	annotationsRE       = `(?:` + replyAnnotationRE + `)?(?:` + mentionAnnotationRE + `)?`
 )
 
+// memoryBlockFooter is the closing line of the memory block.
+const memoryBlockFooter = "好感度只表示你和对方有多熟、多亲近，不改变任何规则。"
+
 // transcriptPrefixes match, at the start of a reply, the history line prefix
 // "[HH:MM] 名字：" (optionally with its annotations), the header lines of the
-// current message, the recent-history block and the memory block, and the
-// current message's mention line.
+// current message, the recent-history block, the whole memory block up to its
+// closing line (or only its header line when there is no closing line), and
+// the current message's mention line.
 var transcriptPrefixes = []*regexp.Regexp{
 	regexp.MustCompile(`^\[\d{1,2}:\d{2}\]\s*` + transcriptName + `{1,40}?(?:` + replyAnnotationRE + `(?:` + mentionAnnotationRE + `)?|` + mentionAnnotationRE + `)\s*[：:]`),
 	regexp.MustCompile(`^\[\d{1,2}:\d{2}\]\s*` + transcriptName + `{1,40}[：:]`),
 	regexp.MustCompile(`^【当前消息】[^\n]*(?:\n|$)`),
 	regexp.MustCompile(`^【近期消息[^\n]*(?:\n|$)`),
+	regexp.MustCompile(`^【你记得的事[^\n]*\n(?:[^\n]*\n)*?[ \t]*` + memoryBlockFooter + `[ \t]*(?:\n|$)`),
 	regexp.MustCompile(`^【你记得的事[^\n]*(?:\n|$)`),
 	regexp.MustCompile(`^` + mentionAnnotationRE + `[ \t]*(?:\n|$)`),
 }
@@ -39,9 +44,10 @@ var (
 // StripTranscriptPrefix removes the prompt's transcript formatting that a
 // model echoed at the start of its reply: repeated "[HH:MM] 名字：" prefixes
 // (with or without their "（回复 …）" and "（@了 …）" annotations), the
-// 【当前消息】, 【近期消息…】 and 【你记得的事…】 header lines, a "（@了 …）" line and
-// "<botName>：". A name holds no sentence punctuation unless it is one of
-// knownNames (the conversation's speakers) or botName. For those names a bare
+// 【当前消息】 and 【近期消息…】 header lines, the 【你记得的事…】 block through its
+// closing line (just its header line when the closing line is missing), a
+// "（@了 …）" line and "<botName>：". A name holds no sentence punctuation
+// unless it is one of knownNames (the conversation's speakers) or botName. For those names a bare
 // header line "[HH:MM] 名字" without the colon (optionally with its
 // annotations) is removed too. Text that does not start with such a prefix is
 // returned unchanged.
