@@ -72,10 +72,18 @@ func consDelta(v any) int {
 	return int(min(max(math.Round(f), -MaxRunDelta), MaxRunDelta))
 }
 
+// consTruncate cuts s to at most maxRunes runes: after the last sentence end
+// (。！？；) within the limit when there is one, otherwise at the limit.
 func consTruncate(s string, maxRunes int) string {
 	r := []rune(s)
 	if len(r) <= maxRunes {
 		return s
 	}
-	return string(r[:maxRunes])
+	r = r[:maxRunes]
+	for i := len(r) - 1; i >= 0; i-- {
+		if strings.ContainsRune("。！？；", r[i]) {
+			return string(r[:i+1])
+		}
+	}
+	return string(r)
 }

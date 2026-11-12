@@ -274,6 +274,11 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 	if err != nil {
 		return consOutcome{}, c.fail(ctx, *g, consErrParse, err, resp)
 	}
+	names := make(map[string]string, len(members))
+	for _, m := range members {
+		names[m.Ref] = m.Name
+	}
+	out = consResolveRefs(out, names)
 
 	day := LocalDay(now, c.d.Location)
 	w, entries := c.compose(*g, b, out, mp.Affinity, day, now)
