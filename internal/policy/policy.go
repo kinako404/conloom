@@ -72,13 +72,18 @@ func (s *Service) current(ctx context.Context, convKey string) (store.PolicyVers
 	return pv, nil
 }
 
-// Update stores put.Policy as a new version; a missing proactive section is filled from the defaults.
+// Update stores put.Policy as a new version. When put omits the proactive section (see
+// conloomapi.PolicyPut.ProactiveOmitted) the group's current section is kept, which is the
+// defaults for a group that never configured one; a section that is present is validated as given.
 func (s *Service) Update(ctx context.Context, convKey string, put conloomapi.PolicyPut, by string) (store.PolicyVersion, error) {
-	p := put.Policy.WithDefaults(s.defaults)
-	if err := Validate(p); err != nil {
-		return store.PolicyVersion{}, err
-	}
-	return s.change(ctx, convKey, by, "update", func(store.PolicyVersion) (conloomapi.GroupPolicy, string, bool, error) {
+	return s.change(ctx, convKey, by, "update", func(cur store.PolicyVersion) (conloomapi.GroupPolicy, string, bool, error) {
+		p := put.Policy
+		if put.ProactiveOmitted() {
+			p.Proactive = cur.Policy.Proactive
+		}
+		if err := Validate(p); err != nil {
+			return conloomapi.GroupPolicy{}, "", false, err
+		}
 		return p, put.Reason, true, nil
 	})
 }
@@ -122,7 +127,8 @@ func (s *Service) Resume(ctx context.Context, convKey, by string) (store.PolicyV
 	})
 }
 
-// change appends the policy produced by next unless it reports no change, then invalidates the
+// change appends the policy produced by next unless it reports no change (returning the current
+// version) or an error (returning no version), then invalidates the
 // cache, records a policy.update audit event and notifies OnChange callbacks. An audit failure is
 // returned together with the already stored version.
 func (s *Service) change(ctx context.Context, convKey, by, action string,
@@ -134,9 +140,13 @@ func (s *Service) change(ctx context.Context, convKey, by, action string,
 		return store.PolicyVersion{}, err
 	}
 	p, reason, changed, err := next(cur)
-	if err != nil || !changed {
+	if err != nil {
 		s.mu.Unlock()
-		return cur, err
+		return store.PolicyVersion{}, err
+	}
+	if !changed {
+		s.mu.Unlock()
+		return cur, nil
 	}
 	pv, err := s.st.AppendPolicyVersion(ctx, store.PolicyVersion{
 		ConversationKey: convKey, Policy: p, Reason: reason, UpdatedBy: by,

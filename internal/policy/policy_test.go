@@ -256,6 +256,118 @@ func TestPolicy_UpdateFillsMissingProactive(t *testing.T) {
 	}
 }
 
+func decodePut(t *testing.T, body string) conloomapi.PolicyPut {
+	t.Helper()
+	var put conloomapi.PolicyPut
+	if err := json.Unmarshal([]byte(body), &put); err != nil {
+		t.Fatalf("Unmarshal %s: %v", body, err)
+	}
+	return put
+}
+
+// putBody returns a PUT body for p with the proactive section replaced by proactive, or removed when it is empty.
+func putBody(t *testing.T, p conloomapi.GroupPolicy, proactive string) string {
+	t.Helper()
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	delete(doc, "proactive")
+	if proactive != "" {
+		doc["proactive"] = json.RawMessage(proactive)
+	}
+	raw, err = json.Marshal(map[string]any{"policy": doc, "reason": "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func TestPolicy_UpdateKeepsCurrentProactiveWhenOmitted(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newTestStore(t), conloomapi.DefaultGroupPolicy())
+	off := conloomapi.DefaultGroupPolicy()
+	off.Proactive.Enabled = false
+	if _, err := svc.Update(ctx, testConvKey, conloomapi.PolicyPut{Policy: off}, "29999"); err != nil {
+		t.Fatalf("switch off: %v", err)
+	}
+
+	goPut := withConcurrency(conloomapi.DefaultGroupPolicy(), 2)
+	goPut.Proactive = conloomapi.ProactivePolicy{}
+	pv, err := svc.Update(ctx, testConvKey, conloomapi.PolicyPut{Policy: goPut}, "29999")
+	if err != nil || pv.Version != 2 || pv.Policy.Proactive != off.Proactive || pv.Policy.Concurrency.MaxInteractiveRequests != 2 {
+		t.Fatalf("Go update without proactive = %+v, %v; want proactive kept off", pv, err)
+	}
+
+	pv, err = svc.Update(ctx, testConvKey, decodePut(t, putBody(t, conloomapi.DefaultGroupPolicy(), "")), "29999")
+	if err != nil || pv.Version != 3 || pv.Policy.Proactive != off.Proactive || pv.Policy.Concurrency.MaxInteractiveRequests != 1 {
+		t.Fatalf("JSON update without proactive = %+v, %v; want proactive kept off", pv, err)
+	}
+	cur, err := svc.Current(ctx, testConvKey)
+	if err != nil || cur.Version != 3 || cur.Policy.Proactive.Enabled {
+		t.Fatalf("Current = %+v, %v; want proactive off", cur, err)
+	}
+}
+
+func TestPolicy_UpdateRejectsPresentZeroProactive(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := NewService(st, conloomapi.DefaultGroupPolicy())
+	for _, body := range []string{
+		putBody(t, conloomapi.DefaultGroupPolicy(), `{"enabled":false}`),
+		putBody(t, conloomapi.DefaultGroupPolicy(), `{}`),
+	} {
+		pv, err := svc.Update(ctx, testConvKey, decodePut(t, body), "29999")
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "proactive.default_level") || pv.Version != 0 {
+			t.Fatalf("Update %s = %+v, %v; want ErrInvalid", body, pv, err)
+		}
+	}
+	if list, _ := st.ListPolicyVersions(ctx, testConvKey); len(list) != 0 {
+		t.Fatalf("invalid update stored %d versions", len(list))
+	}
+
+	if _, err := svc.Update(ctx, testConvKey, conloomapi.PolicyPut{Policy: conloomapi.DefaultGroupPolicy()}, "29999"); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	pv, err := svc.Update(ctx, testConvKey, decodePut(t, putBody(t, conloomapi.DefaultGroupPolicy(), `{"enabled":false}`)), "29999")
+	if !errors.Is(err, ErrInvalid) || pv.Version != 0 {
+		t.Fatalf("Update over stored version = %+v, %v; want ErrInvalid without a version", pv, err)
+	}
+}
+
+func TestPolicy_UpdateAppliesPresentProactive(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newTestStore(t), conloomapi.DefaultGroupPolicy())
+	want := conloomapi.ProactivePolicy{
+		Enabled: false, DefaultLevel: conloomapi.ProactiveMid,
+		EligibilityTTL: conloomapi.Duration{Duration: 48 * time.Hour}, UserCooldown: conloomapi.Duration{Duration: 10 * time.Minute},
+		GroupHourlyLimit: 3, DailyLimits: conloomapi.ProactiveDailyLimits{Low: 1, Mid: 2, High: 3},
+	}
+	section, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pv, err := svc.Update(ctx, testConvKey, decodePut(t, putBody(t, conloomapi.DefaultGroupPolicy(), string(section))), "29999")
+	if err != nil || pv.Version != 1 || pv.Policy.Proactive != want || pv.Reason != "test" {
+		t.Fatalf("Update = %+v, %v; want proactive %+v", pv, err, want)
+	}
+}
+
+func TestPolicy_UpdateOmittedProactiveNeverConfiguredUsesDefaults(t *testing.T) {
+	ctx := context.Background()
+	defaults := conloomapi.DefaultGroupPolicy()
+	defaults.Proactive.DefaultLevel = conloomapi.ProactiveHigh
+	svc := NewService(newTestStore(t), defaults)
+	pv, err := svc.Update(ctx, testConvKey, decodePut(t, putBody(t, conloomapi.DefaultGroupPolicy(), "")), "29999")
+	if err != nil || pv.Version != 1 || pv.Policy.Proactive != defaults.Proactive {
+		t.Fatalf("Update = %+v, %v; want default proactive", pv, err)
+	}
+}
+
 func TestPolicy_OnChangeCalled(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)

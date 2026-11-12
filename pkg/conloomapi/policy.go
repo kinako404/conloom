@@ -1,6 +1,7 @@
 package conloomapi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -89,9 +90,56 @@ type PolicyState struct {
 	CreatedAt      time.Time   `json:"created_at" yaml:"created_at"`
 }
 
+// PolicyPut replaces a group policy. Its proactive section may be left out to keep the group's
+// current one: the section counts as omitted when it is zero and ProactivePresent is false.
+// UnmarshalJSON sets ProactivePresent when the body has a non-null policy.proactive key, so a
+// JSON section such as {"enabled":false} is applied as given and fails validation. Go callers that
+// build a PolicyPut leave ProactivePresent false, and a zero section from them is omitted.
 type PolicyPut struct {
 	Policy GroupPolicy `json:"policy" yaml:"policy"`
 	Reason string      `json:"reason" yaml:"reason"`
+
+	ProactivePresent bool `json:"-" yaml:"-"`
+}
+
+// ProactiveOmitted reports whether the update leaves the proactive section unchanged.
+func (p PolicyPut) ProactiveOmitted() bool {
+	return !p.ProactivePresent && p.Policy.Proactive == (ProactivePolicy{})
+}
+
+// groupPolicyFields has GroupPolicy's fields; policyPutWire's own Proactive field shadows the embedded one.
+type groupPolicyFields GroupPolicy
+
+type policyPutWire struct {
+	Policy struct {
+		groupPolicyFields
+		Proactive *ProactivePolicy `json:"proactive,omitempty"`
+	} `json:"policy"`
+	Reason string `json:"reason"`
+}
+
+// MarshalJSON writes the PolicyPut wire format and leaves out an omitted proactive section.
+func (p PolicyPut) MarshalJSON() ([]byte, error) {
+	var w policyPutWire
+	w.Policy.groupPolicyFields = groupPolicyFields(p.Policy)
+	if !p.ProactiveOmitted() {
+		w.Policy.Proactive = &p.Policy.Proactive
+	}
+	w.Reason = p.Reason
+	return json.Marshal(w)
+}
+
+func (p *PolicyPut) UnmarshalJSON(b []byte) error {
+	var w policyPutWire
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	*p = PolicyPut{Policy: GroupPolicy(w.Policy.groupPolicyFields), Reason: w.Reason}
+	if w.Policy.Proactive != nil {
+		p.Policy.Proactive = *w.Policy.Proactive
+		p.ProactivePresent = true
+	}
+	return nil
 }
 
 func DefaultGroupPolicy() GroupPolicy {

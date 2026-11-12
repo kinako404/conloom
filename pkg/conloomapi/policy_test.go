@@ -163,6 +163,122 @@ proactive:
 	}
 }
 
+func TestPolicyPutUnmarshalRecordsProactivePresence(t *testing.T) {
+	full, err := json.Marshal(PolicyPut{Policy: DefaultGroupPolicy(), Reason: "r"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Policy map[string]json.RawMessage `json:"policy"`
+		Reason string                     `json:"reason"`
+	}
+	if err := json.Unmarshal(full, &doc); err != nil || doc.Reason != "r" {
+		t.Fatalf("decode %s: %v", full, err)
+	}
+	delete(doc.Policy, "proactive")
+	withoutProactive, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc.Policy["proactive"] = json.RawMessage(`{"enabled":false}`)
+	disabledOnly, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc.Policy["proactive"] = json.RawMessage(`null`)
+	nullProactive, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name        string
+		body        []byte
+		wantPresent bool
+		wantOmitted bool
+		want        ProactivePolicy
+	}{
+		{"full", full, true, false, DefaultGroupPolicy().Proactive},
+		{"absent", withoutProactive, false, true, ProactivePolicy{}},
+		{"enabled false only", disabledOnly, true, false, ProactivePolicy{}},
+		{"null", nullProactive, false, true, ProactivePolicy{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var put PolicyPut
+			if err := json.Unmarshal(tc.body, &put); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if put.ProactivePresent != tc.wantPresent || put.ProactiveOmitted() != tc.wantOmitted || put.Policy.Proactive != tc.want {
+				t.Fatalf("put = present %v omitted %v proactive %+v", put.ProactivePresent, put.ProactiveOmitted(), put.Policy.Proactive)
+			}
+			want := DefaultGroupPolicy()
+			want.Proactive = tc.want
+			if !reflect.DeepEqual(put.Policy, want) || put.Reason != "r" {
+				t.Fatalf("put = %+v", put)
+			}
+		})
+	}
+
+	if err := json.Unmarshal([]byte(`{"policy":{"proactive":{"enabled":"yes"}}}`), new(PolicyPut)); err == nil {
+		t.Fatal("bad proactive type: err = nil")
+	}
+}
+
+func TestPolicyPutProactiveOmittedInGo(t *testing.T) {
+	if !(PolicyPut{}).ProactiveOmitted() {
+		t.Fatal("zero section without presence flag must count as omitted")
+	}
+	if (PolicyPut{ProactivePresent: true}).ProactiveOmitted() {
+		t.Fatal("present zero section must not count as omitted")
+	}
+	off := PolicyPut{Policy: DefaultGroupPolicy()}
+	off.Policy.Proactive.Enabled = false
+	if off.ProactiveOmitted() {
+		t.Fatal("non-zero section must not count as omitted")
+	}
+}
+
+func TestPolicyPutMarshalWireFormat(t *testing.T) {
+	put := PolicyPut{Policy: DefaultGroupPolicy(), Reason: "r"}
+	got, err := json.Marshal(put)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(struct {
+		Policy GroupPolicy `json:"policy"`
+		Reason string      `json:"reason"`
+	}{put.Policy, put.Reason})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("marshal = %s\nwant %s", got, want)
+	}
+	var back PolicyPut
+	if err := json.Unmarshal(got, &back); err != nil || !back.ProactivePresent || !reflect.DeepEqual(back.Policy, put.Policy) {
+		t.Fatalf("round trip = %+v, %v", back, err)
+	}
+
+	omitted := put
+	omitted.Policy.Proactive = ProactivePolicy{}
+	got, err = json.Marshal(omitted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "proactive") {
+		t.Fatalf("omitted section marshalled: %s", got)
+	}
+	back = PolicyPut{}
+	if err := json.Unmarshal(got, &back); err != nil || !back.ProactiveOmitted() || !reflect.DeepEqual(back.Policy, omitted.Policy) {
+		t.Fatalf("omitted round trip = %+v, %v", back, err)
+	}
+
+	omitted.ProactivePresent = true
+	if got, _ = json.Marshal(omitted); !strings.Contains(string(got), `"proactive":{"enabled":false`) {
+		t.Fatalf("present zero section not marshalled: %s", got)
+	}
+}
+
 func TestTaskMetaTrigger(t *testing.T) {
 	b, err := json.Marshal(TaskMeta{Trigger: TriggerProactive})
 	if err != nil || string(b) != `{"trigger":"proactive"}` {
