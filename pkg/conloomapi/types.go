@@ -57,12 +57,14 @@ const (
 )
 
 const (
-	TriggerPrivate = "private"
-	TriggerMention = "mention"
-	TriggerReply   = "reply"
-	TriggerCommand = "command"
-	TriggerObserve = "observe"
-	TriggerManual  = "manual"
+	TriggerPrivate      = "private"
+	TriggerMention      = "mention"
+	TriggerReply        = "reply"
+	TriggerCommand      = "command"
+	TriggerObserve      = "observe"
+	TriggerManual       = "manual"
+	TriggerContinuation = "continuation"
+	TriggerProactive    = "proactive"
 )
 
 type Event struct {
@@ -143,6 +145,7 @@ type TaskMeta struct {
 	RouteReason       string `json:"route_reason,omitempty"`
 	ReviewResult      string `json:"review_result,omitempty"`
 	TraceID           string `json:"trace_id,omitempty"`
+	Trigger           string `json:"trigger,omitempty"`
 }
 
 type Action struct {

@@ -48,6 +48,8 @@ func (s *Service) OnChange(fn func(convKey string)) {
 }
 
 // Current returns the latest stored policy, or the defaults as version 0 without writing anything.
+// A section missing from a stored version (such as proactive in versions written before it existed)
+// is filled from the defaults.
 func (s *Service) Current(ctx context.Context, convKey string) (store.PolicyVersion, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -65,16 +67,19 @@ func (s *Service) current(ctx context.Context, convKey string) (store.PolicyVers
 	if err != nil {
 		return store.PolicyVersion{}, err
 	}
+	pv.Policy = pv.Policy.WithDefaults(s.defaults)
 	s.cache[convKey] = pv
 	return pv, nil
 }
 
+// Update stores put.Policy as a new version; a missing proactive section is filled from the defaults.
 func (s *Service) Update(ctx context.Context, convKey string, put conloomapi.PolicyPut, by string) (store.PolicyVersion, error) {
-	if err := Validate(put.Policy); err != nil {
+	p := put.Policy.WithDefaults(s.defaults)
+	if err := Validate(p); err != nil {
 		return store.PolicyVersion{}, err
 	}
 	return s.change(ctx, convKey, by, "update", func(store.PolicyVersion) (conloomapi.GroupPolicy, string, bool, error) {
-		return put.Policy, put.Reason, true, nil
+		return p, put.Reason, true, nil
 	})
 }
 

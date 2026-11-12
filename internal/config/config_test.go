@@ -151,6 +151,10 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 		}
 	}
 
+	if got, want := cfg.DefaultGroupPolicy.Proactive, conloomapi.DefaultGroupPolicy().Proactive; got != want {
+		t.Errorf("default_group_policy.proactive = %+v, want %+v", got, want)
+	}
+
 	nc := cfg.Adapters.NapCat
 	if nc.CoreURL != "http://127.0.0.1:8787" || nc.WSURL != "ws://127.0.0.1:9" || nc.AccessToken != "fake-napcat-token" {
 		t.Errorf("napcat = %+v", nc)
@@ -291,6 +295,34 @@ model_profiles:
 	}
 	if p.Context.NativeWindow != 4096 {
 		t.Errorf("native_window = %d, want env-expanded 4096", p.Context.NativeWindow)
+	}
+}
+
+func TestLoad_ConfigWithoutProactiveUsesDefaults(t *testing.T) {
+	path := writeConfig(t, `default_group_policy:
+  reply:
+    continuation_window: 60s
+`)
+	cfg := mustLoad(t, path)
+	gp := cfg.DefaultGroupPolicy
+	if gp.Reply.ContinuationWindow.Duration != time.Minute || gp.Reply.Debounce.Duration != 1500*time.Millisecond {
+		t.Errorf("reply = %+v", gp.Reply)
+	}
+	if want := conloomapi.DefaultGroupPolicy().Proactive; gp.Proactive != want {
+		t.Errorf("proactive = %+v, want defaults %+v", gp.Proactive, want)
+	}
+
+	path = writeConfig(t, `default_group_policy:
+  proactive:
+    enabled: false
+    daily_limits: {high: 5}
+`)
+	gp = mustLoad(t, path).DefaultGroupPolicy
+	want := conloomapi.DefaultGroupPolicy().Proactive
+	want.Enabled = false
+	want.DailyLimits.High = 5
+	if gp.Proactive != want {
+		t.Errorf("partial proactive = %+v, want %+v", gp.Proactive, want)
 	}
 }
 

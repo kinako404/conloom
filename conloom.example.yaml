@@ -141,6 +141,15 @@ default_group_policy:
     review_output: true
     action: block                 # allow | sanitize | block
     blocked_words: []
+  # 主动搭话：只对在本群 @ 过机器人的群友生效，每人可用 /主动 调整自己的档位。
+  # 库中已有的旧策略版本没有本段时，按这里的默认值补齐。
+  proactive:
+    enabled: true                 # 群总开关（/pause 时同样停止）
+    default_level: low            # 获得资格时的默认档位：off | low | mid | high
+    eligibility_ttl: 720h         # 多久没 @ 机器人就失去资格（30 天），1h~8760h
+    user_cooldown: 30m            # 对同一人两次主动搭话的最短间隔，0~24h
+    group_hourly_limit: 4         # 全群每小时主动发言上限，0~60
+    daily_limits: {low: 2, mid: 4, high: 8}   # 每人每天主动发言上限，0~100 且 low <= mid <= high
 
 # 运行时参数。
 runtime:

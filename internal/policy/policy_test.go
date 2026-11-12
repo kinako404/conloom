@@ -2,6 +2,8 @@ package policy
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -174,6 +176,83 @@ func TestPolicy_ValidateRejectsConcurrency3(t *testing.T) {
 	}
 	if list, _ := st.ListPolicyVersions(ctx, testConvKey); len(list) != 0 {
 		t.Fatalf("invalid update stored %d versions", len(list))
+	}
+}
+
+func TestPolicy_CurrentFillsMissingProactiveDefaults(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "conloom.db")
+	db, err := sqlite.Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	legacy := withConcurrency(conloomapi.DefaultGroupPolicy(), 0)
+	legacy.Reply.ContinuationWindow = conloomapi.Duration{Duration: time.Minute}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	delete(doc, "proactive")
+	raw, err = json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "proactive") {
+		t.Fatalf("legacy policy still has proactive: %s", raw)
+	}
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `INSERT INTO group_policies
+		(conversation_key, version, policy, reason, updated_by, created_at) VALUES (?, 5, ?, 'legacy', '29999', ?)`,
+		testConvKey, string(raw), time.Now().UTC().Format("2006-01-02T15:04:05.000000000Z07:00")); err != nil {
+		t.Fatalf("insert legacy policy: %v", err)
+	}
+
+	defaults := conloomapi.DefaultGroupPolicy()
+	svc := NewService(db, defaults)
+	for i := range 2 {
+		pv, err := svc.Current(ctx, testConvKey)
+		if err != nil {
+			t.Fatalf("Current #%d: %v", i, err)
+		}
+		if pv.Version != 5 || !pv.Policy.Proactive.Enabled || pv.Policy.Proactive != defaults.Proactive {
+			t.Fatalf("Current #%d proactive = %+v (version %d), want defaults", i, pv.Policy.Proactive, pv.Version)
+		}
+		want := legacy
+		want.Proactive = defaults.Proactive
+		if !reflect.DeepEqual(pv.Policy, want) {
+			t.Fatalf("Current #%d policy = %+v, want %+v", i, pv.Policy, want)
+		}
+	}
+
+	resumed, err := svc.Resume(ctx, testConvKey, "29999")
+	if err != nil || resumed.Version != 6 || resumed.Policy.Proactive != defaults.Proactive {
+		t.Fatalf("Resume = %+v, %v; want version 6 with default proactive", resumed, err)
+	}
+}
+
+func TestPolicy_UpdateFillsMissingProactive(t *testing.T) {
+	ctx := context.Background()
+	defaults := conloomapi.DefaultGroupPolicy()
+	svc := NewService(newTestStore(t), defaults)
+	put := conloomapi.DefaultGroupPolicy()
+	put.Proactive = conloomapi.ProactivePolicy{}
+	pv, err := svc.Update(ctx, testConvKey, conloomapi.PolicyPut{Policy: put}, "29999")
+	if err != nil || pv.Version != 1 || pv.Policy.Proactive != defaults.Proactive {
+		t.Fatalf("Update = %+v, %v; want default proactive", pv, err)
+	}
+	cur, err := svc.Current(ctx, testConvKey)
+	if err != nil || cur.Policy.Proactive != defaults.Proactive {
+		t.Fatalf("Current = %+v, %v", cur, err)
 	}
 }
 

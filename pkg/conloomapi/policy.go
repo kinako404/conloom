@@ -12,6 +12,44 @@ type GroupPolicy struct {
 	Reply       ReplyPolicy       `json:"reply" yaml:"reply"`
 	Context     ContextPolicy     `json:"context" yaml:"context"`
 	Review      ReviewPolicy      `json:"review" yaml:"review"`
+	Proactive   ProactivePolicy   `json:"proactive" yaml:"proactive"`
+}
+
+const (
+	ProactiveOff  = "off"
+	ProactiveLow  = "low"
+	ProactiveMid  = "mid"
+	ProactiveHigh = "high"
+)
+
+// ProactivePolicy controls unprompted replies to members who have engaged the bot.
+// The zero value means the section is missing and is replaced by WithDefaults.
+type ProactivePolicy struct {
+	Enabled          bool                 `json:"enabled" yaml:"enabled"`
+	DefaultLevel     string               `json:"default_level" yaml:"default_level"`
+	EligibilityTTL   Duration             `json:"eligibility_ttl" yaml:"eligibility_ttl"`
+	UserCooldown     Duration             `json:"user_cooldown" yaml:"user_cooldown"`
+	GroupHourlyLimit int                  `json:"group_hourly_limit" yaml:"group_hourly_limit"`
+	DailyLimits      ProactiveDailyLimits `json:"daily_limits" yaml:"daily_limits"`
+}
+
+type ProactiveDailyLimits struct {
+	Low  int `json:"low" yaml:"low"`
+	Mid  int `json:"mid" yaml:"mid"`
+	High int `json:"high" yaml:"high"`
+}
+
+// DailyLimit returns the per-user daily proactive reply limit for level; off and unknown levels get 0.
+func (p ProactivePolicy) DailyLimit(level string) int {
+	switch level {
+	case ProactiveLow:
+		return p.DailyLimits.Low
+	case ProactiveMid:
+		return p.DailyLimits.Mid
+	case ProactiveHigh:
+		return p.DailyLimits.High
+	}
+	return 0
 }
 
 type ConcurrencyPolicy struct {
@@ -81,7 +119,23 @@ func DefaultGroupPolicy() GroupPolicy {
 			ReviewOutput: true,
 			Action:       "block",
 		},
+		Proactive: ProactivePolicy{
+			Enabled:          true,
+			DefaultLevel:     ProactiveLow,
+			EligibilityTTL:   Duration{720 * time.Hour},
+			UserCooldown:     Duration{30 * time.Minute},
+			GroupHourlyLimit: 4,
+			DailyLimits:      ProactiveDailyLimits{Low: 2, Mid: 4, High: 8},
+		},
 	}
+}
+
+// WithDefaults returns p with a missing (zero) Proactive section replaced by def.Proactive.
+func (p GroupPolicy) WithDefaults(def GroupPolicy) GroupPolicy {
+	if p.Proactive == (ProactivePolicy{}) {
+		p.Proactive = def.Proactive
+	}
+	return p
 }
 
 // Validate reports every rule violation, each prefixed with its snake_case field path.
@@ -127,6 +181,35 @@ func (p GroupPolicy) Validate() error {
 	}
 	if !slices.Contains([]string{"allow", "sanitize", "block"}, p.Review.Action) {
 		fail("review.action must be one of allow|sanitize|block, got %q", p.Review.Action)
+	}
+	a := p.Proactive
+	if !slices.Contains([]string{ProactiveOff, ProactiveLow, ProactiveMid, ProactiveHigh}, a.DefaultLevel) {
+		fail("proactive.default_level must be one of off|low|mid|high, got %q", a.DefaultLevel)
+	}
+	if a.EligibilityTTL.Duration < time.Hour || a.EligibilityTTL.Duration > 8760*time.Hour {
+		fail("proactive.eligibility_ttl must be in [1h, 8760h], got %s", a.EligibilityTTL)
+	}
+	if a.UserCooldown.Duration < 0 || a.UserCooldown.Duration > 24*time.Hour {
+		fail("proactive.user_cooldown must be in [0, 24h], got %s", a.UserCooldown)
+	}
+	if a.GroupHourlyLimit < 0 || a.GroupHourlyLimit > 60 {
+		fail("proactive.group_hourly_limit must be in [0, 60], got %d", a.GroupHourlyLimit)
+	}
+	dl := a.DailyLimits
+	for _, l := range []struct {
+		path string
+		v    int
+	}{
+		{"proactive.daily_limits.low", dl.Low},
+		{"proactive.daily_limits.mid", dl.Mid},
+		{"proactive.daily_limits.high", dl.High},
+	} {
+		if l.v < 0 || l.v > 100 {
+			fail("%s must be in [0, 100], got %d", l.path, l.v)
+		}
+	}
+	if dl.Low > dl.Mid || dl.Mid > dl.High {
+		fail("proactive.daily_limits must satisfy low <= mid <= high, got %d/%d/%d", dl.Low, dl.Mid, dl.High)
 	}
 	return errors.Join(errs...)
 }
