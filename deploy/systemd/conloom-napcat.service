@@ -1,0 +1,18 @@
+[Unit]
+Description=ConLoom NapCat adapter
+Documentation=https://github.com/kinako404/conloom
+After=network-online.target conloom.service
+Wants=network-online.target conloom.service
+
+[Service]
+Type=simple
+User=conloom
+Group=conloom
+WorkingDirectory=/opt/conloom
+ExecStart=/opt/conloom/conloom adapter napcat -c /opt/conloom/conloom.yaml
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

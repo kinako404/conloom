@@ -1,0 +1,35 @@
+version: 2
+
+project_name: conloom
+
+builds:
+  - id: conloom
+    main: ./cmd/conloom
+    binary: conloom
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}}
+
+archives:
+  - id: conloom
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - conloom.example.yaml
+      - deploy/**/*
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc

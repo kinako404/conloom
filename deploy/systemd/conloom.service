@@ -1,0 +1,18 @@
+[Unit]
+Description=ConLoom core service
+Documentation=https://github.com/kinako404/conloom
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=conloom
+Group=conloom
+WorkingDirectory=/opt/conloom
+ExecStart=/opt/conloom/conloom serve -c /opt/conloom/conloom.yaml
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
