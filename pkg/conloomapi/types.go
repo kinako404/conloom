@@ -25,6 +25,7 @@ const (
 	SuppressedPrivateNotAllowed = "private_not_allowed"
 	SuppressedNotEnabled        = "not_enabled"
 	SuppressedSelfMessage       = "self_message"
+	SuppressedStale             = "stale"
 )
 
 const (

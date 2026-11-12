@@ -69,6 +69,9 @@ func (o *Orchestrator) execCommand(ctx context.Context, task store.TaskRecord) (
 			return "", err
 		}
 		o.logPolicyAuditError(task, err)
+		// A change already cancelled active tasks through PolicyChanged; this
+		// also clears tasks queued while the conversation was paused.
+		o.cancelActive(ctx, task.ConversationKey)
 		return CopyPaused, nil
 	case "resume":
 		if !isAdmin {

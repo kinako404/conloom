@@ -53,14 +53,10 @@ func (o *Orchestrator) Recover(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("core: list unfinished tasks: %w", err)
 	}
-	staleAfter := o.cfg.Runtime.StaleTaskAfter.Duration
-	if staleAfter <= 0 {
-		staleAfter = defaultStaleTaskAfter
-	}
 	now := o.now()
 	counts := map[recovery]int{}
 	for _, t := range tasks {
-		r, err := o.recoverTask(ctx, t, now, staleAfter)
+		r, err := o.recoverTask(ctx, t, now, o.staleAfter)
 		if err != nil {
 			return fmt.Errorf("core: recover task %s: %w", t.ID, err)
 		}

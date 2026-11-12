@@ -691,8 +691,12 @@ func TestCommand_PauseRequiresAdmin(t *testing.T) {
 	if resp := env.submit(t, env.groupEvent("20001", "在吗", mentionBot)); resp.SuppressedReason != conloomapi.SuppressedPaused {
 		t.Fatalf("mention while paused: response %+v", resp)
 	}
-	if got := env.command(t, "20001", "/resume"); got != CopyAdminOnly {
-		t.Fatalf("non-admin resume = %q", got)
+	if resp := env.submit(t, env.groupEvent("20001", "/resume")); resp.Disposition != conloomapi.DispositionObserve ||
+		resp.SuppressedReason != conloomapi.SuppressedPaused || resp.TaskID != "" {
+		t.Fatalf("non-admin resume while paused: response %+v", resp)
+	}
+	if c := concurrency(); c != 0 {
+		t.Fatalf("concurrency after non-admin resume = %d", c)
 	}
 	if got := env.command(t, "29999", "/resume"); got != CopyResumed {
 		t.Fatalf("admin resume = %q", got)
@@ -866,5 +870,214 @@ func TestCancelTask_DuringCloseRecordsCancellation(t *testing.T) {
 	}
 	if got := env.hooks.completed(resp.TaskID); !slices.Equal(got, []string{conloomapi.TaskCancelled}) {
 		t.Fatalf("completions = %v, want [cancelled]", got)
+	}
+}
+
+func occurredAt(at time.Time) evOpt {
+	return func(ev *conloomapi.Event) { ev.OccurredAt = at.UTC() }
+}
+
+func requireObserved(t *testing.T, env *testEnv, ev conloomapi.Event, reason string) {
+	t.Helper()
+	resp := env.submit(t, ev)
+	if resp.Disposition != conloomapi.DispositionObserve || resp.SuppressedReason != reason || resp.TaskID != "" {
+		t.Fatalf("%q: response %+v, want observe/%s", ev.Message.Text, resp, reason)
+	}
+	if _, err := env.st.GetMessage(context.Background(), testBot, ev.Message.ID); err != nil {
+		t.Fatalf("%q: message not stored: %v", ev.Message.Text, err)
+	}
+}
+
+func TestCommand_NonAdminRateLimited(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	for i := range 6 {
+		if got := env.command(t, "20001", "/help"); got != CopyHelp("织语") {
+			t.Fatalf("help %d = %q", i+1, got)
+		}
+	}
+	requireObserved(t, env, env.groupEvent("20001", "/help"), conloomapi.SuppressedRateLimited)
+	requireObserved(t, env, env.groupEvent("20001", "在吗", mentionBot), conloomapi.SuppressedRateLimited)
+
+	for range 5 {
+		env.submit(t, env.groupEvent("20002", "问题", mentionBot))
+	}
+	if got := env.command(t, "20002", "/persona"); got == "" {
+		t.Fatal("6th trigger of 20002 was not answered")
+	}
+	requireObserved(t, env, env.groupEvent("20002", "/stop"), conloomapi.SuppressedRateLimited)
+
+	for i := range 8 {
+		if got := env.command(t, "29999", "/help"); got != CopyHelp("织语") {
+			t.Fatalf("admin help %d = %q", i+1, got)
+		}
+	}
+}
+
+func TestCommand_NonAdminPausedObserves(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	if got := env.command(t, "29999", "/pause"); got != CopyPaused {
+		t.Fatalf("admin pause = %q", got)
+	}
+	for _, text := range []string{"/help", "/persona", "/stop", "/pause"} {
+		requireObserved(t, env, env.groupEvent("20001", text), conloomapi.SuppressedPaused)
+	}
+	if got := env.command(t, "29999", "/help"); got != CopyHelp("织语") {
+		t.Fatalf("admin help while paused = %q", got)
+	}
+	if got := env.command(t, "29999", "/pause"); got != CopyPaused {
+		t.Fatalf("admin pause while paused = %q", got)
+	}
+	if got := env.command(t, "29999", "/resume"); got != CopyResumed {
+		t.Fatalf("admin resume = %q", got)
+	}
+	if got := env.command(t, "20001", "/help"); got != CopyHelp("织语") {
+		t.Fatalf("help after resume = %q", got)
+	}
+}
+
+// startRunningAndQueued starts a task of 20001 blocked in the model and
+// queues a task of 20002 behind it.
+func startRunningAndQueued(t *testing.T) (env *testEnv, running, queued string, unblock func()) {
+	t.Helper()
+	release := make(chan struct{})
+	var once sync.Once
+	unblock = func() { once.Do(func() { close(release) }) }
+	env = newTestOrchestrator(t, testOpts{short: func(map[string]any) (int, string) { <-release; return 200, fakeReply }})
+	t.Cleanup(unblock)
+	running = env.submit(t, env.groupEvent("20001", "讲个长故事", mentionBot)).TaskID
+	waitUntil(t, "model called", func() bool { return env.short.Calls() == 1 })
+	queued = env.submit(t, env.groupEvent("20002", "我也问一个", mentionBot)).TaskID
+	if running == "" || queued == "" {
+		t.Fatalf("tasks = %q, %q", running, queued)
+	}
+	return env, running, queued, unblock
+}
+
+func requireSilentlyCancelled(t *testing.T, env *testEnv, ids ...string) {
+	t.Helper()
+	for _, id := range ids {
+		task := env.waitTask(t, id)
+		if task.Status != conloomapi.TaskCancelled || len(task.Actions) != 0 {
+			t.Fatalf("task %s = %+v, want cancelled without actions", id, task)
+		}
+		if got := env.hooks.completed(id); !slices.Equal(got, []string{conloomapi.TaskCancelled}) {
+			t.Fatalf("task %s completions = %v, want [cancelled]", id, got)
+		}
+	}
+}
+
+func TestCommand_PauseCancelsActiveTasksSilently(t *testing.T) {
+	env, running, queued, unblock := startRunningAndQueued(t)
+	if got := env.command(t, "29999", "/pause"); got != CopyPaused {
+		t.Fatalf("pause = %q", got)
+	}
+	requireSilentlyCancelled(t, env, running, queued)
+	unblock()
+	if got := env.command(t, "29999", "/resume"); got != CopyResumed {
+		t.Fatalf("resume = %q", got)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := env.short.Calls(); n != 1 {
+		t.Fatalf("model calls = %d, want 1", n)
+	}
+	requireSilentlyCancelled(t, env, running, queued)
+}
+
+func TestCommand_PauseWhilePausedCancelsHeldTasks(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	if got := env.command(t, "29999", "/pause"); got != CopyPaused {
+		t.Fatalf("pause = %q", got)
+	}
+	id, msg := env.seedTask(t, "20001", "重启前的问题", "", conloomapi.TaskQueued, time.Now().UTC())
+	env.o.sched.Restore(QueuedTask{TaskID: id, ConversationKey: testConvKey, ActorID: "20001", TriggerMessageIDs: []string{msg}})
+	if got := env.command(t, "29999", "/pause"); got != CopyPaused {
+		t.Fatalf("second pause = %q", got)
+	}
+	requireSilentlyCancelled(t, env, id)
+	if n := env.short.Calls(); n != 0 {
+		t.Fatalf("model calls = %d, want 0", n)
+	}
+}
+
+func TestPolicyChanged_ZeroConcurrencyCancelsActiveTasks(t *testing.T) {
+	env, running, queued, unblock := startRunningAndQueued(t)
+	ctx := context.Background()
+	pv, err := env.policies.Current(ctx, testConvKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := pv.Policy
+	p.Reply.MinReplyInterval = conloomapi.Duration{Duration: time.Second}
+	if _, err := env.policies.Update(ctx, testConvKey, conloomapi.PolicyPut{Policy: p}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if active := env.o.sched.Active(testConvKey); len(active) != 2 {
+		t.Fatalf("active after an unrelated policy change = %+v, want both tasks", active)
+	}
+	p.Concurrency.MaxInteractiveRequests = 0
+	if _, err := env.policies.Update(ctx, testConvKey, conloomapi.PolicyPut{Policy: p}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	requireSilentlyCancelled(t, env, running, queued)
+	unblock()
+	time.Sleep(100 * time.Millisecond)
+	if n := env.short.Calls(); n != 1 {
+		t.Fatalf("model calls = %d, want 1", n)
+	}
+}
+
+func TestSubmit_StaleTriggerObserves(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	old := time.Now().Add(-5 * time.Minute)
+	requireObserved(t, env, env.groupEvent("20001", "五分钟前的问题", mentionBot, occurredAt(old)), conloomapi.SuppressedStale)
+	requireObserved(t, env, env.groupEvent("20001", "/help", occurredAt(old)), conloomapi.SuppressedStale)
+	requireObserved(t, env, env.groupEvent("29999", "/pause", occurredAt(old)), conloomapi.SuppressedStale)
+	requireObserved(t, env, env.event(conloomapi.ConvPrivate, "29999", "29999", "在吗", occurredAt(old)), conloomapi.SuppressedStale)
+
+	plain := env.submit(t, env.groupEvent("20001", "普通聊天", occurredAt(old)))
+	if plain.Disposition != conloomapi.DispositionObserve || plain.SuppressedReason != "" {
+		t.Fatalf("old plain message: response %+v, want plain observe", plain)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := env.short.Calls() + env.long.Calls(); n != 0 {
+		t.Fatalf("model calls = %d, want 0", n)
+	}
+	if active := env.o.sched.Active(testConvKey); len(active) != 0 {
+		t.Fatalf("active tasks = %+v, want none", active)
+	}
+
+	recent := env.submit(t, env.groupEvent("20001", "一分钟前的问题", mentionBot, occurredAt(time.Now().Add(-time.Minute))))
+	if recent.Disposition != conloomapi.DispositionReply || recent.TaskID == "" {
+		t.Fatalf("1-minute-old mention: response %+v, want a reply task", recent)
+	}
+	if task := env.waitTask(t, recent.TaskID); task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 {
+		t.Fatalf("1-minute-old mention task = %+v", task)
+	}
+}
+
+func TestSubmit_FutureOccurredAtTreatedAsNow(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) {
+		c.DefaultGroupPolicy.Reply.Debounce = conloomapi.Duration{Duration: time.Minute}
+	}})
+	before := time.Now()
+	ev := env.groupEvent("20001", "来自未来", mentionBot, occurredAt(time.Now().Add(time.Hour)))
+	resp := env.submit(t, ev)
+	if resp.Disposition != conloomapi.DispositionReply || resp.TaskID == "" {
+		t.Fatalf("response = %+v, want a reply task", resp)
+	}
+	ctx := context.Background()
+	rec, err := env.st.GetTask(ctx, testBot, resp.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := env.st.GetMessage(ctx, testBot, ev.Message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now()
+	for name, at := range map[string]time.Time{"task event time": rec.EventOccurredAt, "message time": msg.OccurredAt} {
+		if at.Before(before.Add(-time.Second)) || at.After(after) {
+			t.Errorf("%s = %v, want between %v and %v", name, at, before, after)
+		}
 	}
 }

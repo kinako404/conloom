@@ -84,6 +84,7 @@ type Orchestrator struct {
 	limiter     *RateLimiter
 	tokenFactor float64
 	actionTTL   time.Duration
+	staleAfter  time.Duration
 
 	closing   atomic.Bool
 	closeOnce sync.Once
@@ -151,6 +152,10 @@ func New(d Deps) (*Orchestrator, error) {
 	if o.actionTTL <= 0 {
 		o.actionTTL = defaultActionTTL
 	}
+	o.staleAfter = o.cfg.Runtime.StaleTaskAfter.Duration
+	if o.staleAfter <= 0 {
+		o.staleAfter = defaultStaleTaskAfter
+	}
 	idle := o.cfg.Runtime.SessionIdle.Duration
 	if idle <= 0 {
 		idle = defaultSessionIdle
@@ -189,9 +194,32 @@ func maxTokenFactor(profiles map[string]config.ModelProfile) float64 {
 	return f
 }
 
-// PolicyChanged makes the conversation's scheduler re-read its policy.
+// PolicyChanged makes the conversation's scheduler re-read its policy. A
+// policy that pauses the conversation (concurrency 0) also cancels its active
+// tasks.
 func (o *Orchestrator) PolicyChanged(convKey string) {
+	ctx := context.Background()
+	if pv, err := o.policies.Current(ctx, convKey); err != nil {
+		o.log.Error("load changed policy failed", "conversation", convKey, "error", err)
+	} else if pv.Policy.Concurrency.MaxInteractiveRequests == 0 {
+		o.cancelActive(ctx, convKey)
+	}
 	o.sched.Kick(convKey)
+}
+
+// cancelActive silently cancels the conversation's queued and running tasks:
+// they end cancelled without any action.
+func (o *Orchestrator) cancelActive(ctx context.Context, convKey string) {
+	botID, _, _ := strings.Cut(convKey, ":")
+	active := o.sched.Active(convKey)
+	for _, t := range active {
+		if _, err := o.cancel(ctx, botID, convKey, t.TaskID); err != nil {
+			o.log.Error("cancel task of paused conversation failed", "task_id", t.TaskID, "conversation", convKey, "error", err)
+		}
+	}
+	if len(active) > 0 {
+		o.log.Info("conversation paused; cancelled active tasks", "conversation", convKey, "count", len(active))
+	}
 }
 
 // Close stops background maintenance and the scheduler. Running tasks are
@@ -243,7 +271,8 @@ func (e *replayError) Error() string { return "core: event already stored" }
 // Submit accepts an event. A repeated idempotency key with the same body
 // returns the stored response with replayed set; with a different body it
 // returns ErrDuplicateEvent. A platform message stored under another key
-// returns store.ErrDuplicateMessage.
+// returns store.ErrDuplicateMessage. A reply or command trigger that occurred
+// StaleTaskAfter or longer ago is only observed, with reason stale.
 func (o *Orchestrator) Submit(ctx context.Context, botID, idemKey string, body []byte, ev conloomapi.Event) (resp conloomapi.EventAccepted, replayed bool, err error) {
 	if o.closing.Load() {
 		return conloomapi.EventAccepted{}, false, ErrSchedulerClosed
@@ -301,6 +330,9 @@ func (o *Orchestrator) submit(ctx context.Context, s *submission) (conloomapi.Ev
 	if err != nil {
 		return conloomapi.EventAccepted{}, err
 	}
+	if d.Disposition == conloomapi.DispositionReply && s.now.Sub(s.occurredAt()) >= o.staleAfter {
+		return o.observeOnly(ctx, s, conloomapi.SuppressedStale)
+	}
 	switch {
 	case d.Disposition == conloomapi.DispositionIgnore:
 		resp := conloomapi.EventAccepted{EventID: s.ev.EventID, Disposition: d.Disposition, SuppressedReason: d.Reason}
@@ -312,13 +344,15 @@ func (o *Orchestrator) submit(ctx context.Context, s *submission) (conloomapi.Ev
 		}
 		return resp, o.ingest(ctx, store.Ingest{Event: evRec})
 	case d.Command != "":
+		if !s.isAdmin {
+			if reason := o.withheld(s, pol); reason != "" {
+				return o.observeOnly(ctx, s, reason)
+			}
+		}
 		return o.submitCommand(ctx, s, d.Command)
 	case d.Disposition == conloomapi.DispositionReply:
-		if pol.Concurrency.MaxInteractiveRequests == 0 {
-			return o.observeOnly(ctx, s, conloomapi.SuppressedPaused)
-		}
-		if !o.limiter.Allow(s.convKey+":"+s.ev.Actor.PlatformUserID, pol.Reply.UserRateLimitPerMinute, s.now) {
-			return o.observeOnly(ctx, s, conloomapi.SuppressedRateLimited)
+		if reason := o.withheld(s, pol); reason != "" {
+			return o.observeOnly(ctx, s, reason)
 		}
 		resp, err := o.admit(ctx, s, AdmitNew)
 		if errors.Is(err, ErrQueueFull) {
@@ -328,6 +362,19 @@ func (o *Orchestrator) submit(ctx context.Context, s *submission) (conloomapi.Ev
 	default:
 		return o.admit(ctx, s, AdmitMergeOnly)
 	}
+}
+
+// withheld returns why a reply trigger is not answered: the conversation is
+// paused or the sender exceeded the per-user rate limit. It returns "" and
+// spends one of the sender's rate-limit hits otherwise.
+func (o *Orchestrator) withheld(s *submission, pol conloomapi.GroupPolicy) string {
+	if pol.Concurrency.MaxInteractiveRequests == 0 {
+		return conloomapi.SuppressedPaused
+	}
+	if !o.limiter.Allow(s.convKey+":"+s.ev.Actor.PlatformUserID, pol.Reply.UserRateLimitPerMinute, s.now) {
+		return conloomapi.SuppressedRateLimited
+	}
+	return ""
 }
 
 func (o *Orchestrator) decide(ctx context.Context, s *submission) (Decision, conloomapi.GroupPolicy, error) {
@@ -449,8 +496,9 @@ func (o *Orchestrator) ingest(ctx context.Context, in store.Ingest) error {
 	return nil
 }
 
+// occurredAt is the event time; an unset or future time counts as now.
 func (s *submission) occurredAt() time.Time {
-	if s.ev.OccurredAt.IsZero() {
+	if s.ev.OccurredAt.IsZero() || s.ev.OccurredAt.After(s.now) {
 		return s.now.UTC()
 	}
 	return s.ev.OccurredAt.UTC()

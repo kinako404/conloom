@@ -156,6 +156,12 @@ type env struct {
 // the test ends; close may also be called earlier.
 func newEnv(t testing.TB, cfg *config.Config) *env {
 	t.Helper()
+	return newEnvWith(t, cfg, app.Options{})
+}
+
+// newEnvWith is newEnv with app options.
+func newEnvWith(t testing.TB, cfg *config.Config, opts app.Options) *env {
+	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
 	if _, bench := t.(*testing.B); !bench {
 		logs := &syncBuffer{}
@@ -166,7 +172,7 @@ func newEnv(t testing.TB, cfg *config.Config) *env {
 			}
 		})
 	}
-	a, err := app.New(cfg, logger, app.Options{})
+	a, err := app.New(cfg, logger, opts)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
@@ -481,7 +487,7 @@ func TestE2E_StaleTaskNotAnsweredAfterRestart(t *testing.T) {
 	dataDir := t.TempDir()
 	slow := blockingModel(t)
 	e1 := newEnv(t, testConfig(t, configParams{dataDir: dataDir, modelURL: slow.URL}))
-	ev := groupMentionEvent("900001", "五分钟前的问题", time.Now().Add(-5*time.Minute))
+	ev := groupMentionEvent("900001", "停机前的问题", time.Now())
 	resp, err := e1.client.SubmitEvent(context.Background(), "test:900001", ev)
 	if err != nil || resp.TaskID == "" {
 		t.Fatalf("SubmitEvent = %+v, %v; want a reply task", resp, err)
@@ -489,8 +495,10 @@ func TestE2E_StaleTaskNotAnsweredAfterRestart(t *testing.T) {
 	waitUntil(t, "the model call to start", func() bool { return slow.Calls() == 1 })
 	e1.close()
 
+	// The core comes back five minutes later.
 	fast := fakeopenai.New(t, answer(fakeReply))
-	e2 := newEnv(t, testConfig(t, configParams{dataDir: dataDir, modelURL: fast.URL}))
+	later := func() time.Time { return time.Now().Add(5 * time.Minute) }
+	e2 := newEnvWith(t, testConfig(t, configParams{dataDir: dataDir, modelURL: fast.URL}), app.Options{Now: later})
 	e2.requireNoAction(time.Second)
 	task, err := e2.client.GetTask(context.Background(), resp.TaskID)
 	if err != nil {
@@ -501,6 +509,35 @@ func TestE2E_StaleTaskNotAnsweredAfterRestart(t *testing.T) {
 	}
 	if n := fast.Calls(); n != 0 {
 		t.Errorf("model calls after restart = %d, want 0", n)
+	}
+}
+
+func TestE2E_OldMentionSubmittedLateIsNotAnswered(t *testing.T) {
+	fake := fakeopenai.New(t, answer(fakeReply))
+	e := newEnv(t, testConfig(t, configParams{modelURL: fake.URL}))
+	ctx := context.Background()
+
+	ev := groupMentionEvent("900003", "五分钟前的问题", time.Now().Add(-5*time.Minute))
+	resp, err := e.client.SubmitEvent(ctx, "test:900003", ev)
+	if err != nil {
+		t.Fatalf("SubmitEvent: %v", err)
+	}
+	if resp.Disposition != conloomapi.DispositionObserve || resp.SuppressedReason != conloomapi.SuppressedStale || resp.TaskID != "" {
+		t.Fatalf("old mention submitted late: response %+v, want observe/%s", resp, conloomapi.SuppressedStale)
+	}
+	e.requireNoAction(500 * time.Millisecond)
+	if n := fake.Calls(); n != 0 {
+		t.Fatalf("model calls = %d, want 0", n)
+	}
+
+	e.mention(group, bob, "刚才有人问了什么？")
+	e.drainOne()
+	reqs := fake.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(reqs))
+	}
+	if !strings.Contains(requestText(reqs[0]), "五分钟前的问题") {
+		t.Error("the stale mention was not stored as context")
 	}
 }
 
