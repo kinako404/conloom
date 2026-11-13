@@ -110,7 +110,7 @@ ssh -L 8787:127.0.0.1:8787 <用户>@<服务器>
 - 错误格式和 Bearer API 相同：`{"error":{"code","message","retryable","trace_id"}}`。没登录或会话已失效返回 401 `UNAUTHORIZED`，CSRF 或 `Origin` 检查不通过返回 403 `FORBIDDEN`，登录被限流返回 429 `RATE_LIMITED`。
 - 时间是 RFC3339 UTC 字符串，可以为空的时间为 `null`。用量接口的 `from`、`to` 是 `server.timezone` 的当地日期 `YYYY-MM-DD`。
 - 路径里的 `{key}` 是会话键 `bot:平台:类型:会话ID`（如 `qq-main:qq:group:group_10001`）经 URL 编码后的形式。面板跨 bot，所以不用 Bearer API 里那种按令牌绑定 bot 的会话 ID。
-- 列表接口用 `before` 游标加 `limit` 翻页，`limit` 默认 50、最大 200；响应里的 `next_before` 是下一页的 `before`，最后一页为 `null`。
+- 任务列表、审计记录、调用明细（`usage/calls`）和消息浏览用 `before` 游标加 `limit` 翻页；响应里的 `next_before` 是下一页的 `before`，最后一页为 `null`。消息检索改用 `offset` 翻页（见下表）。`limit` 都是默认 50、最大 200。会话列表不分页，一次返回全部会话。
 
 **鉴权**
 

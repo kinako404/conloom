@@ -31,6 +31,8 @@
 
 会话 `{id}` 是标准会话 ID，如 `group_10001`、`private_20001`；核心收到过这个会话的消息后它才存在，在此之前读写它的人格、群策略和记忆都返回 404。没有列出的路径返回纯文本 404（不是下面的 JSON 错误格式）。
 
+配置了 `panel` 段时，`/panel/` 下的路径属于 Web 管理面板，用登录 cookie 而不是 Bearer 令牌鉴权，见 [Web 管理面板](panel.md)。
+
 ## 事件
 
 `POST /api/v1/events` 提交一个标准事件（`schema_version` 为 `1.0`，`event_type` 为 `message.created`）：

@@ -227,17 +227,29 @@ sudo sh -c 'umask 077 && openssl rand -base64 18 > /root/conloom-panel-password'
 sudo sh -c '/opt/conloom/conloom panel hash-password < /root/conloom-panel-password'
 ```
 
+登录时要用这个密码，需要时用 root 读出来（文件只有 root 能读）：
+
+```sh
+sudo cat /root/conloom-panel-password
+```
+
 也可以直接运行 `conloom panel hash-password` 后键入密码回车，但密码会显示在终端上。密码不要写进仓库、命令行参数或日志。
 
 **2. 写入 `.env` 和配置**
 
-把输出的整行写进 `/opt/conloom/.env`：
+把输出的整行写进 `/opt/conloom/.env`，形如：
 
 ```sh
 CONLOOM_PANEL_ADMIN_HASH=pbkdf2-sha256:600000:<盐>:<哈希>
 ```
 
-哈希里没有 `$`，放进 `.env` 或 shell 都不会被当成变量展开。然后在 `conloom.yaml` 里加上 `panel` 段（字段见 [配置参考：panel](configuration.md#panel)），重启核心：
+不想手动复制的话，下面这一行重新算一次哈希，算成功了才追加到 `.env` 末尾（每次算出的盐不同，哈希和第 1 步输出的不一样，但同样对应这个密码）：
+
+```sh
+sudo sh -c 'h=$(/opt/conloom/conloom panel hash-password < /root/conloom-panel-password) && printf "\nCONLOOM_PANEL_ADMIN_HASH=%s\n" "$h" >> /opt/conloom/.env'
+```
+
+哈希里没有 `$`，放进 `.env` 或 shell 都不会被当成变量展开。`.env` 里同一个变量出现多次时以最后一行为准。然后在 `conloom.yaml` 里加上 `panel` 段（字段见 [配置参考：panel](configuration.md#panel)），重启核心：
 
 ```yaml
 panel:
@@ -260,7 +272,7 @@ ssh -L 8787:127.0.0.1:8787 <用户>@<服务器>
 
 然后在浏览器打开 `http://127.0.0.1:8787/panel/`，用 `admin` 和第 1 步的密码登录。这种方式 `cookie_secure` 保持 `false`。
 
-**改密码**：重新执行第 1、2 步，替换 `.env` 里的哈希并重启核心。这个用户已有的登录会话随即全部失效（会话记着登录时哈希的指纹，和配置里的不一致就拒绝），其他用户不受影响。忘记密码时也是这样重置。
+**改密码**：重新执行第 1、2 步，替换 `.env` 里的哈希并重启核心（用上面的一行追加时，先用 `sudo sed -i '/^CONLOOM_PANEL_ADMIN_HASH=/d' /opt/conloom/.env` 删掉旧的那行）。这个用户已有的登录会话随即全部失效（会话记着登录时哈希的指纹，和配置里的不一致就拒绝），其他用户不受影响。忘记密码时也是这样重置。
 
 ### 经 HTTPS 反向代理访问
 
@@ -277,6 +289,25 @@ panel.example.invalid {
 }
 ```
 
+用 nginx 时（证书配置从略）：
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name panel.example.invalid;
+
+    location /panel {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_set_header Host $http_host;
+    }
+    location / {
+        return 404;
+    }
+}
+```
+
+`Host` 必须用 `$http_host`（浏览器发来的原样 `Host`，带端口）：面板的 CSRF 检查比较请求的 `Origin` 和 `Host`，nginx 的 `$host` 会去掉端口，代理不在 443 端口上时两者就对不上，登录和所有修改都会返回 403。
+
 同时在 `conloom.yaml` 里设 `cookie_secure: true` 并重启核心：
 
 ```yaml
@@ -289,7 +320,7 @@ panel:
 
 注意：
 
-- 代理必须原样转发 `Host` 头：面板的 CSRF 检查要求请求的 `Origin` 和 `Host` 一致。Caddy 默认就这样做；nginx 要写 `proxy_set_header Host $host;`。
+- 代理必须原样转发 `Host` 头：面板的 CSRF 检查要求请求的 `Origin` 和 `Host` 一致。Caddy 默认就这样做；nginx 要写 `proxy_set_header Host $http_host;`（见上面的例子）。
 - 不要把 `/api/v1`、`/metrics`、`/healthz` 一起暴露到公网，上面的配置只转发 `/panel`。
 - 面板只信任 TCP 连接的对端地址，不读 `X-Forwarded-For`，经代理时所有人的来源 IP 都是代理的地址：登录失败的“每 IP 15 分钟 5 次”额度由所有访问者共用，有人在公网上乱试密码时，你自己也可能要等最多 15 分钟才能再登录。
 - 设了 `cookie_secure: true` 以后浏览器只经 HTTPS 发送登录 cookie，再用 SSH 隧道的 `http://` 地址访问可能登录不上，这时改用 HTTPS 地址。
