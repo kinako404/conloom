@@ -210,8 +210,9 @@ default_group_policy:
     consolidate_min: 20           # 按时间整理时至少要有的新消息条数，1~2000
     backlog: 1000                 # 第一次开启时往回整理多少条旧消息，0~5000
 
-# 私聊会话的默认策略，结构与 default_group_policy 相同，省略的字段取内置默认值。
-# 整段省略时，私聊沿用 default_group_policy。已有策略版本的会话以库里的版本为准。
+# 私聊会话的默认策略，结构与 default_group_policy 相同。段内省略的字段取内置默认值，
+# 不取上面 default_group_policy 里的配置，所以像 review.blocked_words 这样想在私聊里也生效的设置
+# 需要在这里再写一遍。整段省略时，私聊沿用 default_group_policy。已有策略版本的会话以库里的版本为准。
 default_private_policy:
   context:
     max_recent_messages: 200      # 私聊只有一个人，可以带更长的历史
