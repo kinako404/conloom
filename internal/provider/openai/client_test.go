@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -349,7 +350,7 @@ func TestChat_ParsesReasoningTokens(t *testing.T) {
 		t.Fatalf("Chat: %v", err)
 	}
 	want := ChatResponse{Content: "答", Model: "m1-served", FinishReason: "length", PromptTokens: 120, CompletionTokens: 45, ReasoningTokens: 30}
-	if resp != want {
+	if !reflect.DeepEqual(resp, want) {
 		t.Errorf("resp = %+v, want %+v", resp, want)
 	}
 }

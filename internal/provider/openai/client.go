@@ -26,18 +26,30 @@ const (
 // ErrEmptyOutput is returned when the model reply is empty after CleanOutput.
 var ErrEmptyOutput = errors.New("openai: empty model output")
 
+// ChatMessage is one message of the conversation. An assistant message that
+// calls tools carries ToolCalls (its Content may be empty); a "tool" message
+// answers the call ToolCallID.
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string
+	Content    string
+	ToolCalls  []ToolCall
+	ToolCallID string
 }
 
+// ChatRequest is a chat completion request. Tools, when set, are offered to
+// the model; ToolChoice (e.g. "none") is sent only together with Tools.
 type ChatRequest struct {
-	Messages  []ChatMessage
-	MaxTokens int
+	Messages   []ChatMessage
+	MaxTokens  int
+	Tools      []Tool
+	ToolChoice string
 }
 
+// ChatResponse is the model's answer: its cleaned Content and the ToolCalls it
+// requested. Content may be empty only when ToolCalls is not.
 type ChatResponse struct {
 	Content          string
+	ToolCalls        []ToolCall
 	Model            string
 	FinishReason     string
 	PromptTokens     int
@@ -115,6 +127,12 @@ func (c *Client) requestBody(req ChatRequest) ([]byte, error) {
 	if req.MaxTokens > 0 {
 		m["max_tokens"] = req.MaxTokens
 	}
+	if len(req.Tools) > 0 {
+		m["tools"] = req.Tools
+		if req.ToolChoice != "" {
+			m["tool_choice"] = req.ToolChoice
+		}
+	}
 	maps.Copy(m, c.profile.ExtraBody)
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -127,7 +145,8 @@ type completionResponse struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Message struct {
-			Content string `json:"content"`
+			Content   string     `json:"content"`
+			ToolCalls []ToolCall `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -192,6 +211,7 @@ func (c *Client) attempt(ctx context.Context, body []byte) (ChatResponse, bool, 
 	}
 	out := ChatResponse{
 		Content:          CleanOutput(cr.Choices[0].Message.Content),
+		ToolCalls:        withIDs(cr.Choices[0].Message.ToolCalls),
 		Model:            cr.Model,
 		FinishReason:     cr.Choices[0].FinishReason,
 		PromptTokens:     cr.Usage.PromptTokens,
@@ -201,7 +221,7 @@ func (c *Client) attempt(ctx context.Context, body []byte) (ChatResponse, bool, 
 	if out.Model == "" {
 		out.Model = c.profile.Model
 	}
-	if out.Content == "" {
+	if out.Content == "" && len(out.ToolCalls) == 0 {
 		return ChatResponse{}, false, ErrEmptyOutput
 	}
 	return out, false, nil
