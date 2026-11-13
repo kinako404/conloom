@@ -3,11 +3,13 @@ package memory
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/provider/openai"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -414,5 +416,56 @@ func TestConsolidate_PrivateInputHasNoGroupWording(t *testing.T) {
 	}
 	if text := consText(req); strings.Contains(text, "群") {
 		t.Errorf("private consolidation input contains 群:\n%s", text)
+	}
+}
+
+func TestScheduler_OnlyAllowedPrivateChats(t *testing.T) {
+	ctx := context.Background()
+	users := []string{"29999", "20001", "20002"}
+	for mode, want := range map[string][]string{
+		"off":       nil,
+		"admins":    {"29999"},
+		"allowlist": {"29999", "20001"},
+		"all":       {"29999", "20001", "20002"},
+	} {
+		t.Run(mode, func(t *testing.T) {
+			e := newSchedEnv(t)
+			private := conloomapi.DefaultGroupPolicy()
+			private.Memory.Enabled, private.Memory.ConsolidateMin = true, 1
+			e.policies.WithPrivateDefaults(private)
+			cfg := &config.Config{Bots: []config.BotConfig{{ID: "bot_test", PrivateChat: mode, Admins: []string{"29999"},
+				EnabledConversations: []conloomapi.ConversationRef{{Type: conloomapi.ConvPrivate, PlatformID: "20001"}}}}}
+			e.sched = NewScheduler(SchedulerDeps{Store: e.st, Policies: e.policies, Runner: e.runner, Config: cfg})
+			for i, user := range users {
+				key := store.ConversationKey("bot_test", "qq", conloomapi.ConvPrivate, "private_"+user)
+				pmid := fmt.Sprintf("%d", 910000+i)
+				if _, err := e.st.Ingest(ctx, store.Ingest{
+					Event: store.EventRecord{BotInstanceID: "bot_test", IdempotencyKey: "seed:" + pmid, EventID: "evt_" + pmid},
+					Conversation: &store.ConversationRecord{BotInstanceID: "bot_test", ID: "private_" + user, Key: key,
+						Type: conloomapi.ConvPrivate, Platform: "qq", PlatformConversationID: user},
+					Message: &store.MessageRecord{ID: "msg_" + pmid, BotInstanceID: "bot_test", ConversationKey: key, Platform: "qq",
+						PlatformMessageID: pmid, ActorID: "user_" + user, PlatformUserID: user, DisplayName: "小明", Text: "你好",
+						OccurredAt: time.Now()},
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.sched.tick(ctx)
+			var got []string
+			for _, c := range e.runner.takeCalls() {
+				got = append(got, strings.TrimPrefix(c.convKey, "bot_test:qq:private:private_"))
+			}
+			slices.Sort(got)
+			w := slices.Clone(want)
+			slices.Sort(w)
+			if !slices.Equal(got, w) {
+				t.Fatalf("consolidated %v, want %v", got, w)
+			}
+			e.sched.Trigger(store.ConversationKey("bot_test", "qq", conloomapi.ConvPrivate, "private_20002"))
+			e.sched.runTriggered(ctx)
+			if calls := e.runner.takeCalls(); (mode == "all") != (len(calls) == 1) {
+				t.Fatalf("manual run of a disallowed chat: calls %v", calls)
+			}
+		})
 	}
 }

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/policy"
 	"github.com/kinako404/conloom/internal/store"
@@ -22,12 +24,15 @@ const (
 )
 
 // SchedulerDeps are the Scheduler's collaborators. Store, Policies and Runner
-// are required. Nil Metrics are registered on a private registry, a nil Logger
-// discards, a nil Location is UTC and a nil Now is time.Now.
+// are required. Config decides which private chats may be consolidated (see
+// config.BotConfig.PrivateAllowed); without it all may. Nil Metrics are
+// registered on a private registry, a nil Logger discards, a nil Location is
+// UTC and a nil Now is time.Now.
 type SchedulerDeps struct {
 	Store    store.Store
 	Policies *policy.Service
 	Runner   Runner
+	Config   *config.Config
 	Metrics  *obs.Metrics
 	Logger   *slog.Logger
 	Location *time.Location
@@ -179,9 +184,13 @@ func (s *Scheduler) tick(ctx context.Context) {
 	}
 }
 
-// consolidate runs the Runner for convKey if memory is on and the group is
-// not paused; a scheduled run also needs the group to be due.
+// consolidate runs the Runner for convKey if memory is on, the conversation
+// is not paused and, for a private chat, the bot still chats with that user
+// privately; a scheduled run also needs the conversation to be due.
 func (s *Scheduler) consolidate(ctx context.Context, convKey string, manual bool) {
+	if !s.privateAllowed(ctx, convKey) {
+		return
+	}
 	pv, err := s.d.Policies.Current(ctx, convKey)
 	if err != nil {
 		s.logError(ctx, "memory: read policy failed", "conversation", convKey, "error", err)
@@ -346,6 +355,25 @@ func (s *Scheduler) decayGroup(ctx context.Context, convKey, today string) {
 			s.d.Metrics.MemoryAffinityChanges.WithLabelValues(store.RevisionRule).Inc()
 		}
 	}
+}
+
+// privateAllowed reports whether convKey is not a private chat, or one whose
+// user the bot's private_chat setting still allows.
+func (s *Scheduler) privateAllowed(ctx context.Context, convKey string) bool {
+	parts := strings.SplitN(convKey, ":", 4)
+	if s.d.Config == nil || len(parts) != 4 || parts[2] != conloomapi.ConvPrivate {
+		return true
+	}
+	bot, ok := s.d.Config.Bot(parts[0])
+	if !ok {
+		return false
+	}
+	conv, err := s.d.Store.GetConversation(ctx, parts[0], parts[3])
+	if err != nil {
+		s.logError(ctx, "memory: read private conversation failed", "conversation", convKey, "error", err)
+		return false
+	}
+	return bot.PrivateAllowed(conv.PlatformConversationID)
 }
 
 func (s *Scheduler) logError(ctx context.Context, msg string, args ...any) {

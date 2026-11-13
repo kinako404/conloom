@@ -115,6 +115,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Store:    st,
 		Policies: policies,
 		Runner:   cons,
+		Config:   cfg,
 		Metrics:  metrics,
 		Logger:   logger,
 		Location: loc,

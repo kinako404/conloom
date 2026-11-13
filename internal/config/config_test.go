@@ -880,3 +880,21 @@ func TestBot(t *testing.T) {
 		t.Error("Bot(bot_c) found, want missing")
 	}
 }
+
+func TestBotConfig_PrivateAllowed(t *testing.T) {
+	bot := BotConfig{Admins: []string{"29999"}, EnabledConversations: []conloomapi.ConversationRef{
+		{Type: conloomapi.ConvPrivate, PlatformID: "20001"}, {Type: conloomapi.ConvGroup, PlatformID: "20002"}}}
+	for mode, want := range map[string]map[string]bool{
+		"off":       {"29999": false, "20001": false, "20002": false},
+		"admins":    {"29999": true, "20001": false, "20002": false},
+		"allowlist": {"29999": true, "20001": true, "20002": false},
+		"all":       {"29999": true, "20001": true, "20002": true},
+	} {
+		bot.PrivateChat = mode
+		for user, w := range want {
+			if got := bot.PrivateAllowed(user); got != w {
+				t.Errorf("%s: PrivateAllowed(%s) = %v, want %v", mode, user, got, w)
+			}
+		}
+	}
+}

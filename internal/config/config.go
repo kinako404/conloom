@@ -81,6 +81,24 @@ func (b BotConfig) UnusedPrivateConversations() []string {
 	return ids
 }
 
+// PrivateAllowed reports whether the user may chat with the bot privately
+// under PrivateChat: never for "off", only admins for "admins", admins and the
+// private entries of EnabledConversations for "allowlist", anyone for "all".
+func (b BotConfig) PrivateAllowed(platformUserID string) bool {
+	admin := slices.Contains(b.Admins, platformUserID)
+	switch b.PrivateChat {
+	case "off":
+		return false
+	case "admins":
+		return admin
+	case "allowlist":
+		return admin || slices.ContainsFunc(b.EnabledConversations, func(c conloomapi.ConversationRef) bool {
+			return c.Type == conloomapi.ConvPrivate && c.PlatformID == platformUserID
+		})
+	}
+	return true
+}
+
 // ProviderOpenAICompatible is the only supported ModelProfile.Provider and the default.
 const ProviderOpenAICompatible = "openai_compatible"
 
