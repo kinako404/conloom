@@ -137,6 +137,7 @@ model_profiles:
 #   api_key: ${CONLOOM_EMBEDDING_KEY:-}
 #   timeout: 10s
 #   batch_size: 16
+#   min_score: 0.48             # 语义命中的最低余弦相似度，0~1。按 bge-m3 实测校准：相关的约 0.50–0.63，不相关的大多低于 0.46；换模型后要重新校准
 
 # 人格模板：Bot 通过 persona_template 引用；省略 default 时使用内置默认人格。
 persona_templates:
