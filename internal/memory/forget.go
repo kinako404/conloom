@@ -17,7 +17,9 @@ type ForgetStore interface {
 // forgotten at at (store.ForgetMember). A private conversation is about that
 // one person, so it is forgotten whole (store.ForgetPrivate): its summary and
 // summary revisions go too, and its cursor moves past everything said so far
-// by either side. A group's summary is a shared record and is kept.
+// by either side. A group's summary is a shared record and is kept. Either
+// way the semantic search chunks holding what was forgotten are deleted, and
+// queued to be rebuilt from what is left.
 func Forget(ctx context.Context, st ForgetStore, convKey, userID string, at time.Time) error {
 	if convTypeOf(convKey) != conloomapi.ConvPrivate {
 		return st.ForgetMember(ctx, convKey, userID, at)
