@@ -14,10 +14,11 @@ panel:
   session_ttl: 168h      # 登录后最长有效期
   idle_timeout: 12h      # 多久不操作就要重新登录
   cookie_secure: false   # 经 HTTPS 反向代理访问时改为 true
+  # listen: 0.0.0.0:8788 # 面板单独的端口，见下文“用单独端口直接访问”
 ```
 
 - 密码哈希用 `conloom panel hash-password` 生成，写进 `.env`，步骤见 [部署：Web 管理面板](deployment.md#web-管理面板)。字段说明见 [配置参考：panel](configuration.md#panel)。
-- 面板和 API 共用 `server.listen` 这一个端口：`/panel/` 是页面，`/panel/api/` 是页面用的 JSON 接口，`/panel` 会跳转到 `/panel/`。
+- 默认面板和 API 共用 `server.listen` 这一个端口：`/panel/` 是页面，`/panel/api/` 是页面用的 JSON 接口，`/panel` 会跳转到 `/panel/`。设了 `panel.listen` 时面板改到那个单独的端口，见 [用单独端口直接访问](#用单独端口直接访问)。
 - 面板用自己的登录会话（cookie）鉴权，和 `api_tokens` 的 Bearer 令牌无关。现有的 `/api/v1/*`、`/healthz`、`/metrics` 行为不变。
 - 可以配置多个账号，权限都一样，都是管理员。
 
@@ -31,7 +32,31 @@ ssh -L 8787:127.0.0.1:8787 <用户>@<服务器>
 
 保持这个连接，在本机浏览器打开 `http://127.0.0.1:8787/panel/`。本机 8787 端口被占用时换一个本地端口，例如 `-L 18787:127.0.0.1:8787`，然后打开 `http://127.0.0.1:18787/panel/`。
 
-需要不经 SSH 直接从公网访问时，用反向代理负责 HTTPS，并把 `panel.cookie_secure` 改为 `true`，示例见 [部署：经 HTTPS 反向代理访问](deployment.md#经-https-反向代理访问)。不要把 `server.listen` 直接改成公网地址：那样连 `/metrics` 和 API 一起暴露出去，面板也没有 HTTPS。
+需要不经 SSH 直接从公网访问时，推荐用反向代理负责 HTTPS，并把 `panel.cookie_secure` 改为 `true`，示例见 [部署：经 HTTPS 反向代理访问](deployment.md#经-https-反向代理访问)。不要把 `server.listen` 直接改成公网地址：那样连 `/metrics`（不需要鉴权）和 API 一起暴露出去，面板也没有 HTTPS。只想开放面板时用下面的 `panel.listen`。
+
+### 用单独端口直接访问
+
+`panel.listen` 让核心多开一个只提供面板的端口，`server.listen` 保持只监听本机：
+
+```yaml
+panel:
+  listen: 0.0.0.0:8788
+  users:
+    - name: admin
+      password_hash: ${CONLOOM_PANEL_ADMIN_HASH}
+```
+
+重启后在浏览器打开 `http://<服务器地址>:8788/panel/`（直接打开 `http://<服务器地址>:8788/` 会跳转过去）。启动日志里有一行 `panel listening`，带实际监听的地址。
+
+- 这个端口上只有面板：`/api/v1/*`、`/healthz`、`/metrics` 都返回 404，它们仍然只在 `server.listen` 上。
+- 设了 `panel.listen` 后，`server.listen` 上不再有 `/panel/`（返回 404）。用 SSH 隧道时转发面板的端口，例如 `ssh -L 8788:127.0.0.1:8788 <用户>@<服务器>`，再打开 `http://127.0.0.1:8788/panel/`。
+- `panel.listen` 不能和 `server.listen` 是同一个端口；端口被占用时核心启动失败。
+
+**安全警告**：面板自己不提供 HTTPS。经普通 HTTP 从公网访问时，登录密码和会话 cookie 都以明文经过网络，路上的任何人（同一 Wi-Fi、运营商、中间节点）都可能看到并冒用，拿到 cookie 就等于拿到管理员权限。
+
+- 推荐在前面放 HTTPS 反向代理，并设 `cookie_secure: true`，做法见 [部署：经 HTTPS 反向代理访问](deployment.md#经-https-反向代理访问)。这时让 `panel.listen` 只监听本机（如 `127.0.0.1:8788`），代理转发到这个端口。
+- 至少要用防火墙只放行自己的 IP 访问这个端口，见 [部署：用单独端口直接访问](deployment.md#用单独端口直接访问)。
+- 登录限流有一个全局上限（全部来源合计 15 分钟内失败 30 次，见下文 [登录与安全](#登录与安全)）。端口对整个互联网开放时，任何人乱试密码都能让这个上限用尽，在最多 15 分钟内谁都无法登录（包括你自己）；已经登录的会话不受影响，可以继续使用。
 
 ## 页面
 

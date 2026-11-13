@@ -44,7 +44,7 @@ ConLoom 是一个用 Go 编写的群聊对话智能体框架：平台适配器�
 
 | 进程 | 作用 | 网络 |
 |---|---|---|
-| `conloom serve` | 核心：API、判定、调度、模型调用、Outbox、Web 管理面板 | 唯一监听端口的进程，`server.listen` 默认本机回环地址的 8787 端口 |
+| `conloom serve` | 核心：API、判定、调度、模型调用、Outbox、Web 管理面板 | 唯一监听端口的进程，`server.listen` 默认本机回环地址的 8787 端口；设了 `panel.listen` 时另开一个只有面板的端口 |
 | `conloom adapter napcat` | NapCat 适配器，QQ 群聊和私聊 | 不监听端口，只主动连接 NapCat（WebSocket）和核心（HTTP） |
 | `conloom adapter telegram` | Telegram 适配器，私聊、群和超级群（频道跳过） | 不监听端口，只主动连接 Telegram Bot API（HTTPS 长轮询）和核心（HTTP） |
 

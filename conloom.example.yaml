@@ -148,6 +148,8 @@ model_profiles:
 #   session_ttl: 168h           # 登录后最长有效期
 #   idle_timeout: 12h           # 多久没有操作就需要重新登录
 #   cookie_secure: false        # 通过 HTTPS 访问时设为 true
+#   listen: 0.0.0.0:8788        # 可选：面板单独的端口（只有面板，API 和 /metrics 仍只在 server.listen）。
+#                               # 普通 HTTP 下密码和 cookie 明文传输，公网访问请加 HTTPS 反代或防火墙，见 docs/panel.md
 
 # 人格模板：Bot 通过 persona_template 引用；省略 default 时使用内置默认人格。
 persona_templates:

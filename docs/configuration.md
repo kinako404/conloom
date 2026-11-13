@@ -52,7 +52,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `server.listen` | `127.0.0.1:8787` | 核心唯一的监听地址，API、`/healthz`、`/metrics` 和 Web 管理面板共用 |
+| `server.listen` | `127.0.0.1:8787` | 核心的监听地址，`host:port` 形式，API、`/healthz`、`/metrics` 共用；Web 管理面板默认也在这里，设了 [`panel.listen`](#panel) 时改到那个地址 |
 | `server.timezone` | `Asia/Shanghai` | 上下文里时间的显示时区，也是主动搭话每人每日上限和面板用量统计的日界线；时区数据已内嵌在二进制里 |
 | `server.metrics_enabled` | `true` | 是否开放 `/metrics` |
 | `storage.data_dir` | `./data` | 数据目录，相对路径按配置文件所在目录解析；数据库固定为其中的 `conloom.db` |
@@ -260,7 +260,7 @@ embedding:
 
 ## panel
 
-可选。配置后，核心在 `server.listen` 的同一端口上提供 Web 管理面板 `/panel/`；整段省略（或写成空的 `panel:`）时不启用。面板的功能和安全机制见 [Web 管理面板](panel.md)，生成密码哈希和远程访问见 [部署：Web 管理面板](deployment.md#web-管理面板)。
+可选。配置后，核心在 `server.listen` 的同一端口上（设了 `listen` 时改在这个单独的地址上）提供 Web 管理面板 `/panel/`；整段省略（或写成空的 `panel:`）时不启用。面板的功能和安全机制见 [Web 管理面板](panel.md)，生成密码哈希和远程访问见 [部署：Web 管理面板](deployment.md#web-管理面板)。
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
@@ -270,6 +270,7 @@ embedding:
 | `session_ttl` | 168h | 登录后最长有效期，> 0 |
 | `idle_timeout` | 12h | 多久没有操作就要重新登录，> 0 |
 | `cookie_secure` | false | 会话 cookie 是否带 `Secure`（只经 HTTPS 发送）。经 HTTPS 反向代理访问时设为 `true`；只经 SSH 隧道用 `http://127.0.0.1` 访问时保持 `false` |
+| `listen` | 空 | 面板单独的监听地址，`host:port` 形式，例如 `0.0.0.0:8788`。留空时面板在 `server.listen` 的 `/panel/` 下；设置后核心多开一个端口，只提供面板（`/` 跳转到 `/panel/`），`server.listen` 上不再有 `/panel/`，API、`/healthz`、`/metrics` 仍只在 `server.listen` 上。不能和 `server.listen` 占同一个端口。直接开放到公网前务必读 [Web 管理面板：用单独端口直接访问](panel.md#用单独端口直接访问)：普通 HTTP 下密码和会话 cookie 是明文传输的 |
 
 ```yaml
 panel:
@@ -278,7 +279,7 @@ panel:
       password_hash: ${CONLOOM_PANEL_ADMIN_HASH}
 ```
 
-`panel` 段只由 `serve` 校验：没有用户、用户名重复、哈希格式不对或迭代次数太低时启动失败，退出码 78，错误信息只指出字段，不包含哈希本身。
+`panel` 段只由 `serve` 校验：没有用户、用户名重复、哈希格式不对或迭代次数太低，或者 `listen` 不是 `host:port`（端口须是 0–65535 的数字）、和 `server.listen` 是同一个端口（端口相同且主机相同，或其中一个是 `0.0.0.0`、`::`、空主机）时启动失败，退出码 78，错误信息只指出字段，不包含哈希本身。`server.listen` 同样必须是 `host:port`。`listen` 的端口已被别的程序占用时核心启动失败。
 
 ## adapters
 

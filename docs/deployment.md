@@ -22,7 +22,7 @@ go install github.com/kinako404/conloom/cmd/conloom@latest
 
 - 生产环境运行核心 `conloom serve`，以及按需接入的适配器：`conloom adapter napcat`（QQ）、`conloom adapter telegram`（Telegram），都是长期进程。适配器不监听端口，只主动连接平台（NapCat 或 Telegram Bot API）和核心，可以部署在另一台机器上。
 - 核心只能运行一个，每个机器人实例的适配器也只能运行一个：核心的调度、限流等状态在进程内存里，适配器的去重记录是进程本地的。
-- API、`/healthz`、`/metrics` 和 Web 管理面板（配置了 `panel` 段时）共用 `server.listen` 一个端口，默认只监听本机。`/healthz` 与 `/metrics` 不需要鉴权；如果要让别的机器上的适配器访问核心而把 `server.listen` 改为非本地地址，请用防火墙限制来源，或关闭 `metrics_enabled`。适配器和核心之间是普通 HTTP，跨机器时建议走内网或加一层 TLS 代理。
+- API、`/healthz`、`/metrics` 和 Web 管理面板（配置了 `panel` 段时）共用 `server.listen` 一个端口，默认只监听本机；设了 `panel.listen` 时面板改到那个单独的端口（见 [用单独端口直接访问](#用单独端口直接访问)）。`/healthz` 与 `/metrics` 不需要鉴权；如果要让别的机器上的适配器访问核心而把 `server.listen` 改为非本地地址，请用防火墙限制来源，或关闭 `metrics_enabled`。适配器和核心之间是普通 HTTP，跨机器时建议走内网或加一层 TLS 代理。
 - 仓库不负责部署 NapCat，只要求 NapCat 开启 OneBot 11 正向 WebSocket 服务并设置 access token。适配器断线后自动重连（退避从 1 秒起，最长 30 秒）。
 
 ## Linux（systemd）
@@ -324,6 +324,40 @@ panel:
 - 不要把 `/api/v1`、`/metrics`、`/healthz` 一起暴露到公网，上面的配置只转发 `/panel`。
 - 面板只信任 TCP 连接的对端地址，不读 `X-Forwarded-For`，经代理时所有人的来源 IP 都是代理的地址：登录失败的“每 IP 15 分钟 5 次”额度由所有访问者共用，有人在公网上乱试密码时，你自己也可能要等最多 15 分钟才能再登录。
 - 设了 `cookie_secure: true` 以后浏览器只经 HTTPS 发送登录 cookie，再用 SSH 隧道的 `http://` 地址访问可能登录不上，这时改用 HTTPS 地址。
+- 也可以让面板单独监听本机的一个端口（`panel.listen: 127.0.0.1:8788`），代理转发到 `127.0.0.1:8788`。这个端口上只有面板，代理即使整站转发也不会带出 API 和 `/metrics`。
+
+### 用单独端口直接访问
+
+不想装反向代理时，可以让核心多开一个只提供面板的端口，直接对外监听；`server.listen` 保持 `127.0.0.1:8787`，API、`/healthz`、`/metrics` 不会因此暴露：
+
+```yaml
+panel:
+  listen: 0.0.0.0:8788
+  users:
+    - name: admin
+      password_hash: ${CONLOOM_PANEL_ADMIN_HASH}
+```
+
+```sh
+sudo systemctl restart conloom
+sudo journalctl -u conloom | grep 'panel listening'
+```
+
+然后在浏览器打开 `http://<服务器地址>:8788/panel/`。这个端口上 `/` 跳转到 `/panel/`，`/api/v1/*`、`/healthz`、`/metrics` 返回 404；`server.listen` 上不再有 `/panel/`，用 SSH 隧道时改为转发 8788 端口。
+
+**警告：这样访问是普通 HTTP，登录密码和会话 cookie 都以明文经过网络**，路上的任何人都可能截获并冒用（拿到 cookie 就是管理员）。按推荐程度：
+
+1. 最好仍在前面放 HTTPS 反向代理（见上一节的 Caddy 示例，`panel.listen` 改为 `127.0.0.1:8788`、代理转发到这个端口），并设 `cookie_secure: true`。
+2. 至少用防火墙只放行自己的 IP，例如 ufw（`203.0.113.7` 换成你的地址）：
+
+   ```sh
+   sudo ufw allow from 203.0.113.7 to any port 8788 proto tcp
+   sudo ufw deny 8788/tcp
+   ```
+
+   云服务器还要在安全组里同样只放行自己的 IP。
+
+另外，登录限流有一个全局上限：全部来源合计 15 分钟内登录失败 30 次后，所有新的登录都返回 429，直到最早的失败移出 15 分钟窗口（详见 [Web 管理面板：登录与安全](panel.md#登录与安全)）。端口对整个互联网开放时，任何人都能乱试密码把这个上限用完，让你在最多 15 分钟内无法登录；已经登录的会话不受影响，可以继续使用。这也是建议用防火墙限制来源的原因之一。
 
 ## 数据目录与权限
 
