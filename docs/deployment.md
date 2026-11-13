@@ -124,7 +124,10 @@ sudo systemctl edit ollama
 [Service]
 Environment=CUDA_VISIBLE_DEVICES=-1
 Environment=OLLAMA_HOST=127.0.0.1:11434
+Environment=OLLAMA_KEEP_ALIVE=-1
 ```
+
+`OLLAMA_KEEP_ALIVE=-1` 让模型一直留在内存里：Ollama 默认空闲 5 分钟就卸载模型，下一次查询要先重新加载，会超过检索的 2 秒超时，这次语义检索就落空了。
 
 ```sh
 sudo systemctl restart ollama
@@ -204,6 +207,8 @@ embedding:
 ```
 
 重启核心。之后每分钟一轮，后台为记忆已生效的会话生成向量。初次开启时会从每个会话的第一条消息开始回溯全部历史（和关键词索引的补建一样），每轮最多 200 段、每小时约 1.2 万段，所以历史较长的会话要一段时间才能补齐：一个很活跃的大群一年约 9 万段，补齐要 7 个多小时。
+
+首次回填的头几分钟里，向量服务忙着批量生成，查询句转向量可能超过 2 秒的超时；连续 3 次超时会触发熔断，一分钟内跳过语义检索、只走关键词，日志里出现 `embedding the query failed; no semantic hits`。这是正常现象，回填的压力降下来以后会自动恢复。
 
 资源量级：每段的向量约 4KB（1024 维），这样的大群一年约 9 万段，`conloom.db` 里多出约 370MB，核心检索它时内存里也要约 370MB；最近检索过的最多 8 个会话会同时留在内存里，按会话规模之和估算内存。群聊里有人 `/忘记我` 时，删段在同一个写事务里按段扫描，9 万段的群约 1 秒，期间其他写入稍等。可以看 `/metrics` 的 `conloom_embedding_requests_total{result="ok"}` 是否在增长、`conloom_embedding_backlog`（待生成段数的估计值）是否在下降。隧道断开或 Ollama 停止时，日志里出现 `embedding round failed`，后台按 1、2、4、8 分钟直到最长 10 分钟的间隔重试，恢复后自动继续；语义检索在这期间返回空结果。
 
@@ -302,6 +307,7 @@ sqlite3 <data_dir>/conloom.db 'DELETE FROM memory_chunks; DELETE FROM memory_chu
 - 日志默认**不记录**消息正文，只记 ID、长度、会话、路由和耗时；本地调试时可以设 `observability.log_message_content: true`。
 - 只有 `enabled_conversations` 中的会话（以及按 `private_chat` 开放的私聊）的消息会被保存。其他会话的消息不转发、正文不落库，只留一条不含正文的幂等记录（幂等键、请求哈希和响应），按 `idempotency_retention` 清理。
 - 消息保存在本机 `<data_dir>/conloom.db` 中，用作对话上下文；被处理的事件原文（含正文）在幂等记录里保留 `idempotency_retention`。请像对待聊天记录一样保护数据目录和备份文件。
+- 配置了 `embedding` 时，`recall` 的查询句（模型写的 `query`）会原样发给向量服务，不做打码或其他脱敏。
 - 配置了 `embedding` 时，段落文本会发给向量服务：它和 `recall` 能看到的内容一样（命令、被忘记的内容和被审查拦截的消息不收，联系方式打码，不带 ID），但仍然是聊天原文，所以向量服务应当部署在你自己控制的机器上，并像上文那样只通过隧道或内网访问。库里只存向量和文本的哈希，不另存段落文本。
 - 主动搭话的兴趣画像（每位 @ 过机器人的群友最多 50 个关键词及权重）、档位和最近一次 @ 机器人的时间保存在 `conloom.db` 中，不写入日志，也不会出现在群消息里；加入群聊时只把在场目标资格人合并后的前 5 个兴趣词放进发给模型的提示。在聊会话和停顿计时器只在内存里，不落库。
 - 组装好的上下文会发送到你配置的模型 endpoint，也就是说消息内容会离开本机（除非模型部署在本机）。

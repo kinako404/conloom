@@ -452,9 +452,9 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - **补建**（`BackfillMessageIndex`，`internal/store/sqlite/fts.go`；后台循环是 `internal/core/recover.go` 的 `backfillMessageIndex`，在 `Recover` 时启动）：从旧到新，每批 500 条，批与批之间停 200ms；补完后每小时再查一次。进度记在 `message_fts_progress.backfilled_seq`，表示这个 seq 及以前的消息都已经进了索引，所以中途停下、重启后能接着做。每批找的是进度之后、还不在索引里的消息，所以回滚到旧版本二进制期间写入、没进索引的消息，换回新版本后也会补上。失败时退避，从 5 秒开始翻倍，最长 10 分钟。剩余条数（进度之后的消息数）记在 `conloom_fts_backfill_remaining`。
 - **查询**（`SearchMessages(…, offset, limit)`）：每个查询词（`search.Terms`，见 [技能](skills.md#recall)）按 `search.TermPhrase` 转成 FTS5 短语，词与词之间用 OR 连接，写成 `conv : "c…" AND seg : (…)`。按只计 `seg` 列的 bm25 排序，同分时新的在前，支持 offset 分页。以单个字（汉字、假名、韩文）或 3 个字母以上的单词结尾的词做前缀匹配。会话标记只在 `conv` 列里查，所以正文里写了别的会话的标记也匹配不到那个会话。没有时间范围时只在索引里排序；有时间范围时联表，按 `occurred_at` 和 `conversation_key` 过滤。
 - **recall 融合**（`internal/skills/tools/recall.go`）：
-  - 两路检索：关键词取前 50 条消息；配置了 `embedding` 段时（`app` 把 `App.VectorSearcher()` 传给 `RecallDeps.Vectors`），语义检索再取前 20 段（下文的 `Searcher`；它自己等查询向量最多 2 秒，recall 外面再限 3 秒），出错、超时或熔断时只用关键词结果。没配置时只走关键词。
+  - 两路检索：关键词取前 50 条消息；配置了 `embedding` 段时（`app` 把 `App.VectorSearcher()` 传给 `RecallDeps.Vectors`），语义检索再取前 6 段（下文的 `Searcher`；它自己等查询向量最多 2 秒，recall 外面再限 3 秒），出错、超时或熔断时只用关键词结果。没配置时只走关键词。
   - 时间范围：两路都按 `[After, Before)`，After 包含、Before 不包含（recall 把 `before` 那天的次日 0 点作为 Before）。语义命中是整段的，展开显示时把段里不在范围内的消息裁掉。
-  - 融合用 RRF（k=60）：命中范围重叠的消息和段合并成一个候选，分数相加；再按新旧略加分，最多加 2%。
+  - 融合用 RRF（k=60）：命中范围重叠的消息和段合并成一个候选，分数相加；只有语义检索命中、没有关键词命中的候选分数乘 0.5（`recallVectorOnlyWeight`），关键词和语义都命中的不打折，所以关键词命中不会被纯语义命中挤掉；再按新旧略加分，最多加 2%。
   - 私聊里如果说话人被忘记过，两路检索的起点都设为 `max(after, 忘记时间)`，忘记之前的消息根本不进候选。
   - 依次展开候选，直到凑满 6 个能显示的组：消息命中带上前后各 2 条，段命中整段显示，相接或重叠的组合并。第一页的候选展开完还不到 6 组，并且关键词检索返回的是满页（50 条）时，再取下一页，最多再取 3 页。后面这几页的名次接着往下排，和已经看过的候选重叠的跳过。
   - 过滤：每个候选按 seq 读出周围的消息，再执行原有的全部过滤。为了准确认出机器人对命令的回复，会往前多读，直到找到一个前 2 分钟内没有命令的位置，最多多读 500 条；找不到时，命令之后 2 分钟内的机器人消息一律丢掉。消息命中经过打码和审查后，正文或显示名（按 `search.Normalize` 归一化）里仍然要含有查询词，才算命中。
@@ -489,7 +489,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 
 - 先把查询句转成向量，最多等 2 秒（`DefaultQueryTimeout`，和 `embedding.timeout` 无关）。超时或出错时记一条 Warn 日志（不含查询内容）并返回空结果，不返回错误，调用方只用关键词结果。连续 3 次失败（`breakerFailures`）后熔断 60 秒（`breakerCooldown`）：这期间直接返回空结果，不请求服务；时间到了只放一个请求试探，成功就恢复，失败再熔断 60 秒。调用方自己取消的请求不计入失败。
 - 只用当前模型的段：换模型后，新向量补齐之前这个会话的语义检索结果会变少，旧向量不参与比较（维数不同，不能混用）。
-- 在内存里对这个会话的全部段计算余弦相似度，按时间范围过滤（段的时间区间和 `[After, Before)` 有重叠即可：After 包含、Before 不包含，恰好从 Before 开始的段不算；零值表示不限），相似度低于 `MinScore` 的段不要（`app` 传入配置项 `embedding.min_score`，默认 0.48，是用线上 bge-m3 校准的：相关的约 0.50–0.63，不相关的大多低于 0.46；换模型后要重新校准），从高到低取前 `limit` 个，返回段的首末 `seq` 和分数。没有这道门槛时，语义检索总会凑出 20 段，recall 就永远“查得到”。
+- 在内存里对这个会话的全部段计算余弦相似度，按时间范围过滤（段的时间区间和 `[After, Before)` 有重叠即可：After 包含、Before 不包含，恰好从 Before 开始的段不算；零值表示不限），只保留相似度不低于 `max(MinScore, 本次最高分 − Margin)` 的段：`MinScore` 由 `app` 传入配置项 `embedding.min_score`（默认 0.48，`config.DefaultEmbeddingMinScore`，是用线上 bge-m3 校准的：相关的约 0.50–0.63，不相关的大多低于 0.46；换模型后要重新校准），`Margin` 是 `vector.DefaultMargin` = 0.05，只要和本次最好的段分数相近的。然后从高到低取前 `limit` 个，返回段的首末 `seq` 和分数。没有这两道门槛时，语义检索总会凑出几段，recall 就几乎每次都“查得到”。每次检索在 Debug 日志里记一行 `semantic search scores`：最好的至多 5 个分数（`top_scores`）和保留下来的段数（`hits`），不记查询、正文和会话。
 - **内存量级**：bge-m3 的向量 1024 维，每段约 4KB（库里和内存里都是）。一个很活跃的大群一年约 9 万段，约 370MB；缓存最多 8 个会话，最坏情况是这 8 个会话之和。冷缓存第一次检索这样的会话要整段读入，本机实测 8 万多段约 1.2 秒，之后只读新增的段。
 - 最近检索过的 8 个会话的向量缓存在内存里（LRU）。每次检索先查一次库里这个会话当前模型的段数、最大 ID 和缓存范围内还剩几段：只多了新段时只读新段，有段被删掉（忘记、重建）时整段重读，所以缓存不会留下已删除的段。
 
@@ -584,7 +584,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - **记忆日志**：每次成功整理一行 `memory consolidated`（会话、批数、消息条数、prompt token 数、更新了几位成员、用时），失败时 `memory consolidation failed` 带类别和连续失败次数；注入失败记 `memory not injected: …`。记忆相关日志不写笔记和摘要正文。
 - **检索日志**：关键词索引补建完成时记一行 `keyword index backfilled`（补了多少条），失败时记 `keyword index backfill failed`（带下次重试的间隔）；不写正文。
 - **技能日志**：每次执行工具一行 `skill call`（`task_id`、`tool`、`duration_ms`、`ok`、`result`），不记参数和结果；带工具的 `model call` 多出 `round`、`final` 和 `tool_calls`，`task finished` 带 `skill_calls`（如 `now:1`）。
-- **语义检索日志**：后台一轮失败记 `embedding round failed`（带下次重试的等待时间），查询转向量失败记 `embedding the query failed; no semantic hits`（带会话和结果类别）；都不写段落和查询的正文。
+- **语义检索日志**：后台一轮失败记 `embedding round failed`（带下次重试的等待时间），查询转向量失败记 `embedding the query failed; no semantic hits`（带会话和结果类别）；每次检索在 Debug 级记 `semantic search scores`（`top_scores` 最多 5 个分数、`hits` 保留的段数）。都不写段落和查询的正文。
 - **任务 meta**：`selected_model_role`、`route_reason`（`fits_short_context` 等）、`review_result`（skipped / blocked / 审查结论）、错误码。
 
 ## 9. 已知限制和后续方向
