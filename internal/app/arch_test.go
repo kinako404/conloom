@@ -18,7 +18,7 @@ var corePackages = []string{
 	"memory",
 }
 
-var vendorNames = regexp.MustCompile(`(?i)onebot|napcat|qwen|deepseek|grok`)
+var vendorNames = regexp.MustCompile(`(?i)onebot|napcat|telegram|qwen|deepseek|grok`)
 
 func moduleRoot(t *testing.T) string {
 	t.Helper()

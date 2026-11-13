@@ -15,6 +15,7 @@ import (
 
 	"github.com/kinako404/conloom/internal/adapter/mock"
 	"github.com/kinako404/conloom/internal/adapter/napcat"
+	"github.com/kinako404/conloom/internal/adapter/telegram"
 	"github.com/kinako404/conloom/internal/app"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/obs"
@@ -37,6 +38,7 @@ const (
 const usage = `usage:
   conloom serve -c conloom.yaml
   conloom adapter napcat -c conloom.yaml
+  conloom adapter telegram -c conloom.yaml
   conloom mock -c conloom.yaml [-conv group:10001] [-user 20001:name]
   conloom backup -c conloom.yaml -o <file>
   conloom version
@@ -70,8 +72,11 @@ var commands = map[string]command{
 }
 
 var adapters = map[string]command{
-	"napcat": runNapCat,
+	"napcat":   runNapCat,
+	"telegram": runTelegram,
 }
+
+const adapterUsage = "usage: conloom adapter napcat|telegram -c conloom.yaml"
 
 func main() {
 	ctx, stop := signalContext()
@@ -168,11 +173,11 @@ func runServe(ctx context.Context, args []string, sio stdio) error {
 
 func runAdapter(ctx context.Context, args []string, sio stdio) error {
 	if len(args) == 0 {
-		return configErr(errors.New("missing adapter name; usage: conloom adapter napcat -c conloom.yaml"))
+		return configErr(errors.New("missing adapter name; " + adapterUsage))
 	}
 	adapter, ok := adapters[args[0]]
 	if !ok {
-		return configErr(fmt.Errorf("unknown adapter %q; usage: conloom adapter napcat -c conloom.yaml", args[0]))
+		return configErr(fmt.Errorf("unknown adapter %q; %s", args[0], adapterUsage))
 	}
 	return adapter(ctx, args[1:], sio)
 }
@@ -196,6 +201,28 @@ func runNapCat(ctx context.Context, args []string, sio stdio) error {
 		return configErr(err)
 	}
 	logger.Info("starting napcat adapter", "version", version, "commit", commit, "config", cfg.Path)
+	return a.Run(ctx)
+}
+
+func runTelegram(ctx context.Context, args []string, sio stdio) error {
+	fs := flag.NewFlagSet("adapter telegram", flag.ContinueOnError)
+	cfgPath := fs.String("c", "conloom.yaml", "config file")
+	if err := parseFlags(fs, args, sio); err != nil {
+		return err
+	}
+	cfg, err := loadConfig(*cfgPath)
+	if err != nil {
+		return err
+	}
+	if err := cfg.ValidateTelegram(); err != nil {
+		return configErr(err)
+	}
+	logger := obs.NewLogger(cfg.Observability, sio.err)
+	a, err := telegram.New(cfg.Adapters.Telegram, logger)
+	if err != nil {
+		return configErr(err)
+	}
+	logger.Info("starting telegram adapter", "version", version, "commit", commit, "config", cfg.Path)
 	return a.Run(ctx)
 }
 

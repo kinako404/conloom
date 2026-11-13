@@ -115,3 +115,71 @@ func TestBackup_PrivateFileAndExistingTargetIsUsageError(t *testing.T) {
 		t.Fatalf("backup over existing file: exit %d, stderr %q; want exit %d", code, stderr, exitConfig)
 	}
 }
+
+func runCommand(ctx context.Context, args ...string) (int, string, string) {
+	var stdout, stderr bytes.Buffer
+	code := run(ctx, args, stdio{in: strings.NewReader(""), out: &stdout, err: &stderr})
+	return code, stdout.String(), stderr.String()
+}
+
+func TestAdapterTelegram_ConfigErrors(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "conloom.yaml")
+	if err := os.WriteFile(cfgPath, []byte("adapters:\n  telegram:\n    poll_timeout: 90s\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runCommand(context.Background(), "adapter", "telegram", "-c", cfgPath)
+	if code != exitConfig {
+		t.Fatalf("exit %d, want %d; stderr %s", code, exitConfig, stderr)
+	}
+	for _, w := range []string{"adapters.telegram.token", "adapters.telegram.core_token", "adapters.telegram.poll_timeout"} {
+		if !strings.Contains(stderr, w) {
+			t.Errorf("stderr %q does not mention %s", stderr, w)
+		}
+	}
+
+	code, _, stderr = runCommand(context.Background(), "adapter", "nosuch")
+	if code != exitConfig || !strings.Contains(stderr, "conloom adapter napcat|telegram") {
+		t.Errorf("unknown adapter: exit %d, stderr %q; want a usage error listing telegram", code, stderr)
+	}
+	code, stdout, _ := runCommand(context.Background(), "help")
+	if code != 0 || !strings.Contains(stdout, "conloom adapter telegram -c conloom.yaml") {
+		t.Errorf("help: exit %d, stdout %q; want the telegram adapter in the usage", code, stdout)
+	}
+}
+
+func TestAdapterTelegram_RunsUntilCancelledWithoutLeakingToken(t *testing.T) {
+	const token = "30001:AAcmd-test-token_value"
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "conloom.yaml")
+	cfg := `storage:
+  data_dir: ./data
+adapters:
+  telegram:
+    token: ` + token + `
+    api_base: http://127.0.0.1:9
+    core_url: http://127.0.0.1:9
+    core_token: fake-tg-adapter-token
+    bot_instance_id: bot_tg
+observability:
+  log_format: text
+`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	code, _, stderr := runCommand(ctx, "adapter", "telegram", "-c", cfgPath)
+	if code != 0 {
+		t.Fatalf("exit %d, want 0 after cancellation; stderr %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "starting telegram adapter") || !strings.Contains(stderr, "getMe") {
+		t.Errorf("stderr %q, want the start line and a getMe retry", stderr)
+	}
+	if strings.Contains(stderr, token) || strings.Contains(stderr, "AAcmd-test-token_value") {
+		t.Errorf("stderr leaks the bot token: %s", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "data", "telegram-dedup.log")); err != nil {
+		t.Errorf("dedup log not created in the default state_dir: %v", err)
+	}
+}
