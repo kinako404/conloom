@@ -7,7 +7,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 - 所有子命令都用 `-c <文件>` 指定配置，默认 `conloom.yaml`。真实的 `conloom.yaml` 和 `.env` 已被 `.gitignore` 排除，不要提交它们。
 - **变量展开**：支持 `${VAR}` 和 `${VAR:-默认值}`，`$$` 表示字面量 `$`。变量先从进程环境变量取，其次取配置文件**同目录**的 `.env`；`.env` 不会覆盖已经存在的进程环境变量。没有设置、也没有默认值的变量展开为空串，如果它导致某个必填字段为空，启动时的错误信息会列出这些没设置的变量。
 - **严格解析**：未知字段会被拒绝。`bots[]` 的每一项、`model_profiles` 的每一项分别在各自的默认值上解析：省略的字段取默认值，显式写出的零值保留。
-- **按子命令校验**：`serve`、`adapter napcat`、`adapter telegram`、`mock` 只校验各自用到的字段，出错时一次列出全部问题并给出字段路径，退出码为 2。所以不用的适配器段（比如只接 QQ 时的 `adapters.telegram`）即使变量没设置也不影响其他子命令。
+- **按子命令校验**：`serve`、`adapter napcat`、`adapter telegram`、`mock` 只校验各自用到的字段，出错时一次列出全部问题并给出字段路径，退出码为 78（配置错误；命令行用法错误是 2）。所以不用的适配器段（比如只接 QQ 时的 `adapters.telegram`）即使变量没设置也不影响其他子命令。
 - 配置里的群号、QQ 号一律写平台原始 ID。
 
 ## 示例配置使用的环境变量
@@ -245,7 +245,7 @@ default_private_policy:
 | `adapters.telegram.bot_instance_id` | 必填 | 对应的机器人实例，该实例的 `platform` 为 `telegram`，`platform_self_id` 填机器人的数字 ID（token 冒号前的部分），`admins` 填 Telegram 用户 ID |
 | `adapters.telegram.state_dir` | `storage.data_dir` | 去重记录 `telegram-dedup.log` 所在目录，相对路径按配置文件目录解析 |
 
-`adapter telegram` 只校验上表的字段和 `observability`，出错时退出码为 2。示例配置为它用到这些变量：
+`adapter telegram` 只校验上表的字段和 `observability`，出错时退出码为 78；启动后 Telegram 拒绝 bot token、核心拒绝 `core_token` 或令牌属于别的机器人实例时，同样以 78 退出。示例配置为它用到这些变量：
 
 | 变量 | 用途 |
 |---|---|

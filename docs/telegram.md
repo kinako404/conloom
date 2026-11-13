@@ -119,7 +119,7 @@ Telegram 的机器人默认处于隐私模式。按 [Telegram 的说明](https:/
 conloom adapter telegram -c conloom.yaml
 ```
 
-适配器启动时依次检查 token（`getMe`）、删除可能设置过的 webhook（`deleteWebhook`，保留尚未拉取的消息）、检查核心令牌（`/api/v1/capabilities`）。token 被 Telegram 拒绝、或者 `core_token` 绑定的不是 `bot_instance_id` 指定的机器人实例时，适配器直接报错退出；网络或核心暂时不可用则退避重试（1 秒起，最长 30 秒）。
+适配器启动时依次检查 token（`getMe`）、删除可能设置过的 webhook（`deleteWebhook`，保留尚未拉取的消息）、检查核心令牌（`/api/v1/capabilities`）。token 被 Telegram 拒绝、`core_token` 被核心拒绝、或者它绑定的不是 `bot_instance_id` 指定的机器人实例时，适配器直接报错退出，退出码 78（配置错误；systemd 单元不会自动重启它，改好配置后手动重启）；网络或核心暂时不可用则退避重试（1 秒起，最长 30 秒）。
 
 作为 systemd 服务运行时，使用仓库里的 `deploy/systemd/conloom-telegram.service`，做法与 NapCat 适配器相同，见 [部署与运维](deployment.md#linuxsystemd)：
 
@@ -179,7 +179,7 @@ token 泄露了，或者只是想定期更换：
 2. 把新 token 写进 `.env` 的 `CONLOOM_TG_BOT_TOKEN`。
 3. 重启适配器：`sudo systemctl restart conloom-telegram`。核心不用重启。
 
-旧 token 失效后、适配器重启前，正在运行的适配器会在日志里报 401 Unauthorized 并不断重试；用旧 token 启动的适配器会报“the bot token was rejected”后退出。机器人的数字 ID 不会因此改变，`platform_self_id` 不用改。只想查看当前 token 时，在 BotFather 发送 `/token`。
+旧 token 失效后、适配器重启前，正在运行的适配器会在日志里报 401 Unauthorized 并不断重试；用旧 token 启动的适配器会报“the bot token was rejected”后以退出码 78 退出，systemd 不会反复重启它。机器人的数字 ID 不会因此改变，`platform_self_id` 不用改。只想查看当前 token 时，在 BotFather 发送 `/token`。
 
 ## 8. 常见问题
 

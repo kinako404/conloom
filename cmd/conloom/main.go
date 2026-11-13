@@ -32,7 +32,14 @@ var (
 
 const (
 	exitRuntime = 1
-	exitConfig  = 2
+	// exitUsage reports a wrong command line: an unknown command, a bad flag
+	// or argument.
+	exitUsage = 2
+	// exitConfig is EX_CONFIG from sysexits.h: the configuration cannot be
+	// loaded or is invalid, or a credential in it was refused. Restarting does
+	// not help, so the systemd units do not restart on it. It differs from 2,
+	// the status of a Go panic, which must still be restarted.
+	exitConfig = 78
 )
 
 const usage = `usage:
@@ -53,7 +60,10 @@ type exitError struct {
 func (e *exitError) Error() string { return e.err.Error() }
 func (e *exitError) Unwrap() error { return e.err }
 
-// configErr marks err as a usage or configuration problem (exit code 2).
+// usageErr marks err as a command line problem (exitUsage).
+func usageErr(err error) error { return &exitError{code: exitUsage, err: err} }
+
+// configErr marks err as a configuration or credential problem (exitConfig).
 func configErr(err error) error { return &exitError{code: exitConfig, err: err} }
 
 type stdio struct {
@@ -106,7 +116,7 @@ func signalContext() (context.Context, context.CancelFunc) {
 func run(ctx context.Context, args []string, sio stdio) int {
 	if len(args) == 0 {
 		fmt.Fprint(sio.err, usage)
-		return exitConfig
+		return exitUsage
 	}
 	switch args[0] {
 	case "help", "-h", "-help", "--help":
@@ -116,7 +126,7 @@ func run(ctx context.Context, args []string, sio stdio) int {
 	cmd, ok := commands[args[0]]
 	if !ok {
 		fmt.Fprintf(sio.err, "conloom: unknown command %q\n%s", args[0], usage)
-		return exitConfig
+		return exitUsage
 	}
 	err := cmd(ctx, args[1:], sio)
 	switch {
@@ -137,10 +147,10 @@ func parseFlags(fs *flag.FlagSet, args []string, sio stdio) error {
 		if errors.Is(err, flag.ErrHelp) {
 			return err
 		}
-		return configErr(err)
+		return usageErr(err)
 	}
 	if fs.NArg() > 0 {
-		return configErr(fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " ")))
+		return usageErr(fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 	return nil
 }
@@ -173,11 +183,11 @@ func runServe(ctx context.Context, args []string, sio stdio) error {
 
 func runAdapter(ctx context.Context, args []string, sio stdio) error {
 	if len(args) == 0 {
-		return configErr(errors.New("missing adapter name; " + adapterUsage))
+		return usageErr(errors.New("missing adapter name; " + adapterUsage))
 	}
 	adapter, ok := adapters[args[0]]
 	if !ok {
-		return configErr(fmt.Errorf("unknown adapter %q; %s", args[0], adapterUsage))
+		return usageErr(fmt.Errorf("unknown adapter %q; %s", args[0], adapterUsage))
 	}
 	return adapter(ctx, args[1:], sio)
 }
@@ -252,11 +262,11 @@ func runMock(ctx context.Context, args []string, sio stdio) error {
 	}
 	user, err := mockUser(*userFlag, bot)
 	if err != nil {
-		return configErr(err)
+		return err
 	}
 	conv, err := mockConv(*convFlag, user)
 	if err != nil {
-		return configErr(err)
+		return err
 	}
 
 	m := mock.New(client.New(mc.CoreURL, mc.CoreToken, nil), bot.ID, bot.Platform)
@@ -272,13 +282,13 @@ func runMock(ctx context.Context, args []string, sio stdio) error {
 func mockUser(flagValue string, bot config.BotConfig) (mock.User, error) {
 	if flagValue == "" {
 		if len(bot.Admins) == 0 {
-			return mock.User{}, fmt.Errorf("bot %q has no admins; pass -user id:name", bot.ID)
+			return mock.User{}, configErr(fmt.Errorf("bot %q has no admins; pass -user id:name", bot.ID))
 		}
 		return mock.User{PlatformID: bot.Admins[0], Name: "管理员"}, nil
 	}
 	id, name, _ := strings.Cut(flagValue, ":")
 	if strings.TrimSpace(id) == "" {
-		return mock.User{}, fmt.Errorf("-user must be id:name, got %q", flagValue)
+		return mock.User{}, usageErr(fmt.Errorf("-user must be id:name, got %q", flagValue))
 	}
 	if name == "" {
 		name = id
@@ -292,7 +302,7 @@ func mockConv(flagValue string, user mock.User) (mock.Conv, error) {
 	}
 	typ, id, _ := strings.Cut(flagValue, ":")
 	if (typ != conloomapi.ConvGroup && typ != conloomapi.ConvPrivate) || strings.TrimSpace(id) == "" {
-		return mock.Conv{}, fmt.Errorf("-conv must be group:<id> or private:<id>, got %q", flagValue)
+		return mock.Conv{}, usageErr(fmt.Errorf("-conv must be group:<id> or private:<id>, got %q", flagValue))
 	}
 	return mock.Conv{Type: typ, PlatformID: id}, nil
 }
@@ -305,14 +315,14 @@ func runBackup(ctx context.Context, args []string, sio stdio) error {
 		return err
 	}
 	if *out == "" {
-		return configErr(errors.New("-o <file> is required"))
+		return usageErr(errors.New("-o <file> is required"))
 	}
 	cfg, err := loadConfig(*cfgPath)
 	if err != nil {
 		return err
 	}
 	if _, err := os.Stat(*out); err == nil {
-		return configErr(fmt.Errorf("%s already exists", *out))
+		return usageErr(fmt.Errorf("%s already exists", *out))
 	}
 	if _, err := os.Stat(cfg.DBPath()); err != nil {
 		return fmt.Errorf("database: %w", err)

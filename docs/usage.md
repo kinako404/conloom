@@ -9,13 +9,14 @@
 ```text
 conloom serve -c conloom.yaml                                   核心服务（API、判定、调度、模型调用、发件箱）
 conloom adapter napcat -c conloom.yaml                          NapCat 适配器（独立进程，可以部署在别的机器上）
+conloom adapter telegram -c conloom.yaml                        Telegram 适配器（独立进程，见 telegram.md）
 conloom mock -c conloom.yaml [-conv <类型>:<ID>] [-user <ID>:<昵称>]   终端里的 Mock 适配器
 conloom backup -c conloom.yaml -o <文件>                         在线备份数据库（目标文件必须不存在）
 conloom version                                                 显示版本与提交
 ```
 
 - `-c` 默认为 `conloom.yaml`。
-- 退出码：0 正常，1 运行时错误，2 参数或配置错误。
+- 退出码：0 正常，1 运行时错误，2 命令行用法错误（未知命令、参数不对），78 配置错误（配置文件读不了或校验失败、凭据被拒绝，即 sysexits 的 `EX_CONFIG`）。Go 程序 panic 时退出码也是 2。
 - 收到 SIGINT / SIGTERM 时优雅退出；关闭过程中再收到一次信号会直接结束进程。
 
 **Mock 适配器**只通过公开 API 和核心交互，用来在本地体验和调试：

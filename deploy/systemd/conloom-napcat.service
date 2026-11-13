@@ -12,9 +12,9 @@ WorkingDirectory=/opt/conloom
 ExecStart=/opt/conloom/conloom adapter napcat -c /opt/conloom/conloom.yaml
 Restart=always
 RestartSec=3
-# Exit status 2 is a configuration error (invalid config) that a restart
-# cannot fix. A Go panic also exits with 2.
-RestartPreventExitStatus=2
+# Exit status 78 (EX_CONFIG) is a configuration error (invalid config) that a
+# restart cannot fix. Crashes, including Go panics (status 2), are restarted.
+RestartPreventExitStatus=78
 # Shutdown can wait up to about 70s for an in-flight send and its ACK.
 TimeoutStopSec=90
 NoNewPrivileges=true

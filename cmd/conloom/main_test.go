@@ -114,8 +114,8 @@ func TestBackup_PrivateFileAndExistingTargetIsUsageError(t *testing.T) {
 	}
 
 	code, stderr := backup()
-	if code != exitConfig || !strings.Contains(stderr, "already exists") {
-		t.Fatalf("backup over existing file: exit %d, stderr %q; want exit %d", code, stderr, exitConfig)
+	if code != exitUsage || !strings.Contains(stderr, "already exists") {
+		t.Fatalf("backup over existing file: exit %d, stderr %q; want exit %d", code, stderr, exitUsage)
 	}
 }
 
@@ -142,7 +142,7 @@ func TestAdapterTelegram_ConfigErrors(t *testing.T) {
 	}
 
 	code, _, stderr = runCommand(context.Background(), "adapter", "nosuch")
-	if code != exitConfig || !strings.Contains(stderr, "conloom adapter napcat|telegram") {
+	if code != exitUsage || !strings.Contains(stderr, "conloom adapter napcat|telegram") {
 		t.Errorf("unknown adapter: exit %d, stderr %q; want a usage error listing telegram", code, stderr)
 	}
 	code, stdout, _ := runCommand(context.Background(), "help")
@@ -223,7 +223,8 @@ adapters:
 
 // TestSystemdUnits_DoNotRestartOnConfigErrors checks that every unit keeps
 // systemd from restarting a process that exited with exitConfig, which a
-// restart cannot fix.
+// restart cannot fix, and only that status: a panic (status 2) must still be
+// restarted.
 func TestSystemdUnits_DoNotRestartOnConfigErrors(t *testing.T) {
 	units, err := filepath.Glob("../../deploy/systemd/*.service")
 	if err != nil || len(units) != 3 {
@@ -235,8 +236,14 @@ func TestSystemdUnits_DoNotRestartOnConfigErrors(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(data), "\n"+want+"\n") {
-			t.Errorf("%s lacks %s", filepath.Base(u), want)
+		var prevent []string
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "RestartPreventExitStatus=") {
+				prevent = append(prevent, line)
+			}
+		}
+		if len(prevent) != 1 || prevent[0] != want {
+			t.Errorf("%s: RestartPreventExitStatus lines = %q, want exactly %q", filepath.Base(u), prevent, want)
 		}
 	}
 }

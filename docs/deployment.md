@@ -27,7 +27,7 @@ go install github.com/kinako404/conloom/cmd/conloom@latest
 
 ## Linux（systemd）
 
-仓库的 [`deploy/systemd/`](../deploy/systemd) 提供三个单元：`conloom.service`（核心），以及 `conloom-napcat.service` 和 `conloom-telegram.service`（适配器，依赖核心，按需安装）。它们都以 `conloom` 用户运行、异常退出 3 秒后自动重启，停止时最多等待 90 秒（适配器会等正在发送的消息拿到结果再退出）。退出码为 2 时不重启（`RestartPreventExitStatus=2`）：这是配置错误，比如配置校验失败、Telegram 的 token 或核心令牌被拒绝，重启也没用，改好配置后手动 `systemctl restart`。注意 Go 程序 panic 时同样以 2 退出，这种情况也不会自动重启，`systemctl status` 会显示退出码，日志里有 panic 的堆栈。单元启用了 `ProtectSystem=strict`，只有 `/opt/conloom/data` 可写：该目录必须在启动前存在；如果把 `storage.data_dir` 或适配器的 `state_dir` 改到别处，要同步修改单元里的 `ReadWritePaths`。
+仓库的 [`deploy/systemd/`](../deploy/systemd) 提供三个单元：`conloom.service`（核心），以及 `conloom-napcat.service` 和 `conloom-telegram.service`（适配器，依赖核心，按需安装）。它们都以 `conloom` 用户运行、异常退出 3 秒后自动重启，停止时最多等待 90 秒（适配器会等正在发送的消息拿到结果再退出）。退出码为 78 时不重启（`RestartPreventExitStatus=78`）：78 是配置错误（sysexits 的 `EX_CONFIG`），比如配置文件读不了、校验失败、Telegram 的 token 或核心令牌被拒绝，重启也没用，`systemctl status` 会显示 `status=78`，改好配置后手动 `systemctl restart`。其他异常退出照常重启，包括 Go 程序 panic（退出码 2，日志里有堆栈）。单元启用了 `ProtectSystem=strict`，只有 `/opt/conloom/data` 可写：该目录必须在启动前存在；如果把 `storage.data_dir` 或适配器的 `state_dir` 改到别处，要同步修改单元里的 `ReadWritePaths`。
 
 ```sh
 sudo useradd --system --home-dir /opt/conloom --shell /usr/sbin/nologin conloom
