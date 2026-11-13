@@ -63,8 +63,8 @@ group_summary 是更新后的完整摘要；note 是更新后的完整笔记；r
 var consPrivateSystemPrompt = consPrivateOpening + "\n\n" + consPrivateWording.Replace(consSharedRules) + "\n" +
 	consPrivateRule9 + "\n" + consPrivateWording.Replace(consClosing)
 
-var consPrivateWording = strings.NewReplacer("这位群友", "对方", "没有变化的群友可以省略", "对方没有变化时可以省略",
-	"群聊摘要", "对话摘要", "群友", "对方")
+var consPrivateWording = strings.NewReplacer("希望大家怎么称呼自己的普通昵称", "希望被怎么称呼的普通昵称",
+	"这位群友", "对方", "没有变化的群友可以省略", "对方没有变化时可以省略", "群聊摘要", "对话摘要", "群友", "对方")
 
 // consStyle is how a conversation is consolidated: the system prompt, the
 // section labels, the name of a member without one and the storage limits of

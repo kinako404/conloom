@@ -55,8 +55,8 @@ func TestConsStyle_PrivateKeepsEveryRuleButNineAndTheOpening(t *testing.T) {
 	if len(gl) != len(pl) {
 		t.Fatalf("private prompt has %d lines, group %d", len(pl), len(gl))
 	}
-	reword := strings.NewReplacer("这位群友", "对方", "没有变化的群友可以省略", "对方没有变化时可以省略",
-		"群聊摘要", "对话摘要", "群友", "对方")
+	reword := strings.NewReplacer("希望大家怎么称呼自己的普通昵称", "希望被怎么称呼的普通昵称",
+		"这位群友", "对方", "没有变化的群友可以省略", "对方没有变化时可以省略", "群聊摘要", "对话摘要", "群友", "对方")
 	for i := range gl {
 		if i == 0 || strings.HasPrefix(gl[i], "9. ") {
 			if gl[i] == pl[i] {
@@ -68,7 +68,10 @@ func TestConsStyle_PrivateKeepsEveryRuleButNineAndTheOpening(t *testing.T) {
 			t.Errorf("line %d: private %q, want the group line reworded: %q", i, pl[i], want)
 		}
 	}
-	for _, banned := range []string{"群友", "群聊", "群"} {
+	if !strings.Contains(p.system, "明确表达的偏好（包括希望被怎么称呼的普通昵称；") {
+		t.Errorf("private rule 3 lacks the private nickname wording:\n%s", p.system)
+	}
+	for _, banned := range []string{"群友", "群聊", "群", "大家"} {
 		if strings.Contains(p.system, banned) {
 			t.Errorf("private prompt contains %q:\n%s", banned, p.system)
 		}
