@@ -24,7 +24,8 @@ func secretConfig(h *overviewHarness) {
 	c.Bots[0].Admins = []string{"20001"}
 	c.Bots[0].EnabledConversations = []conloomapi.ConversationRef{{Type: conloomapi.ConvGroup, PlatformID: "10001"}}
 	c.ModelProfiles = map[string]config.ModelProfile{
-		"short_context": {Provider: config.ProviderOpenAICompatible, Endpoint: "http://example.invalid/v1", Model: "qwen3",
+		"short_context": {Provider: config.ProviderOpenAICompatible,
+			Endpoint: "http://u:SECRET-pw@example.invalid/v1?access_token=SECRET-q&x=1", Model: "qwen3",
 			APIKey: "SECRET-api_key", ExtraBody: map[string]any{
 				"enable_thinking": false, "top_k": 20, "temperature": 0.7, "user_token": "SECRET-extra_body", "suffix": "",
 				"chat_template_kwargs": map[string]any{"key": "SECRET-extra_body_nested"}, "stop": []any{"SECRET-extra_body_list"},
@@ -35,15 +36,15 @@ func secretConfig(h *overviewHarness) {
 	c.PersonaTemplates = map[string]conloomapi.PersonaDoc{"default": conloomapi.DefaultPersona()}
 	c.DefaultGroupPolicy = conloomapi.DefaultGroupPolicy()
 	c.Runtime = config.RuntimeConfig{ActionTTL: dur(10 * time.Minute), AuditRetention: dur(2160 * time.Hour)}
-	c.Embedding = &config.EmbeddingConfig{Endpoint: "http://example.invalid:11434/v1", Model: "bge-m3",
+	c.Embedding = &config.EmbeddingConfig{Endpoint: "http://SECRET-user@example.invalid:11434/v1?key=SECRET-k#SECRET-frag", Model: "bge-m3",
 		APIKey: "SECRET-embedding_api_key", BatchSize: 16, MinScore: 0.48}
 	c.Panel.Users = append(c.Panel.Users, config.PanelUser{Name: "viewer", PasswordHash: "SECRET-password_hash"})
 	c.Adapters = config.AdaptersConfig{
-		NapCat: config.NapCatConfig{WSURL: "ws://example.invalid:3001", AccessToken: "SECRET-access_token",
+		NapCat: config.NapCatConfig{WSURL: "ws://example.invalid:3001/?access_token=SECRET-ws&token", AccessToken: "SECRET-access_token",
 			CoreURL: "http://example.invalid:8787", CoreToken: "SECRET-napcat_core_token", BotInstanceID: "qq-main"},
-		Telegram: config.TelegramConfig{Token: "SECRET-telegram_token", APIBase: "https://example.invalid",
-			CoreToken: "SECRET-telegram_core_token", BotInstanceID: "tg-main"},
-		Mock: config.MockConfig{CoreURL: "http://example.invalid:8787", CoreToken: ""},
+		Telegram: config.TelegramConfig{Token: "SECRET-telegram_token", APIBase: "https://bot:SECRET-tg@example.invalid",
+			CoreURL: "SECRET-opaque:SECRET-pw@example.invalid", CoreToken: "SECRET-telegram_core_token", BotInstanceID: "tg-main"},
+		Mock: config.MockConfig{CoreURL: "http://[SECRET-host", CoreToken: ""},
 	}
 	c.Observability = config.ObservabilityConfig{LogLevel: "info", LogFormat: "json"}
 }
@@ -112,15 +113,20 @@ func TestConfigView_NoSecrets(t *testing.T) {
 		{[]any{"adapters", "telegram", "core_token"}, "(已设置)"},
 		{[]any{"adapters", "mock", "core_token"}, "(未设置)"},
 
-		{[]any{"model_profiles", "short_context", "endpoint"}, "http://example.invalid/v1"},
+		{[]any{"model_profiles", "short_context", "endpoint"}, "http://example.invalid/v1?access_token=(已隐藏)&x=(已隐藏)"},
+		{[]any{"model_profiles", "long_context", "endpoint"}, "http://example.invalid/v2"},
 		{[]any{"model_profiles", "short_context", "runtime", "timeout"}, "1m0s"},
 		{[]any{"model_profiles", "short_context", "extra_body"}, map[string]any{
 			"enable_thinking": false, "top_k": 20.0, "temperature": 0.7, "user_token": "(已设置)", "suffix": "(未设置)",
 			"chat_template_kwargs": "(已设置)", "stop": "(已设置)",
 		}},
 		{[]any{"model_profiles", "long_context", "extra_body"}, map[string]any{}},
-		{[]any{"embedding", "endpoint"}, "http://example.invalid:11434/v1"},
-		{[]any{"adapters", "napcat", "ws_url"}, "ws://example.invalid:3001"},
+		{[]any{"embedding", "endpoint"}, "http://example.invalid:11434/v1?key=(已隐藏)#(已隐藏)"},
+		{[]any{"adapters", "napcat", "ws_url"}, "ws://example.invalid:3001/?access_token=(已隐藏)&token"},
+		{[]any{"adapters", "napcat", "core_url"}, "http://example.invalid:8787"},
+		{[]any{"adapters", "telegram", "api_base"}, "https://example.invalid"},
+		{[]any{"adapters", "telegram", "core_url"}, "(已设置)"},
+		{[]any{"adapters", "mock", "core_url"}, "(已设置)"},
 		{[]any{"adapters", "telegram", "bot_instance_id"}, "tg-main"},
 		{[]any{"server", "listen"}, "127.0.0.1:8787"},
 		{[]any{"storage", "data_dir"}, "/var/lib/conloom"},
@@ -156,4 +162,65 @@ func TestConfigView_NoSecrets(t *testing.T) {
 	if v, ok := resp.Config["default_private_policy"]; !ok || v != nil {
 		t.Errorf("default_private_policy unset = %v (present %v), want null", v, ok)
 	}
+}
+
+func TestConfigView_NegativeUsageRetentionAndEmptyURL(t *testing.T) {
+	h := newOverviewHarness(t, nil)
+	secretConfig(h)
+	h.cfg.Runtime.UsageRetention = dur(-time.Hour)
+	h.cfg.Adapters.Mock.CoreURL = ""
+
+	var resp struct {
+		Config map[string]any `json:"config"`
+	}
+	h.getJSON("/panel/api/config", &resp)
+	if got := jsonAt(t, resp.Config, "runtime", "usage_retention"); got != "9600h0m0s" {
+		t.Errorf("negative usage_retention shown as %v, want the default 9600h0m0s", got)
+	}
+	if got := jsonAt(t, resp.Config, "adapters", "mock", "core_url"); got != "" {
+		t.Errorf("empty core_url shown as %q, want empty", got)
+	}
+}
+
+// TestConfigView_PassThroughTypesHaveNoSecretFields guards the persona
+// templates and default policies, which the config view shows whole.
+func TestConfigView_PassThroughTypesHaveNoSecretFields(t *testing.T) {
+	type inner struct{ APIKey string }
+	type outer struct{ Items []map[string]*inner }
+	if got := secretLikeFields(reflect.TypeFor[outer](), map[reflect.Type]bool{}); !reflect.DeepEqual(got, []string{"inner.APIKey"}) {
+		t.Fatalf("secretLikeFields(outer) = %v, want [inner.APIKey]", got)
+	}
+
+	allowed := map[string]bool{"ContextPolicy.MaxContextTokens": true}
+	for _, typ := range []reflect.Type{reflect.TypeFor[conloomapi.GroupPolicy](), reflect.TypeFor[conloomapi.PersonaDoc]()} {
+		for _, f := range secretLikeFields(typ, map[reflect.Type]bool{}) {
+			if !allowed[f] {
+				t.Errorf("%s has field %s, which may hold a secret; show it field by field in redactedConfig", typ, f)
+			}
+		}
+	}
+}
+
+// secretLikeFields returns, as Type.Field, the fields of t and of the structs
+// it contains whose Go or JSON name mentions a token, key, secret or password.
+func secretLikeFields(t reflect.Type, seen map[reflect.Type]bool) []string {
+	for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice || t.Kind() == reflect.Array || t.Kind() == reflect.Map {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct || seen[t] {
+		return nil
+	}
+	seen[t] = true
+	var out []string
+	for f := range t.Fields() {
+		names := strings.ToLower(f.Name + " " + f.Tag.Get("json"))
+		for _, word := range []string{"token", "key", "secret", "password"} {
+			if strings.Contains(names, word) {
+				out = append(out, t.Name()+"."+f.Name)
+				break
+			}
+		}
+		out = append(out, secretLikeFields(f.Type, seen)...)
+	}
+	return out
 }

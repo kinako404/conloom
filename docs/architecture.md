@@ -621,7 +621,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - **响应头**：所有 `/panel/` 响应带 CSP（`default-src 'self'`、`frame-ancestors 'none'` 等）、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`；接口另加 `Cache-Control: no-store`，静态资源为 `no-cache`。每个请求有 trace ID，按路由模板和状态码计入 `panel_requests_total`，panic 转成 500。
 - **读**：会话列表的消息数和最后时间用一条 GROUP BY 查询得到；消息检索复用 `SearchMessages`；读人设走只读路径，会话还没有人设时不触发第 1 版的写入；概览的实时状态来自本进程的 Prometheus registry（队列深度、关键词索引补建剩余、熔断，配置了 `embedding` 时还有向量积压）和发件箱待发数的查库结果；各 bot 的“最近调用”由 gateway 在 Bearer 鉴权通过时记进内存里的 `obs.Presence`。
 - **写**：策略和人设直接调用 `policy.Service`、`persona.Service`，`by` 为 `panel:<用户名>`；成员记忆的修改、忘记和读取走与 Bearer API 共用的 `memory.Admin`，修订记录来源为 `panel`，审计的 `bot_instance_id` 取自会话记录。触发整理写新审计种类 `memory.consolidate`，登录成功写 `panel.login`。
-- **配置页**：按白名单逐字段输出，密钥只显示 `(已设置)` / `(未设置)`，`extra_body` 只显示键和布尔、数字值。
+- **配置页**：按白名单逐字段输出，密钥只显示 `(已设置)` / `(未设置)`，`extra_body` 只显示键和布尔、数字值；接口地址去掉 `user:password@`，查询参数的值和 `#` 后的部分显示为 `(已隐藏)`（`redactURL`）。人格模板和默认策略整段输出，测试检查这两个类型里没有名字像密钥的字段。
 
 ## 9. 已知限制和后续方向
 

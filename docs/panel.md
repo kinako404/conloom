@@ -79,7 +79,8 @@ ssh -L 8787:127.0.0.1:8787 <用户>@<服务器>
 - 所有密钥只显示 `(已设置)` 或 `(未设置)`，不输出值：模型和向量服务的 `api_key`，适配器的 `access_token`、`token`、`core_token`，面板用户的 `password_hash`。
 - `api_tokens` 只显示名字、所属 bot 和 scope。
 - `model_profiles.*.extra_body` 只显示键名；布尔值和数字照常显示，字符串、列表、对象等其他值一律显示为 `(已设置)` 或 `(未设置)`，因为它们可能藏着凭据。
-- 接口地址（endpoint、`ws_url`、`core_url` 等）对管理员不是秘密，照常显示。
+- 接口地址（模型和向量服务的 `endpoint`，适配器的 `ws_url`、`core_url`、`api_base`）显示主机和路径，但地址里可能带凭据：`user:password@` 部分去掉，查询参数只保留参数名、值一律显示为 `(已隐藏)`，`#` 后面的部分也显示为 `(已隐藏)`；解析不了的地址只显示 `(已设置)`。
+- 人格模板（`persona_templates`）和默认群策略、私聊策略整段原样显示，它们只有行为设置，不含凭据。
 - 没有配置 `embedding` 段时，`embedding` 显示为 `null`。
 
 ## 模型用量
