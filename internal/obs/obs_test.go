@@ -67,8 +67,8 @@ func TestNewMetrics_RegistersOnFreshRegistry(t *testing.T) {
 			t.Fatalf("%s missing; got %v", name, names)
 		}
 	}
-	if len(mfs) != 18 {
-		t.Errorf("gathered %d metric families, want 18: %v", len(mfs), names)
+	if len(mfs) != 19 {
+		t.Errorf("gathered %d metric families, want 19: %v", len(mfs), names)
 	}
 }
 
@@ -114,6 +114,32 @@ func TestMetrics_CleanupRegistered(t *testing.T) {
 		}
 	}
 	t.Fatal("conloom_cleanup_deleted_total missing")
+}
+
+func TestMetrics_SearchRegistered(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+	m.SearchSeconds.WithLabelValues("keyword").Observe(0.07)
+	m.FTSBackfillRemaining.Set(1200)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	got := map[string]float64{}
+	for _, mf := range mfs {
+		for _, mt := range mf.GetMetric() {
+			switch {
+			case mt.GetHistogram() != nil:
+				got[mf.GetName()] = float64(mt.GetHistogram().GetSampleCount())
+			case mt.GetGauge() != nil:
+				got[mf.GetName()] = mt.GetGauge().GetValue()
+			}
+		}
+	}
+	if got["conloom_search_seconds"] != 1 || got["conloom_fts_backfill_remaining"] != 1200 {
+		t.Fatalf("search metrics = %v", got)
+	}
 }
 
 func TestNewLogger_JSONFormat(t *testing.T) {

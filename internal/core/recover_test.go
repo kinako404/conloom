@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/ids"
@@ -156,6 +160,65 @@ func TestRecover_LeavesLiveTasksAlone(t *testing.T) {
 	}
 	if n := env.short.Calls(); n != 2 {
 		t.Fatalf("model calls = %d, want 2", n)
+	}
+}
+
+// gaugeValue is the value of the gauge name in reg.
+func gaugeValue(t *testing.T, reg *prometheus.Registry, name string) float64 {
+	t.Helper()
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == name && len(mf.GetMetric()) == 1 {
+			return mf.GetMetric()[0].GetGauge().GetValue()
+		}
+	}
+	return -1
+}
+
+func TestRecover_BackfillsTheKeywordIndexInTheBackground(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	var mu sync.Mutex
+	var batches []int
+	remaining := []int{1200, 700, 200, 0}
+	fail := true
+	env.hooks.backfill = func(batch int) (int, int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if fail {
+			fail = false
+			return 0, 0, errors.New("test: database busy")
+		}
+		batches = append(batches, batch)
+		if len(batches) > len(remaining) {
+			return 0, 0, nil
+		}
+		return 500, remaining[len(batches)-1], nil
+	}
+	env.o.ftsRetry = 10 * time.Millisecond
+	if err := env.o.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	waitUntil(t, "backfill caught up", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(batches) >= len(remaining)
+	})
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	got := slices.Clone(batches)
+	mu.Unlock()
+	if len(got) != len(remaining) || got[0] != 500 {
+		t.Fatalf("batches = %v, want %d batches of 500 and then a pause", got, len(remaining))
+	}
+	if v := gaugeValue(t, env.reg, "conloom_fts_backfill_remaining"); v != 0 {
+		t.Fatalf("conloom_fts_backfill_remaining = %v, want 0", v)
+	}
+	logs := env.logs.String()
+	if !strings.Contains(logs, "keyword index backfill failed") || !strings.Contains(logs, "keyword index backfilled") {
+		t.Fatalf("logs lack the backfill failure and completion:\n%s", logs)
 	}
 }
 

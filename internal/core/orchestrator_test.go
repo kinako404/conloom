@@ -160,6 +160,18 @@ type hookStore struct {
 	nameLookups [][]string
 	// failNames makes LatestDisplayNames fail.
 	failNames atomic.Bool
+	// backfill, when set, replaces BackfillMessageIndex.
+	backfill func(batch int) (indexed, remaining int, err error)
+}
+
+func (h *hookStore) BackfillMessageIndex(ctx context.Context, batch int) (int, int, error) {
+	h.mu.Lock()
+	fn := h.backfill
+	h.mu.Unlock()
+	if fn != nil {
+		return fn(batch)
+	}
+	return h.Store.BackfillMessageIndex(ctx, batch)
 }
 
 func (h *hookStore) LatestDisplayNames(ctx context.Context, convKey string, actorIDs []string) (map[string]string, error) {

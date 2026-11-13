@@ -450,7 +450,7 @@ func TestForgetMember_ClearsAndDeletesRevisions(t *testing.T) {
 }
 
 // memInsertMessages stores msgs in order in one transaction.
-func memInsertMessages(t *testing.T, db *DB, msgs ...store.MessageRecord) {
+func memInsertMessages(t testing.TB, db *DB, msgs ...store.MessageRecord) {
 	t.Helper()
 	err := db.inTx(context.Background(), func(tx *sql.Tx) error {
 		for _, m := range msgs {

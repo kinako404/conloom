@@ -122,6 +122,8 @@ func insertMessageIfAbsent(ctx context.Context, tx *sql.Tx, m store.MessageRecor
 	return execInsertMessage(ctx, tx, m, " ON CONFLICT DO NOTHING")
 }
 
+// execInsertMessage inserts m and, when it was inserted, its keyword index
+// row.
 func execInsertMessage(ctx context.Context, tx *sql.Tx, m store.MessageRecord, onConflict string) error {
 	mentions, err := json.Marshal(m.Mentions)
 	if err != nil {
@@ -131,14 +133,21 @@ func execInsertMessage(ctx context.Context, tx *sql.Tx, m store.MessageRecord, o
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `
+	var seq int64
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO messages (bot_instance_id, id, conversation_key, platform, platform_message_id, actor_id,
 			platform_user_id, display_name, text, reply_to, mentions, attachments, from_bot, occurred_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`+onConflict,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`+onConflict+` RETURNING seq`,
 		m.BotInstanceID, m.ID, m.ConversationKey, m.Platform, m.PlatformMessageID, m.ActorID,
 		m.PlatformUserID, m.DisplayName, m.Text, m.ReplyTo, string(mentions), string(attachments), m.FromBot,
-		fmtTime(m.OccurredAt), fmtTime(nowIfZero(m.CreatedAt)))
-	return err
+		fmtTime(m.OccurredAt), fmtTime(nowIfZero(m.CreatedAt))).Scan(&seq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return indexMessage(ctx, tx, seq, m.ConversationKey, m.DisplayName, m.Text)
 }
 
 type scanner interface {

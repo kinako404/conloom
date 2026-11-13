@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +12,9 @@ import (
 	"github.com/kinako404/conloom/internal/skills"
 	"github.com/kinako404/conloom/internal/store"
 )
+
+// day1113 is the date header of groups from 2026-11-13.
+const day1113 = "—— 2026-11-13 ——"
 
 // at is 09:00 plus minutes on 2026-11-13 in Asia/Shanghai.
 func at(minutes int) time.Time {
@@ -42,49 +44,18 @@ func assertNoIDs(t *testing.T, text string) {
 	}
 }
 
-func TestRecallTokens(t *testing.T) {
-	for _, c := range []struct {
-		query string
-		want  []string
-	}{
-		{"我喜欢草莓", []string{"我喜", "喜欢", "欢草", "草莓"}},
-		{"喜欢 Go 1.26 和 SQLite", []string{"喜欢", "go", "1", "26", "sqlite"}},
-		{"猫", []string{"猫"}},
-		{"一二三四五六七八九十", []string{"一二", "二三", "三四", "四五", "五六", "六七", "七八", "八九"}},
-		{"草莓草莓 GO go", []string{"草莓", "莓草", "go"}},
-		{"？？！", nil},
-	} {
-		if got := recallTokens(c.query); !slices.Equal(got, c.want) {
-			t.Errorf("recallTokens(%q) = %q, want %q", c.query, got, c.want)
-		}
-	}
-}
-
-func TestSearchTerms(t *testing.T) {
-	for _, c := range []struct {
-		query    string
-		keywords []string
-		want     []string
-	}{
-		{"旅游", nil, []string{"旅游"}},
-		{"旅游", []string{"出去玩", "旅游", "Go 语言", "旅行"}, []string{"出去玩", "旅游", "go 语言", "旅行"}},
-		{"？", []string{"出去玩"}, []string{"出去玩"}},
-		{"一二三四五六七八九", []string{"出去玩"}, []string{"出去玩", "一二", "二三", "三四", "四五", "五六", "六七", "七八", "八九"}},
-		{"一二三四五六七八九十", []string{"甲", "乙", "丙", "丁", "戊", "己", "庚", "辛"},
-			[]string{"甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "一二", "二三", "三四", "四五", "五六", "六七", "七八", "八九"}},
-		{"一二三", []string{"二三", "x"}, []string{"二三", "x", "一二"}},
-	} {
-		if got := searchTerms(c.query, c.keywords); !slices.Equal(got, c.want) {
-			t.Errorf("searchTerms(%q, %q) = %q, want %q", c.query, c.keywords, got, c.want)
-		}
-	}
-}
-
 func TestRecall_Spec(t *testing.T) {
 	spec := newRecall(newStore(t), true).Spec()
 	checkSpec(t, spec, "recall", "query")
-	if !strings.Contains(string(spec.Parameters), `"keywords"`) || !strings.Contains(spec.Description, "出去玩") {
-		t.Errorf("recall spec lacks the keywords argument or its guidance: %+v", spec)
+	for _, want := range []string{`"keywords"`, `"after"`, `"before"`, "YYYY-MM-DD"} {
+		if !strings.Contains(string(spec.Parameters), want) {
+			t.Errorf("recall parameters lack %s: %s", want, spec.Parameters)
+		}
+	}
+	for _, want := range []string{"出去玩", "after", "before", "——"} {
+		if !strings.Contains(spec.Description, want) {
+			t.Errorf("recall description lacks %q: %s", want, spec.Description)
+		}
 	}
 }
 
@@ -110,6 +81,7 @@ func TestRecall_RanksMergesContextAndSkipsTheCurrentTurn(t *testing.T) {
 
 	got := call(t, newRecall(st, true), answering(groupKey, "20001", "小明", trigger), `{"query":"喜欢草莓"}`)
 	want := strings.Join([]string{
+		day1113,
 		"[11-13 09:03] 一位群友：闲聊第3句",
 		"[11-13 09:04] 一位群友：闲聊第4句",
 		"[11-13 09:05] 小明：我最喜欢草莓蛋糕",
@@ -117,6 +89,7 @@ func TestRecall_RanksMergesContextAndSkipsTheCurrentTurn(t *testing.T) {
 		"[11-13 09:07] 一位群友：闲聊第7句",
 		"[11-13 09:08] 一位群友：闲聊第8句",
 		"",
+		day1113,
 		"[11-13 09:18] 一位群友：闲聊第18句",
 		"[11-13 09:19] 一位群友：闲聊第19句",
 		"[11-13 09:20] 小红：我不喜欢香菜",
@@ -172,7 +145,7 @@ func TestRecall_Keywords(t *testing.T) {
 	if got := call(t, tool, inv, `{"query":"旅游计划"}`); got != recallNotFound {
 		t.Fatalf("recall without keywords = %q", got)
 	}
-	want := "[11-13 09:00] 小明：下周去旅行\n[11-13 09:01] 小红：周末一起出去玩吧"
+	want := day1113 + "\n[11-13 09:00] 小明：下周去旅行\n[11-13 09:01] 小红：周末一起出去玩吧"
 	if got := call(t, tool, inv, `{"query":"旅游计划","keywords":["旅行","出去玩"]}`); got != want {
 		t.Fatalf("recall with keywords =\n%s\nwant\n%s", got, want)
 	}
@@ -267,7 +240,7 @@ func TestRecall_SkipsCommandsAndHidesSensitiveText(t *testing.T) {
 	)
 	inv := invocation(groupKey, "20003", "")
 	got := call(t, NewRecall(RecallDeps{Store: st, Policies: policies, Reviewer: review.New(nil, review.Options{})}), inv, `{"query":"草莓"}`)
-	want := "[11-13 09:02] 小红：我［联系方式］\n[11-13 09:03] 小红：草莓店的［联系方式］\n[11-13 09:05] 你：草莓很甜"
+	want := day1113 + "\n[11-13 09:02] 小红：我［联系方式］\n[11-13 09:03] 小红：草莓店的［联系方式］\n[11-13 09:05] 你：草莓很甜"
 	if got != want {
 		t.Fatalf("recall =\n%s\nwant\n%s", got, want)
 	}
@@ -343,7 +316,7 @@ func TestRecall_HiddenMessagesAreNotContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := call(t, newRecall(st, true), invocation(groupKey, "20003", ""), `{"query":"草莓"}`)
-	if want := "[11-13 09:00] 小明：闲聊甲\n[11-13 09:02] 小明：草莓真好\n[11-13 09:04] 小明：闲聊乙"; got != want {
+	if want := day1113 + "\n[11-13 09:00] 小明：闲聊甲\n[11-13 09:02] 小明：草莓真好\n[11-13 09:04] 小明：闲聊乙"; got != want {
 		t.Fatalf("recall next to hidden messages =\n%s\nwant\n%s", got, want)
 	}
 }
@@ -365,7 +338,7 @@ func TestRecall_PrivateHidesEverythingBeforeForgetting(t *testing.T) {
 		trigger,
 	)
 	got := call(t, newRecall(st, true), answering(privateKey, "20001", "小明", trigger), `{"query":"草莓"}`)
-	if want := "[11-13 09:06] 小明：今天吃了草莓\n[11-13 09:07] 你：真好"; got != want {
+	if want := day1113 + "\n[11-13 09:06] 小明：今天吃了草莓\n[11-13 09:07] 你：真好"; got != want {
 		t.Fatalf("private recall after forgetting =\n%s\nwant\n%s", got, want)
 	}
 }
@@ -382,6 +355,7 @@ func TestRecall_NamesWithoutIDs(t *testing.T) {
 	)
 	got := call(t, newRecall(st, true), invocation(groupKey, "20001", "小明"), `{"query":"草莓"}`)
 	want := strings.Join([]string{
+		day1113,
 		"[11-13 09:00] 一位群友：草莓一号",
 		"[11-13 09:01] 一位群友：草莓二号",
 		"[11-13 09:02] 小红：草莓 三号",
@@ -413,37 +387,6 @@ func TestRecall_LengthCap(t *testing.T) {
 	}
 }
 
-// limitStore serves msgs as a conversation's history and records the limits
-// asked for.
-type limitStore struct {
-	msgs   []store.MessageRecord
-	limits []int
-}
-
-func (s *limitStore) RecentMessages(_ context.Context, _ string, limit int) ([]store.MessageRecord, error) {
-	s.limits = append(s.limits, limit)
-	return slices.Clone(s.msgs[max(len(s.msgs)-limit, 0):]), nil
-}
-
-func (s *limitStore) ListMemberMemories(context.Context, string) ([]store.MemberMemory, error) {
-	return nil, nil
-}
-
-func TestRecall_LooksAtTheNewest5000(t *testing.T) {
-	fake := &limitStore{msgs: []store.MessageRecord{message(groupKey, "20001", "小明", "很久以前说过草莓", at(0))}}
-	for i := range 5000 {
-		fake.msgs = append(fake.msgs, message(groupKey, "20001", "小明", "闲聊", at(1).Add(time.Duration(i)*time.Second)))
-	}
-	st := newStore(t)
-	tool := NewRecall(RecallDeps{Store: fake, Policies: newPolicies(st, true, true), Reviewer: review.New(nil, review.Options{})})
-	if got := call(t, tool, invocation(groupKey, "20002", "小红"), `{"query":"草莓"}`); got != recallNotFound {
-		t.Fatalf("recall beyond the newest 5000 = %q", got)
-	}
-	if !slices.Equal(fake.limits, []int{5000}) {
-		t.Fatalf("RecentMessages limits = %v, want [5000]", fake.limits)
-	}
-}
-
 func TestRecall_NotFoundDisabledAndArguments(t *testing.T) {
 	st := newStore(t)
 	addMessages(t, st, message(groupKey, "20001", "小明", "今天天气不错", at(0)))
@@ -459,10 +402,18 @@ func TestRecall_NotFoundDisabledAndArguments(t *testing.T) {
 		{`{"query":"草莓","keywords":["1","2","3","4","5","6","7","8","9"]}`, "keywords 最多 8 个。"},
 		{`{"query":"草莓","keywords":[" "]}`, "keywords 里每个词要 1 到 20 字。"},
 		{`{"query":"草莓","keywords":["` + strings.Repeat("长", 21) + `"]}`, "keywords 里每个词要 1 到 20 字。"},
+		{`{"query":"草莓","after":"2026/03/01"}`, recallBadDate},
+		{`{"query":"草莓","after":"2026-02-30"}`, recallBadDate},
+		{`{"query":"草莓","before":20260301}`, recallBadDate},
+		{`{"query":"草莓","before":"2026-3-1"}`, recallBadDate},
+		{`{"query":"草莓","after":"2026-03-05","before":"2026-03-01"}`, "after 不能晚于 before。"},
 	}
 	tool := newRecall(st, true)
 	for _, c := range append(argCases,
 		struct{ args, want string }{`{"query":"草莓"}`, recallNotFound},
+		struct{ args, want string }{`{"query":"天气","after":"","before":null}`, day1113 + "\n[11-13 09:00] 小明：今天天气不错"},
+		struct{ args, want string }{`{"query":"天气","after":"2026-11-13","before":"2026-11-13"}`, day1113 + "\n[11-13 09:00] 小明：今天天气不错"},
+		struct{ args, want string }{`{"query":"天气","after":"2026-11-14"}`, recallNotFound},
 		struct{ args, want string }{`{"query":"？！"}`, recallNotFound}) {
 		if got := call(t, tool, inv, c.args); got != c.want {
 			t.Errorf("recall(%.30s) = %q, want %q", c.args, got, c.want)
