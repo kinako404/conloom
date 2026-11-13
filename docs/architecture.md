@@ -89,7 +89,7 @@ NapCat      Adapter                 Core                          SQLite        
 
 | 触发 | 来源 | 说明 |
 |---|---|---|
-| `private` | 私聊 | 受 `bots[].private_chat`（off / admins / all）限制 |
+| `private` | 私聊 | 受 `bots[].private_chat`（off / admins / allowlist / all）限制 |
 | `mention` | @ 机器人 | 直接对话 |
 | `reply` | 回复机器人的消息 | 直接对话 |
 | `command` | 命令前缀加已知命令词 | 不进调度器，在请求协程里同步执行，不调用模型 |

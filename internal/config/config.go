@@ -63,6 +63,21 @@ type BotConfig struct {
 	PersonaTemplate      string                       `yaml:"persona_template"`
 }
 
+// UnusedPrivateConversations returns the platform IDs of the private entries in
+// EnabledConversations, which only take effect when PrivateChat is "allowlist".
+func (b BotConfig) UnusedPrivateConversations() []string {
+	if b.PrivateChat == "allowlist" {
+		return nil
+	}
+	var ids []string
+	for _, c := range b.EnabledConversations {
+		if c.Type == conloomapi.ConvPrivate {
+			ids = append(ids, c.PlatformID)
+		}
+	}
+	return ids
+}
+
 // ProviderOpenAICompatible is the only supported ModelProfile.Provider and the default.
 const ProviderOpenAICompatible = "openai_compatible"
 
