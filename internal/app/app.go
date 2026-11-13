@@ -27,16 +27,18 @@ import (
 	"github.com/kinako404/conloom/internal/provider/openai"
 	"github.com/kinako404/conloom/internal/review"
 	"github.com/kinako404/conloom/internal/router"
+	"github.com/kinako404/conloom/internal/skills"
 	"github.com/kinako404/conloom/internal/store/sqlite"
 )
 
 // Options override defaults: a nil Registry is a fresh registry, a nil
-// HTTPClient is http.DefaultClient (used for model calls) and a nil Now is
-// time.Now.
+// HTTPClient is http.DefaultClient (used for model calls), a nil Now is
+// time.Now and nil Tools are the built-in tools.
 type Options struct {
 	Registry   *prometheus.Registry
 	HTTPClient *http.Client
 	Now        func() time.Time
+	Tools      []skills.Tool
 }
 
 // App is the assembled core service.
@@ -50,9 +52,10 @@ type App struct {
 	closeErr  error
 }
 
-// New opens the database in the configured data directory (creating the
-// directory if needed), registers the configured bots and wires every
-// component. The caller must Close the App.
+// New loads the skills, opens the database in the configured data directory
+// (creating the directory if needed), registers the configured bots and wires
+// every component. An invalid skill configuration is an error wrapping
+// skills.ErrInvalid. The caller must Close the App.
 func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -63,6 +66,14 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	now := opts.Now
 	if now == nil {
 		now = time.Now
+	}
+	tools := opts.Tools
+	if tools == nil {
+		tools = builtinTools()
+	}
+	skillReg, err := loadSkills(cfg, tools)
+	if err != nil {
+		return nil, fmt.Errorf("app: %w", err)
 	}
 
 	if err := os.MkdirAll(cfg.Storage.DataDir, 0o700); err != nil {
@@ -136,6 +147,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Location:      loc,
 		Now:           now,
 		MemoryTrigger: sched,
+		Skills:        skillReg,
 	})
 	if err != nil {
 		_ = st.Close()
