@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -113,5 +114,45 @@ func TestDeliver_NotSentIsLeftForRedeliveryAndSentOnce(t *testing.T) {
 	}
 	if n := len(core.Acks()); n != 1 {
 		t.Errorf("acks = %d, want 1 (none for the attempt that was not sent)", n)
+	}
+}
+
+// replyActionTo is replyAction for the private chat of user id.
+func replyActionTo(actionID, text, id string) conloomapi.Action {
+	a := replyAction(actionID, text, "")
+	a.ConversationID, a.PlatformConversationID = "private_"+id, id
+	return a
+}
+
+func TestDeliver_NotSentHoldsOnlyItsConversation(t *testing.T) {
+	tg, core := newFakeTG(t), newFakeCore(t)
+	core.Enqueue(replyActionTo("act_a", "给小明的第一句", "20001"))
+	core.Enqueue(replyActionTo("act_b", "给小红的", "20002"))
+	core.Enqueue(replyActionTo("act_a2", "给小明的第二句", "20001"))
+	transport := &refusingTransport{refuse: 1}
+	startAdapter(t, tgConfig(tg.URL, core.URL, t.TempDir()), func(a *Adapter) {
+		a.api.hc = &http.Client{Transport: transport}
+	})
+
+	waitFor(t, 5*time.Second, "all three ACKs", func() bool { return len(core.Acks()) == 3 })
+	refused := transport.Refused()
+	if len(refused) != 1 {
+		t.Fatalf("refused sends = %d, want 1", len(refused))
+	}
+	var texts []string
+	var other time.Time
+	for _, c := range tg.Calls("sendMessage") {
+		switch c.num("chat_id") {
+		case userXM:
+			texts = append(texts, c.text())
+		case 20002:
+			other = c.At
+		}
+	}
+	if other.IsZero() || other.Sub(refused[0]) > 200*time.Millisecond {
+		t.Errorf("the other conversation's reply went out %v after the failure, want it in the same batch", other.Sub(refused[0]))
+	}
+	if want := []string{"给小明的第一句", "给小明的第二句"}; !slices.Equal(texts, want) {
+		t.Errorf("replies to 小明 = %q, want %q in order, each once", texts, want)
 	}
 }

@@ -349,7 +349,10 @@ func (a *Adapter) noteGroupNotEnabled(chatID int64, conversationID string) {
 	}
 }
 
-// deliverOutbox polls the outbox and sends actions until ctx is done.
+// deliverOutbox polls the outbox and sends actions until ctx is done. When an
+// action could not be sent, the rest of the batch still goes out except the
+// later actions of the same conversation, which wait with it for redelivery
+// so a conversation's replies keep their order.
 func (a *Adapter) deliverOutbox(ctx context.Context) {
 	for {
 		actions, err := a.core.PollOutbox(ctx, outboxLimit, a.outboxWait)
@@ -363,16 +366,22 @@ func (a *Adapter) deliverOutbox(ctx context.Context) {
 			}
 			continue
 		}
+		held := map[string]bool{}
 		for _, act := range actions {
 			if ctx.Err() != nil {
 				return
 			}
-			if err := a.deliver(ctx, act); err != nil {
-				if !sleep(ctx, a.outboxErrorDelay) {
-					return
-				}
-				break
+			if held[act.ConversationID] {
+				a.log.Debug("holding an action behind an unsent one in its conversation", "action_id", act.ActionID,
+					"conversation_id", act.ConversationID)
+				continue
 			}
+			if err := a.deliver(ctx, act); err != nil {
+				held[act.ConversationID] = true
+			}
+		}
+		if len(held) > 0 && !sleep(ctx, a.outboxErrorDelay) {
+			return
 		}
 	}
 }
