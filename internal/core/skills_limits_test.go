@@ -96,6 +96,7 @@ func TestSkills_ToolCallWrittenAsTextIsNotSent(t *testing.T) {
 		`<tool_call>{"name":"now","arguments":{}}</tool_call>`,
 		"我查一下\n<function=now>{}</function>",
 		"<TOOL_CALL>now</TOOL_CALL>",
+		`<function_calls><invoke name="now"></invoke></function_calls>`,
 	} {
 		t.Run(content, func(t *testing.T) {
 			env := skillEnv(t, testOpts{
@@ -110,6 +111,16 @@ func TestSkills_ToolCallWrittenAsTextIsNotSent(t *testing.T) {
 				t.Errorf("logs lack the reason")
 			}
 		})
+	}
+}
+
+func TestSkills_FunctionTagsInProseAreSent(t *testing.T) {
+	const prose = "在这段 XML 里，<function> 标签包着函数名，<functions> 是列表。"
+	env := skillEnv(t, testOpts{shortTools: func(map[string]any) fakeopenai.Reply { return fakeopenai.Reply{Content: prose} }},
+		[]string{"time"}, &recTool{name: "now"})
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "这段 XML 什么意思", mentionBot)).TaskID)
+	if len(task.Actions) != 1 || task.Actions[0].Content.Text != prose || env.long.Calls() != 0 {
+		t.Fatalf("task = %+v, want the prose sent as is", task)
 	}
 }
 

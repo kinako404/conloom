@@ -136,6 +136,11 @@ func worstRound(outputTokens int, factor float64, maxResultRunes int) int {
 	return maxCallsPerRound*result + assistant + contextbuilder.MessageOverhead
 }
 
+// toolCallMarkers start a tool call a model wrote as text instead of calling
+// the tool. Plain tags such as "<function>" in an explanation are not among
+// them.
+var toolCallMarkers = []string{"<tool_call", "<function=", "<function_calls"}
+
 // notAnAnswer returns why resp, to a request offering tools (final false) or
 // to the final request, must not be taken as the reply, or "": a tool call
 // written as text, a tool round cut off by the output limit before any call,
@@ -144,7 +149,7 @@ func worstRound(outputTokens int, factor float64, maxResultRunes int) int {
 func notAnAnswer(resp openai.ChatResponse, final bool) string {
 	content := strings.ToLower(resp.Content)
 	switch {
-	case strings.Contains(content, "<tool_call") || strings.Contains(content, "<function"):
+	case slices.ContainsFunc(toolCallMarkers, func(m string) bool { return strings.Contains(content, m) }):
 		return "tool call written as text"
 	case final && len(resp.ToolCalls) > 0:
 		return "tool calls in the final request"
