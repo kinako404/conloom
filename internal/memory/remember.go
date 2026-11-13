@@ -1,8 +1,10 @@
 package memory
 
 import (
+	"cmp"
 	"context"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -19,6 +21,9 @@ const (
 	RememberMaxRunes = 100
 	// ReasonRemember is the reason of revisions written by /记住.
 	ReasonRemember = "remember"
+	// ReasonRememberTool is the reason of revisions written by the remember
+	// tool.
+	ReasonRememberTool = "remember_tool"
 )
 
 // AppendRemembered appends RememberMarker and content to note. When the
@@ -48,10 +53,9 @@ func AppendRemembered(note, content string, maxRunes int) string {
 }
 
 var (
-	// contactSeparators are dropped between digits before digit patterns
-	// are matched, so "138 0000 1111" and "138-0000-1111" read as one number.
-	contactSeparators = regexp.MustCompile(`(\d)[ \t\-.]+(\d)`)
-	contactPatterns   = []*regexp.Regexp{
+	// contactPatterns are matched after compactDigits, so "138 0000 1111" and
+	// "138-0000-1111" read as one number.
+	contactPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+`),
 		regexp.MustCompile(`\d{9,}`),
 		regexp.MustCompile(`\d{17}[Xx]`),
@@ -61,25 +65,82 @@ var (
 	}
 )
 
+// ContactPlaceholder replaces contact details and identity numbers in
+// RedactContactOrID.
+const ContactPlaceholder = "［联系方式］"
+
 // LooksLikeContactOrID reports whether s seems to hold contact details or an
 // identity number: an email address, a long run of digits (phone, QQ or ID
 // card numbers), or a QQ, WeChat, phone or ID label followed by an
 // identifier.
 func LooksLikeContactOrID(s string) bool {
-	compact := s
-	for {
-		next := contactSeparators.ReplaceAllString(compact, "$1$2")
-		if next == compact {
-			break
-		}
-		compact = next
+	return len(contactSpans(s)) > 0
+}
+
+// RedactContactOrID replaces each part of s that LooksLikeContactOrID would
+// find with ContactPlaceholder.
+func RedactContactOrID(s string) string {
+	spans := contactSpans(s)
+	if len(spans) == 0 {
+		return s
 	}
+	var b strings.Builder
+	last := 0
+	for _, sp := range spans {
+		b.WriteString(s[last:sp[0]])
+		b.WriteString(ContactPlaceholder)
+		last = sp[1]
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// contactSpans returns the sorted, disjoint byte ranges of s matched by
+// contactPatterns. Patterns are matched on compactDigits(s) and the ranges
+// are mapped back to s.
+func contactSpans(s string) [][2]int {
+	compact, origin := compactDigits(s)
+	var spans [][2]int
 	for _, p := range contactPatterns {
-		if p.MatchString(compact) {
-			return true
+		for _, m := range p.FindAllStringIndex(compact, -1) {
+			spans = append(spans, [2]int{origin[m[0]], origin[m[1]-1] + 1})
 		}
 	}
-	return false
+	slices.SortFunc(spans, func(a, b [2]int) int { return cmp.Compare(a[0], b[0]) })
+	var merged [][2]int
+	for _, sp := range spans {
+		if n := len(merged); n > 0 && sp[0] <= merged[n-1][1] {
+			merged[n-1][1] = max(merged[n-1][1], sp[1])
+			continue
+		}
+		merged = append(merged, sp)
+	}
+	return merged
+}
+
+// compactDigits removes every run of spaces, tabs, hyphens and dots lying
+// between two ASCII digits, and maps each byte of the result to its offset
+// in s.
+func compactDigits(s string) (string, []int) {
+	isSep := func(c byte) bool { return c == ' ' || c == '\t' || c == '-' || c == '.' }
+	isDigit := func(c byte) bool { return c >= '0' && c <= '9' }
+	var b strings.Builder
+	origin := make([]int, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if isSep(s[i]) && i > 0 && isDigit(s[i-1]) {
+			j := i
+			for j < len(s) && isSep(s[j]) {
+				j++
+			}
+			if j < len(s) && isDigit(s[j]) {
+				i = j - 1
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		origin = append(origin, i)
+	}
+	return b.String(), origin
 }
 
 // WithoutRemembered is note without the items its member asked the bot to
@@ -115,11 +176,13 @@ type RememberDeps struct {
 }
 
 // RememberRequest is one thing a member asked the bot to remember in a
-// conversation; Review is the conversation's review policy.
+// conversation; Review is the conversation's review policy and Reason the
+// revision's reason, ReasonRemember when empty.
 type RememberRequest struct {
 	ConversationKey, UserID, DisplayName string
 	Content                              string
 	Review                               conloomapi.ReviewPolicy
+	Reason                               string
 }
 
 // Remember appends what a member asked to remember to their note (see
@@ -148,6 +211,7 @@ func Remember(ctx context.Context, d RememberDeps, req RememberRequest) (Remembe
 	if content = strings.Join(strings.Fields(out.Text), " "); out.Verdict == review.VerdictBlock || content == "" {
 		return RememberBlocked, nil
 	}
+	reason := cmp.Or(req.Reason, ReasonRemember)
 	limit := NoteLimit(convTypeOf(req.ConversationKey))
 	_, err := UpdateMember(ctx, d.Store, req.ConversationKey, req.UserID, store.RevisionCommand,
 		func(m *store.MemberMemory) (string, bool) {
@@ -155,7 +219,7 @@ func Remember(ctx context.Context, d RememberDeps, req RememberRequest) (Remembe
 			if req.DisplayName != "" && req.DisplayName != req.UserID {
 				m.DisplayName = req.DisplayName
 			}
-			return ReasonRemember, true
+			return reason, true
 		})
 	if err != nil {
 		return 0, err

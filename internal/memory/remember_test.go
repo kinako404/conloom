@@ -45,6 +45,43 @@ func TestLooksLikeContactOrID(t *testing.T) {
 	}
 }
 
+func TestRedactContactOrID(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"我的手机号是 13800001111，记得打", "我的［联系方式］，记得打"},
+		{"打 138-0000-1111 或 138 0000 2222 都行", "打 ［联系方式］ 或 ［联系方式］ 都行"},
+		{"邮箱 xiaoming@example.com 常用", "邮箱 ［联系方式］ 常用"},
+		{"身份证 12345678901234567X。", "［联系方式］。"},
+		{"加我 vx：xm2026 吧", "加我 ［联系方式］ 吧"},
+		{"电话 +86 138 0000 1111", "［联系方式］"},
+		{"号码 1234567 和 QQ 20001", "［联系方式］ 和 ［联系方式］"},
+		{"我 2026 年毕业，猫 3 岁", "我 2026 年毕业，猫 3 岁"},
+		{"", ""},
+	} {
+		got := RedactContactOrID(c.in)
+		if got != c.want {
+			t.Errorf("RedactContactOrID(%q) = %q, want %q", c.in, got, c.want)
+		}
+		if LooksLikeContactOrID(c.in) != (got != c.in) || LooksLikeContactOrID(got) {
+			t.Errorf("RedactContactOrID(%q) = %q disagrees with LooksLikeContactOrID", c.in, got)
+		}
+	}
+}
+
+func TestRemember_Reason(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	got, err := Remember(ctx, RememberDeps{Store: st, Reviewer: review.New(nil, review.Options{})}, RememberRequest{
+		ConversationKey: testConvKey, UserID: "20001", Content: "我喜欢草莓", Reason: "remember_tool",
+	})
+	if err != nil || got != Remembered {
+		t.Fatalf("Remember = %v, %v", got, err)
+	}
+	revs, err := st.ListMemoryRevisions(ctx, testConvKey, "20001")
+	if err != nil || len(revs) != 1 || revs[0].Source != store.RevisionCommand || revs[0].Reason != "remember_tool" {
+		t.Fatalf("revisions = %+v, %v", revs, err)
+	}
+}
+
 func TestWithoutRemembered(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
 		{"喜欢猫。", "喜欢猫。"},
