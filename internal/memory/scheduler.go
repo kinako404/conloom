@@ -35,7 +35,8 @@ type SchedulerDeps struct {
 }
 
 // Scheduler runs consolidations one at a time on a single worker goroutine:
-// groups that are due on every check, groups an admin triggered, and the daily
+// group and private conversations that are due on every check, conversations
+// an admin triggered, and the daily
 // affinity decay and revision purge.
 type Scheduler struct {
 	d SchedulerDeps
@@ -163,9 +164,9 @@ func (s *Scheduler) runTriggered(ctx context.Context) {
 	}
 }
 
-// tick consolidates every group that is due.
+// tick consolidates every group and private conversation that is due.
 func (s *Scheduler) tick(ctx context.Context) {
-	convs, err := s.d.Store.ListConversations(ctx, conloomapi.ConvGroup)
+	convs, err := s.conversations(ctx)
 	if err != nil {
 		s.logError(ctx, "memory: list conversations failed", "error", err)
 		return
@@ -271,12 +272,12 @@ func (s *Scheduler) dailyIfNewDay(ctx context.Context) {
 	s.daily(ctx)
 }
 
-// daily applies affinity decay in every group with memory and affinity on,
+// daily applies affinity decay in every conversation with memory and affinity on,
 // then purges revisions older than 30 days.
 func (s *Scheduler) daily(ctx context.Context) {
 	now := s.d.Now()
 	today := LocalDay(now, s.d.Location)
-	convs, err := s.d.Store.ListConversations(ctx, conloomapi.ConvGroup)
+	convs, err := s.conversations(ctx)
 	if err != nil {
 		s.logError(ctx, "memory: list conversations failed", "error", err)
 	}
@@ -294,6 +295,19 @@ func (s *Scheduler) daily(ctx context.Context) {
 	if n > 0 {
 		s.d.Logger.Info("memory: purged revisions", "count", n)
 	}
+}
+
+// conversations lists the group conversations, then the private ones.
+func (s *Scheduler) conversations(ctx context.Context) ([]store.ConversationRecord, error) {
+	var all []store.ConversationRecord
+	for _, t := range []string{conloomapi.ConvGroup, conloomapi.ConvPrivate} {
+		convs, err := s.d.Store.ListConversations(ctx, t)
+		if err != nil {
+			return all, err
+		}
+		all = append(all, convs...)
+	}
+	return all, nil
 }
 
 func (s *Scheduler) decayGroup(ctx context.Context, convKey, today string) {

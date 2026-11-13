@@ -214,7 +214,8 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 	if err != nil {
 		return consOutcome{}, err
 	}
-	base := consPromptTokens(buildPrompt(g.Summary, nil, nil), c.d.Config.ModelProfiles[string(router.RoleLong)].TokenEstimateFactor)
+	style := consStyleFor(convKey)
+	base := consPromptTokens(buildPrompt(style.system, g.Summary, nil, nil), c.d.Config.ModelProfiles[string(router.RoleLong)].TokenEstimateFactor)
 	d, err := c.d.Router.Route(router.Request{AllowLong: true, Exclude: []router.Role{router.RoleShort}, BaseTokens: base})
 	if err != nil {
 		c.d.Logger.Info("memory consolidation skipped: long-context model unavailable", "conversation", convKey, "error", err)
@@ -242,7 +243,7 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 	for i, m := range b.Members {
 		members[i] = consPromptMember(m.Memory, m.Ref, m.Name)
 	}
-	prompt := buildPrompt(g.Summary, members, b.Lines)
+	prompt := buildPrompt(style.system, g.Summary, members, b.Lines)
 	tokens := consPromptTokens(prompt, p.Config.TokenEstimateFactor) + d.MaxOutputTokens + p.Config.Context.SafetyMarginTokens
 	lease, err := c.acquire(ctx, p, convKey, tokens)
 	if err != nil {
@@ -286,7 +287,7 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 	for _, t := range in.ReplyTargets {
 		written = append(written, t.Text)
 	}
-	out = consResolveRefs(out, names, consLiteralCodes(written...))
+	out = consResolveRefs(out, names, consLiteralCodes(written...), style.summaryMax, style.noteMax)
 
 	day := LocalDay(now, c.d.Location)
 	w, entries := c.compose(*g, b, out, mp.Affinity, day, now)

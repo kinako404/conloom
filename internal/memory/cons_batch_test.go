@@ -205,7 +205,7 @@ func TestConsolidate_SplitsBatchesByBudget(t *testing.T) {
 	text := strings.Repeat("猫", 100)
 	lineCost := contextbuilder.Estimate("[09:00] 小明（P1）："+text+"\n", 1)
 	memberCost := contextbuilder.Estimate(consMemberLine(promptMember{Ref: "P1", Name: "小明"})+"\n", 1)
-	base := consPromptTokens(buildPrompt("S1", nil, nil), 1)
+	base := consPromptTokens(buildPrompt(consGroupSystemPrompt, "S1", nil, nil), 1)
 	e := newConsEnv(t, consOpts{softBudget: base + 2*memberCost + 25*lineCost})
 
 	var msgs []store.MessageRecord

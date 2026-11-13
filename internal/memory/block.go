@@ -19,9 +19,19 @@ const (
 // The summary, names and notes are each put on one line, so they cannot add
 // lines of their own. It returns "" when there is neither a summary nor a note.
 func RenderBlock(summary string, entries []BlockEntry) string {
+	return renderBlock("群里最近：", summary, entries)
+}
+
+// RenderPrivateBlock is RenderBlock for a private conversation: the summary
+// reads "你们最近聊过：…" and only the other person's note is shown.
+func RenderPrivateBlock(summary string, person BlockEntry) string {
+	return renderBlock("你们最近聊过：", summary, []BlockEntry{person})
+}
+
+func renderBlock(summaryLabel, summary string, entries []BlockEntry) string {
 	var lines []string
 	if s := blockLine(summary); s != "" {
-		lines = append(lines, "群里最近："+s)
+		lines = append(lines, summaryLabel+s)
 	}
 	for _, e := range entries {
 		note := blockLine(e.Note)
