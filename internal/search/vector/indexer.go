@@ -30,6 +30,9 @@ const (
 	// rebuildScan the messages read for one rebuild.
 	forwardScan = 1000
 	rebuildScan = 5000
+	// dimsProbe is embedded to learn the service's vector length when no
+	// vector has been seen yet but chunks are stored.
+	dimsProbe = "维度"
 )
 
 // Embedder turns texts into vectors; *embedding.Client is one.
@@ -54,6 +57,8 @@ type Store interface {
 	CountChunkRebuilds(ctx context.Context) (int, error)
 	DeleteStaleChunks(ctx context.Context, convKey, model string) (int, error)
 	ReconcileForgottenChunks(ctx context.Context) (int, error)
+	ChunkDims(ctx context.Context, convKey, model string) ([]int, error)
+	RequeueChunkDims(ctx context.Context, convKey, model string, dims int) (int, error)
 }
 
 // IndexerDeps are what the Indexer needs. Reviewer and IsCommand are those of
@@ -92,6 +97,9 @@ type Indexer struct {
 	// reconciled is set once the first round has applied forgetting that
 	// the chunks missed; only rounds touch it.
 	reconciled bool
+	// dims is the length of the service's vectors, 0 until one is seen;
+	// only rounds touch it.
+	dims int
 }
 
 func NewIndexer(d IndexerDeps) *Indexer {
@@ -249,6 +257,9 @@ func (ix *Indexer) conversation(ctx context.Context, convKey, convType, model st
 			return 0, err
 		}
 	}
+	if err := ix.checkDims(ctx, convKey, model); err != nil {
+		return 0, err
+	}
 	stamp, err := ix.d.Store.ForgetStamp(ctx, convKey)
 	if err != nil {
 		return 0, err
@@ -274,6 +285,33 @@ func (ix *Indexer) conversation(ctx context.Context, convKey, convType, model st
 	}
 	n, err := ix.forward(ctx, convKey, model, stamp, st.CursorSeq, budget-used, transcript)
 	return used + n, err
+}
+
+// checkDims queues the conversation's chunks of model whose vectors are not
+// as long as the service's now (it was replaced without changing the model
+// name) to be rebuilt.
+func (ix *Indexer) checkDims(ctx context.Context, convKey, model string) error {
+	stored, err := ix.d.Store.ChunkDims(ctx, convKey, model)
+	if err != nil || len(stored) == 0 {
+		return err
+	}
+	if ix.dims == 0 {
+		vecs, err := ix.d.Embedder.Embed(ctx, []string{dimsProbe})
+		ix.count(err)
+		if err != nil {
+			return err
+		}
+		ix.dims = len(vecs[0])
+	}
+	if len(stored) == 1 && stored[0] == ix.dims {
+		return nil
+	}
+	n, err := ix.d.Store.RequeueChunkDims(ctx, convKey, model, ix.dims)
+	if err == nil && n > 0 {
+		ix.d.Logger.Warn("embedding dimensions differ from the stored chunks; rebuilding them",
+			"conversation", convKey, "model", model, "stored_dims", stored, "dims", ix.dims, "chunks", n)
+	}
+	return err
 }
 
 type transcriptFunc func(msgs []store.MessageRecord, from int64) []tools.TranscriptLine
@@ -380,6 +418,12 @@ func (ix *Indexer) embed(ctx context.Context, convKey, model string, chunks []*c
 		ix.count(err)
 		if err != nil {
 			return nil, err
+		}
+		if d := len(vecs[0]); d != ix.dims {
+			if ix.dims != 0 {
+				ix.d.Logger.Warn("embedding dimensions changed", "model", model, "was", ix.dims, "now", d)
+			}
+			ix.dims = d
 		}
 		for i, c := range batch {
 			out = append(out, c.record(convKey, model, vecs[i]))

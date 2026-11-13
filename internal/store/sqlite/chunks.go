@@ -164,6 +164,40 @@ func (db *DB) DeleteStaleChunks(ctx context.Context, convKey, model string) (int
 	return int(n), err
 }
 
+// ChunkDims returns the distinct vector lengths of the conversation's chunks
+// of model, in ascending order.
+func (db *DB) ChunkDims(ctx context.Context, convKey, model string) ([]int, error) {
+	rows, err := db.r.QueryContext(ctx, `SELECT DISTINCT dims FROM memory_chunks
+		WHERE conversation_key = ? AND model = ? ORDER BY dims`, convKey, model)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int
+	for rows.Next() {
+		var d int
+		if err := rows.Scan(&d); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// RequeueChunkDims queues the conversation's chunks of model whose vectors do
+// not have dims dimensions to be rebuilt, and returns how many stretches it
+// newly queued.
+func (db *DB) RequeueChunkDims(ctx context.Context, convKey, model string, dims int) (int, error) {
+	res, err := db.w.ExecContext(ctx, `INSERT OR IGNORE INTO memory_chunk_rebuild (conversation_key, start_seq, end_seq)
+		SELECT conversation_key, start_seq, end_seq FROM memory_chunks
+		WHERE conversation_key = ? AND model = ? AND dims <> ? ORDER BY start_seq`, convKey, model, dims)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
+
 // ChunkStamp summarises the conversation's chunks of model; see
 // store.ChunkStamp.
 func (db *DB) ChunkStamp(ctx context.Context, convKey, model string, upToID int64) (store.ChunkStamp, error) {

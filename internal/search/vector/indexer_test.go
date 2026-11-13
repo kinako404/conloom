@@ -286,6 +286,55 @@ func TestIndexer_ModelSwitch(t *testing.T) {
 	}
 }
 
+func TestIndexer_DimensionChangeRebuilds(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.say(groupKey, "20001", "小明", "我喜欢草莓", at(0))
+	e.say(groupKey, "20002", "小红", "草莓很甜", at(60))
+	e.run(e.indexer("m1", 16))
+	e.emb.take()
+	if hits, _ := e.searcher("m1").Search(ctx, groupKey, "草莓", search.Range{}, 5); len(hits) != 2 {
+		t.Fatalf("hits = %v", hits)
+	}
+
+	e.emb.set(func(f *fakeEmbedder) { f.extraDims = 1 })
+	if hits, _ := e.searcher("m1").Search(ctx, groupKey, "草莓", search.Range{}, 5); len(hits) != 0 {
+		t.Fatalf("hits with vectors of another length = %v, want none", hits)
+	}
+	e.emb.take()
+	e.run(e.indexer("m1", 16))
+	if got := flat(e.emb.take()); len(got) != 2 {
+		t.Fatalf("after the service changed embedded %q, want both chunks again", got)
+	}
+	for _, c := range e.chunks(groupKey, "m1") {
+		if len(c.Vector) != len(vocab)+2 {
+			t.Errorf("chunk %d-%d has %d dimensions, want %d", c.StartSeq, c.EndSeq, len(c.Vector), len(vocab)+2)
+		}
+	}
+	if n := len(e.chunks(groupKey, "m1")); n != 2 {
+		t.Errorf("chunks = %d, want 2", n)
+	}
+	if !strings.Contains(e.logs.String(), "level=WARN") || !strings.Contains(e.logs.String(), "dimensions") {
+		t.Errorf("logs = %s, want a warning about the dimensions", e.logs.String())
+	}
+	if hits, _ := e.searcher("m1").Search(ctx, groupKey, "草莓", search.Range{}, 5); len(hits) != 2 {
+		t.Fatalf("hits after rebuilding = %v", hits)
+	}
+
+	e.say(groupKey, "20001", "小明", "猫", at(120))
+	ix := e.indexer("m1", 16)
+	e.run(ix)
+	e.emb.set(func(f *fakeEmbedder) { f.extraDims = 2 })
+	e.say(groupKey, "20001", "小明", "火锅", at(180))
+	e.run(ix)
+	e.run(ix)
+	for _, c := range e.chunks(groupKey, "m1") {
+		if len(c.Vector) != len(vocab)+3 {
+			t.Errorf("after a change mid-run chunk %d-%d has %d dimensions, want %d", c.StartSeq, c.EndSeq, len(c.Vector), len(vocab)+3)
+		}
+	}
+}
+
 func TestIndexer_ModelSwitchKeepsOldVectorsUntilDone(t *testing.T) {
 	e := newEnv(t)
 	for i := range roundBudget + 5 {

@@ -1,12 +1,15 @@
 package vector
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -51,17 +54,20 @@ func at(minutes int) time.Time {
 var vocab = []string{"草莓", "猫", "旅行", "工作", "火锅"}
 
 // fakeEmbedder is an OpenAI-compatible embeddings service. Model "m2" gives
-// vectors one dimension longer than other models.
+// vectors one dimension longer than other models. It does not record the
+// indexer's dimension probes.
 type fakeEmbedder struct {
 	srv *httptest.Server
 
-	mu       sync.Mutex
-	inputs   [][]string
-	fail     bool
-	invalid  bool
-	delay    time.Duration
-	onInput  func()
-	requests int
+	mu      sync.Mutex
+	inputs  [][]string
+	fail    bool
+	invalid bool
+	// extraDims lengthens every vector, as another service would.
+	extraDims int
+	delay     time.Duration
+	onInput   func()
+	requests  int
 }
 
 func newFakeEmbedder(t *testing.T) *fakeEmbedder {
@@ -79,9 +85,10 @@ func newFakeEmbedder(t *testing.T) *fakeEmbedder {
 		f.mu.Lock()
 		f.requests++
 		fail, invalid, delay, hook := f.fail, f.invalid, f.delay, f.onInput
-		if !fail {
+		if !fail && !slices.Equal(req.Input, []string{dimsProbe}) {
 			f.inputs = append(f.inputs, req.Input)
 		}
+		extra := f.extraDims
 		f.mu.Unlock()
 		if delay > 0 {
 			select {
@@ -104,6 +111,9 @@ func newFakeEmbedder(t *testing.T) *fakeEmbedder {
 		var data []item
 		for i, text := range req.Input {
 			v := fakeVector(req.Model, text)
+			for range extra {
+				v = append(v, 0.1)
+			}
 			if invalid {
 				v[0] = 1e39
 			}
@@ -165,6 +175,7 @@ type env struct {
 	// cfg decides which private chats are allowed; nil allows all.
 	cfg     *config.Config
 	reg     *prometheus.Registry
+	logs    *lockedBuffer
 	metrics *obs.Metrics
 	now     time.Time
 }
@@ -181,12 +192,13 @@ func newEnv(t *testing.T) *env {
 	p.Memory.Enabled, p.Concurrency.AllowLongRequests = true, true
 	reg := prometheus.NewRegistry()
 	return &env{t: t, st: st, dbPath: dbPath, policies: policy.NewService(st, p), emb: newFakeEmbedder(t),
-		override: map[string]func(p *conloomapi.GroupPolicy){}, reg: reg, metrics: obs.NewMetrics(reg), now: at(24 * 60)}
+		override: map[string]func(p *conloomapi.GroupPolicy){}, reg: reg, logs: &lockedBuffer{}, metrics: obs.NewMetrics(reg), now: at(24 * 60)}
 }
 
 func (e *env) indexer(model string, batch int) *Indexer {
 	ix := NewIndexer(IndexerDeps{Store: e.st, Embedder: e.emb.client(model, batch), Policies: overridden{e},
-		Reviewer: review.New(nil, review.Options{}), Location: shanghai, Metrics: e.metrics, Config: e.cfg})
+		Reviewer: review.New(nil, review.Options{}), Location: shanghai, Metrics: e.metrics, Config: e.cfg,
+		Logger: slog.New(slog.NewTextHandler(e.logs, nil))})
 	ix.now = func() time.Time { return e.now }
 	return ix
 }
@@ -213,6 +225,23 @@ func (e *env) setPolicy(convKey string, fn func(p *conloomapi.GroupPolicy)) {
 	if _, err := e.policies.Update(context.Background(), convKey, conloomapi.PolicyPut{Policy: p, Reason: "test"}, "admin"); err != nil {
 		e.t.Fatal(err)
 	}
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 type overridden struct{ e *env }

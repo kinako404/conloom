@@ -405,3 +405,29 @@ func TestChunks_ReconcileForgetting(t *testing.T) {
 		t.Errorf("reconciled %d members after forgetting again the old way, want 1", n)
 	}
 }
+
+func TestChunks_Dims(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	long := testChunk(testConvKey, 5, 9, chunkAt(5), chunkAt(9), "m1")
+	long.Vector = []float32{1, 2, 3, 4}
+	writeChunks(t, db, store.ChunkWrite{ConversationKey: testConvKey, Model: "m1", Chunks: []store.MemoryChunk{
+		testChunk(testConvKey, 1, 4, chunkAt(0), chunkAt(3), "m1"), long,
+	}})
+	writeChunks(t, db, store.ChunkWrite{ConversationKey: testConvKey, Model: "m0", Chunks: []store.MemoryChunk{
+		testChunk(testConvKey, 10, 11, chunkAt(10), chunkAt(11), "m0"),
+	}})
+	dims, err := db.ChunkDims(ctx, testConvKey, "m1")
+	if err != nil || !slices.Equal(dims, []int{3, 4}) {
+		t.Fatalf("ChunkDims = %v, %v", dims, err)
+	}
+	for range 2 {
+		n, err := db.RequeueChunkDims(ctx, testConvKey, "m1", 4)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := rebuildRanges(t, db, testConvKey); !slices.Equal(got, [][2]int64{{1, 4}}) {
+			t.Fatalf("rebuilds = %v (newly queued %d), want only the m1 chunk of 3 dimensions", got, n)
+		}
+	}
+}
