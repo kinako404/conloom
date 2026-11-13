@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"github.com/kinako404/conloom/internal/review"
 	"github.com/kinako404/conloom/internal/router"
 	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/internal/usage"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -91,6 +93,7 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 		return
 	}
 	task.TriggerMessageIDs = qt.TriggerMessageIDs
+	ctx = usage.WithAttribution(ctx, usage.Attribution{BotInstanceID: task.BotInstanceID, ConversationKey: task.ConversationKey, TaskID: task.ID})
 
 	plan, _ := o.joinPlans.take(task.ID)
 	out := o.execute(ctx, task, plan)
@@ -557,7 +560,8 @@ func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router
 
 // chat waits for admission for a request estimated at estimate prompt tokens
 // and calls the model. Model errors (not admission errors) count against the
-// role's circuit breaker. logAttrs are added to the model call log.
+// role's circuit breaker. Every model call, failed or not, is recorded (see
+// recordCall). logAttrs are added to the model call log.
 func (o *Orchestrator) chat(ctx context.Context, task store.TaskRecord, d router.Decision, req openai.ChatRequest,
 	built contextbuilder.Output, estimate int, logAttrs []any) (openai.ChatResponse, error) {
 	p := d.Profile
@@ -570,6 +574,8 @@ func (o *Orchestrator) chat(ctx context.Context, task store.TaskRecord, d router
 
 	start := time.Now()
 	resp, err := p.Client.Chat(ctx, req)
+	latency := time.Since(start)
+	o.recordCall(task, p, start, latency, estimate, resp, err)
 	if err != nil {
 		if ctx.Err() == nil {
 			o.router.ReportFailure(p.Role)
@@ -580,7 +586,6 @@ func (o *Orchestrator) chat(ctx context.Context, task store.TaskRecord, d router
 	o.router.ReportSuccess(p.Role)
 	o.setBreakerGauge(p.Role)
 
-	latency := time.Since(start)
 	o.metrics.ModelLatency.WithLabelValues(role, resp.Model).Observe(latency.Seconds())
 	o.metrics.ModelTokens.WithLabelValues(role, resp.Model, "prompt").Add(float64(resp.PromptTokens))
 	o.metrics.ModelTokens.WithLabelValues(role, resp.Model, "completion").Add(float64(resp.CompletionTokens))
@@ -599,6 +604,19 @@ func (o *Orchestrator) chat(ctx context.Context, task store.TaskRecord, d router
 	}
 	o.log.Info("model call", attrs...)
 	return resp, nil
+}
+
+// recordCall records a call to p's model for task, made at start, that
+// took latency and was estimated at estimate prompt tokens. A failed call
+// names the configured model.
+func (o *Orchestrator) recordCall(task store.TaskRecord, p *router.Profile, start time.Time, latency time.Duration,
+	estimate int, resp openai.ChatResponse, err error) {
+	o.usage.Record(store.ModelCall{
+		At: start.UTC(), BotInstanceID: task.BotInstanceID, ConversationKey: task.ConversationKey, TaskID: task.ID,
+		Purpose: store.PurposeChat, Role: string(p.Role), Model: cmp.Or(resp.Model, p.Config.Model),
+		PromptTokens: resp.PromptTokens, CompletionTokens: resp.CompletionTokens, ReasoningTokens: resp.ReasoningTokens,
+		EstimatedTokens: estimate, LatencyMS: latency.Milliseconds(), Outcome: usage.Outcome(err), FinishReason: resp.FinishReason,
+	})
 }
 
 // acquire waits for an admission lease at the task's stored priority.

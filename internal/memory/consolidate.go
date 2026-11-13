@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/kinako404/conloom/internal/provider/openai"
 	"github.com/kinako404/conloom/internal/router"
 	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/internal/usage"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -68,7 +70,7 @@ type consLimits struct {
 
 // ConsolidatorDeps are a Consolidator's collaborators. A nil Metrics, Logger
 // or Now uses a private registry, a discarding logger or time.Now; a nil
-// Location is UTC.
+// Location is UTC and a nil Usage records no model calls.
 type ConsolidatorDeps struct {
 	Store     store.Store
 	Router    *router.Router
@@ -80,6 +82,7 @@ type ConsolidatorDeps struct {
 	Logger    *slog.Logger
 	Location  *time.Location
 	Now       func() time.Time
+	Usage     *usage.Recorder
 }
 
 // Consolidator updates a group's summary, member notes and affinity from its
@@ -280,7 +283,7 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 		}
 		return consOutcome{}, c.fail(ctx, *g, consErrAdmission, err, openai.ChatResponse{})
 	}
-	resp, err := c.chat(ctx, p, prompt, d.MaxOutputTokens)
+	resp, err := c.chat(ctx, p, convKey, prompt, d.MaxOutputTokens)
 	lease.Release()
 	if err != nil {
 		if ctx.Err() != nil {
@@ -637,17 +640,24 @@ func (c *Consolidator) acquire(ctx context.Context, p *router.Profile, convKey s
 	})
 }
 
-// chat calls p's model and records model metrics. It never reports to the
-// router: the breaker is shared with replies, and consolidation failures only
-// count toward its own backoff.
-func (c *Consolidator) chat(ctx context.Context, p *router.Profile, msgs []openai.ChatMessage, maxTokens int) (openai.ChatResponse, error) {
+// chat calls p's model for convKey and records the call and model metrics.
+// It never reports to the router: the breaker is shared with replies, and
+// consolidation failures only count toward its own backoff.
+func (c *Consolidator) chat(ctx context.Context, p *router.Profile, convKey string, msgs []openai.ChatMessage, maxTokens int) (openai.ChatResponse, error) {
 	start := time.Now()
 	resp, err := p.Client.Chat(ctx, openai.ChatRequest{Messages: msgs, MaxTokens: maxTokens})
+	latency := time.Since(start)
+	c.d.Usage.Record(store.ModelCall{
+		At: start.UTC(), BotInstanceID: consBotID(convKey), ConversationKey: convKey,
+		Purpose: store.PurposeMemory, Role: string(p.Role), Model: cmp.Or(resp.Model, p.Config.Model),
+		PromptTokens: resp.PromptTokens, CompletionTokens: resp.CompletionTokens, ReasoningTokens: resp.ReasoningTokens,
+		LatencyMS: latency.Milliseconds(), Outcome: usage.Outcome(err), FinishReason: resp.FinishReason,
+	})
 	if err != nil {
 		return openai.ChatResponse{}, err
 	}
 	role := string(p.Role)
-	c.d.Metrics.ModelLatency.WithLabelValues(role, resp.Model).Observe(time.Since(start).Seconds())
+	c.d.Metrics.ModelLatency.WithLabelValues(role, resp.Model).Observe(latency.Seconds())
 	c.d.Metrics.ModelTokens.WithLabelValues(role, resp.Model, "prompt").Add(float64(resp.PromptTokens))
 	c.d.Metrics.ModelTokens.WithLabelValues(role, resp.Model, "completion").Add(float64(resp.CompletionTokens))
 	c.d.Metrics.ModelTokens.WithLabelValues(role, resp.Model, "reasoning").Add(float64(resp.ReasoningTokens))
