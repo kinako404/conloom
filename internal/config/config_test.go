@@ -403,6 +403,37 @@ func TestLoad_DefaultsApplied(t *testing.T) {
 	}
 }
 
+func TestLoad_Skills(t *testing.T) {
+	base, err := os.ReadFile("testdata/valid.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := mustLoad(t, writeConfig(t, string(base)))
+	if cfg.Skills.Dir != "" || cfg.Bots[0].Skills != nil {
+		t.Errorf("skills without configuration = %+v / %v, want none", cfg.Skills, cfg.Bots[0].Skills)
+	}
+
+	withSkills := strings.Replace(string(base), "  - id: bot_main\n", "  - id: bot_main\n    skills: [memory, time]\n", 1) +
+		"skills:\n  dir: ./my-skills\n"
+	path := writeConfig(t, withSkills)
+	cfg = mustLoad(t, path)
+	if want := filepath.Join(filepath.Dir(path), "my-skills"); cfg.Skills.Dir != want {
+		t.Errorf("skills.dir = %q, want %q", cfg.Skills.Dir, want)
+	}
+	if !slices.Equal(cfg.Bots[0].Skills, []string{"memory", "time"}) {
+		t.Errorf("bots[0].skills = %v", cfg.Bots[0].Skills)
+	}
+	if err := cfg.ValidateServe(); err != nil {
+		t.Errorf("ValidateServe: %v", err)
+	}
+
+	abs := filepath.Join(t.TempDir(), "skills")
+	cfg = mustLoad(t, writeConfig(t, string(base)+"skills:\n  dir: "+abs+"\n"))
+	if cfg.Skills.Dir != abs {
+		t.Errorf("absolute skills.dir = %q, want %q", cfg.Skills.Dir, abs)
+	}
+}
+
 func TestLoad_ExplicitValuesOverrideDefaults(t *testing.T) {
 	path := writeConfig(t, `server:
   metrics_enabled: false
@@ -802,6 +833,9 @@ func TestValidateServe_Rules(t *testing.T) {
 		{"duplicate token name", func(c *Config) {
 			c.APITokens = append(c.APITokens, APIToken{Name: c.APITokens[0].Name, Token: "fake-other-token", BotInstanceID: "bot_main"})
 		}, []string{"api_tokens[1].name", "duplicate"}},
+		{"empty skill name", func(c *Config) { c.Bots[0].Skills = []string{"time", " "} }, []string{"bots[0].skills[1]"}},
+		{"duplicate skill", func(c *Config) { c.Bots[0].Skills = []string{"time", "memory", "time"} },
+			[]string{"bots[0].skills[2]", `duplicate skill "time"`}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

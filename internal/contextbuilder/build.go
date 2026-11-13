@@ -52,6 +52,9 @@ type Input struct {
 	// line and then the recent history and current message. It never changes
 	// the system prompt and counts toward BaseTokens.
 	Memory string
+	// ToolSchema is the JSON of the tool definitions sent with the request.
+	// It is never rendered but counts toward BaseTokens and EstimatedTokens.
+	ToolSchema string
 }
 
 type Output struct {
@@ -78,7 +81,7 @@ func BaseTokens(in Input) int {
 	if in.SystemPrompt != "" {
 		n += Estimate(in.SystemPrompt, in.TokenFactor) + MessageOverhead
 	}
-	return n
+	return n + Estimate(in.ToolSchema, in.TokenFactor)
 }
 
 // Build fills History from newest to oldest into the budget left after
@@ -157,6 +160,7 @@ func Build(in Input) Output {
 	}
 	out.Messages = append(out.Messages, openai.ChatMessage{Role: "user", Content: current})
 
+	out.EstimatedTokens = Estimate(in.ToolSchema, in.TokenFactor)
 	for _, m := range out.Messages {
 		out.EstimatedTokens += Estimate(m.Content, in.TokenFactor) + MessageOverhead
 	}

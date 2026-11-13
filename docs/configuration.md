@@ -41,6 +41,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `default_group_policy` | 新会话的初始群策略 |
 | `default_private_policy` | 私聊会话的初始策略，省略时沿用 `default_group_policy` |
 | `runtime` | 投递、过时判定、合并窗口等运行时参数 |
+| `skills` | 额外技能文件所在的目录 |
 | `adapters` | NapCat、Telegram 和 Mock 适配器 |
 | `observability` | 日志 |
 
@@ -82,6 +83,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `enabled_conversations` | 空 | 只在这些会话里工作，每项 `{type: group\|private, platform_id: "<ID>"}`；未列出的群消息会被忽略。`private` 项的 `platform_id` 填用户的平台 ID，只在 `private_chat: allowlist` 时生效，用来放行这些人的私聊；其他档位下会被忽略，启动时打一条警告日志 |
 | `private_chat` | `admins` | 私聊策略：`admins`（仅管理员）、`allowlist`（管理员和 `enabled_conversations` 里列为 `private` 的人）、`all`（所有人）、`off`（关闭）。不被允许的私聊不回复 |
 | `persona_template` | `default` | 会话初始人格使用的模板名，必须存在于 `persona_templates` |
+| `skills` | 空 | 启用的技能名列表，如 `[memory, time]`，不能有空项或重复；必须是内置技能或 `skills.dir` 里的技能，它们用到的工具都必须存在，否则启动失败（退出码 78）。省略或为空时不带任何工具，行为和没有技能时一样。见 [技能](skills.md) |
 
 ## model_profiles
 
@@ -220,6 +222,14 @@ default_private_policy:
 | `session_idle` | 5m | 调度会话（每个会话的任务队列）空闲多久后回收，最小 1m |
 
 这些字段不做范围校验，≤ 0 时回落到默认值。不要把 `action_ttl` 配到 24 小时以上：适配器的去重记录只保留 24 小时，超过后可能重发。
+
+## skills
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `skills.dir` | 空 | 额外技能的目录，相对路径按配置文件所在目录解析。目录里每个 `<名字>/SKILL.md` 与内置技能同名时替换它，否则作为新技能加入。留空只用内置技能（`memory`、`time`） |
+
+目录不存在、子目录里没有 `SKILL.md`、技能文件格式不对时，`serve` 启动失败，退出码 78。技能文件格式和启用方式见 [技能](skills.md)。
 
 ## adapters
 

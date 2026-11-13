@@ -128,6 +128,14 @@ func (c *Config) ValidateServe() error {
 		if _, ok := c.PersonaTemplates[b.PersonaTemplate]; !ok {
 			p.addf(path+".persona_template", "unknown persona template %q", b.PersonaTemplate)
 		}
+		for j, s := range b.Skills {
+			spath := fmt.Sprintf("%s.skills[%d]", path, j)
+			if strings.TrimSpace(s) == "" {
+				p.addf(spath, "must not be empty")
+			} else if slices.Contains(b.Skills[:j], s) {
+				p.addf(spath, "duplicate skill %q", s)
+			}
+		}
 	}
 
 	if _, ok := c.ModelProfiles["short_context"]; !ok {

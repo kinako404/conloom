@@ -24,6 +24,7 @@ import (
 	"github.com/kinako404/conloom/internal/policy"
 	"github.com/kinako404/conloom/internal/review"
 	"github.com/kinako404/conloom/internal/router"
+	"github.com/kinako404/conloom/internal/skills"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -48,8 +49,8 @@ type Notifier interface{ Notify(botID string) }
 // Personas, Policies, Reviewer and Config are required. A nil Notifier does
 // nothing, nil Metrics are registered on a private registry, a nil Logger
 // discards, a nil Location is Config.Server.Timezone (falling back to
-// Asia/Shanghai, then UTC), a nil Now is time.Now and a nil MemoryTrigger
-// does nothing.
+// Asia/Shanghai, then UTC), a nil Now is time.Now, a nil MemoryTrigger
+// does nothing and nil Skills offer the model no tools.
 type Deps struct {
 	Store     store.Store
 	Router    *router.Router
@@ -65,6 +66,7 @@ type Deps struct {
 	Now       func() time.Time
 
 	MemoryTrigger MemoryTrigger
+	Skills        *skills.Registry
 }
 
 // Orchestrator accepts events, runs commands and reply tasks, and recovers
@@ -84,6 +86,7 @@ type Orchestrator struct {
 	now      func() time.Time
 
 	memTrigger MemoryTrigger
+	skills     *skills.Registry
 
 	sched       *Scheduler
 	limiter     *RateLimiter
@@ -144,7 +147,7 @@ func New(d Deps) (*Orchestrator, error) {
 	o := &Orchestrator{
 		st: d.Store, router: d.Router, adm: d.Admission, personas: d.Personas, policies: d.Policies,
 		reviewer: d.Reviewer, notifier: d.Notifier, metrics: d.Metrics, log: d.Logger, cfg: d.Config,
-		loc: d.Location, now: d.Now, memTrigger: d.MemoryTrigger,
+		loc: d.Location, now: d.Now, memTrigger: d.MemoryTrigger, skills: d.Skills,
 		limiter: NewRateLimiter(),
 		owners:  map[string]*taskOwner{},
 	}

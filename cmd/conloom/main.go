@@ -19,6 +19,7 @@ import (
 	"github.com/kinako404/conloom/internal/app"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/obs"
+	"github.com/kinako404/conloom/internal/skills"
 	"github.com/kinako404/conloom/internal/store/sqlite"
 	"github.com/kinako404/conloom/pkg/client"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -178,7 +179,11 @@ func runServe(ctx context.Context, args []string, sio stdio) error {
 	}
 	logger := obs.NewLogger(cfg.Observability, sio.err)
 	logger.Info("starting conloom", "version", version, "commit", commit, "config", cfg.Path)
-	return app.Serve(ctx, cfg, logger)
+	err = app.Serve(ctx, cfg, logger)
+	if errors.Is(err, skills.ErrInvalid) {
+		return configErr(err)
+	}
+	return err
 }
 
 func runAdapter(ctx context.Context, args []string, sio stdio) error {

@@ -28,6 +28,29 @@ type Server struct {
 // server is closed: register the release with t.Cleanup after calling New.
 func New(t testing.TB, h func(req map[string]any) (status int, content string)) *Server {
 	t.Helper()
+	return NewWithTools(t, func(req map[string]any) Reply {
+		status, content := h(req)
+		return Reply{Status: status, Content: content}
+	})
+}
+
+// Reply is a fake answer: for Status 200 (or 0) the assistant Content and
+// ToolCalls (content is sent as null when it is empty and there are tool
+// calls), otherwise an error whose message is Content.
+type Reply struct {
+	Status    int
+	Content   string
+	ToolCalls []ToolCall
+}
+
+// ToolCall is a function call in a fake answer; Arguments is JSON text.
+type ToolCall struct {
+	ID, Name, Arguments string
+}
+
+// NewWithTools is New for handlers that may answer with tool calls.
+func NewWithTools(t testing.TB, h func(req map[string]any) Reply) *Server {
+	t.Helper()
 	s := &Server{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +64,11 @@ func New(t testing.TB, h func(req map[string]any) (status int, content string)) 
 		s.requests = append(s.requests, req)
 		s.mu.Unlock()
 
-		status, content := h(req)
+		reply := h(req)
+		status, content := reply.Status, reply.Content
+		if status == 0 {
+			status = http.StatusOK
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		if status != http.StatusOK {
@@ -49,6 +76,19 @@ func New(t testing.TB, h func(req map[string]any) (status int, content string)) 
 				"error": map[string]any{"message": content, "type": "fake_error"},
 			})
 			return
+		}
+		message := map[string]any{"role": "assistant", "content": content}
+		finish := "stop"
+		if len(reply.ToolCalls) > 0 {
+			calls := make([]any, len(reply.ToolCalls))
+			for i, c := range reply.ToolCalls {
+				calls[i] = map[string]any{"id": c.ID, "type": "function",
+					"function": map[string]any{"name": c.Name, "arguments": c.Arguments}}
+			}
+			message["tool_calls"], finish = calls, "tool_calls"
+			if content == "" {
+				message["content"] = nil
+			}
 		}
 		promptTokens := 0
 		if msgs, ok := req["messages"].([]any); ok {
@@ -66,8 +106,8 @@ func New(t testing.TB, h func(req map[string]any) (status int, content string)) 
 			"model":  req["model"],
 			"choices": []any{map[string]any{
 				"index":         0,
-				"message":       map[string]any{"role": "assistant", "content": content},
-				"finish_reason": "stop",
+				"message":       message,
+				"finish_reason": finish,
 			}},
 			"usage": map[string]any{
 				"prompt_tokens":             promptTokens,

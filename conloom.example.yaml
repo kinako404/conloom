@@ -57,6 +57,8 @@ bots:
     # private 项只在 allowlist 下生效。
     private_chat: admins
     persona_template: default
+    # 启用的技能（模型在私聊和直接对话里可调用的内置工具，见 docs/skills.md）；省略时不带任何工具。
+    # skills: [memory, time]
   # Telegram 机器人：platform_self_id 是 Bot 的数字 ID（token 冒号前的部分），admins 填 Telegram 用户 ID；
   # group 项是开启的群（Telegram 的群 ID 是负数，要加引号），private 项是允许私聊的人（用户 ID），
   # 只在 private_chat: allowlist 时生效；allowlist 表示管理员和列出的人可以私聊，想对所有人开放改成 all。
@@ -120,6 +122,11 @@ model_profiles:
       data_location: remote
       allow_sensitive_content: true
     token_estimate_factor: 1.0
+
+# 技能：内置技能 memory、time 打包在程序里。dir 可选，相对路径按本文件所在目录解析；
+# 目录里每个 <名字>/SKILL.md 与内置技能同名时替换它，否则作为新技能加入（格式见 docs/skills.md）。
+# skills:
+#   dir: ./skills
 
 # 人格模板：Bot 通过 persona_template 引用；省略 default 时使用内置默认人格。
 persona_templates:

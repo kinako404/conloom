@@ -221,6 +221,40 @@ adapters:
 	}
 }
 
+func TestServe_SkillWithMissingToolExitsWithConfigCode(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "conloom.yaml")
+	cfg := `server:
+  listen: 127.0.0.1:0
+api_tokens:
+  - {name: adapter, token: fake-adapter-token, bot_instance_id: bot_main, scopes: [events:write]}
+bots:
+  - id: bot_main
+    platform: qq
+    platform_self_id: "30001"
+    skills: [time]
+model_profiles:
+  short_context:
+    endpoint: http://127.0.0.1:9/v1
+    model: fake-model
+    context: {native_window: 32768, configured_window: 32768, soft_input_budget: 16000}
+storage:
+  data_dir: ./data
+`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	code, _, stderr := runCommand(ctx, "serve", "-c", cfgPath)
+	if code != exitConfig || ctx.Err() != nil {
+		t.Fatalf("exit %d, want %d before the deadline; stderr %s", code, exitConfig, stderr)
+	}
+	if !strings.Contains(stderr, `skill "time" uses unknown tool "now"`) {
+		t.Errorf("stderr = %q, want the missing tool named", stderr)
+	}
+}
+
 // TestSystemdUnits_DoNotRestartOnConfigErrors checks that every unit keeps
 // systemd from restarting a process that exited with exitConfig, which a
 // restart cannot fix, and only that status: a panic (status 2) must still be
