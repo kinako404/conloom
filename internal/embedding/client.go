@@ -83,6 +83,9 @@ type embeddingsResponse struct {
 		Index     int       `json:"index"`
 		Embedding []float64 `json:"embedding"`
 	} `json:"data"`
+	Usage struct {
+		PromptTokens int `json:"prompt_tokens"`
+	} `json:"usage"`
 }
 
 // Embed sends texts in one request bounded by the configured timeout and
@@ -90,12 +93,19 @@ type embeddingsResponse struct {
 // length and only finite float32 values; a response breaking that is an
 // error. It makes no request for no texts.
 func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	vecs, _, err := c.EmbedUsage(ctx, texts)
+	return vecs, err
+}
+
+// EmbedUsage is Embed that also returns the prompt tokens the service
+// reported (usage.prompt_tokens), 0 when it reported none or on an error.
+func (c *Client) EmbedUsage(ctx context.Context, texts []string) ([][]float32, int, error) {
 	if len(texts) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
 	body, err := json.Marshal(map[string]any{"model": c.cfg.Model, "input": texts})
 	if err != nil {
-		return nil, fmt.Errorf("embedding: encode request: %w", err)
+		return nil, 0, fmt.Errorf("embedding: encode request: %w", err)
 	}
 	if d := c.cfg.Timeout.Duration; d > 0 {
 		var cancel context.CancelFunc
@@ -104,7 +114,7 @@ func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("embedding: build request: %w", err)
+		return nil, 0, fmt.Errorf("embedding: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.cfg.APIKey != "" {
@@ -112,44 +122,44 @@ func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error)
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return nil, c.wrap(ctx, "request", err)
+		return nil, 0, c.wrap(ctx, "request", err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return nil, c.wrap(ctx, "read response", err)
+		return nil, 0, c.wrap(ctx, "read response", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		if len(raw) > maxErrorBody {
 			raw = raw[:maxErrorBody]
 		}
-		return nil, &StatusError{Code: resp.StatusCode, Body: c.mask(string(raw))}
+		return nil, 0, &StatusError{Code: resp.StatusCode, Body: c.mask(string(raw))}
 	}
 	var er embeddingsResponse
 	if err := json.Unmarshal(raw, &er); err != nil {
-		return nil, fmt.Errorf("embedding: decode response: %w", err)
+		return nil, 0, fmt.Errorf("embedding: decode response: %w", err)
 	}
 	if len(er.Data) != len(texts) {
-		return nil, fmt.Errorf("embedding: got %d vectors for %d texts", len(er.Data), len(texts))
+		return nil, 0, fmt.Errorf("embedding: got %d vectors for %d texts", len(er.Data), len(texts))
 	}
 	out := make([][]float32, len(texts))
 	for _, d := range er.Data {
 		if d.Index < 0 || d.Index >= len(texts) || out[d.Index] != nil {
-			return nil, fmt.Errorf("embedding: bad or repeated index %d", d.Index)
+			return nil, 0, fmt.Errorf("embedding: bad or repeated index %d", d.Index)
 		}
 		if len(d.Embedding) == 0 || len(d.Embedding) != len(er.Data[0].Embedding) {
-			return nil, fmt.Errorf("embedding: vector %d has %d dimensions, want %d", d.Index, len(d.Embedding), len(er.Data[0].Embedding))
+			return nil, 0, fmt.Errorf("embedding: vector %d has %d dimensions, want %d", d.Index, len(d.Embedding), len(er.Data[0].Embedding))
 		}
 		vec := make([]float32, len(d.Embedding))
 		for i, f := range d.Embedding {
 			if math.IsNaN(f) || math.Abs(f) > math.MaxFloat32 {
-				return nil, fmt.Errorf("embedding: vector %d holds an invalid value", d.Index)
+				return nil, 0, fmt.Errorf("embedding: vector %d holds an invalid value", d.Index)
 			}
 			vec[i] = float32(f)
 		}
 		out[d.Index] = vec
 	}
-	return out, nil
+	return out, er.Usage.PromptTokens, nil
 }
 
 // wrap reports a transport error, marking it as a deadline when ctx ran out.

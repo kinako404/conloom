@@ -13,6 +13,7 @@ import (
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/skills/tools"
 	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/internal/usage"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -33,7 +34,9 @@ const (
 	dimsProbe = "维度"
 )
 
-// Embedder turns texts into vectors; *embedding.Client is one.
+// Embedder turns texts into vectors; *embedding.Client is one, and
+// *usage.Embedder one that records its calls. The Indexer's calls carry the
+// conversation they embed as their usage.Attribution.
 type Embedder interface {
 	Model() string
 	BatchSize() int
@@ -208,7 +211,8 @@ func (ix *Indexer) RunOnce(ctx context.Context) error {
 				continue
 			}
 			if budget > 0 {
-				used, err := ix.conversation(ctx, c.Key, c.Type, model, pv.Policy, budget)
+				cctx := usage.WithAttribution(ctx, usage.Attribution{BotInstanceID: c.BotInstanceID, ConversationKey: c.Key})
+				used, err := ix.conversation(cctx, c.Key, c.Type, model, pv.Policy, budget)
 				if err != nil {
 					return err
 				}
