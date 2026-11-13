@@ -11,11 +11,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/kinako404/conloom/internal/panel"
 	"github.com/kinako404/conloom/internal/store/sqlite"
 )
 
@@ -288,5 +290,38 @@ func TestSystemdUnits_DoNotRestartOnConfigErrors(t *testing.T) {
 		if len(prevent) != 1 || prevent[0] != want {
 			t.Errorf("%s: RestartPreventExitStatus lines = %q, want exactly %q", filepath.Base(u), prevent, want)
 		}
+	}
+}
+
+func TestMain_PanelHashPassword(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"panel", "hash-password"}, stdio{in: strings.NewReader("secret\n"), out: &stdout, err: &stderr})
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %s", code, stderr.String())
+	}
+	out := stdout.String()
+	if !regexp.MustCompile(`^pbkdf2-sha256:600000:[A-Za-z0-9_-]{22}:[A-Za-z0-9_-]{43}\n$`).MatchString(out) {
+		t.Fatalf("stdout %q is not one hash line", out)
+	}
+	if ok, err := panel.VerifyPassword(strings.TrimSpace(out), "secret"); err != nil || !ok {
+		t.Errorf("VerifyPassword(output, secret) = %v, %v", ok, err)
+	}
+
+	for _, in := range []string{"", "\n", "\r\n"} {
+		stdout.Reset()
+		stderr.Reset()
+		code := run(context.Background(), []string{"panel", "hash-password"}, stdio{in: strings.NewReader(in), out: &stdout, err: &stderr})
+		if code == 0 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "empty password") {
+			t.Errorf("stdin %q: exit %d, stdout %q, stderr %q; want an empty password error", in, code, stdout.String(), stderr.String())
+		}
+	}
+
+	code, _, stderr2 := runCommand(context.Background(), "panel", "nosuch")
+	if code != exitUsage || !strings.Contains(stderr2, "conloom panel hash-password") {
+		t.Errorf("unknown panel command: exit %d, stderr %q", code, stderr2)
+	}
+	code, stdout2, _ := runCommand(context.Background(), "help")
+	if code != 0 || !strings.Contains(stdout2, "conloom panel hash-password") {
+		t.Errorf("help does not list panel hash-password: %q", stdout2)
 	}
 }

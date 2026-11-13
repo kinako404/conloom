@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -19,6 +20,7 @@ import (
 	"github.com/kinako404/conloom/internal/app"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/obs"
+	"github.com/kinako404/conloom/internal/panel"
 	"github.com/kinako404/conloom/internal/skills"
 	"github.com/kinako404/conloom/internal/store/sqlite"
 	"github.com/kinako404/conloom/pkg/client"
@@ -49,6 +51,7 @@ const usage = `usage:
   conloom adapter telegram -c conloom.yaml
   conloom mock -c conloom.yaml [-conv group:10001] [-user 20001:name]
   conloom backup -c conloom.yaml -o <file>
+  conloom panel hash-password < password.txt
   conloom version
 `
 
@@ -79,6 +82,7 @@ var commands = map[string]command{
 	"adapter": runAdapter,
 	"mock":    runMock,
 	"backup":  runBackup,
+	"panel":   runPanel,
 	"version": runVersion,
 }
 
@@ -348,6 +352,37 @@ func runBackup(ctx context.Context, args []string, sio stdio) error {
 		return err
 	}
 	fmt.Fprintf(sio.out, "backup of %s written to %s\n", cfg.DBPath(), *out)
+	return nil
+}
+
+const panelUsage = "usage: conloom panel hash-password < password.txt"
+
+func runPanel(_ context.Context, args []string, sio stdio) error {
+	if len(args) == 0 || args[0] != "hash-password" {
+		return usageErr(errors.New(panelUsage))
+	}
+	if err := parseFlags(flag.NewFlagSet("panel hash-password", flag.ContinueOnError), args[1:], sio); err != nil {
+		return err
+	}
+	return runHashPassword(sio)
+}
+
+// runHashPassword reads a password from the first line of standard input and
+// prints its hash for panel.users[].password_hash.
+func runHashPassword(sio stdio) error {
+	line, err := bufio.NewReader(sio.in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("read password: %w", err)
+	}
+	password := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+	if password == "" {
+		return errors.New("empty password on standard input")
+	}
+	hash, err := panel.HashPassword(password, panel.DefaultIterations)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(sio.out, hash)
 	return nil
 }
 
