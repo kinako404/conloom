@@ -1,11 +1,13 @@
 package config
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"maps"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -246,8 +248,70 @@ func (c *Config) ValidateServe() error {
 			p.addf("embedding.batch_size", "must be between 1 and %d, got %d", maxEmbeddingBatch, e.BatchSize)
 		}
 	}
+	if c.Panel != nil {
+		p.panel(c.Panel)
+	}
 
 	return p.err(c, "serve")
+}
+
+// Panel password hashes have the form pbkdf2-sha256:<iterations>:<salt>:<hash>
+// with a 16-byte salt and a 32-byte key in unpadded base64url. internal/panel
+// owns the format but imports this package, so the format is checked here too.
+const (
+	panelHashScheme        = "pbkdf2-sha256"
+	minPanelHashIterations = 100000
+	panelHashSaltLen       = 16
+	panelHashKeyLen        = 32
+)
+
+// panel checks the panel section. Problems never quote a password hash.
+func (p *problems) panel(pc *PanelConfig) {
+	if len(pc.Users) == 0 {
+		p.addf("panel.users", "at least one user is required")
+	}
+	names := map[string]bool{}
+	for i, u := range pc.Users {
+		path := fmt.Sprintf("panel.users[%d]", i)
+		p.required(path+".name", u.Name)
+		if u.Name != "" && names[u.Name] {
+			p.addf(path+".name", "duplicate user %q", u.Name)
+		}
+		names[u.Name] = true
+		if strings.TrimSpace(u.PasswordHash) == "" {
+			p.required(path+".password_hash", u.PasswordHash)
+		} else if err := checkPanelHash(u.PasswordHash); err != nil {
+			p.addf(path+".password_hash", "%v (generate one with `conloom panel hash-password`)", err)
+		}
+	}
+	if d := pc.SessionTTL.Duration; d <= 0 {
+		p.addf("panel.session_ttl", "must be > 0, got %s", d)
+	}
+	if d := pc.IdleTimeout.Duration; d <= 0 {
+		p.addf("panel.idle_timeout", "must be > 0, got %s", d)
+	}
+}
+
+func checkPanelHash(encoded string) error {
+	parts := strings.Split(encoded, ":")
+	if len(parts) != 4 || parts[0] != panelHashScheme {
+		return errors.New("must have the form " + panelHashScheme + ":<iterations>:<salt>:<hash>")
+	}
+	n, err := strconv.Atoi(parts[1])
+	if err != nil || parts[1] != strconv.Itoa(n) {
+		return errors.New("iterations must be a decimal number")
+	}
+	if n < minPanelHashIterations {
+		return fmt.Errorf("iterations must be >= %d, got %d", minPanelHashIterations, n)
+	}
+	b64 := base64.RawURLEncoding.Strict()
+	if salt, err := b64.DecodeString(parts[2]); err != nil || len(salt) != panelHashSaltLen {
+		return fmt.Errorf("salt must be %d bytes of unpadded base64url", panelHashSaltLen)
+	}
+	if key, err := b64.DecodeString(parts[3]); err != nil || len(key) != panelHashKeyLen {
+		return fmt.Errorf("hash must be %d bytes of unpadded base64url", panelHashKeyLen)
+	}
+	return nil
 }
 
 // ValidateNapCat checks the fields the NapCat adapter needs.

@@ -478,7 +478,8 @@ func (c *Config) DBPath() string {
 }
 
 // Secrets returns every non-empty credential in the config (model and embedding
-// API keys, API tokens, adapter access, bot and core tokens), without duplicates.
+// API keys, API tokens, adapter access, bot and core tokens, panel password
+// hashes), without duplicates.
 func (c *Config) Secrets() []string {
 	var out []string
 	seen := map[string]bool{}
@@ -501,6 +502,11 @@ func (c *Config) Secrets() []string {
 	add(c.Adapters.Mock.CoreToken)
 	if c.Embedding != nil {
 		add(c.Embedding.APIKey)
+	}
+	if c.Panel != nil {
+		for _, u := range c.Panel.Users {
+			add(u.PasswordHash)
+		}
 	}
 	return out
 }
