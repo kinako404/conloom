@@ -113,7 +113,7 @@
 - 返回修改后的这位群友（格式同 `members` 里的一项）。每个有变化的字段写一条修改记录（来源 `api`，原因取 `reason`），并写审计 `memory.update`，审计里只记用户 ID 和改了哪些字段。和整理同时修改同一个人时会自动重试；仍然冲突时返回 503（`retryable: true`），可以稍后重试。
 - 记忆关闭时也可以修改，方便管理员更正冻结的数据。
 
-`DELETE …/memory/members/{user_id}` 等同于这位群友发 `/忘记我`：清空笔记和好感度，删除他的修改记录，记下忘记的时间，写审计 `memory.forget`，返回 `{"ok":true}`。记忆关闭时同样可用；群聊摘要不会逐人删除，私聊会话的对话摘要会一起清空（整理进度保留）。
+`DELETE …/memory/members/{user_id}` 等同于这位群友发 `/忘记我`：清空笔记和好感度，删除他的修改记录，记下忘记的时间，写审计 `memory.forget`，返回 `{"ok":true}`。记忆关闭时同样可用；群聊摘要不会逐人删除，私聊会话的对话摘要会一起清空，摘要的全部修改记录也一并删除（整理进度保留）。
 
 `POST …/memory/consolidate` 请求立即整理一次，返回 202 `{"accepted":true}`，整理在后台执行，结果可以用 `GET …/memory` 查看。会话没有开启记忆时返回 409 `MEMORY_DISABLED`；会话暂停中（`concurrency.max_interactive_requests: 0`）时返回 409 `PAUSED`。两种情况都不会整理。
 
