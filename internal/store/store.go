@@ -67,6 +67,11 @@ type Store interface {
 	PurgeOutbox(ctx context.Context, before time.Time, limit int) (int, error)
 	// PurgeAudit deletes up to limit audit events created before before.
 	PurgeAudit(ctx context.Context, before time.Time, limit int) (int, error)
+	// PurgeModelCalls deletes up to limit model calls made before before.
+	PurgeModelCalls(ctx context.Context, before time.Time, limit int) (int, error)
+	// PurgePanelSessions deletes panel sessions with ExpiresAt <= expiredBefore
+	// or LastSeenAt <= idleBefore.
+	PurgePanelSessions(ctx context.Context, expiredBefore, idleBefore time.Time) (int, error)
 	LatestPersona(ctx context.Context, convKey string) (PersonaVersion, error)
 	GetPersonaVersion(ctx context.Context, convKey string, version int) (PersonaVersion, error)
 	// AppendPersonaVersion assigns the next version number.
