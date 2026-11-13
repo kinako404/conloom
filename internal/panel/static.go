@@ -9,8 +9,10 @@ import (
 )
 
 // static serves a file from Assets: index.html for /panel/, 404 for
-// directories and paths that are not valid fs paths.
+// directories and paths that are not valid fs paths. The URLs are not
+// versioned, so browsers must revalidate every response after an upgrade.
 func (s *Server) static(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-cache")
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

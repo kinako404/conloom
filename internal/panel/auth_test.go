@@ -59,9 +59,10 @@ func otherTestHash(t *testing.T) string {
 func dur(d time.Duration) conloomapi.Duration { return conloomapi.Duration{Duration: d} }
 
 type fakeSessions struct {
-	mu      sync.Mutex
-	m       map[string]store.PanelSession
-	touches int
+	mu       sync.Mutex
+	m        map[string]store.PanelSession
+	touches  int
+	touchErr error
 }
 
 func (f *fakeSessions) CreatePanelSession(_ context.Context, s store.PanelSession) error {
@@ -84,6 +85,9 @@ func (f *fakeSessions) GetPanelSession(_ context.Context, tokenHash string) (sto
 func (f *fakeSessions) TouchPanelSession(_ context.Context, tokenHash string, at time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.touchErr != nil {
+		return f.touchErr
+	}
 	s, ok := f.m[tokenHash]
 	if !ok {
 		return store.ErrNotFound
@@ -404,6 +408,45 @@ func TestLogin_RateLimited(t *testing.T) {
 	}
 }
 
+func TestLogin_ConcurrentAttemptsAreLimited(t *testing.T) {
+	t.Parallel() // over 30 PBKDF2 runs; slow under -race
+	h := newHarness(t, nil)
+	burst := func(n int, addr func(i int) string) map[int]int {
+		codes := make([]int, n)
+		var wg sync.WaitGroup
+		for i := range n {
+			wg.Go(func() { codes[i] = h.login(testUser, "wrong", withRemoteAddr(addr(i))).Code })
+		}
+		wg.Wait()
+		count := map[int]int{}
+		for _, c := range codes {
+			count[c]++
+		}
+		return count
+	}
+
+	got := burst(12, func(int) string { return "192.0.2.1:5000" })
+	if got[http.StatusUnauthorized] != 5 || got[http.StatusTooManyRequests] != 7 {
+		t.Errorf("12 concurrent attempts from one IP: %v, want 5×401 and 7×429", got)
+	}
+
+	h.advance(15 * time.Minute)
+	got = burst(40, func(i int) string { return fmt.Sprintf("198.51.100.%d:5000", i+1) })
+	if got[http.StatusUnauthorized] != 30 || got[http.StatusTooManyRequests] != 10 {
+		t.Errorf("40 concurrent attempts from 40 IPs: %v, want 30×401 and 10×429", got)
+	}
+}
+
+func TestLogin_RejectedBodiesAreNotFailures(t *testing.T) {
+	h := newHarness(t, nil)
+	for range 8 {
+		errorBody(t, h.do(http.MethodPost, "/panel/api/login", `not json`), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	}
+	if w := h.login(testUser, testPassword); w.Code != http.StatusOK {
+		t.Errorf("login after bad bodies: %d, want 200", w.Code)
+	}
+}
+
 func TestAPI_RequiresSession(t *testing.T) {
 	get := func(h *harness, opts ...reqOpt) int {
 		return h.do(http.MethodGet, "/panel/api/session", "", opts...).Code
@@ -458,6 +501,22 @@ func TestAPI_RequiresSession(t *testing.T) {
 		h.cfg.Panel.Users[0].PasswordHash = otherTestHash(t)
 		if code := get(h, withCookie(c)); code != http.StatusUnauthorized {
 			t.Errorf("after password change: %d, want 401", code)
+		}
+	})
+	t.Run("session gone before touch", func(t *testing.T) {
+		h := newHarness(t, nil)
+		c, _ := h.loginOK()
+		h.advance(2 * time.Minute)
+		h.sessions.touchErr = fmt.Errorf("touch: %w", store.ErrNotFound)
+		errorBody(t, h.do(http.MethodGet, "/panel/api/session", "", withCookie(c)), http.StatusUnauthorized, conloomapi.CodeUnauthorized)
+	})
+	t.Run("touch failure is not fatal", func(t *testing.T) {
+		h := newHarness(t, nil)
+		c, _ := h.loginOK()
+		h.advance(2 * time.Minute)
+		h.sessions.touchErr = errors.New("database is locked")
+		if code := get(h, withCookie(c)); code != http.StatusOK {
+			t.Errorf("after a failed touch: %d, want 200", code)
 		}
 	})
 	t.Run("user removed", func(t *testing.T) {

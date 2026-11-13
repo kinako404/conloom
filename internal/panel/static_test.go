@@ -71,6 +71,11 @@ func TestStatic_ServesIndexAndRedirects(t *testing.T) {
 	if w = get("/panel/index.html"); w.Code != http.StatusOK {
 		t.Errorf("/panel/index.html: %d", w.Code)
 	}
+	for _, p := range []string{"/panel/", "/panel/index.html", "/panel/app.js", "/panel/style.css", "/panel/views/a.js"} {
+		if got := get(p).Header().Get("Cache-Control"); got != "no-cache" {
+			t.Errorf("%s: Cache-Control = %q, want no-cache", p, got)
+		}
+	}
 
 	for _, p := range []string{"/panel/missing.js", "/panel/views/", "/panel/views", "/panel/views/missing.js"} {
 		if w := get(p); w.Code != http.StatusNotFound {

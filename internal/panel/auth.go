@@ -37,8 +37,8 @@ type loginRequest struct {
 }
 
 // login checks a name and password and starts a session. A wrong password and
-// an unknown name get the same response after the same work; failures are
-// rate-limited per source IP and in total.
+// an unknown name get the same response after the same work; failures, and
+// attempts still being checked, are rate-limited per source IP and in total.
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		s.writeError(w, r, http.StatusForbidden, conloomapi.CodeForbidden, "cross-origin request")
@@ -46,11 +46,13 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := remoteIP(r)
 	now := s.now()
-	if d := s.limiter.wait(ip, now); d > 0 {
+	if d := s.limiter.begin(ip, now); d > 0 {
 		w.Header().Set("Retry-After", strconv.FormatInt(int64((d+time.Second-1)/time.Second), 10))
 		s.writeError(w, r, http.StatusTooManyRequests, conloomapi.CodeRateLimited, "too many failed logins; try again later")
 		return
 	}
+	failed := false
+	defer func() { s.limiter.end(ip, s.now(), failed) }()
 	var req loginRequest
 	if !s.decode(w, r, &req) {
 		return
@@ -66,7 +68,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok || !known {
-		s.limiter.fail(ip, now)
+		failed = true
 		if s.d.Metrics != nil {
 			s.d.Metrics.PanelLoginFailures.Inc()
 		}
@@ -119,7 +121,8 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request, sess *Session) {
 
 // authenticate returns the request's session, writing a 401 response itself
 // when there is none: no cookie, an unknown token, a session past its TTL or
-// idle timeout, or a user whose password hash changed or who was removed.
+// idle timeout or deleted meanwhile, or a user whose password hash changed or
+// who was removed.
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*Session, bool) {
 	c, err := r.Cookie(cookieName)
 	if err != nil || c.Value == "" {
@@ -144,7 +147,12 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*Session,
 		return nil, false
 	}
 	if now.Sub(ps.LastSeenAt) > touchInterval {
-		if err := s.d.Sessions.TouchPanelSession(r.Context(), tokenHash, now.UTC()); err != nil {
+		err := s.d.Sessions.TouchPanelSession(r.Context(), tokenHash, now.UTC())
+		if errors.Is(err, store.ErrNotFound) {
+			s.unauthorized(w, r)
+			return nil, false
+		}
+		if err != nil {
 			s.log.Warn("panel session not touched", "trace_id", traceID(r.Context()), "error", err)
 		}
 	}

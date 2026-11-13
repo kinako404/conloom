@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"slices"
 	"sync"
 	"time"
 )
@@ -12,43 +13,86 @@ const (
 	loginFailsGlobal = 30
 )
 
-// loginLimiter counts failed logins in a sliding window. Rejected attempts are
-// not failures, so the failures it holds stay near loginFailsGlobal.
+// loginLimiter counts failed logins in a sliding window. An attempt reserves a
+// slot before the password is checked, so attempts still in flight count
+// against the limits too and a burst of concurrent attempts cannot exceed
+// them. Rejected attempts reserve nothing, so the limiter holds at most
+// loginFailsGlobal recent failures and attempts.
 type loginLimiter struct {
-	mu     sync.Mutex
-	perIP  map[string][]time.Time
-	global []time.Time
+	mu             sync.Mutex
+	perIP          map[string]*ipAttempts
+	global         []time.Time
+	globalInFlight int
+}
+
+type ipAttempts struct {
+	fails    []time.Time
+	inFlight int
 }
 
 func newLoginLimiter() *loginLimiter {
-	return &loginLimiter{perIP: map[string][]time.Time{}}
+	return &loginLimiter{perIP: map[string]*ipAttempts{}}
 }
 
-// wait returns how long ip must wait before trying again; 0 when it may try now.
-func (l *loginLimiter) wait(ip string, now time.Time) time.Duration {
+// begin reserves an attempt for ip and returns 0, or returns how long ip must
+// wait before trying again without reserving anything. Every reservation must
+// be released by end.
+func (l *loginLimiter) begin(ip string, now time.Time) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.prune(now)
+	a := l.perIP[ip]
 	var d time.Duration
-	if fails := l.perIP[ip]; len(fails) >= loginFailsPerIP {
-		d = fails[len(fails)-loginFailsPerIP].Add(loginWindow).Sub(now)
+	if a != nil && len(a.fails)+a.inFlight >= loginFailsPerIP {
+		d = waitFor(a.fails, loginFailsPerIP, now)
 	}
-	if len(l.global) >= loginFailsGlobal {
-		d = max(d, l.global[len(l.global)-loginFailsGlobal].Add(loginWindow).Sub(now))
+	if len(l.global)+l.globalInFlight >= loginFailsGlobal {
+		d = max(d, waitFor(l.global, loginFailsGlobal, now))
 	}
-	return d
+	if d > 0 {
+		return d
+	}
+	if a == nil {
+		a = &ipAttempts{}
+		l.perIP[ip] = a
+	}
+	a.inFlight++
+	l.globalInFlight++
+	return 0
 }
 
-// fail records a failed login from ip.
-func (l *loginLimiter) fail(ip string, now time.Time) {
+// end releases the attempt begin reserved for ip, recording it as a failure at
+// now when failed.
+func (l *loginLimiter) end(ip string, now time.Time, failed bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.globalInFlight--
+	a := l.perIP[ip]
+	a.inFlight--
+	if failed {
+		a.fails = insertSorted(a.fails, now)
+		l.global = insertSorted(l.global, now)
+	}
 	l.prune(now)
-	l.perIP[ip] = append(l.perIP[ip], now)
-	l.global = append(l.global, now)
 }
 
-// prune drops failures that have left the window.
+// insertSorted inserts t into ts in order: concurrent attempts may end out of
+// order.
+func insertSorted(ts []time.Time, t time.Time) []time.Time {
+	i, _ := slices.BinarySearchFunc(ts, t, time.Time.Compare)
+	return slices.Insert(ts, i, t)
+}
+
+// waitFor is how long until fewer than limit of fails remain in the window; a
+// second when the limit is reached only with attempts in flight, which end soon.
+func waitFor(fails []time.Time, limit int, now time.Time) time.Duration {
+	if len(fails) < limit {
+		return time.Second
+	}
+	return max(fails[len(fails)-limit].Add(loginWindow).Sub(now), time.Second)
+}
+
+// prune drops failures that have left the window and IPs with nothing left.
 func (l *loginLimiter) prune(now time.Time) {
 	cutoff := now.Add(-loginWindow)
 	recent := func(ts []time.Time) []time.Time {
@@ -59,11 +103,10 @@ func (l *loginLimiter) prune(now time.Time) {
 		return ts[i:]
 	}
 	l.global = recent(l.global)
-	for ip, ts := range l.perIP {
-		if ts = recent(ts); len(ts) == 0 {
+	for ip, a := range l.perIP {
+		a.fails = recent(a.fails)
+		if len(a.fails) == 0 && a.inFlight == 0 {
 			delete(l.perIP, ip)
-		} else {
-			l.perIP[ip] = ts
 		}
 	}
 }
