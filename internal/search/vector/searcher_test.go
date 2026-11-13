@@ -43,8 +43,11 @@ func TestSearcher_RanksByCosine(t *testing.T) {
 		want []int64
 	}{
 		{search.Range{After: at(30)}, []int64{berry, trip}},
-		{search.Range{Before: at(60)}, []int64{cat, berry}},
-		{search.Range{After: at(1), Before: at(60)}, []int64{cat, berry}},
+		{search.Range{Before: at(60)}, []int64{cat}},
+		{search.Range{After: at(1), Before: at(60)}, []int64{cat}},
+		{search.Range{Before: at(60).Add(time.Second)}, []int64{cat, berry}},
+		{search.Range{Before: at(120)}, []int64{cat, berry}},
+		{search.Range{After: at(60), Before: at(61)}, []int64{berry}},
 		{search.Range{After: at(61), Before: at(119)}, nil},
 	} {
 		hits, _ := s.Search(ctx, groupKey, "旅行", c.r, 10)
@@ -63,8 +66,8 @@ func TestSearcher_RanksByCosine(t *testing.T) {
 	if hits, _ := s.Search(ctx, groupKey, "猫", search.Range{}, 0); hits != nil {
 		t.Errorf("limit 0 hits = %v", hits)
 	}
-	if n := e.metric("conloom_search_seconds", "vector"); n != 9 {
-		t.Errorf("search_seconds{vector} samples = %v, want 9", n)
+	if n := e.metric("conloom_search_seconds", "vector"); n != 12 {
+		t.Errorf("search_seconds{vector} samples = %v, want 12", n)
 	}
 }
 

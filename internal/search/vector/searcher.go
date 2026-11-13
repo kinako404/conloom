@@ -80,7 +80,8 @@ type entry struct {
 	chunks         []cached
 }
 
-// Search returns the up to limit chunks of convKey that overlap r and are
+// Search returns the up to limit chunks of convKey that overlap r (a chunk
+// ending at After counts, one starting at Before does not) and are
 // closest to query by cosine similarity, best first. When the query cannot be
 // embedded in time it logs why and returns no hits, without an error.
 func (s *Searcher) Search(ctx context.Context, convKey, query string, r search.Range, limit int) ([]search.Hit, error) {
@@ -115,7 +116,7 @@ func (s *Searcher) Search(ctx context.Context, convKey, query string, r search.R
 	var hits []search.Hit
 	for _, c := range e.chunks {
 		if len(c.vec) != len(q) || c.norm == 0 ||
-			!r.After.IsZero() && c.endAt.Before(r.After) || !r.Before.IsZero() && c.startAt.After(r.Before) {
+			!r.After.IsZero() && c.endAt.Before(r.After) || !r.Before.IsZero() && !c.startAt.Before(r.Before) {
 			continue
 		}
 		hits = append(hits, search.Hit{FromSeq: c.from, ToSeq: c.to, Score: dot(q, c.vec) / (qnorm * c.norm)})

@@ -7,7 +7,8 @@ import (
 	"time"
 )
 
-// Range limits a search to messages that occurred within it. A zero After or
+// Range limits a search to messages that occurred within it: at or after
+// After and before Before (After is included, Before is not). A zero After or
 // Before leaves that side unbounded.
 type Range struct {
 	After, Before time.Time
