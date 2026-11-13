@@ -58,6 +58,7 @@ bots:
     private_chat: admins
     persona_template: default
     # 启用的技能（模型在私聊和直接对话里可调用的内置工具，见 docs/skills.md）；省略时不带任何工具。
+    # memory 的 remember、recall、get_affinity 只在会话开启了记忆时生效；time 的 now 随时可用。
     # skills: [memory, time]
   # Telegram 机器人：platform_self_id 是 Bot 的数字 ID（token 冒号前的部分），admins 填 Telegram 用户 ID；
   # group 项是开启的群（Telegram 的群 ID 是负数，要加引号），private 项是允许私聊的人（用户 ID），
