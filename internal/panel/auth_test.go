@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -444,6 +445,57 @@ func TestLogin_RejectedBodiesAreNotFailures(t *testing.T) {
 	}
 	if w := h.login(testUser, testPassword); w.Code != http.StatusOK {
 		t.Errorf("login after bad bodies: %d, want 200", w.Code)
+	}
+}
+
+// stalledBody reports its first Read on started, then blocks until release
+// is closed and ends with a body that is not JSON.
+type stalledBody struct {
+	started chan<- struct{}
+	release <-chan struct{}
+	once    sync.Once
+	done    bool
+}
+
+func (b *stalledBody) Read(p []byte) (int, error) {
+	b.once.Do(func() { b.started <- struct{}{} })
+	<-b.release
+	if b.done {
+		return 0, io.EOF
+	}
+	b.done = true
+	return copy(p, "not json"), nil
+}
+
+func TestLogin_SlowBodiesHoldNoLimiterSlot(t *testing.T) {
+	h := newHarness(t, nil)
+	started, release := make(chan struct{}), make(chan struct{})
+	codes := make(chan int, loginFailsPerIP)
+	for range loginFailsPerIP {
+		go func() {
+			r := httptest.NewRequest(http.MethodPost, "http://"+testHost+"/panel/api/login",
+				&stalledBody{started: started, release: release})
+			r.RemoteAddr = testIP + ":40000"
+			w := httptest.NewRecorder()
+			h.h.ServeHTTP(w, r)
+			codes <- w.Code
+		}()
+	}
+	for range loginFailsPerIP {
+		<-started
+	}
+	w := h.login(testUser, testPassword)
+	close(release)
+	if w.Code != http.StatusOK {
+		t.Errorf("login while %d bodies are still arriving: status %d, want 200 (body %s)", loginFailsPerIP, w.Code, w.Body)
+	}
+	for range loginFailsPerIP {
+		if c := <-codes; c != http.StatusBadRequest {
+			t.Errorf("stalled bad body: status %d, want 400", c)
+		}
+	}
+	if got := h.counter("conloom_panel_login_failures_total", nil); got != 0 {
+		t.Errorf("login failures = %v, want 0", got)
 	}
 }
 

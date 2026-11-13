@@ -616,7 +616,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 
 - **鉴权**：账号在配置的 `panel.users` 里，密码哈希为 PBKDF2-SHA256（Go 标准库 `crypto/pbkdf2`，16 字节随机盐，默认 600000 次迭代，最少 100000 次），格式 `pbkdf2-sha256:<迭代次数>:<盐>:<哈希>`，由 `conloom panel hash-password` 生成。用户名不存在时校验一个同等迭代次数的假哈希，密码用常量时间比较。
 - **会话**（迁移 `0009_panel_sessions.sql`，表 `panel_sessions`）：会话令牌是 32 字节随机数，只放在 cookie `conloom_panel` 里（`HttpOnly`、`SameSite=Strict`、`Path=/panel/`，`Secure` 由 `panel.cookie_secure` 决定），库里存它的 SHA-256，另存 CSRF 令牌、`cred_fingerprint`（登录时该用户密码哈希的 SHA-256 前 16 位十六进制）和创建、最近使用、过期时间。每个请求都检查：没过 `session_ttl`、没超过 `idle_timeout`、用户还在配置里且指纹和当前哈希一致，所以改密码后旧会话立即失效。`last_seen_at` 最多每分钟更新一次。
-- **限流**（`limiter.go`）：15 分钟滑动窗口内，同一来源 IP 失败 5 次或全局失败 30 次后返回 429 和 `Retry-After`；尝试在校验密码之前就占一个名额，所以并发的尝试也计入。来源 IP 只取 `RemoteAddr`。计数只在内存里，重启清零。
+- **限流**（`limiter.go`）：15 分钟滑动窗口内，同一来源 IP 失败 5 次或全局失败 30 次后返回 429 和 `Retry-After`；尝试在请求体解析通过以后、校验密码之前就占一个名额，所以并发的尝试也计入，而格式不对或迟迟发不完的请求体不占名额、也不算失败。来源 IP 只取 `RemoteAddr`。计数只在内存里，重启清零。
 - **CSRF**：`GET`、`HEAD` 以外的接口要求 `X-CSRF-Token` 等于会话的 CSRF 令牌；请求带 `Origin` 时其主机必须等于 `Host`（登录也检查）。
 - **响应头**：所有 `/panel/` 响应带 CSP（`default-src 'self'`、`frame-ancestors 'none'` 等）、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`；接口另加 `Cache-Control: no-store`，静态资源为 `no-cache`。每个请求有 trace ID，按路由模板和状态码计入 `panel_requests_total`，panic 转成 500。
 - **读**：会话列表的消息数和最后时间用一条 GROUP BY 查询得到；消息检索复用 `SearchMessages`；读人设走只读路径，会话还没有人设时不触发第 1 版的写入；概览的实时状态来自本进程的 Prometheus registry（队列深度、关键词索引补建剩余、熔断，配置了 `embedding` 时还有向量积压）和发件箱待发数的查库结果；各 bot 的“最近调用”由 gateway 在 Bearer 鉴权通过时记进内存里的 `obs.Presence`。

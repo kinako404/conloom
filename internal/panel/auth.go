@@ -39,9 +39,15 @@ type loginRequest struct {
 // login checks a name and password and starts a session. A wrong password and
 // an unknown name get the same response after the same work; failures, and
 // attempts still being checked, are rate-limited per source IP and in total.
+// The body is read before the limiter is consulted, so a malformed or slowly
+// sent body holds no attempt.
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		s.writeError(w, r, http.StatusForbidden, conloomapi.CodeForbidden, "cross-origin request")
+		return
+	}
+	var req loginRequest
+	if !s.decode(w, r, &req) {
 		return
 	}
 	ip := remoteIP(r)
@@ -53,10 +59,6 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	failed := false
 	defer func() { s.limiter.end(ip, s.now(), failed) }()
-	var req loginRequest
-	if !s.decode(w, r, &req) {
-		return
-	}
 	user, known := s.user(req.Name)
 	hash := s.dummyHash
 	if known {
