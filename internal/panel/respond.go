@@ -51,9 +51,10 @@ func (s *Server) respondError(w http.ResponseWriter, r *http.Request, status int
 
 // fail maps err from a collaborator to an error response as the Bot
 // Interaction API does: store.ErrNotFound is 404; a rejected policy, persona
-// or member memory edit is 400 with the error text; a cancelled request or a
-// member memory that kept changing is a retryable 503; anything else is a 500
-// whose details are only logged.
+// or member memory edit is 400 with the error text; a refused consolidation
+// is 409 MEMORY_DISABLED or PAUSED; a cancelled request or a member memory
+// that kept changing is a retryable 503; anything else is a 500 whose details
+// are only logged.
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if ctxErr := r.Context().Err(); ctxErr != nil && errors.Is(err, ctxErr) {
 		s.respondError(w, r, http.StatusServiceUnavailable, conloomapi.CodeInternal, "request cancelled; server may be shutting down", err)
@@ -69,6 +70,10 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 			strings.TrimPrefix(err.Error(), memory.ErrInvalid.Error()+": "), err)
 	case errors.Is(err, memory.ErrUpdateConflict):
 		s.respondError(w, r, http.StatusServiceUnavailable, conloomapi.CodeInternal, "member memory kept changing; try again", err)
+	case errors.Is(err, memory.ErrMemoryDisabled):
+		s.respondError(w, r, http.StatusConflict, conloomapi.CodeMemoryDisabled, memory.ErrMemoryDisabled.Error(), err)
+	case errors.Is(err, memory.ErrPaused):
+		s.respondError(w, r, http.StatusConflict, conloomapi.CodePaused, memory.ErrPaused.Error(), err)
 	default:
 		s.respondError(w, r, http.StatusInternalServerError, conloomapi.CodeInternal, "internal error", err)
 	}

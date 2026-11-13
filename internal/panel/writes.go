@@ -227,8 +227,8 @@ func (s *Server) deleteMemberMemory(w http.ResponseWriter, r *http.Request, sess
 }
 
 // consolidateMemory asks for a consolidation of the conversation and audits
-// it as memory.consolidate. As in the Bot Interaction API it is refused with
-// 409 MEMORY_DISABLED while memory is off and 409 PAUSED while the
+// it as memory.consolidate. It is refused as memory.ConsolidateAllowed
+// decides: 409 MEMORY_DISABLED while memory is off and 409 PAUSED while the
 // conversation is paused.
 func (s *Server) consolidateMemory(w http.ResponseWriter, r *http.Request, sess *Session) {
 	conv, ok := s.memoryConversation(w, r)
@@ -236,16 +236,11 @@ func (s *Server) consolidateMemory(w http.ResponseWriter, r *http.Request, sess 
 		return
 	}
 	pv, err := s.d.Policies.Current(r.Context(), conv.Key)
+	if err == nil {
+		err = memory.ConsolidateAllowed(pv.Policy)
+	}
 	if err != nil {
 		s.fail(w, r, err)
-		return
-	}
-	if p := pv.Policy; !p.Memory.Enabled || !p.Concurrency.AllowLongRequests {
-		s.writeError(w, r, http.StatusConflict, conloomapi.CodeMemoryDisabled, "memory is not enabled for this conversation")
-		return
-	}
-	if pv.Policy.Concurrency.MaxInteractiveRequests == 0 {
-		s.writeError(w, r, http.StatusConflict, conloomapi.CodePaused, "the conversation is paused; memory is not consolidated")
 		return
 	}
 	if s.d.Memory != nil {

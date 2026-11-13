@@ -512,17 +512,22 @@ func TestFail_WriteErrors(t *testing.T) {
 	for _, tc := range []struct {
 		err       error
 		status    int
+		code      string
 		message   string
 		retryable bool
 	}{
 		{fmt.Errorf("%w: %w", policy.ErrInvalid, errors.New("context.max_recent_messages must be positive")),
-			http.StatusBadRequest, "policy: invalid: context.max_recent_messages must be positive", false},
+			http.StatusBadRequest, conloomapi.CodeInvalidEvent, "policy: invalid: context.max_recent_messages must be positive", false},
 		{fmt.Errorf("%w: unknown template %q", persona.ErrInvalid, "dog"),
-			http.StatusBadRequest, `persona: invalid: unknown template "dog"`, false},
+			http.StatusBadRequest, conloomapi.CodeInvalidEvent, `persona: invalid: unknown template "dog"`, false},
 		{fmt.Errorf("%w: affinity must be in [0, 100], got 101", memory.ErrInvalid),
-			http.StatusBadRequest, "affinity must be in [0, 100], got 101", false},
+			http.StatusBadRequest, conloomapi.CodeInvalidEvent, "affinity must be in [0, 100], got 101", false},
 		{fmt.Errorf("update memory of 20001: %w", memory.ErrUpdateConflict),
-			http.StatusServiceUnavailable, "member memory kept changing; try again", true},
+			http.StatusServiceUnavailable, conloomapi.CodeInternal, "member memory kept changing; try again", true},
+		{memory.ErrMemoryDisabled,
+			http.StatusConflict, conloomapi.CodeMemoryDisabled, "memory is not enabled for this conversation", false},
+		{memory.ErrPaused,
+			http.StatusConflict, conloomapi.CodePaused, "the conversation is paused; memory is not consolidated", false},
 	} {
 		r := httptest.NewRequest(http.MethodPut, "http://"+testHost+"/panel/api/x", nil)
 		w := httptest.NewRecorder()
@@ -535,8 +540,8 @@ func TestFail_WriteErrors(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatal(err)
 		}
-		if resp.Error.Message != tc.message || resp.Error.Retryable != tc.retryable {
-			t.Errorf("%v: body %+v, want message %q retryable %v", tc.err, resp.Error, tc.message, tc.retryable)
+		if resp.Error.Code != tc.code || resp.Error.Message != tc.message || resp.Error.Retryable != tc.retryable {
+			t.Errorf("%v: body %+v, want code %s message %q retryable %v", tc.err, resp.Error, tc.code, tc.message, tc.retryable)
 		}
 	}
 }

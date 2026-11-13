@@ -43,6 +43,10 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 			strings.TrimPrefix(err.Error(), memory.ErrInvalid.Error()+": "), false, err)
 	case errors.Is(err, memory.ErrUpdateConflict):
 		s.writeError(w, r, http.StatusServiceUnavailable, conloomapi.CodeInternal, "member memory kept changing; try again", true, err)
+	case errors.Is(err, memory.ErrMemoryDisabled):
+		s.writeError(w, r, http.StatusConflict, conloomapi.CodeMemoryDisabled, memory.ErrMemoryDisabled.Error(), false, err)
+	case errors.Is(err, memory.ErrPaused):
+		s.writeError(w, r, http.StatusConflict, conloomapi.CodePaused, memory.ErrPaused.Error(), false, err)
 	default:
 		s.writeError(w, r, http.StatusInternalServerError, conloomapi.CodeInternal, "internal error", false, err)
 	}

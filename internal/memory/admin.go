@@ -24,6 +24,26 @@ var ErrInvalid = errors.New("memory: invalid")
 // stored anyway; callers are expected to report the change as done.
 var ErrAudit = errors.New("memory: audit")
 
+// ErrMemoryDisabled and ErrPaused refuse an admin's request for a
+// consolidation (see ConsolidateAllowed); their text is meant for the admin.
+var (
+	ErrMemoryDisabled = errors.New("memory is not enabled for this conversation")
+	ErrPaused         = errors.New("the conversation is paused; memory is not consolidated")
+)
+
+// ConsolidateAllowed reports whether an admin may ask for a consolidation of
+// a conversation under policy p: ErrMemoryDisabled while memory is off or long
+// requests are not allowed, ErrPaused while the conversation is paused.
+func ConsolidateAllowed(p conloomapi.GroupPolicy) error {
+	if !p.Memory.Enabled || !p.Concurrency.AllowLongRequests {
+		return ErrMemoryDisabled
+	}
+	if p.Concurrency.MaxInteractiveRequests == 0 {
+		return ErrPaused
+	}
+	return nil
+}
+
 // AdminDeps are the Admin's collaborators. A nil Metrics records nothing; a
 // nil Now is time.Now.
 type AdminDeps struct {

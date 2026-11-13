@@ -259,3 +259,32 @@ func TestAdmin_View(t *testing.T) {
 		t.Fatalf("view = %+v", got)
 	}
 }
+
+func TestConsolidateAllowed(t *testing.T) {
+	on := conloomapi.DefaultGroupPolicy()
+	on.Memory.Enabled = true
+	for _, tc := range []struct {
+		name string
+		edit func(*conloomapi.GroupPolicy)
+		want error
+	}{
+		{"memory on", func(*conloomapi.GroupPolicy) {}, nil},
+		{"memory off", func(p *conloomapi.GroupPolicy) { p.Memory.Enabled = false }, ErrMemoryDisabled},
+		{"long requests off", func(p *conloomapi.GroupPolicy) { p.Concurrency.AllowLongRequests = false }, ErrMemoryDisabled},
+		{"paused", func(p *conloomapi.GroupPolicy) { p.Concurrency.MaxInteractiveRequests = 0 }, ErrPaused},
+		{"memory off and paused", func(p *conloomapi.GroupPolicy) {
+			p.Memory.Enabled = false
+			p.Concurrency.MaxInteractiveRequests = 0
+		}, ErrMemoryDisabled},
+	} {
+		p := on
+		tc.edit(&p)
+		if got := ConsolidateAllowed(p); got != tc.want {
+			t.Errorf("%s: ConsolidateAllowed = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if ErrMemoryDisabled.Error() != "memory is not enabled for this conversation" ||
+		ErrPaused.Error() != "the conversation is paused; memory is not consolidated" {
+		t.Errorf("messages = %q, %q", ErrMemoryDisabled, ErrPaused)
+	}
+}
