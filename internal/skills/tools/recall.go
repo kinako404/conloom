@@ -10,21 +10,26 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/kinako404/conloom/internal/memory"
+	"github.com/kinako404/conloom/internal/review"
 	"github.com/kinako404/conloom/internal/skills"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 const (
-	recallScan       = 5000
-	recallQueryRunes = 100
-	recallMaxTokens  = 8
-	recallHits       = 6
-	recallContext    = 2
-	recallMaxRunes   = 1500
-	recallBodyRunes  = 200
-	recallNotFound   = "没有找到相关的聊天记录。"
-	recallNoName     = "一位群友"
+	recallScan         = 5000
+	recallQueryRunes   = 100
+	recallMaxTokens    = 8
+	recallKeywordRunes = 20
+	recallHits         = 6
+	recallContext      = 2
+	recallMaxRunes     = 1500
+	recallBodyRunes    = 200
+	recallNameRunes    = 20
+	recallTurnWindow   = 2 * time.Minute
+	recallNotFound     = "没有找到相关的聊天记录。"
+	recallNoName       = "一位群友"
 )
 
 // RecallStore is the part of store.Store that recall reads.
@@ -33,21 +38,34 @@ type RecallStore interface {
 	ListMemberMemories(ctx context.Context, convKey string) ([]store.MemberMemory, error)
 }
 
-// RecallDeps are what recall needs.
+// OutputReviewer is the part of review.Reviewer that recall uses.
+type OutputReviewer interface {
+	Output(text string, pol conloomapi.ReviewPolicy) review.Result
+}
+
+// RecallDeps are what recall needs. IsCommand reports whether text is a
+// command under the conversation's command prefix (core.ParseCommand); when
+// nil, every message starting with the prefix counts as one.
 type RecallDeps struct {
-	Store    RecallStore
-	Policies PolicySource
+	Store     RecallStore
+	Policies  PolicySource
+	Reviewer  OutputReviewer
+	IsCommand func(text, prefix string) bool
 }
 
 type recallTool struct{ d RecallDeps }
 
 // NewRecall returns the recall tool: a keyword search of the newest 5000
-// messages of the invocation's conversation when memory is in effect. Messages
-// hidden by forgetting are skipped: in private chats everything before the
-// speaker was forgotten, in groups what each forgotten member said before
-// then. So is the current turn, the speaker's messages after the bot's last
-// one. The best 6 hits, each with 2 messages of context on either side and
-// overlapping ones merged, are returned in time order as
+// messages of the invocation's conversation when memory is in effect.
+//
+// Skipped are commands, messages blocked by the conversation's review, the
+// current turn (the trigger messages, or without them the speaker's messages
+// of the last two minutes) and messages hidden by forgetting: in private chats
+// everything before the speaker was forgotten, in groups what each forgotten
+// member said before then. The rest is searched and shown with contact
+// details redacted (memory.RedactContactOrID) and the review's output rules
+// applied. The best 6 hits, each with 2 messages of context on either side
+// and overlapping ones merged, are returned in time order as
 // "[MM-DD HH:MM] 名字：正文" lines, at most 1500 runes, without any IDs.
 func NewRecall(d RecallDeps) skills.Tool { return &recallTool{d: d} }
 
@@ -55,9 +73,13 @@ func (*recallTool) Spec() skills.Spec {
 	return skills.Spec{
 		Name: "recall",
 		Description: "在当前会话以前的聊天记录里按关键词查找。用户问到以前聊过、但眼前的对话和你记得的事里都没有的内容时调用，" +
-			"查不到就老实说不记得。返回相关的几段聊天记录，每行是“[月-日 时:分] 名字：内容”，“你”是你自己说的话。",
-		Parameters: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string",` +
-			`"description":"要查找的关键词或短句，例如“草莓 蛋糕”，1 到 100 字","minLength":1,"maxLength":100}},` +
+			"查不到就老实说不记得。除了 query，最好在 keywords 里再给几个同义或相关的说法，" +
+			"比如找“旅游”时给“旅游 / 旅行 / 出去玩”，这样换了说法的记录也能找到。" +
+			"返回相关的几段聊天记录，每行是“[月-日 时:分] 名字：内容”，“你”是你自己说的话。",
+		Parameters: json.RawMessage(`{"type":"object","properties":{` +
+			`"query":{"type":"string","description":"要查找的关键词或短句，例如“草莓 蛋糕”，1 到 100 字","minLength":1,"maxLength":100},` +
+			`"keywords":{"type":"array","description":"可选：同义或相关的说法，每个整词匹配，例如 [\"旅行\",\"出去玩\"]",` +
+			`"items":{"type":"string","minLength":1,"maxLength":20},"maxItems":8}},` +
 			`"required":["query"]}`),
 	}
 }
@@ -74,15 +96,19 @@ func (t *recallTool) Call(ctx context.Context, inv skills.Invocation, args json.
 	case n > recallQueryRunes:
 		return "要查找的内容超过 100 字。", nil
 	}
-	_, on, err := memoryOn(ctx, t.d.Policies, inv.ConversationKey)
+	keywords, problem := keywordsArg(args)
+	if problem != "" {
+		return problem, nil
+	}
+	pv, on, err := memoryOn(ctx, t.d.Policies, inv.ConversationKey)
 	if err != nil {
 		return "", err
 	}
 	if !on {
 		return "这个会话没有开启记忆。", nil
 	}
-	tokens := recallTokens(query)
-	if len(tokens) == 0 {
+	terms := searchTerms(query, keywords)
+	if len(terms) == 0 {
 		return recallNotFound, nil
 	}
 	msgs, err := t.d.Store.RecentMessages(ctx, inv.ConversationKey, recallScan)
@@ -93,8 +119,9 @@ func (t *recallTool) Call(ctx context.Context, inv skills.Invocation, args json.
 	if err != nil {
 		return "", err
 	}
-	msgs = withoutCurrentTurn(visible(msgs, members, inv), inv.PlatformUserID)
-	groups := recallGroups(msgs, tokens)
+	msgs = withoutCurrentTurn(visible(msgs, members, inv), inv)
+	entries := t.entries(msgs, pv.Policy)
+	groups := recallGroups(entries, terms)
 	if len(groups) == 0 {
 		return recallNotFound, nil
 	}
@@ -102,7 +129,47 @@ func (t *recallTool) Call(ctx context.Context, inv skills.Invocation, args json.
 	if loc == nil {
 		loc = time.UTC
 	}
-	return renderGroups(msgs, groups, loc), nil
+	return renderGroups(entries, groups, loc), nil
+}
+
+// keywordsArg returns the optional keywords argument with whitespace
+// collapsed, or a sentence saying what is wrong with it.
+func keywordsArg(args json.RawMessage) ([]string, string) {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(args, &obj) != nil {
+		return nil, ""
+	}
+	raw, found := obj["keywords"]
+	if !found || string(raw) == "null" {
+		return nil, ""
+	}
+	var keywords []string
+	if err := json.Unmarshal(raw, &keywords); err != nil || keywords == nil {
+		return nil, "keywords 需要是字符串列表。"
+	}
+	if len(keywords) > recallMaxTokens {
+		return nil, "keywords 最多 8 个。"
+	}
+	for i, k := range keywords {
+		k = strings.Join(strings.Fields(k), " ")
+		if n := utf8.RuneCountInString(k); n == 0 || n > recallKeywordRunes {
+			return nil, "keywords 里每个词要 1 到 20 字。"
+		}
+		keywords[i] = k
+	}
+	return keywords, ""
+}
+
+// searchTerms is recallTokens(query) followed by the lower-cased keywords,
+// each matched whole, without repeats and at most recallMaxTokens.
+func searchTerms(query string, keywords []string) []string {
+	terms := recallTokens(query)
+	for _, k := range keywords {
+		if k = strings.ToLower(k); !slices.Contains(terms, k) {
+			terms = append(terms, k)
+		}
+	}
+	return terms[:min(len(terms), recallMaxTokens)]
 }
 
 // recallTokens splits query into at most recallMaxTokens distinct search
@@ -179,26 +246,100 @@ func visible(msgs []store.MessageRecord, members []store.MemberMemory, inv skill
 	})
 }
 
-// withoutCurrentTurn drops the speaker's messages after the bot's last one:
-// the turn being answered, which the model already sees. Without a bot
-// message only the speaker's trailing run of messages is dropped.
-func withoutCurrentTurn(msgs []store.MessageRecord, userID string) []store.MessageRecord {
-	start := len(msgs)
-	for start > 0 && !msgs[start-1].FromBot {
-		start--
+// withoutCurrentTurn drops the turn being answered, which the model already
+// sees: the invocation's trigger messages, or without them the speaker's
+// messages from recallTurnWindow before the invocation's time on.
+func withoutCurrentTurn(msgs []store.MessageRecord, inv skills.Invocation) []store.MessageRecord {
+	if len(inv.TriggerMessageIDs) > 0 {
+		return slices.DeleteFunc(msgs, func(m store.MessageRecord) bool { return slices.Contains(inv.TriggerMessageIDs, m.ID) })
 	}
-	if start == 0 {
-		for start = len(msgs); start > 0 && msgs[start-1].PlatformUserID == userID; start-- {
-		}
+	now := inv.Now
+	if now.IsZero() {
+		now = time.Now()
 	}
-	turn := msgs[start:]
-	kept := slices.DeleteFunc(slices.Clone(turn), func(m store.MessageRecord) bool {
-		return !m.FromBot && m.PlatformUserID == userID
+	since := now.Add(-recallTurnWindow)
+	return slices.DeleteFunc(msgs, func(m store.MessageRecord) bool {
+		return !m.FromBot && m.PlatformUserID == inv.PlatformUserID && !m.OccurredAt.Before(since)
 	})
-	return append(msgs[:start:start], kept...)
 }
 
-// recallGroup is a run of messages, by index, around one or more hits; rank
+// recallEntry is a message as recall may show it: name and body cleaned,
+// redacted and reviewed, and search the lower-cased body.
+type recallEntry struct {
+	at                 time.Time
+	name, body, search string
+}
+
+// entries prepares msgs for searching and showing, dropping commands and
+// messages that the review blocks.
+func (t *recallTool) entries(msgs []store.MessageRecord, pol conloomapi.GroupPolicy) []recallEntry {
+	prefix := pol.Reply.CommandPrefix
+	isCommand := t.d.IsCommand
+	if isCommand == nil {
+		isCommand = func(text, prefix string) bool {
+			return prefix != "" && strings.HasPrefix(strings.TrimSpace(text), prefix)
+		}
+	}
+	out := make([]recallEntry, 0, len(msgs))
+	for _, m := range msgs {
+		if !m.FromBot && isCommand(m.Text, prefix) {
+			continue
+		}
+		body := oneLine(m.Text)
+		for _, a := range m.Attachments {
+			if a.Type == "image" {
+				body += "[图片]"
+			} else {
+				body += "[文件]"
+			}
+		}
+		if body == "" {
+			body = "（没有文字内容）"
+		}
+		res := t.d.Reviewer.Output(memory.RedactContactOrID(body), pol.Review)
+		if res.Verdict == review.VerdictBlock {
+			continue
+		}
+		body = oneLine(res.Text)
+		out = append(out, recallEntry{at: m.OccurredAt, name: recallName(m), body: body, search: strings.ToLower(body)})
+	}
+	return out
+}
+
+// recallName is "你" for the bot, otherwise the member's display name on one
+// line, redacted and cut to recallNameRunes runes, or recallNoName without a
+// usable one.
+func recallName(m store.MessageRecord) string {
+	if m.FromBot {
+		return "你"
+	}
+	name := oneLine(m.DisplayName)
+	if name == "" || name == m.PlatformUserID || name == m.ActorID {
+		return recallNoName
+	}
+	name = memory.RedactContactOrID(name)
+	if r := []rune(name); len(r) > recallNameRunes {
+		name = string(r[:recallNameRunes])
+	}
+	return name
+}
+
+// oneLine drops control and format characters (zero-width and direction
+// marks among them) from s and collapses its whitespace to single spaces.
+func oneLine(s string) string {
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case unicode.IsSpace(r):
+			return ' '
+		case unicode.Is(unicode.Cc, r), unicode.Is(unicode.Cf, r):
+			return -1
+		}
+		return r
+	}, s)
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// recallGroup is a run of entries, by index, around one or more hits; rank
 // is the best rank of its hits (0 is best) and hits are their indexes.
 type recallGroup struct {
 	from, to int
@@ -206,17 +347,16 @@ type recallGroup struct {
 	hits     []int
 }
 
-// recallGroups finds the recallHits messages containing the most distinct
-// tokens, newest first among equals, and returns the runs of context around
+// recallGroups finds the recallHits entries containing the most distinct
+// terms, newest first among equals, and returns the runs of context around
 // them, merged where they touch or overlap, in time order.
-func recallGroups(msgs []store.MessageRecord, tokens []string) []recallGroup {
+func recallGroups(entries []recallEntry, terms []string) []recallGroup {
 	type hit struct{ index, score int }
 	var hits []hit
-	for i, m := range msgs {
-		text := strings.ToLower(m.Text)
+	for i, e := range entries {
 		score := 0
-		for _, tok := range tokens {
-			if strings.Contains(text, tok) {
+		for _, term := range terms {
+			if strings.Contains(e.search, term) {
 				score++
 			}
 		}
@@ -232,7 +372,7 @@ func recallGroups(msgs []store.MessageRecord, tokens []string) []recallGroup {
 	var groups []recallGroup
 	for rank, h := range hits {
 		groups = append(groups, recallGroup{from: max(h.index-recallContext, 0),
-			to: min(h.index+recallContext, len(msgs)-1), rank: rank, hits: []int{h.index}})
+			to: min(h.index+recallContext, len(entries)-1), rank: rank, hits: []int{h.index}})
 	}
 	slices.SortFunc(groups, func(a, b recallGroup) int { return cmp.Compare(a.from, b.from) })
 	var merged []recallGroup
@@ -252,7 +392,7 @@ func recallGroups(msgs []store.MessageRecord, tokens []string) []recallGroup {
 // renderGroups renders groups, blank-line separated, within recallMaxRunes.
 // Groups are filled best rank first; a group that does not fit keeps its
 // hits first and then the context nearest to them.
-func renderGroups(msgs []store.MessageRecord, groups []recallGroup, loc *time.Location) string {
+func renderGroups(entries []recallEntry, groups []recallGroup, loc *time.Location) string {
 	order := make([]int, len(groups))
 	for i := range order {
 		order[i] = i
@@ -272,7 +412,7 @@ func renderGroups(msgs []store.MessageRecord, groups []recallGroup, loc *time.Lo
 			return cmp.Compare(distance(a, g.hits), distance(b, g.hits))
 		})
 		for _, i := range candidates {
-			line := recallLine(msgs[i], loc)
+			line := recallLine(entries[i], loc)
 			cost := utf8.RuneCountInString(line)
 			if used > 0 {
 				cost++
@@ -317,31 +457,12 @@ func distance(i int, hits []int) int {
 	return d
 }
 
-// recallLine renders m as "[MM-DD HH:MM] 名字：正文" on one line: the bot is
-// "你", a member without a usable name recallNoName, and the body is cut to
+// recallLine renders e as "[MM-DD HH:MM] 名字：正文" with the body cut to
 // recallBodyRunes runes.
-func recallLine(m store.MessageRecord, loc *time.Location) string {
-	name := "你"
-	if !m.FromBot {
-		name = strings.Join(strings.Fields(m.DisplayName), " ")
-		if name == "" || name == m.PlatformUserID || name == m.ActorID {
-			name = recallNoName
-		}
-	}
-	body := m.Text
-	for _, a := range m.Attachments {
-		if a.Type == "image" {
-			body += "[图片]"
-		} else {
-			body += "[文件]"
-		}
-	}
-	body = strings.Join(strings.Fields(body), " ")
-	if body == "" {
-		body = "（没有文字内容）"
-	}
+func recallLine(e recallEntry, loc *time.Location) string {
+	body := e.body
 	if r := []rune(body); len(r) > recallBodyRunes {
 		body = string(r[:recallBodyRunes]) + "…"
 	}
-	return "[" + m.OccurredAt.In(loc).Format("01-02 15:04") + "] " + name + "：" + body
+	return "[" + e.at.In(loc).Format("01-02 15:04") + "] " + e.name + "：" + body
 }
