@@ -122,6 +122,7 @@ func TestSearcher_EmptyWhenTheServiceFails(t *testing.T) {
 	}
 
 	e.emb.set(func(f *fakeEmbedder) { f.invalid = false })
+	s.now = func() time.Time { return time.Now().Add(breakerCooldown) }
 	if hits, _ := s.Search(ctx, groupKey, "草莓", search.Range{}, 5); len(hits) != 1 {
 		t.Errorf("hits after the service came back = %v", hits)
 	}
@@ -185,5 +186,83 @@ func TestSearcher_KeepsEightConversations(t *testing.T) {
 	}
 	if got := s.cachedKeys(); len(got) != 8 || got[0] != keys[0] || slices.Contains(got, keys[1]) {
 		t.Errorf("cached = %v", got)
+	}
+}
+
+func TestSearcher_BreakerSkipsTheServiceAfterFailures(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.say(groupKey, "20001", "小明", "我喜欢草莓", at(0))
+	e.run(e.indexer("m1", 16))
+	s := e.searcher("m1")
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	search1 := func() ([]search.Hit, int) {
+		t.Helper()
+		before := e.emb.requestCount()
+		hits, err := s.Search(ctx, groupKey, "草莓", search.Range{}, 5)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		return hits, e.emb.requestCount() - before
+	}
+
+	e.emb.set(func(f *fakeEmbedder) { f.fail = true })
+	for i := range breakerFailures - 1 {
+		if _, n := search1(); n != 1 {
+			t.Fatalf("failure %d sent %d requests, want 1", i+1, n)
+		}
+	}
+	e.emb.set(func(f *fakeEmbedder) { f.fail = false })
+	if hits, n := search1(); n != 1 || len(hits) != 1 {
+		t.Fatalf("success after %d failures = %v hits, %d requests", breakerFailures-1, hits, n)
+	}
+	e.emb.set(func(f *fakeEmbedder) { f.fail = true })
+	for range breakerFailures {
+		if _, n := search1(); n != 1 {
+			t.Fatalf("a success resets the count: %d requests, want 1", n)
+		}
+	}
+	errors := e.requests("error")
+
+	now = now.Add(breakerCooldown - time.Second)
+	if hits, n := search1(); n != 0 || hits != nil {
+		t.Fatalf("while open = %v hits, %d requests; want none", hits, n)
+	}
+	now = now.Add(time.Second)
+	if _, n := search1(); n != 1 {
+		t.Fatalf("after the cooldown sent %d requests, want one trial", n)
+	}
+	if _, n := search1(); n != 0 {
+		t.Fatalf("after a failed trial sent %d requests, want the breaker open again", n)
+	}
+	if got := e.requests("error"); got != errors+1 {
+		t.Errorf("error requests = %v, want %v (skipped searches are not requests)", got, errors+1)
+	}
+
+	now = now.Add(breakerCooldown)
+	e.emb.set(func(f *fakeEmbedder) { f.fail, f.delay = false, 300*time.Millisecond })
+	done := make(chan []search.Hit)
+	base := e.emb.requestCount()
+	go func() {
+		hits, _ := s.Search(ctx, groupKey, "草莓", search.Range{}, 5)
+		done <- hits
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for e.emb.requestCount() == base {
+		if time.Now().After(deadline) {
+			t.Fatal("the trial request never arrived")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if hits, n := search1(); n != 0 || hits != nil {
+		t.Fatalf("during the trial = %v hits, %d requests; want none", hits, n)
+	}
+	if hits := <-done; len(hits) != 1 {
+		t.Fatalf("trial hits = %v", hits)
+	}
+	e.emb.set(func(f *fakeEmbedder) { f.delay = 0 })
+	if hits, n := search1(); n != 1 || len(hits) != 1 {
+		t.Fatalf("after a successful trial = %v hits, %d requests", hits, n)
 	}
 }
