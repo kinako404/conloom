@@ -13,6 +13,7 @@ import (
 
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/gateway"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -466,24 +467,69 @@ func TestMemoryAPI_OtherBotConversation404(t *testing.T) {
 	}
 }
 
-func TestMemoryAPI_PrivateConversation400(t *testing.T) {
+func TestMemoryAPI_PrivateConversation(t *testing.T) {
 	s := newMemServer(t, true)
 	s.accept(t, adapterToken, s.event("29999", "在吗", func(ev *conloomapi.Event) {
 		ev.Conversation = conloomapi.Conversation{Type: conloomapi.ConvPrivate, ID: "private_29999", PlatformConversationID: "29999"}
 	}))
-	const base = "/api/v1/conversations/private_29999/memory"
-	for _, c := range []struct {
-		method, path string
-		body         any
-	}{
-		{http.MethodGet, base, nil},
-		{http.MethodPut, base + "/members/29999", conloomapi.MemberMemoryPut{Note: strPtr("喜欢咖啡")}},
-		{http.MethodDelete, base + "/members/29999", nil},
-		{http.MethodPost, base + "/consolidate", nil},
-	} {
-		expectError(t, s.do(t, c.method, c.path, memoryToken, c.body, nil), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	privKey := store.ConversationKey("bot_main", "qq", conloomapi.ConvPrivate, "private_29999")
+	ctx := context.Background()
+	if err := s.st.PutGroupMemory(ctx, store.GroupMemory{ConversationKey: privKey, Summary: "最近在聊钢琴。", CursorSeq: 5}); err != nil {
+		t.Fatal(err)
 	}
-	if calls := s.trigger.calls(); len(calls) != 0 {
-		t.Fatalf("private consolidate triggered %v", calls)
+	const base = "/api/v1/conversations/private_29999/memory"
+
+	r := s.do(t, http.MethodGet, base, memoryToken, nil, nil)
+	var state conloomapi.MemoryState
+	decode(t, r.body, &state)
+	if r.status != http.StatusOK || !state.Enabled || state.Summary != "最近在聊钢琴。" || state.ConversationID != "private_29999" {
+		t.Fatalf("GET private memory: status %d, state %+v", r.status, state)
+	}
+
+	note := strings.Repeat("记", memory.PrivateNoteMaxRunes)
+	if r := s.do(t, http.MethodPut, base+"/members/29999", memoryToken, conloomapi.MemberMemoryPut{Note: &note, Affinity: intPtr(30)}, nil); r.status != http.StatusOK {
+		t.Fatalf("PUT a %d-rune private note: status %d, body %s", memory.PrivateNoteMaxRunes, r.status, r.body)
+	}
+	long := note + "多"
+	expectError(t, s.do(t, http.MethodPut, base+"/members/29999", memoryToken, conloomapi.MemberMemoryPut{Note: &long}, nil),
+		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	got, err := s.st.GetMemberMemories(ctx, privKey, []string{"29999"})
+	if err != nil || got["29999"].Note != note || got["29999"].Affinity == nil || *got["29999"].Affinity != 30 {
+		t.Fatalf("private member = %+v, %v", got["29999"], err)
+	}
+
+	if r := s.do(t, http.MethodPost, base+"/consolidate", memoryToken, nil, nil); r.status != http.StatusAccepted {
+		t.Fatalf("POST private consolidate: status %d, body %s", r.status, r.body)
+	}
+	if calls := s.trigger.calls(); !slices.Equal(calls, []string{privKey}) {
+		t.Fatalf("trigger calls = %v, want [%s]", calls, privKey)
+	}
+
+	if r := s.do(t, http.MethodDelete, base+"/members/29999", memoryToken, nil, nil); r.status != http.StatusOK {
+		t.Fatalf("DELETE private member: status %d, body %s", r.status, r.body)
+	}
+	got, err = s.st.GetMemberMemories(ctx, privKey, []string{"29999"})
+	if m := got["29999"]; err != nil || m.Note != "" || m.Affinity != nil || m.ForgottenAt.IsZero() {
+		t.Fatalf("forgotten private member = %+v, %v", m, err)
+	}
+	if g, err := s.st.GetGroupMemory(ctx, privKey); err != nil || g.Summary != "" || g.CursorSeq != 5 {
+		t.Fatalf("private summary after DELETE = %+v, %v; want cleared with the cursor kept", g, err)
+	}
+}
+
+func TestMemoryAPI_GroupNoteLimitUnchanged(t *testing.T) {
+	s := newMemServer(t, true)
+	s.accept(t, adapterToken, s.event("20001", "大家好"))
+	long := strings.Repeat("记", memory.NoteMaxRunes+1)
+	expectError(t, s.do(t, http.MethodPut, memoryPath+"/members/20001", memoryToken, conloomapi.MemberMemoryPut{Note: &long}, nil),
+		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	if err := s.st.PutGroupMemory(context.Background(), store.GroupMemory{ConversationKey: memGroupKey, Summary: "大家在聊咖啡。"}); err != nil {
+		t.Fatal(err)
+	}
+	if r := s.do(t, http.MethodDelete, memoryPath+"/members/20001", memoryToken, nil, nil); r.status != http.StatusOK {
+		t.Fatalf("DELETE: status %d", r.status)
+	}
+	if g, err := s.st.GetGroupMemory(context.Background(), memGroupKey); err != nil || g.Summary != "大家在聊咖啡。" {
+		t.Fatalf("group summary after DELETE = %+v, %v; want kept", g, err)
 	}
 }
