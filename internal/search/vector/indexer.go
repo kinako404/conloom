@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/embedding"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/skills/tools"
@@ -56,7 +57,9 @@ type Store interface {
 
 // IndexerDeps are what the Indexer needs. Reviewer and IsCommand are those of
 // recall (tools.RecallDeps), so that chunks hold only what recall may show;
-// Location renders the chunks' times. Metrics and Logger may be nil.
+// Location renders the chunks' times. Config decides, like for memory
+// consolidation, which private chats are embedded (config.BotConfig.PrivateAllowed);
+// without it all are. Metrics and Logger may be nil.
 type IndexerDeps struct {
 	Store     Store
 	Embedder  Embedder
@@ -64,11 +67,13 @@ type IndexerDeps struct {
 	Reviewer  tools.OutputReviewer
 	IsCommand func(text, prefix string) bool
 	Location  *time.Location
+	Config    *config.Config
 	Metrics   *obs.Metrics
 	Logger    *slog.Logger
 }
 
-// Indexer embeds the chunks of every conversation where memory is in effect,
+// Indexer embeds the chunks of every conversation where memory is in effect
+// (and, for a private chat, that the bot still allows),
 // in rounds a minute apart of at most 200 chunks each: first the chunks that
 // forgetting or a change of model queued to be rebuilt, newest first, then
 // the conversation's new closed chunks. A failed round pauses the indexer,
@@ -175,7 +180,7 @@ func (ix *Indexer) RunOnce(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if !on {
+			if !on || !ix.privateAllowed(c) {
 				continue
 			}
 			if budget > 0 {
@@ -193,6 +198,16 @@ func (ix *Indexer) RunOnce(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// privateAllowed reports whether c is not a private chat, or one whose user
+// the bot's private_chat setting still allows.
+func (ix *Indexer) privateAllowed(c store.ConversationRecord) bool {
+	if ix.d.Config == nil || c.Type != conloomapi.ConvPrivate {
+		return true
+	}
+	bot, ok := ix.d.Config.Bot(c.BotInstanceID)
+	return ok && bot.PrivateAllowed(c.PlatformConversationID)
 }
 
 // unchunked estimates the chunks of convKey still to be cut: its messages

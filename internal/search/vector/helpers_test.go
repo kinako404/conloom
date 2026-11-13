@@ -156,9 +156,11 @@ type env struct {
 	// override changes the stored policies as the indexer sees them, for
 	// combinations that policy validation rejects.
 	override map[string]func(p *conloomapi.GroupPolicy)
-	reg      *prometheus.Registry
-	metrics  *obs.Metrics
-	now      time.Time
+	// cfg decides which private chats are allowed; nil allows all.
+	cfg     *config.Config
+	reg     *prometheus.Registry
+	metrics *obs.Metrics
+	now     time.Time
 }
 
 func newEnv(t *testing.T) *env {
@@ -177,7 +179,7 @@ func newEnv(t *testing.T) *env {
 
 func (e *env) indexer(model string, batch int) *Indexer {
 	ix := NewIndexer(IndexerDeps{Store: e.st, Embedder: e.emb.client(model, batch), Policies: overridden{e},
-		Reviewer: review.New(nil, review.Options{}), Location: shanghai, Metrics: e.metrics})
+		Reviewer: review.New(nil, review.Options{}), Location: shanghai, Metrics: e.metrics, Config: e.cfg})
 	ix.now = func() time.Time { return e.now }
 	return ix
 }

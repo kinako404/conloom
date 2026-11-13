@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/review"
 	"github.com/kinako404/conloom/internal/search"
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -121,6 +123,37 @@ func TestIndexer_OnlyConversationsWithMemoryInEffect(t *testing.T) {
 	e.run(e.indexer("m1", 16))
 	if got := flat(e.emb.take()); !slices.Equal(got, []string{"[11-13 09:00] 小明：旅行"}) {
 		t.Fatalf("after memory took effect embedded %q", got)
+	}
+}
+
+func TestIndexer_OnlyAllowedPrivateChats(t *testing.T) {
+	e := newEnv(t)
+	private2Key := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "20002")
+	e.say(privateKey, "20001", "小明", "草莓", at(0))
+	e.say(private2Key, "20002", "小红", "猫", at(0))
+	e.say(groupKey, "20002", "小红", "旅行", at(0))
+	e.cfg = &config.Config{Bots: []config.BotConfig{{ID: testBot, PrivateChat: "admins", Admins: []string{"20001"}}}}
+	e.run(e.indexer("m1", 16))
+	got := flat(e.emb.take())
+	slices.Sort(got)
+	if want := []string{"[11-13 09:00] 小明：草莓", "[11-13 09:00] 小红：旅行"}; !slices.Equal(got, want) {
+		t.Fatalf("embedded %q, want the group and the allowed private chat only", got)
+	}
+	if e.cursor(private2Key) != 0 {
+		t.Error("cursor moved in a private chat that is no longer allowed")
+	}
+
+	e.cfg.Bots[0].PrivateChat = "all"
+	e.run(e.indexer("m1", 16))
+	if got := flat(e.emb.take()); !slices.Equal(got, []string{"[11-13 09:00] 小红：猫"}) {
+		t.Fatalf("after allowing everyone embedded %q", got)
+	}
+
+	e.cfg = &config.Config{}
+	e.say(privateKey, "20001", "小明", "火锅", at(100))
+	e.run(e.indexer("m1", 16))
+	if got := flat(e.emb.take()); len(got) != 0 {
+		t.Fatalf("private chat of an unknown bot embedded %q", got)
 	}
 }
 
