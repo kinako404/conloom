@@ -41,7 +41,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `default_group_policy` | 新会话的初始群策略 |
 | `default_private_policy` | 私聊会话的初始策略，省略时沿用 `default_group_policy` |
 | `runtime` | 投递、过时判定、合并窗口等运行时参数 |
-| `adapters` | NapCat 和 Mock 适配器 |
+| `adapters` | NapCat、Telegram 和 Mock 适配器 |
 | `observability` | 日志 |
 
 ## server、storage

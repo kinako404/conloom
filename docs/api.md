@@ -1,6 +1,6 @@
 # HTTP API
 
-核心通过 REST API 对外提供全部能力，适配器（包括 NapCat 和 Mock）也只通过这套 API 和核心交互。请求与响应的 Go 类型见 [`pkg/conloomapi`](../pkg/conloomapi)，Go SDK 见 [`pkg/client`](../pkg/client)。一条消息在核心内部怎么处理，见 [架构](architecture.md#2-一条群消息的完整往返)。
+核心通过 REST API 对外提供全部能力，适配器（包括 NapCat、Telegram 和 Mock）也只通过这套 API 和核心交互。请求与响应的 Go 类型见 [`pkg/conloomapi`](../pkg/conloomapi)，Go SDK 见 [`pkg/client`](../pkg/client)。一条消息在核心内部怎么处理，见 [架构](architecture.md#2-一条群消息的完整往返)。
 
 ## 鉴权
 
