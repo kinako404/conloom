@@ -1,9 +1,15 @@
 package memory
 
 import (
+	"context"
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/kinako404/conloom/internal/obs"
+	"github.com/kinako404/conloom/internal/review"
+	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 const (
@@ -82,4 +88,77 @@ func LooksLikeContactOrID(s string) bool {
 func WithoutRemembered(note string) string {
 	before, _, _ := strings.Cut(note, RememberMarker)
 	return strings.TrimSpace(before)
+}
+
+// RememberStatus is the outcome of Remember.
+type RememberStatus int
+
+const (
+	Remembered        RememberStatus = iota
+	RememberEmpty                    // nothing left after trimming
+	RememberTooLong                  // over RememberMaxRunes
+	RememberSensitive                // contact details or an identity number
+	RememberBlocked                  // refused by review
+)
+
+// Reviewer is the part of review.Reviewer that Remember uses.
+type Reviewer interface {
+	Input(text string, pol conloomapi.ReviewPolicy) review.Result
+	Output(text string, pol conloomapi.ReviewPolicy) review.Result
+}
+
+// RememberDeps are what Remember needs. Metrics may be nil.
+type RememberDeps struct {
+	Store    MemberStore
+	Reviewer Reviewer
+	Metrics  *obs.Metrics
+}
+
+// RememberRequest is one thing a member asked the bot to remember in a
+// conversation; Review is the conversation's review policy.
+type RememberRequest struct {
+	ConversationKey, UserID, DisplayName string
+	Content                              string
+	Review                               conloomapi.ReviewPolicy
+}
+
+// Remember appends what a member asked to remember to their note (see
+// AppendRemembered) within the conversation's note limit, with a note
+// revision from the command source. The content has its whitespace collapsed
+// and must be 1..RememberMaxRunes runes; contact details and identity numbers
+// are refused, and the rest goes through the review of incoming messages and
+// then the redaction and blocked words of outgoing ones, as it may be shown to
+// the reply model. The caller checks that memory is on.
+func Remember(ctx context.Context, d RememberDeps, req RememberRequest) (RememberStatus, error) {
+	content := strings.Join(strings.Fields(req.Content), " ")
+	switch n := utf8.RuneCountInString(content); {
+	case n == 0:
+		return RememberEmpty, nil
+	case n > RememberMaxRunes:
+		return RememberTooLong, nil
+	case LooksLikeContactOrID(content):
+		return RememberSensitive, nil
+	}
+	in := d.Reviewer.Input(content, req.Review)
+	out := d.Reviewer.Output(in.Text, req.Review)
+	if d.Metrics != nil {
+		d.Metrics.Review.WithLabelValues("input", in.Verdict).Inc()
+		d.Metrics.Review.WithLabelValues("output", out.Verdict).Inc()
+	}
+	if content = strings.Join(strings.Fields(out.Text), " "); out.Verdict == review.VerdictBlock || content == "" {
+		return RememberBlocked, nil
+	}
+	limit := NoteLimit(convTypeOf(req.ConversationKey))
+	_, err := UpdateMember(ctx, d.Store, req.ConversationKey, req.UserID, store.RevisionCommand,
+		func(m *store.MemberMemory) (string, bool) {
+			m.Note = AppendRemembered(m.Note, content, limit)
+			if req.DisplayName != "" && req.DisplayName != req.UserID {
+				m.DisplayName = req.DisplayName
+			}
+			return ReasonRemember, true
+		})
+	if err != nil {
+		return 0, err
+	}
+	return Remembered, nil
 }

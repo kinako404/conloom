@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/persona"
-	"github.com/kinako404/conloom/internal/review"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -130,44 +128,29 @@ func (o *Orchestrator) memCmdAffinity(ctx context.Context, task store.TaskRecord
 	return CopyAffinity(name, memory.TierName(*m.Affinity), *m.Affinity), nil
 }
 
-// memCmdRemember appends what the sender asked to remember to their note (see
-// memory.AppendRemembered), within the conversation's note limit. Contact
-// details and identity numbers are refused; the rest goes through the review
-// of incoming messages and then the redaction and blocked words of outgoing
-// ones, as it may be shown to the reply model.
+// memCmdRemember remembers what the sender asked (memory.Remember) and
+// answers with the copy for its outcome.
 func (o *Orchestrator) memCmdRemember(ctx context.Context, task store.TaskRecord, args string, triggers []store.MessageRecord,
 	pol conloomapi.ReviewPolicy) (string, error) {
-	content := strings.Join(strings.Fields(args), " ")
-	switch n := utf8.RuneCountInString(content); {
-	case n == 0:
-		return CopyRememberUsage, nil
-	case n > memory.RememberMaxRunes:
-		return CopyRememberTooLong, nil
-	case memory.LooksLikeContactOrID(content):
-		return CopyRememberSensitive, nil
-	}
-	in := o.reviewer.Input(content, pol)
-	o.metrics.Review.WithLabelValues("input", in.Verdict).Inc()
-	out := o.reviewer.Output(in.Text, pol)
-	o.metrics.Review.WithLabelValues("output", out.Verdict).Inc()
-	if content = strings.Join(strings.Fields(out.Text), " "); out.Verdict == review.VerdictBlock || content == "" {
-		return CopyRememberBlocked, nil
-	}
-	limit := memory.NoteLimit(convType(task.ConversationKey))
-	user, name := task.ActorPlatformUserID, ""
+	name := ""
 	if len(triggers) > 0 {
 		name = triggers[len(triggers)-1].DisplayName
 	}
-	_, err := memory.UpdateMember(ctx, o.st, task.ConversationKey, user, store.RevisionCommand,
-		func(m *store.MemberMemory) (string, bool) {
-			m.Note = memory.AppendRemembered(m.Note, content, limit)
-			if name != "" && name != user {
-				m.DisplayName = name
-			}
-			return memory.ReasonRemember, true
-		})
+	status, err := memory.Remember(ctx, memory.RememberDeps{Store: o.st, Reviewer: o.reviewer, Metrics: o.metrics},
+		memory.RememberRequest{ConversationKey: task.ConversationKey, UserID: task.ActorPlatformUserID,
+			DisplayName: name, Content: args, Review: pol})
 	if err != nil {
 		return "", err
+	}
+	switch status {
+	case memory.RememberEmpty:
+		return CopyRememberUsage, nil
+	case memory.RememberTooLong:
+		return CopyRememberTooLong, nil
+	case memory.RememberSensitive:
+		return CopyRememberSensitive, nil
+	case memory.RememberBlocked:
+		return CopyRememberBlocked, nil
 	}
 	return CopyRemembered, nil
 }
