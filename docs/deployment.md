@@ -22,7 +22,7 @@ go install github.com/kinako404/conloom/cmd/conloom@latest
 
 - 生产环境运行核心 `conloom serve`，以及按需接入的适配器：`conloom adapter napcat`（QQ）、`conloom adapter telegram`（Telegram），都是长期进程。适配器不监听端口，只主动连接平台（NapCat 或 Telegram Bot API）和核心，可以部署在另一台机器上。
 - 核心只能运行一个，每个机器人实例的适配器也只能运行一个：核心的调度、限流等状态在进程内存里，适配器的去重记录是进程本地的。
-- API、`/healthz` 和 `/metrics` 共用 `server.listen` 一个端口，默认只监听本机。`/healthz` 与 `/metrics` 不需要鉴权；如果要让别的机器上的适配器访问核心而把 `server.listen` 改为非本地地址，请用防火墙限制来源，或关闭 `metrics_enabled`。适配器和核心之间是普通 HTTP，跨机器时建议走内网或加一层 TLS 代理。
+- API、`/healthz`、`/metrics` 和 Web 管理面板（配置了 `panel` 段时）共用 `server.listen` 一个端口，默认只监听本机。`/healthz` 与 `/metrics` 不需要鉴权；如果要让别的机器上的适配器访问核心而把 `server.listen` 改为非本地地址，请用防火墙限制来源，或关闭 `metrics_enabled`。适配器和核心之间是普通 HTTP，跨机器时建议走内网或加一层 TLS 代理。
 - 仓库不负责部署 NapCat，只要求 NapCat 开启 OneBot 11 正向 WebSocket 服务并设置 access token。适配器断线后自动重连（退避从 1 秒起，最长 30 秒）。
 
 ## Linux（systemd）
@@ -214,6 +214,86 @@ embedding:
 
 换模型时改 `model` 后重启即可：后台按会话从新到旧重新生成向量，补齐之前旧模型的向量不参与检索，全部补齐后删除。换向量服务（换机器、换 Ollama 以外的实现，哪怕模型同名）时也要改 `model`：先在新服务上给模型起个新名字（如 `ollama cp bge-m3 bge-m3-b`），再把 `model` 改成它，否则后台只能靠维数不同来发现，维数相同的不同向量会被混在一起比较。
 
+## Web 管理面板
+
+面板是可选的，功能见 [Web 管理面板](panel.md)。下面按 systemd 布局（`/opt/conloom`）说明。
+
+**1. 生成密码和哈希**
+
+`conloom panel hash-password` 从标准输入读一行作为密码（去掉行尾的换行），输出一行 `pbkdf2-sha256:<迭代次数>:<盐>:<哈希>`，默认 600000 次迭代。生成一个随机密码，存在只有 root 能读的文件里，再算出哈希：
+
+```sh
+sudo sh -c 'umask 077 && openssl rand -base64 18 > /root/conloom-panel-password'
+sudo sh -c '/opt/conloom/conloom panel hash-password < /root/conloom-panel-password'
+```
+
+也可以直接运行 `conloom panel hash-password` 后键入密码回车，但密码会显示在终端上。密码不要写进仓库、命令行参数或日志。
+
+**2. 写入 `.env` 和配置**
+
+把输出的整行写进 `/opt/conloom/.env`：
+
+```sh
+CONLOOM_PANEL_ADMIN_HASH=pbkdf2-sha256:600000:<盐>:<哈希>
+```
+
+哈希里没有 `$`，放进 `.env` 或 shell 都不会被当成变量展开。然后在 `conloom.yaml` 里加上 `panel` 段（字段见 [配置参考：panel](configuration.md#panel)），重启核心：
+
+```yaml
+panel:
+  users:
+    - name: admin
+      password_hash: ${CONLOOM_PANEL_ADMIN_HASH}
+```
+
+```sh
+sudo systemctl restart conloom
+```
+
+**3. 经 SSH 隧道访问**
+
+核心默认只监听 `127.0.0.1:8787`，在自己的电脑上开一条隧道：
+
+```sh
+ssh -L 8787:127.0.0.1:8787 <用户>@<服务器>
+```
+
+然后在浏览器打开 `http://127.0.0.1:8787/panel/`，用 `admin` 和第 1 步的密码登录。这种方式 `cookie_secure` 保持 `false`。
+
+**改密码**：重新执行第 1、2 步，替换 `.env` 里的哈希并重启核心。这个用户已有的登录会话随即全部失效（会话记着登录时哈希的指纹，和配置里的不一致就拒绝），其他用户不受影响。忘记密码时也是这样重置。
+
+### 经 HTTPS 反向代理访问
+
+需要不经 SSH 直接访问时，在核心前面放一个负责 HTTPS 的反向代理，只转发 `/panel` 下的路径，核心仍然只监听本机。以 [Caddy](https://caddyserver.com/) 为例（`panel.example.invalid` 换成你的域名，Caddy 会自动申请证书）：
+
+```text
+panel.example.invalid {
+	handle /panel* {
+		reverse_proxy 127.0.0.1:8787
+	}
+	handle {
+		respond 404
+	}
+}
+```
+
+同时在 `conloom.yaml` 里设 `cookie_secure: true` 并重启核心：
+
+```yaml
+panel:
+  cookie_secure: true
+  users:
+    - name: admin
+      password_hash: ${CONLOOM_PANEL_ADMIN_HASH}
+```
+
+注意：
+
+- 代理必须原样转发 `Host` 头：面板的 CSRF 检查要求请求的 `Origin` 和 `Host` 一致。Caddy 默认就这样做；nginx 要写 `proxy_set_header Host $host;`。
+- 不要把 `/api/v1`、`/metrics`、`/healthz` 一起暴露到公网，上面的配置只转发 `/panel`。
+- 面板只信任 TCP 连接的对端地址，不读 `X-Forwarded-For`，经代理时所有人的来源 IP 都是代理的地址：登录失败的“每 IP 15 分钟 5 次”额度由所有访问者共用，有人在公网上乱试密码时，你自己也可能要等最多 15 分钟才能再登录。
+- 设了 `cookie_secure: true` 以后浏览器只经 HTTPS 发送登录 cookie，再用 SSH 隧道的 `http://` 地址访问可能登录不上，这时改用 HTTPS 地址。
+
 ## 数据目录与权限
 
 全部状态在一个数据目录里，全部配置在 `conloom.yaml` 加可选的 `.env`，二进制没有其他依赖：
@@ -236,6 +316,8 @@ embedding:
   | 事件幂等记录（含被处理事件的原文） | `events` | `runtime.idempotency_retention`（默认 7 天） |
   | 主动搭话记录 | `proactive_log` | 7 天 |
   | 记忆修订历史 | `memory_revisions` | 30 天（由记忆层清理，不受 `ops_retention` 影响） |
+  | 模型用量明细（每次模型调用一行） | `model_calls` | `runtime.usage_retention`（默认 400 天） |
+  | Web 管理面板的登录会话 | `panel_sessions` | 超过 `panel.session_ttl` 或 `panel.idle_timeout` 后删除 |
 
 - **永远保留**：聊天消息 `messages`（长期记忆的来源）、会话和用户、记忆（`group_memory`、`member_memory`）、群策略版本、人格版本、群友的主动档位和兴趣画像（`conversation_members`）。它们会随使用增长，删除只能靠 `/忘记我` 等功能或手工处理。排队中和运行中的任务也不会被清理，重启后照常恢复。
 - 清理以后，`GET /api/v1/tasks/{task_id}` 查询已删除的任务返回 404；聊天消息、引用回复的解析和记忆整理都不依赖这些表。清理只删行，不收缩数据库文件；删掉的空间会被之后的写入复用。
@@ -269,6 +351,8 @@ embedding:
 
 **升级**：先备份，再替换二进制并重启（先核心后适配器）。核心启动时自动按顺序应用新的表结构迁移，迁移只能前进、没有回滚脚本，所以回退到旧版本时要用升级前的备份。升级前请对照 [配置参考](configuration.md#群策略) 检查已移除的配置字段（例如 `proactive.contact_cooldown`），配置文件里残留未知字段会导致启动失败。流水表清理没有新增表结构迁移，旧二进制可以直接在同一个库上运行；但回退到没有流水表清理的版本时，要先从 `conloom.yaml` 里删掉 `runtime.ops_retention` 和 `runtime.audit_retention`。
 
+**回退到没有 Web 管理面板的旧版本**（没有迁移 0008、0009）：先从 `conloom.yaml` 里删掉整个 `panel` 段和 `runtime.usage_retention`，否则旧二进制因为未知字段启动失败。旧二进制会忽略 `model_calls`、`panel_sessions` 两张表，不需要用备份恢复；回退期间的模型调用不会记入用量，再升级回来后这段时间在用量页上是空白。
+
 **回退到没有长期检索的旧版本**（没有迁移 0006、0007，也就是没有关键词索引和语义检索的版本）：
 - **配置**：换回旧二进制之前，先从 `conloom.yaml` 里删掉 `runtime.ops_retention`、`runtime.audit_retention` 和整个 `embedding` 段。旧版本严格解析配置，遇到不认识的字段会直接启动失败。
 - **表结构**：旧二进制会忽略 0006 和 0007 新增的表，不需要用备份恢复。
@@ -300,6 +384,8 @@ sqlite3 <data_dir>/conloom.db 'DELETE FROM memory_chunks; DELETE FROM memory_chu
 | `conloom_continuation_exits_total` | `reason`：`rule`、`model`、`limit`、`idle` | 在聊模式的退出次数：`rule` 为参与者规则退出，`model` 为连续跳过使会话结束，`limit` 为未点名回复达到上限使会话结束，`idle` 为超过保持时间无活动而结束 |
 | `conloom_proactive_total` | `result`：`evaluated`、`sent`、`skipped` | 加入群聊：`evaluated` 为通过检查、交给模型评估，`sent` 为实际发出，`skipped` 为模型放弃，或调用模型前 / 发出前重新检查时已不允许发出 |
 
+配置了 `panel` 段时，也可以在 [Web 管理面板](panel.md) 的概览页看实时状态、在用量页看按天统计的模型调用和 token（这部分存在库里，重启不丢）。面板和用量记录新增的指标见 [Web 管理面板：指标](panel.md#指标)。
+
 完整的指标列表、日志里的原因代码（如 `join skipped` 的 `few_messages`、`cooldown`、`no_eligible`）见 [架构 8 节](architecture.md#8-可观测性)。停顿检查没有加入时的日志带窗口消息数和目标资格人数，不记录兴趣词、消息正文和群友昵称。指标在进程重启后归零。
 
 ## 隐私
@@ -312,3 +398,4 @@ sqlite3 <data_dir>/conloom.db 'DELETE FROM memory_chunks; DELETE FROM memory_chu
 - 主动搭话的兴趣画像（每位 @ 过机器人的群友最多 50 个关键词及权重）、档位和最近一次 @ 机器人的时间保存在 `conloom.db` 中，不写入日志，也不会出现在群消息里；加入群聊时只把在场目标资格人合并后的前 5 个兴趣词放进发给模型的提示。在聊会话和停顿计时器只在内存里，不落库。
 - 组装好的上下文会发送到你配置的模型 endpoint，也就是说消息内容会离开本机（除非模型部署在本机）。
 - 模型输出会剥离平台控制码，并对密钥形态的字符串和配置中的任何密钥打码后才发送。
+- Web 管理面板能看到全部会话的聊天记录、记忆和配置（密钥打码），登录密码要和数据目录一样保管好；不要让面板未经 HTTPS 暴露在公网。用量明细只记 token 数、耗时和结果，不记提示词和回复内容。
