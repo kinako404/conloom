@@ -51,13 +51,19 @@ func BenchmarkSearchMessages(b *testing.B) {
 		}
 	}
 	terms := search.Terms("周末出去玩", []string{"旅行", "海边"})
-	for name, r := range map[string]search.Range{
-		"all":   {},
-		"range": {After: time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)},
+	prefixes := search.Terms("吃", []string{"今", "明", "周", "晚", "早", "火", "草", "蛋"})
+	for _, c := range []struct {
+		name  string
+		terms []string
+		r     search.Range
+	}{
+		{"all", terms, search.Range{}},
+		{"range", terms, search.Range{After: time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)}},
+		{"prefixes", prefixes, search.Range{}},
 	} {
-		b.Run(name, func(b *testing.B) {
+		b.Run(c.name, func(b *testing.B) {
 			for b.Loop() {
-				hits, err := db.SearchMessages(context.Background(), testConvKey, terms, r, 50)
+				hits, err := db.SearchMessages(context.Background(), testConvKey, c.terms, c.r, 0, 50)
 				if err != nil || len(hits) != 50 {
 					b.Fatalf("SearchMessages = %d hits, %v", len(hits), err)
 				}

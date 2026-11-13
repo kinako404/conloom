@@ -27,6 +27,9 @@ const (
 	// stretches each search path returns for fusion.
 	recallKeywordHits = 50
 	recallVectorHits  = 20
+	// recallMorePages is how many further pages of keyword hits are read
+	// when the candidates so far leave fewer than recallHits groups to show.
+	recallMorePages = 3
 	// recallRRFK is the k of reciprocal rank fusion, and recallRecencyWeight
 	// the most a hit gains for being the newest among the candidates.
 	recallRRFK          = 60
@@ -58,7 +61,7 @@ var recallVectorTimeout = 3 * time.Second
 
 // RecallStore is the part of store.Store that recall reads.
 type RecallStore interface {
-	SearchMessages(ctx context.Context, convKey string, terms []string, r search.Range, limit int) ([]store.MessageHit, error)
+	SearchMessages(ctx context.Context, convKey string, terms []string, r search.Range, offset, limit int) ([]store.MessageHit, error)
 	MessagesAround(ctx context.Context, convKey string, fromSeq, toSeq int64, before, after int) ([]store.MessageRecord, error)
 	ListMemberMemories(ctx context.Context, convKey string) ([]store.MemberMemory, error)
 }
@@ -93,10 +96,13 @@ type recallTool struct {
 // The keyword index gives the best 50 messages and, when Vectors is set,
 // semantic search the best 20 stretches; reciprocal rank fusion (k = 60)
 // with a slight preference for newer hits ranks them, overlapping hits
-// counting together. The best 6 are shown: a message hit with 2 messages of
-// context on either side, a stretch whole, groups that touch merged, each
-// group under a "—— YYYY-MM-DD ——" line, in time order, as
-// "[MM-DD HH:MM] 名字：正文" lines, at most 1500 runes, without any IDs.
+// counting together. In a private chat whose speaker was forgotten, both
+// searches start at that time. Candidates are expanded in turn until 6
+// groups can be shown, reading up to 3 more pages of keyword hits when the
+// first leaves fewer: a message hit with 2 messages of context on either
+// side, a stretch whole, groups that touch merged, each group under a
+// "—— YYYY-MM-DD ——" line, in time order, as "[MM-DD HH:MM] 名字：正文"
+// lines, at most 1500 runes, without any IDs.
 //
 // Never shown are commands and the bot's replies to them, messages blocked
 // by the conversation's review, the current turn (the trigger messages, or
@@ -161,30 +167,46 @@ func (t *recallTool) Call(ctx context.Context, inv skills.Invocation, args json.
 	if !on {
 		return "这个会话没有开启记忆。", nil
 	}
-	terms := search.Terms(query, keywords)
-	keyword, err := t.keywordHits(ctx, inv.ConversationKey, terms, rng)
-	if err != nil {
-		return "", err
-	}
-	candidates := fuse(keyword, t.vectorHits(ctx, inv.ConversationKey, query, rng))
-	if len(candidates) == 0 {
-		return recallNotFound, nil
-	}
 	members, err := t.d.Store.ListMemberMemories(ctx, inv.ConversationKey)
 	if err != nil {
 		return "", err
 	}
+	rng = sinceForgotten(rng, members, inv)
+	terms := search.Terms(query, keywords)
+	keyword, err := t.keywordHits(ctx, inv.ConversationKey, terms, rng, 0)
+	if err != nil {
+		return "", err
+	}
 	var groups []recallGroup
-	for _, c := range candidates {
-		if len(groups) == t.maxGroups {
-			break
+	var seen []recallCandidate
+	expand := func(candidates []recallCandidate) error {
+		for _, c := range candidates {
+			if len(groups) == t.maxGroups {
+				return nil
+			}
+			if slices.ContainsFunc(seen, func(s recallCandidate) bool { return c.from <= s.to && s.from <= c.to }) {
+				continue
+			}
+			seen = append(seen, c)
+			g, ok, err := t.expand(ctx, inv, pv.Policy, members, terms, c)
+			if err != nil {
+				return err
+			}
+			if ok {
+				groups = append(groups, g)
+			}
 		}
-		g, ok, err := t.expand(ctx, inv, pv.Policy, members, terms, c)
-		if err != nil {
+		return nil
+	}
+	if err := expand(fuse(keyword, 0, t.vectorHits(ctx, inv.ConversationKey, query, rng))); err != nil {
+		return "", err
+	}
+	for page := 1; page <= recallMorePages && len(groups) < t.maxGroups && len(keyword) == recallKeywordHits; page++ {
+		if keyword, err = t.keywordHits(ctx, inv.ConversationKey, terms, rng, page*recallKeywordHits); err != nil {
 			return "", err
 		}
-		if ok {
-			groups = append(groups, g)
+		if err := expand(fuse(keyword, page*recallKeywordHits, nil)); err != nil {
+			return "", err
 		}
 	}
 	if len(groups) == 0 {
@@ -259,13 +281,28 @@ func dateRangeArg(args json.RawMessage, loc *time.Location) (search.Range, strin
 	return r, ""
 }
 
-// keywordHits searches the keyword index, timing it as path "keyword".
-func (t *recallTool) keywordHits(ctx context.Context, convKey string, terms []string, r search.Range) ([]store.MessageHit, error) {
+// sinceForgotten narrows r, in a private chat whose speaker was forgotten,
+// to start no earlier than that, since nothing before it may be shown.
+func sinceForgotten(r search.Range, members []store.MemberMemory, inv skills.Invocation) search.Range {
+	if inv.ConversationType != conloomapi.ConvPrivate {
+		return r
+	}
+	for _, m := range members {
+		if m.PlatformUserID == inv.PlatformUserID && m.ForgottenAt.After(r.After) {
+			r.After = m.ForgottenAt
+		}
+	}
+	return r
+}
+
+// keywordHits searches the keyword index from offset, timing it as path
+// "keyword".
+func (t *recallTool) keywordHits(ctx context.Context, convKey string, terms []string, r search.Range, offset int) ([]store.MessageHit, error) {
 	if len(terms) == 0 {
 		return nil, nil
 	}
 	start := time.Now()
-	hits, err := t.d.Store.SearchMessages(ctx, convKey, terms, r, recallKeywordHits)
+	hits, err := t.d.Store.SearchMessages(ctx, convKey, terms, r, offset, recallKeywordHits)
 	if t.d.Metrics != nil {
 		t.d.Metrics.SearchSeconds.WithLabelValues("keyword").Observe(time.Since(start).Seconds())
 	}
@@ -298,15 +335,16 @@ type recallCandidate struct {
 }
 
 // fuse ranks keyword and vector hits by reciprocal rank fusion: a hit at
-// rank i of its list scores 1/(recallRRFK+i+1), and hits whose seq ranges
+// rank i of its list scores 1/(recallRRFK+i+1), the keyword hits' ranks
+// starting at keywordRank (for later pages), and hits whose seq ranges
 // overlap become one candidate with their scores added. Each candidate's
 // score is then raised by up to recallRecencyWeight for being newer than the
 // others. Candidates come best first, newer first among equals.
-func fuse(keyword []store.MessageHit, vector []search.Hit) []recallCandidate {
+func fuse(keyword []store.MessageHit, keywordRank int, vector []search.Hit) []recallCandidate {
 	rrf := func(rank int) float64 { return 1 / float64(recallRRFK+rank+1) }
 	var cands []recallCandidate
 	for i, h := range keyword {
-		cands = append(cands, recallCandidate{from: h.Seq, to: h.Seq, anchors: []int64{h.Seq}, score: rrf(i)})
+		cands = append(cands, recallCandidate{from: h.Seq, to: h.Seq, anchors: []int64{h.Seq}, score: rrf(keywordRank + i)})
 	}
 	for i, h := range vector {
 		from, to := min(h.FromSeq, h.ToSeq), max(h.FromSeq, h.ToSeq)
@@ -342,8 +380,9 @@ func fuse(keyword []store.MessageHit, vector []search.Hit) []recallCandidate {
 }
 
 // recallEntry is a message as recall may show it: name and body cleaned,
-// redacted and reviewed, and search the lower-cased name and body without
-// spaces, for checking terms.
+// redacted and reviewed, and search the name and body normalised as the
+// keyword index sees them (search.Normalize) without spaces, for checking
+// terms.
 type recallEntry struct {
 	seq                int64
 	at                 time.Time
@@ -573,7 +612,7 @@ func (t *recallTool) entries(msgs []store.MessageRecord, pol conloomapi.GroupPol
 		body = oneLine(res.Text)
 		name := recallName(m)
 		out = append(out, recallEntry{seq: m.Seq, at: m.OccurredAt, name: name, body: body,
-			search: strings.ToLower(strings.ReplaceAll(name+body, " ", ""))})
+			search: strings.ReplaceAll(search.Normalize(name+body), " ", "")})
 	}
 	return out
 }

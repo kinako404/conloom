@@ -7,6 +7,7 @@ toolchain go1.26.4
 require (
 	github.com/coder/websocket v1.8.15
 	github.com/prometheus/client_golang v1.25.0
+	golang.org/x/text v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.62.0
 )

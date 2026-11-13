@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
@@ -14,15 +16,25 @@ const (
 	// MaxTerms bounds the terms of one search: keywords first, then the
 	// query's tokens.
 	MaxTerms = 16
-	// asciiPrefixRunes is the shortest ASCII word matched as a prefix at the
-	// end of a term, so that "straw" finds "strawberry".
-	asciiPrefixRunes = 3
+	// wordPrefixRunes is the shortest word matched as a prefix at the end of
+	// a term, so that "straw" finds "strawberry".
+	wordPrefixRunes = 3
 )
 
+// Text is cut into runs of two kinds, after NFKC normalisation (full-width
+// letters and digits become half-width, half-width katakana full-width) and
+// lower-casing: CJK runs of Han, kana and Hangul, cut into every two adjacent
+// characters, and word runs of other letters and digits (accented Latin
+// letters included), kept whole. Everything else separates runs.
+
+// Normalize is s as the keyword index sees it: NFKC, then lower case.
+func Normalize(s string) string { return normalize(s) }
+
+func normalize(s string) string { return strings.ToLower(norm.NFKC.String(s)) }
+
 // QueryTokens splits query into at most MaxQueryTokens distinct search terms
-// in order: every two adjacent characters of each run of Han characters and
-// every lower-cased run of ASCII letters or digits. A lone Han character is a
-// term only when the query has no other terms.
+// in order: every two adjacent characters of each CJK run and every word. A
+// lone CJK character is a term only when the query has no other terms.
 func QueryTokens(query string) []string {
 	var tokens, singles []string
 	add := func(list *[]string, tok string) {
@@ -30,10 +42,10 @@ func QueryTokens(query string) []string {
 			*list = append(*list, tok)
 		}
 	}
-	scan(query, func(run []rune, han bool) {
+	scan(normalize(query), func(run []rune, cjk bool) {
 		switch {
-		case !han:
-			add(&tokens, strings.ToLower(string(run)))
+		case !cjk:
+			add(&tokens, string(run))
 		case len(run) == 1:
 			add(&singles, string(run))
 		default:
@@ -48,13 +60,13 @@ func QueryTokens(query string) []string {
 	return tokens[:min(len(tokens), MaxQueryTokens)]
 }
 
-// Terms is the lower-cased keywords, each matched whole, followed by
+// Terms is the normalised keywords, each matched whole, followed by
 // QueryTokens(query), without repeats and at most MaxTerms, so that a long
 // query never crowds out the keywords.
 func Terms(query string, keywords []string) []string {
 	var terms []string
 	for _, k := range keywords {
-		if k = strings.ToLower(k); !slices.Contains(terms, k) {
+		if k = normalize(k); !slices.Contains(terms, k) {
 			terms = append(terms, k)
 		}
 	}
@@ -67,15 +79,13 @@ func Terms(query string, keywords []string) []string {
 }
 
 // IndexTokens is what the keyword index stores for text, in order: for each
-// run of Han characters every two adjacent characters followed by its last
-// character alone, and every lower-cased run of ASCII letters or digits.
-// Other characters separate tokens. Together with TermPhrase this finds a
-// term wherever it occurs in text, as long as an ASCII word in it is not cut.
+// CJK run every two adjacent characters followed by its last character
+// alone, and every word.
 func IndexTokens(text string) []string {
 	var tokens []string
-	scan(text, func(run []rune, han bool) {
-		if !han {
-			tokens = append(tokens, strings.ToLower(string(run)))
+	scan(normalize(text), func(run []rune, cjk bool) {
+		if !cjk {
+			tokens = append(tokens, string(run))
 			return
 		}
 		for k := 0; k+1 < len(run); k++ {
@@ -88,16 +98,22 @@ func IndexTokens(text string) []string {
 
 // TermPhrase is how term is looked up in tokens made by IndexTokens: as the
 // phrase of consecutive tokens returned, whose last one only needs to start
-// the matching token when prefix is set. That is IndexTokens(term) without
-// the lone last character of Han runs longer than one (their bigrams cover
-// it), and prefix when the term ends in a lone Han character or an ASCII word
-// of at least three characters.
+// the matching token when prefix is set.
+//
+// The phrase is IndexTokens(term) without the lone last character of the
+// term's last run when that run is CJK and longer than one character: in the
+// index that character, or a pair starting with it, always follows the pair
+// before it, so leaving it out changes nothing and saves a prefix search. The
+// last token is a prefix when the term ends in a lone CJK character or a word
+// of at least wordPrefixRunes characters, since the text may go on there.
+// Every piece of an indexed text that does not cut a word is thus found.
 func TermPhrase(term string) (tokens []string, prefix bool) {
-	scan(term, func(run []rune, han bool) {
+	var lastRun int
+	scan(normalize(term), func(run []rune, cjk bool) {
 		switch {
-		case !han:
-			tokens = append(tokens, strings.ToLower(string(run)))
-			prefix = len(run) >= asciiPrefixRunes
+		case !cjk:
+			tokens = append(tokens, string(run))
+			prefix = len(run) >= wordPrefixRunes
 		case len(run) == 1:
 			tokens = append(tokens, string(run))
 			prefix = true
@@ -105,9 +121,17 @@ func TermPhrase(term string) (tokens []string, prefix bool) {
 			for k := 0; k+1 < len(run); k++ {
 				tokens = append(tokens, string(run[k:k+2]))
 			}
+			tokens = append(tokens, string(run[len(run)-1]))
 			prefix = false
 		}
+		lastRun = len(run)
+		if !cjk {
+			lastRun = 0
+		}
 	})
+	if lastRun > 1 {
+		tokens = tokens[:len(tokens)-1]
+	}
 	return tokens, prefix
 }
 
@@ -118,25 +142,22 @@ func ConversationMark(convKey string) string {
 	return "c" + hex.EncodeToString(sum[:8])
 }
 
-// IndexText is the indexed text of a message: its conversation's mark, then
-// the IndexTokens of its text and of its sender's display name, separated by
-// spaces.
-func IndexText(convKey, displayName, text string) string {
-	parts := append([]string{ConversationMark(convKey)}, IndexTokens(text)...)
-	return strings.Join(append(parts, IndexTokens(displayName)...), " ")
+// IndexText is the indexed text of a message: the IndexTokens of its text
+// and of its sender's display name, separated by spaces.
+func IndexText(displayName, text string) string {
+	return strings.Join(append(IndexTokens(text), IndexTokens(displayName)...), " ")
 }
 
-// scan calls fn with each run of Han characters (han set) and each run of
-// ASCII letters or digits in s, in order.
-func scan(s string, fn func(run []rune, han bool)) {
+// scan calls fn with each CJK run (cjk set) and each word run of s, in order.
+func scan(s string, fn func(run []rune, cjk bool)) {
 	runes := []rune(s)
 	for i := 0; i < len(runes); {
 		var in func(rune) bool
 		switch {
-		case isHan(runes[i]):
-			in = isHan
-		case isASCIIAlnum(runes[i]):
-			in = isASCIIAlnum
+		case isCJK(runes[i]):
+			in = isCJK
+		case isWord(runes[i]):
+			in = isWord
 		default:
 			i++
 			continue
@@ -145,13 +166,18 @@ func scan(s string, fn func(run []rune, han bool)) {
 		for j < len(runes) && in(runes[j]) {
 			j++
 		}
-		fn(runes[i:j], isHan(runes[i]))
+		fn(runes[i:j], isCJK(runes[i]))
 		i = j
 	}
 }
 
-func isHan(r rune) bool { return unicode.Is(unicode.Han, r) }
+// isCJK reports whether r is Han, kana (with the prolonged sound mark) or
+// Hangul.
+func isCJK(r rune) bool {
+	return unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul) || r == 'ー'
+}
 
-func isASCIIAlnum(r rune) bool {
-	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
+// isWord reports whether r is a letter, digit or mark outside CJK.
+func isWord(r rune) bool {
+	return !isCJK(r) && (unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r))
 }

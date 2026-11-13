@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -72,7 +73,7 @@ func seqOf(t testing.TB, db *DB, id string) int64 {
 // found returns the IDs of the messages SearchMessages finds, best first.
 func found(t testing.TB, db *DB, convKey string, terms []string, r search.Range, limit int) []string {
 	t.Helper()
-	hits, err := db.SearchMessages(context.Background(), convKey, terms, r, limit)
+	hits, err := db.SearchMessages(context.Background(), convKey, terms, r, 0, limit)
 	if err != nil {
 		t.Fatalf("SearchMessages(%q): %v", terms, err)
 	}
@@ -212,6 +213,65 @@ func TestSearchMessages_Terms(t *testing.T) {
 		{[]string{"？"}, nil},
 		{nil, nil},
 		{[]string{"\"", "*", "OR", "NEAR(a b)"}, nil},
+	} {
+		if got := found(t, db, testConvKey, c.terms, search.Range{}, 10); !slices.Equal(got, c.want) {
+			t.Errorf("terms %q found %v, want %v", c.terms, got, c.want)
+		}
+	}
+}
+
+func TestSearchMessages_Pages(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	var msgs []store.MessageRecord
+	for i := range 7 {
+		msgs = append(msgs, ftsMessage(testConvKey, "20001", "小明", fmt.Sprintf("第%d次草莓%s", i, strings.Repeat("。", i)), ftsDay(i)))
+	}
+	memInsertMessages(t, db, msgs...)
+	for _, r := range []search.Range{{}, {After: ftsDay(-1)}} {
+		all, err := db.SearchMessages(ctx, testConvKey, []string{"草莓"}, r, 0, 10)
+		if err != nil || len(all) != 7 {
+			t.Fatalf("all = %v, %v", all, err)
+		}
+		var paged []store.MessageHit
+		for offset := 0; offset < 10; offset += 3 {
+			page, err := db.SearchMessages(ctx, testConvKey, []string{"草莓"}, r, offset, 3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			paged = append(paged, page...)
+		}
+		if !reflect.DeepEqual(paged, all) {
+			t.Fatalf("range %v: pages %v, want %v", r, paged, all)
+		}
+	}
+}
+
+func TestSearchMessages_MixedScripts(t *testing.T) {
+	db := newTestDB(t)
+	phone := ftsMessage(testConvKey, "20001", "小明", "我的手机iPhone坏了", ftsDay(0))
+	mi := ftsMessage(testConvKey, "20001", "小明", "新出的小米14发布了", ftsDay(1))
+	out := ftsMessage(testConvKey, "20001", "小明", "我们出去 玩吧", ftsDay(2))
+	qq := ftsMessage(testConvKey, "20002", "小红", "我的ＱＱ号是２０２６年注册的", ftsDay(3))
+	jp := ftsMessage(testConvKey, "20002", "小红", "東京に行きたい", ftsDay(4))
+	kr := ftsMessage(testConvKey, "20002", "小红", "한국어 공부", ftsDay(5))
+	cafe := ftsMessage(testConvKey, "20003", "Zoë", "Café au lait", ftsDay(6))
+	memInsertMessages(t, db, phone, mi, out, qq, jp, kr, cafe)
+	for _, c := range []struct {
+		terms []string
+		want  []string
+	}{
+		{[]string{"手机iPhone"}, []string{phone.ID}},
+		{[]string{"小米14"}, []string{mi.ID}},
+		{[]string{"出去 玩"}, []string{out.ID}},
+		{[]string{"qq"}, []string{qq.ID}},
+		{[]string{"2026"}, []string{qq.ID}},
+		{[]string{"东京"}, nil},
+		{[]string{"東京"}, []string{jp.ID}},
+		{[]string{"に行"}, []string{jp.ID}},
+		{[]string{"한국"}, []string{kr.ID}},
+		{[]string{"café"}, []string{cafe.ID}},
+		{[]string{"zoë"}, []string{cafe.ID}},
 	} {
 		if got := found(t, db, testConvKey, c.terms, search.Range{}, 10); !slices.Equal(got, c.want) {
 			t.Errorf("terms %q found %v, want %v", c.terms, got, c.want)

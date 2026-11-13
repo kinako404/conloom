@@ -72,7 +72,7 @@ func local(year int, month time.Month, day, hour, minute int) time.Time {
 func TestFuse(t *testing.T) {
 	kw := []store.MessageHit{{Seq: 10, Score: 9}, {Seq: 50, Score: 8}, {Seq: 30, Score: 7}, {Seq: 70, Score: 6}}
 	vec := []search.Hit{{FromSeq: 48, ToSeq: 52, Score: 0.9}, {FromSeq: 90, ToSeq: 95, Score: 0.8}, {FromSeq: 94, ToSeq: 99, Score: 0.7}}
-	got := fuse(kw, vec)
+	got := fuse(kw, 0, vec)
 	type c struct {
 		from, to int64
 		anchors  []int64
@@ -89,11 +89,14 @@ func TestFuse(t *testing.T) {
 		t.Fatalf("scores = %v", got)
 	}
 
-	tied := fuse([]store.MessageHit{{Seq: 5, Score: 1}, {Seq: 900, Score: 1}}, nil)
+	tied := fuse([]store.MessageHit{{Seq: 5, Score: 1}, {Seq: 900, Score: 1}}, 0, nil)
 	if tied[0].from != 900 {
 		t.Fatalf("near-equal hits = %v, want the newer first", tied)
 	}
-	clear := fuse([]store.MessageHit{{Seq: 5, Score: 9}, {Seq: 6, Score: 8}, {Seq: 7, Score: 7}, {Seq: 900, Score: 1}}, nil)
+	if later := fuse([]store.MessageHit{{Seq: 900, Score: 1}}, 50, nil); later[0].score != 1/float64(recallRRFK+51) {
+		t.Fatalf("a hit at rank 50 scores %v", later[0].score)
+	}
+	clear := fuse([]store.MessageHit{{Seq: 5, Score: 9}, {Seq: 6, Score: 8}, {Seq: 7, Score: 7}, {Seq: 900, Score: 1}}, 0, nil)
 	if clear[0].from != 5 {
 		t.Fatalf("ranked = %v, want relevance to outweigh recency", clear)
 	}
@@ -401,6 +404,78 @@ func TestRecall_FindsVeryOldMessages(t *testing.T) {
 	got := call(t, newRecall(st, true), invocation(groupKey, "20003", "小刚"), `{"query":"团子"}`)
 	if !strings.HasPrefix(got, "—— 2025-01-02 ——\n[01-02 20:00] 小明：我小时候养过一只叫团子的猫") {
 		t.Fatalf("recall of a message 6000 messages back =\n%s", got)
+	}
+}
+
+// longStrawberry is a message mentioning 草莓 among many other words, so it
+// ranks below short ones.
+var longStrawberry = strings.Repeat("今天天气不错，", 15) + "后来又吃了草莓"
+
+func TestRecall_PrivateSearchStartsAfterForgetting(t *testing.T) {
+	ctx := context.Background()
+	st, raw := openBulk(t)
+	forgotten := local(2026, 6, 1, 12, 0)
+	var msgs []store.MessageRecord
+	for i := range 220 {
+		user := "20001"
+		if i%2 == 1 {
+			user = ""
+		}
+		msgs = append(msgs, message(privateKey, user, "小明", "草莓", forgotten.Add(-time.Duration(300-i)*time.Minute)))
+	}
+	msgs = append(msgs, message(privateKey, "20001", "小明", longStrawberry, forgotten.Add(time.Hour)))
+	bulkInsert(t, raw, msgs)
+	backfillAll(t, st)
+	if err := st.ForgetPrivate(ctx, privateKey, "20001", forgotten); err != nil {
+		t.Fatal(err)
+	}
+	vec := &fakeVectors{}
+	tool := newRecallWith(st, vec)
+	inv := invocation(privateKey, "20001", "小明")
+	if got, want := call(t, tool, inv, `{"query":"草莓"}`), "—— 2026-06-01 ——\n[06-01 13:00] 小明："+longStrawberry; got != want {
+		t.Fatalf("private recall after forgetting =\n%s\nwant\n%s", got, want)
+	}
+	call(t, tool, inv, `{"query":"草莓","after":"2026-01-01"}`)
+	call(t, tool, inv, `{"query":"草莓","after":"2026-06-02"}`)
+	for i, want := range []time.Time{forgotten, forgotten, local(2026, 6, 2, 0, 0)} {
+		if got := vec.calls[i].r.After; !got.Equal(want) {
+			t.Errorf("vector search %d starts at %v, want %v", i, got, want)
+		}
+	}
+}
+
+func TestRecall_PagesPastHiddenHits(t *testing.T) {
+	ctx := context.Background()
+	st, raw := openBulk(t)
+	forgotten := local(2026, 6, 1, 12, 0)
+	var msgs []store.MessageRecord
+	for i := range 70 {
+		msgs = append(msgs, message(groupKey, "20002", "小红", "草莓", forgotten.Add(-time.Duration(100-i)*time.Minute)))
+	}
+	msgs = append(msgs, message(groupKey, "20001", "小明", longStrawberry, forgotten.Add(time.Hour)))
+	bulkInsert(t, raw, msgs)
+	backfillAll(t, st)
+	if err := st.ForgetMember(ctx, groupKey, "20002", forgotten); err != nil {
+		t.Fatal(err)
+	}
+	got := call(t, newRecall(st, true), invocation(groupKey, "20003", "小刚"), `{"query":"草莓"}`)
+	if !strings.Contains(got, "小明：今天天气不错") || strings.Contains(got, "小红") {
+		t.Fatalf("recall past 70 hidden hits =\n%s", got)
+	}
+}
+
+func TestRecall_MarksInTextDoNotReachAnotherConversation(t *testing.T) {
+	st, raw := openBulk(t)
+	var msgs []store.MessageRecord
+	for i := range 250 {
+		msgs = append(msgs, message(otherKey, "20002", "小红", search.ConversationMark(groupKey)+" 草莓", local(2026, 6, 1, 0, i)))
+	}
+	msgs = append(msgs, message(groupKey, "20001", "小明", longStrawberry, local(2026, 6, 2, 12, 0)))
+	bulkInsert(t, raw, msgs)
+	backfillAll(t, st)
+	got := call(t, newRecall(st, true), invocation(groupKey, "20003", "小刚"), `{"query":"草莓"}`)
+	if want := "—— 2026-06-02 ——\n[06-02 12:00] 小明：" + longStrawberry; got != want {
+		t.Fatalf("recall with another conversation writing this one's mark =\n%s\nwant\n%s", got, want)
 	}
 }
 

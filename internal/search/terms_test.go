@@ -55,12 +55,37 @@ func TestIndexTokens(t *testing.T) {
 		{"Go 1.26 和 SQLite！", []string{"go", "1", "26", "和", "sqlite"}},
 		{"草莓草莓", []string{"草莓", "莓草", "草莓", "莓"}},
 		{"a猫b", []string{"a", "猫", "b"}},
+		{"ＱＱ号是２０２６", []string{"qq", "号是", "是", "2026"}},
+		{"東京に行きたい", []string{"東京", "京に", "に行", "行き", "きた", "たい", "い"}},
+		{"ラーメン", []string{"ラー", "ーメ", "メン", "ン"}},
+		{"한국어 공부", []string{"한국", "국어", "어", "공부", "부"}},
+		{"Café au lait", []string{"café", "au", "lait"}},
+		{"ｶﾞｷﾞ", []string{"ガギ", "ギ"}},
 		{"", nil},
 		{"？！", nil},
 	} {
 		if got := IndexTokens(c.text); !slices.Equal(got, c.want) {
 			t.Errorf("IndexTokens(%q) = %q, want %q", c.text, got, c.want)
 		}
+	}
+}
+
+func TestQueryTokensNormalise(t *testing.T) {
+	for _, c := range []struct {
+		query string
+		want  []string
+	}{
+		{"ＱＱ号", []string{"qq"}},
+		{"ＱＱ", []string{"qq"}},
+		{"ラーメン", []string{"ラー", "ーメ", "メン"}},
+		{"CAFÉ", []string{"café"}},
+	} {
+		if got := QueryTokens(c.query); !slices.Equal(got, c.want) {
+			t.Errorf("QueryTokens(%q) = %q, want %q", c.query, got, c.want)
+		}
+	}
+	if got := Terms("x", []string{"ＱＱ"}); !slices.Equal(got, []string{"qq", "x"}) {
+		t.Errorf("Terms with a full-width keyword = %q", got)
 	}
 }
 
@@ -79,6 +104,9 @@ func TestTermPhrase(t *testing.T) {
 		{"strawberry", []string{"strawberry"}, true},
 		{"Straw", []string{"straw"}, true},
 		{"go", []string{"go"}, false},
+		{"手机iPhone", []string{"手机", "机", "iphone"}, true},
+		{"小米14", []string{"小米", "米", "14"}, false},
+		{"出去 玩", []string{"出去", "去", "玩"}, true},
 		{"？", nil, false},
 	} {
 		got, prefix := TermPhrase(c.term)
@@ -88,29 +116,67 @@ func TestTermPhrase(t *testing.T) {
 	}
 }
 
-// TestTermPhraseMatchesSubstrings checks that a term's phrase occurs in the
-// index tokens of a text exactly when the term occurs in it, for Han text.
-func TestTermPhraseMatchesSubstrings(t *testing.T) {
-	texts := []string{"我们出去玩吧", "出去 玩", "周末去玩", "小猫咪", "家猫", "猫", "a猫咪", "小猫a", "我在学Go语言", "草莓蛋糕"}
-	terms := []string{"出去玩", "去玩", "猫", "猫咪", "a猫", "猫a", "go语言", "草莓", "蛋糕"}
+// phraseIn reports whether term's TermPhrase occurs among tokens.
+func phraseIn(term string, tokens []string) bool {
+	phrase, prefix := TermPhrase(term)
+	if len(phrase) == 0 {
+		return false
+	}
+	for i := 0; i+len(phrase) <= len(tokens); i++ {
+		ok := true
+		for j, p := range phrase {
+			tok := tokens[i+j]
+			if tok != p && !(prefix && j == len(phrase)-1 && strings.HasPrefix(tok, p)) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+// TestTermPhraseFindsEverySubstring checks the index and the query side
+// agree: every piece of an indexed text that does not cut a word is found by
+// its own TermPhrase, across scripts, mixed text and several runs.
+func TestTermPhraseFindsEverySubstring(t *testing.T) {
+	texts := []string{
+		"我的手机iPhone坏了", "新出的小米14发布了", "我们出去 玩吧", "周末出去玩，好不好", "a猫b猫c",
+		"東京に行きたいです", "한국어 공부 시작", "Café au lait 很好喝", "ＱＱ号是２０２６年注册的", "Go 1.26 和 SQLite！",
+	}
 	for _, text := range texts {
 		tokens := IndexTokens(text)
-		for _, term := range terms {
-			phrase, prefix := TermPhrase(term)
-			found := false
-			for i := 0; i+len(phrase) <= len(tokens) && !found; i++ {
-				found = true
-				for j, p := range phrase {
-					tok := tokens[i+j]
-					if tok != p && !(prefix && j == len(phrase)-1 && strings.HasPrefix(tok, p)) {
-						found = false
-						break
-					}
+		runes := []rune(normalize(text))
+		cut := func(i int) bool { return i > 0 && i < len(runes) && isWord(runes[i-1]) && isWord(runes[i]) }
+		for i := 0; i <= len(runes); i++ {
+			for j := i + 1; j <= len(runes); j++ {
+				if cut(i) || cut(j) {
+					continue
+				}
+				if term := string(runes[i:j]); len(IndexTokens(term)) > 0 && !phraseIn(term, tokens) {
+					p, prefix := TermPhrase(term)
+					t.Errorf("%q not found in %q: phrase %q (prefix %v), tokens %q", term, text, p, prefix, tokens)
 				}
 			}
-			if want := strings.Contains(strings.ToLower(text), strings.ToLower(term)); found != want {
-				t.Errorf("%q in %q: phrase %q (prefix %v) found = %v, want %v", term, text, phrase, prefix, found, want)
-			}
+		}
+	}
+}
+
+func TestTermPhraseMissesWhatIsAbsent(t *testing.T) {
+	for _, c := range []struct{ term, text string }{
+		{"出去玩", "出去 玩"},
+		{"出去 玩", "我们出去玩吧"},
+		{"去玩", "周末出去，玩吧"},
+		{"猫a", "a猫咪"},
+		{"手机iPhone", "手机 华为 iPhone"},
+		{"小米14", "小米 13 和 14"},
+		{"phone", "iPhone"},
+		{"東京", "京都"},
+	} {
+		if phraseIn(c.term, IndexTokens(c.text)) {
+			t.Errorf("%q found in %q", c.term, c.text)
 		}
 	}
 }
@@ -120,7 +186,7 @@ func TestConversationMark(t *testing.T) {
 	if !regexp.MustCompile(`^c[0-9a-f]{16}$`).MatchString(a) || a == b || a != ConversationMark("bot:qq:group:group_10001") {
 		t.Fatalf("marks = %q, %q", a, b)
 	}
-	if got, want := IndexText("bot:qq:group:group_10001", "小明", "草莓！"), a+" 草莓 莓 小明 明"; got != want {
+	if got, want := IndexText("小明", "草莓！"), "草莓 莓 小明 明"; got != want {
 		t.Fatalf("IndexText = %q, want %q", got, want)
 	}
 }

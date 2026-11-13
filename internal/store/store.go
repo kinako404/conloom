@@ -116,11 +116,12 @@ type Store interface {
 	UserIDsForActors(ctx context.Context, convKey string, actorIDs []string) (map[string]string, error)
 	// ListConversations returns all conversations of convType ordered by key.
 	ListConversations(ctx context.Context, convType string) ([]ConversationRecord, error)
-	// SearchMessages finds up to limit of the conversation's messages, bot
-	// messages included, whose text or sender name holds any of terms
-	// (search.Terms) and that occurred within r (After inclusive, Before
-	// exclusive), best first by bm25 and newest first among equals.
-	SearchMessages(ctx context.Context, convKey string, terms []string, r search.Range, limit int) ([]MessageHit, error)
+	// SearchMessages finds the conversation's messages, bot messages
+	// included, whose text or sender name holds any of terms (search.Terms)
+	// and that occurred within r (After inclusive, Before exclusive), best
+	// first by bm25 and newest first among equals, and returns up to limit of
+	// them after skipping offset.
+	SearchMessages(ctx context.Context, convKey string, terms []string, r search.Range, offset, limit int) ([]MessageHit, error)
 	// MessagesAround returns the conversation's messages with fromSeq <= Seq <=
 	// toSeq, plus up to before messages preceding them and up to after
 	// following them, ordered by Seq ascending.
