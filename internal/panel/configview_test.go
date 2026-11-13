@@ -39,6 +39,7 @@ func secretConfig(h *overviewHarness) {
 	c.Embedding = &config.EmbeddingConfig{Endpoint: "http://SECRET-user@example.invalid:11434/v1?key=SECRET-k#SECRET-frag", Model: "bge-m3",
 		APIKey: "SECRET-embedding_api_key", BatchSize: 16, MinScore: 0.48}
 	c.Panel.Users = append(c.Panel.Users, config.PanelUser{Name: "viewer", PasswordHash: "SECRET-password_hash"})
+	c.Panel.Listen = "0.0.0.0:8788"
 	c.Adapters = config.AdaptersConfig{
 		NapCat: config.NapCatConfig{WSURL: "ws://example.invalid:3001/?access_token=SECRET-ws&token", AccessToken: "SECRET-access_token",
 			CoreURL: "http://example.invalid:8787", CoreToken: "SECRET-napcat_core_token", BotInstanceID: "qq-main"},
@@ -135,6 +136,7 @@ func TestConfigView_NoSecrets(t *testing.T) {
 		{[]any{"bots", 0, "enabled_conversations", 0, "platform_id"}, "10001"},
 		{[]any{"panel", "users", 1, "name"}, "viewer"},
 		{[]any{"panel", "session_ttl"}, "168h0m0s"},
+		{[]any{"panel", "listen"}, "0.0.0.0:8788"},
 		{[]any{"runtime", "action_ttl"}, "10m0s"},
 		{[]any{"runtime", "usage_retention"}, "9600h0m0s"},
 		{[]any{"default_group_policy", "memory", "enabled"}, false},

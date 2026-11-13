@@ -424,8 +424,8 @@ func TestLoad_PanelSectionDefaults(t *testing.T) {
 		t.Fatalf("Panel = %+v, want %+v", cfg.Panel, want)
 	}
 
-	cfg = loadWith(t, "panel:\n  users: [{name: admin, password_hash: x}]\n  session_ttl: 24h\n  idle_timeout: 1h\n  cookie_secure: true\n")
-	if p := cfg.Panel; p.SessionTTL.Duration != 24*time.Hour || p.IdleTimeout.Duration != time.Hour || !p.CookieSecure {
+	cfg = loadWith(t, "panel:\n  users: [{name: admin, password_hash: x}]\n  session_ttl: 24h\n  idle_timeout: 1h\n  cookie_secure: true\n  listen: 0.0.0.0:8788\n")
+	if p := cfg.Panel; p.SessionTTL.Duration != 24*time.Hour || p.IdleTimeout.Duration != time.Hour || !p.CookieSecure || p.Listen != "0.0.0.0:8788" {
 		t.Errorf("Panel = %+v, want explicit values kept", *p)
 	}
 }

@@ -66,6 +66,8 @@ type App struct {
 	sched   *memory.Scheduler
 	usage   *usage.Recorder
 	handler http.Handler
+	// panelSite is the panel on its own listener, nil without panel.listen.
+	panelSite http.Handler
 	// indexer and vectors are semantic search, both nil without an
 	// embedding section in the config.
 	indexer *vector.Indexer
@@ -210,7 +212,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	}
 	memAdmin := memory.NewAdmin(memory.AdminDeps{Store: st, Policies: policies, Metrics: metrics, Now: now})
 	presence := obs.NewPresence()
-	var panelHandler http.Handler
+	var panelHandler, panelSite http.Handler
 	if cfg.Panel != nil {
 		panelHandler = panel.New(panel.Deps{
 			Config:      cfg,
@@ -232,6 +234,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 			Commit:      opts.Commit,
 			StartedAt:   opts.StartedAt,
 		}).Handler()
+		if cfg.Panel.Listen != "" {
+			panelSite, panelHandler = panelOnly(panelHandler), nil
+		}
 	}
 	gw := gateway.New(gateway.Deps{
 		Orchestrator: orch,
@@ -248,8 +253,19 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Presence:     presence,
 		Panel:        panelHandler,
 	})
-	return &App{st: st, orch: orch, sched: sched, usage: rec, handler: gw.Handler(), indexer: indexer, vectors: vectors,
-		logger: logger, usageFlushTimeout: usageFlushTimeout}, nil
+	return &App{st: st, orch: orch, sched: sched, usage: rec, handler: gw.Handler(), panelSite: panelSite,
+		indexer: indexer, vectors: vectors, logger: logger, usageFlushTimeout: usageFlushTimeout}, nil
+}
+
+// panelOnly serves the panel alone on its own listener: / redirects to
+// /panel/ and every path outside the panel is not found.
+func panelOnly(h http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/panel/", http.StatusFound)
+	})
+	mux.Handle("/", h)
+	return mux
 }
 
 // location is the time zone tz, falling back to Asia/Shanghai, then UTC.
@@ -266,8 +282,12 @@ func location(tz string) *time.Location {
 }
 
 // Handler serves the Bot Interaction API, /healthz and, if enabled, /metrics
-// and the web panel.
+// and the web panel, unless the panel has its own listener.
 func (a *App) Handler() http.Handler { return a.handler }
+
+// PanelHandler serves the web panel on the address panel.listen; it is nil
+// when panel.listen is not set and the panel, if any, is part of Handler.
+func (a *App) PanelHandler() http.Handler { return a.panelSite }
 
 // VectorSearcher is the semantic search over the conversations' chunks, or
 // nil when the config has no embedding section.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/url"
 	"slices"
 	"strconv"
@@ -112,6 +113,8 @@ func (p *problems) err(c *Config, command string) error {
 func (c *Config) ValidateServe() error {
 	var p problems
 
+	p.required("server.listen", c.Server.Listen)
+	p.listenAddr("server.listen", c.Server.Listen)
 	if tz := c.Server.Timezone; tz != "" {
 		if _, err := time.LoadLocation(tz); err != nil {
 			p.addf("server.timezone", "unknown time zone %q", tz)
@@ -249,7 +252,7 @@ func (c *Config) ValidateServe() error {
 		}
 	}
 	if c.Panel != nil {
-		p.panel(c.Panel)
+		p.panel(c.Panel, c.Server.Listen)
 	}
 
 	return p.err(c, "serve")
@@ -265,8 +268,48 @@ const (
 	panelHashKeyLen        = 32
 )
 
+// listenAddr requires value, when set, to be a host:port with a numeric port;
+// the host may be empty to listen on every interface.
+func (p *problems) listenAddr(path, value string) {
+	if value == "" {
+		return
+	}
+	_, port, err := net.SplitHostPort(value)
+	if err != nil {
+		p.addf(path, "must be host:port, got %q", value)
+		return
+	}
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		p.addf(path, "port must be a number in [0, 65535], got %q", value)
+	}
+}
+
+// sameListenAddr reports whether listening on both a and b would claim the
+// same port: equal non-zero ports on the same host, or on any host when one
+// of them is unspecified. Port 0 picks a free port, so it never conflicts.
+func sameListenAddr(a, b string) bool {
+	ah, ap, aerr := net.SplitHostPort(a)
+	bh, bp, berr := net.SplitHostPort(b)
+	if aerr != nil || berr != nil || ap != bp || ap == "0" {
+		return false
+	}
+	return strings.EqualFold(ah, bh) || unspecifiedHost(ah) || unspecifiedHost(bh)
+}
+
+func unspecifiedHost(h string) bool {
+	if h == "" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsUnspecified()
+}
+
 // panel checks the panel section. Problems never quote a password hash.
-func (p *problems) panel(pc *PanelConfig) {
+func (p *problems) panel(pc *PanelConfig, serverListen string) {
+	p.listenAddr("panel.listen", pc.Listen)
+	if pc.Listen != "" && sameListenAddr(pc.Listen, serverListen) {
+		p.addf("panel.listen", "must differ from server.listen (%q), got %q", serverListen, pc.Listen)
+	}
 	if len(pc.Users) == 0 {
 		p.addf("panel.users", "at least one user is required")
 	}

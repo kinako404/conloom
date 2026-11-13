@@ -92,12 +92,15 @@ type PanelUser struct {
 
 // PanelConfig configures the web admin panel. A session ends SessionTTL after
 // login or IdleTimeout after its last request, whichever comes first.
-// CookieSecure sets the Secure flag on the session cookie.
+// CookieSecure sets the Secure flag on the session cookie. Listen, when set,
+// is a host:port on which the panel alone is served instead of under
+// server.listen.
 type PanelConfig struct {
 	Users        []PanelUser         `yaml:"users"`
 	SessionTTL   conloomapi.Duration `yaml:"session_ttl"`
 	IdleTimeout  conloomapi.Duration `yaml:"idle_timeout"`
 	CookieSecure bool                `yaml:"cookie_secure"`
+	Listen       string              `yaml:"listen"`
 }
 
 // Defaults of panel.session_ttl and panel.idle_timeout.

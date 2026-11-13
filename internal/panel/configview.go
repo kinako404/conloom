@@ -206,6 +206,7 @@ func panelView(p *config.PanelConfig) map[string]any {
 	}
 	return map[string]any{
 		"users": users, "session_ttl": p.SessionTTL, "idle_timeout": p.IdleTimeout, "cookie_secure": p.CookieSecure,
+		"listen": p.Listen,
 	}
 }
 

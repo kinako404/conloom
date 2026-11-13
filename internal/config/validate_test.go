@@ -103,6 +103,53 @@ func TestValidate_NoPanelSection(t *testing.T) {
 	}
 }
 
+func TestValidate_PanelListen(t *testing.T) {
+	cases := []struct {
+		server, panel string
+		want          []string
+	}{
+		{"127.0.0.1:8787", "", nil},
+		{"127.0.0.1:8787", "0.0.0.0:8788", nil},
+		{"127.0.0.1:8787", "127.0.0.1:8788", nil},
+		{"127.0.0.1:8787", "[::]:8788", nil},
+		{"127.0.0.1:8787", ":8788", nil},
+		{"127.0.0.1:8787", "192.0.2.1:8787", nil},
+		{"127.0.0.1:0", "127.0.0.1:0", nil},
+		{"127.0.0.1:8787", "127.0.0.1:8787", []string{"panel.listen", "must differ from server.listen"}},
+		{"127.0.0.1:8787", "0.0.0.0:8787", []string{"panel.listen", "must differ from server.listen"}},
+		{":8787", "127.0.0.1:8787", []string{"panel.listen", "must differ from server.listen"}},
+		{"127.0.0.1:8787", "8788", []string{"panel.listen", "host:port"}},
+		{"127.0.0.1:8787", "0.0.0.0:", []string{"panel.listen", "port"}},
+		{"127.0.0.1:8787", "0.0.0.0:99999", []string{"panel.listen", "port"}},
+		{"127.0.0.1:8787", "0.0.0.0:http", []string{"panel.listen", "port"}},
+		{"127.0.0.1", "", []string{"server.listen", "host:port"}},
+		{"", "", []string{"server.listen", "must not be empty"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.server+" "+tc.panel, func(t *testing.T) {
+			cfg := mustLoad(t, "testdata/valid.yaml")
+			cfg.Server.Listen = tc.server
+			cfg.Panel = validPanel()
+			cfg.Panel.Listen = tc.panel
+			err := cfg.ValidateServe()
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("ValidateServe: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("ValidateServe succeeded, want error")
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error %q does not contain %q", err, w)
+				}
+			}
+		})
+	}
+}
+
 func TestSecrets_IncludePanelPasswordHashes(t *testing.T) {
 	other := "pbkdf2-sha256:100000:" + fakeSalt + ":" + strings.Repeat("C", 42) + "A"
 	cfg := &Config{
