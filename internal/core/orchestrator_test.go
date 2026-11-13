@@ -527,6 +527,54 @@ func TestSubmit_PrivateReplyHasNoReplyTo(t *testing.T) {
 	}
 }
 
+func TestSubmit_PrivateChatModes(t *testing.T) {
+	type outcome struct {
+		user string
+		want string
+	}
+	tests := []struct {
+		mode string
+		want []outcome
+	}{
+		{"allowlist", []outcome{{"20001", conloomapi.DispositionReply}, {"20002", conloomapi.DispositionIgnore}, {"29999", conloomapi.DispositionReply}}},
+		{"admins", []outcome{{"20001", conloomapi.DispositionIgnore}, {"20002", conloomapi.DispositionIgnore}, {"29999", conloomapi.DispositionReply}}},
+		{"all", []outcome{{"20001", conloomapi.DispositionReply}, {"20002", conloomapi.DispositionReply}, {"29999", conloomapi.DispositionReply}}},
+		{"off", []outcome{{"20001", conloomapi.DispositionIgnore}, {"20002", conloomapi.DispositionIgnore}, {"29999", conloomapi.DispositionIgnore}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.mode, func(t *testing.T) {
+			env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) {
+				c.Bots[0].PrivateChat = tt.mode
+				c.Bots[0].EnabledConversations = append(c.Bots[0].EnabledConversations,
+					conloomapi.ConversationRef{Type: conloomapi.ConvPrivate, PlatformID: "20001"})
+			}})
+			for _, o := range tt.want {
+				resp := env.submit(t, env.event(conloomapi.ConvPrivate, o.user, o.user, "在吗"))
+				if resp.Disposition != o.want {
+					t.Fatalf("private from %s: response %+v, want %s", o.user, resp, o.want)
+				}
+				if o.want == conloomapi.DispositionIgnore && resp.SuppressedReason != conloomapi.SuppressedPrivateNotAllowed {
+					t.Errorf("private from %s: reason %q, want %q", o.user, resp.SuppressedReason, conloomapi.SuppressedPrivateNotAllowed)
+				}
+				if resp.TaskID != "" {
+					env.waitTask(t, resp.TaskID)
+				}
+			}
+
+			group := env.submit(t, env.groupEvent("20002", "你好", mentionBot))
+			if group.Disposition != conloomapi.DispositionReply {
+				t.Errorf("group mention: response %+v, want reply", group)
+			} else {
+				env.waitTask(t, group.TaskID)
+			}
+			other := env.submit(t, env.event(conloomapi.ConvGroup, "10002", "20001", "/help"))
+			if other.Disposition != conloomapi.DispositionIgnore || other.SuppressedReason != conloomapi.SuppressedNotEnabled {
+				t.Errorf("unlisted group: response %+v, want ignore/not_enabled", other)
+			}
+		})
+	}
+}
+
 func TestSubmit_ReplayReturnsSameResponse(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{})
 	ev := env.groupEvent("20001", "你好", mentionBot)

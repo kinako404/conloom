@@ -519,6 +519,7 @@ func (o *Orchestrator) decide(ctx context.Context, s *submission) (Decision, con
 		Mentions:         ev.Message.Mentions,
 		Enabled:          enabledIn(s.bot, ev.Conversation),
 		IsAdmin:          s.isAdmin,
+		PrivateListed:    privateListed(s.bot, ev.Actor.PlatformUserID),
 		MentionsOthers:   mentionsOthers(ev.Message.Mentions),
 	}
 	// Ignore decisions do not depend on policy, so no policy is loaded (and
@@ -553,6 +554,12 @@ func (o *Orchestrator) decide(ctx context.Context, s *submission) (Decision, con
 func enabledIn(bot config.BotConfig, c conloomapi.Conversation) bool {
 	return slices.ContainsFunc(bot.EnabledConversations, func(r conloomapi.ConversationRef) bool {
 		return r.Type == c.Type && r.PlatformID == c.PlatformConversationID
+	})
+}
+
+func privateListed(bot config.BotConfig, platformUserID string) bool {
+	return slices.ContainsFunc(bot.EnabledConversations, func(r conloomapi.ConversationRef) bool {
+		return r.Type == conloomapi.ConvPrivate && r.PlatformID == platformUserID
 	})
 }
 

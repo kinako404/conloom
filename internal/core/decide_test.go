@@ -88,6 +88,73 @@ func TestDecide(t *testing.T) {
 			want: Decision{Disposition: conloomapi.DispositionReply, Trigger: conloomapi.TriggerPrivate},
 		},
 		{
+			name: "private allowlist listed user replies",
+			base: privateInput,
+			modify: func(in *DecideInput) {
+				in.PrivateChat = "allowlist"
+				in.PrivateListed = true
+			},
+			want: Decision{Disposition: conloomapi.DispositionReply, Trigger: conloomapi.TriggerPrivate},
+		},
+		{
+			name: "private allowlist unlisted user ignored",
+			base: privateInput,
+			modify: func(in *DecideInput) {
+				in.PrivateChat = "allowlist"
+				in.PlatformUserID = "20002"
+				in.Text = "/help"
+			},
+			want: Decision{Disposition: conloomapi.DispositionIgnore, Reason: conloomapi.SuppressedPrivateNotAllowed},
+		},
+		{
+			name: "private allowlist admin replies",
+			base: privateInput,
+			modify: func(in *DecideInput) {
+				in.PrivateChat = "allowlist"
+				in.PlatformUserID = "29999"
+				in.IsAdmin = true
+			},
+			want: Decision{Disposition: conloomapi.DispositionReply, Trigger: conloomapi.TriggerPrivate},
+		},
+		{
+			name: "private admins ignores listing",
+			base: privateInput,
+			modify: func(in *DecideInput) {
+				in.PrivateChat = "admins"
+				in.PrivateListed = true
+			},
+			want: Decision{Disposition: conloomapi.DispositionIgnore, Reason: conloomapi.SuppressedPrivateNotAllowed},
+		},
+		{
+			name: "private off ignores listing",
+			base: privateInput,
+			modify: func(in *DecideInput) {
+				in.PrivateChat = "off"
+				in.PrivateListed = true
+			},
+			want: Decision{Disposition: conloomapi.DispositionIgnore, Reason: conloomapi.SuppressedPrivateNotAllowed},
+		},
+		{
+			name: "group under allowlist unaffected",
+			base: groupInput,
+			modify: func(in *DecideInput) {
+				in.PrivateChat = "allowlist"
+				in.Mentions = []conloomapi.Mention{{Type: "bot", ID: "bot_main"}}
+			},
+			want: Decision{Disposition: conloomapi.DispositionReply, Trigger: conloomapi.TriggerMention},
+		},
+		{
+			name: "group not enabled under allowlist ignored",
+			base: groupInput,
+			modify: func(in *DecideInput) {
+				in.PrivateChat = "allowlist"
+				in.PrivateListed = true
+				in.Enabled = false
+				in.Text = "/help"
+			},
+			want: Decision{Disposition: conloomapi.DispositionIgnore, Reason: conloomapi.SuppressedNotEnabled},
+		},
+		{
 			name: "command in group",
 			base: groupInput,
 			modify: func(in *DecideInput) {
