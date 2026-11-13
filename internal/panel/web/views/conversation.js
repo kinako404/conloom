@@ -245,7 +245,7 @@ function personaForm(key, doc) {
   const description = h('textarea', { value: base.description || '' });
   const speakingStyle = h('textarea', { value: base.speaking_style || '' });
   const styleInputs = Object.fromEntries(STYLE.map(([k]) => [k,
-    h('input', { type: 'number', min: 0, max: 1, step: 0.05, value: style[k] ?? '' })]));
+    h('input', { type: 'number', min: 0, max: 1, step: 'any', value: style[k] ?? '' })]));
   const replyLength = select(REPLY_LENGTH, behavior.default_reply_length);
   const followup = select(FOLLOWUP, behavior.ask_followup_questions);
   const technical = select(TECHNICAL, behavior.technical_explanations);
