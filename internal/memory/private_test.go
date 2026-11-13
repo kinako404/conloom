@@ -53,11 +53,26 @@ func TestConsStyle_PrivateKeepsEveryRuleButNineAndTheOpening(t *testing.T) {
 	if len(gl) != len(pl) {
 		t.Fatalf("private prompt has %d lines, group %d", len(pl), len(gl))
 	}
+	reword := strings.NewReplacer("这位群友", "对方", "没有变化的群友可以省略", "对方没有变化时可以省略",
+		"群聊摘要", "对话摘要", "群友", "对方")
 	for i := range gl {
-		same := gl[i] == pl[i]
-		if differs := i == 0 || strings.HasPrefix(gl[i], "9. "); same == differs {
-			t.Errorf("line %d: group %q, private %q", i, gl[i], pl[i])
+		if i == 0 || strings.HasPrefix(gl[i], "9. ") {
+			if gl[i] == pl[i] {
+				t.Errorf("line %d is the same in both prompts: %q", i, pl[i])
+			}
+			continue
 		}
+		if want := reword.Replace(gl[i]); pl[i] != want {
+			t.Errorf("line %d: private %q, want the group line reworded: %q", i, pl[i], want)
+		}
+	}
+	for _, banned := range []string{"群友", "群聊", "群"} {
+		if strings.Contains(p.system, banned) {
+			t.Errorf("private prompt contains %q:\n%s", banned, p.system)
+		}
+	}
+	if !strings.Contains(g.system, "群友") {
+		t.Error("group prompt lost its wording")
 	}
 	for _, want := range []string{"机器人和一位用户的私聊", "不超过 1000 字", "不超过 400 字",
 		"最近聊过什么、约定或答应过什么、还没聊完的话题、对方的近况", "对方是谁、喜好、正在做的事、重要经历",
@@ -351,5 +366,29 @@ func TestConsolidate_PrivateFailureAfterForgetKeepsSummaryEmpty(t *testing.T) {
 	}
 	if g := e.group(t); g.Summary != "" || g.LastError != consErrModel {
 		t.Fatalf("group = %+v, want the summary still empty with the error recorded", g)
+	}
+}
+
+func TestConsolidate_PrivateInputHasNoGroupWording(t *testing.T) {
+	e := newConsEnv(t, consOpts{private: true})
+	putMember(t, e.st, store.MemberMemory{ConversationKey: testPrivateKey, PlatformUserID: "20001", Note: "喜欢猫"})
+	unnamed := e.msg("20001", "", "你见过他吗", consAt(0))
+	unnamed.Mentions = []conloomapi.Mention{{Type: "user", ID: "user_20003"}}
+	e.add(t, unnamed, e.botMsg("没见过", consAt(1)))
+	e.long.answer(`{"group_summary":"","members":[]}`)
+	e.run(t, false)
+	req := e.long.request(t, 0)
+	user := req.Messages[1].Content
+	for _, want := range []string{LabelPrivateSummary + "\n（暂无）", LabelPrivateMembers + "\nP1 某人：笔记：喜欢猫；好感度：未建立", LabelBatch,
+		"[09:00] 某人（P1）（@了 某人）：你见过他吗"} {
+		if !strings.Contains(user, want) {
+			t.Errorf("private input lacks %q:\n%s", want, user)
+		}
+	}
+	if LabelPrivateSummary != "【之前的对话摘要】" || LabelPrivateMembers != "【对方和之前的笔记】" || LabelBatch != "【最近的聊天记录】" {
+		t.Errorf("private labels = %s %s %s", LabelPrivateSummary, LabelPrivateMembers, LabelBatch)
+	}
+	if text := consText(req); strings.Contains(text, "群") {
+		t.Errorf("private consolidation input contains 群:\n%s", text)
 	}
 }

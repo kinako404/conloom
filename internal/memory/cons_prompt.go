@@ -9,11 +9,20 @@ import (
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
-// Section labels of the consolidation input's user message.
+// Section labels of the consolidation input's user message; private chats
+// use LabelPrivateSummary and LabelPrivateMembers instead of the first two.
 const (
-	LabelSummary = "【之前的群聊摘要】"
-	LabelMembers = "【群友和之前的笔记】"
-	LabelBatch   = "【最近的聊天记录】"
+	LabelSummary        = "【之前的群聊摘要】"
+	LabelMembers        = "【群友和之前的笔记】"
+	LabelBatch          = "【最近的聊天记录】"
+	LabelPrivateSummary = "【之前的对话摘要】"
+	LabelPrivateMembers = "【对方和之前的笔记】"
+)
+
+// Names shown for a member without a usable display name.
+const (
+	consUnnamedGroup   = "一位群友"
+	consUnnamedPrivate = "某人"
 )
 
 const consNone = "（暂无）"
@@ -45,25 +54,34 @@ const (
 {"group_summary":"…","members":[{"ref":"P1","note":"…","affinity_delta":0,"reason":"…"}]}
 group_summary 是更新后的完整摘要；note 是更新后的完整笔记；reason 简要说明好感度变化的原因。没有变化的群友可以省略。`
 
-	consGroupSystemPrompt   = consGroupOpening + "\n\n" + consSharedRules + "\n" + consGroupRule9 + "\n" + consClosing
-	consPrivateSystemPrompt = consPrivateOpening + "\n\n" + consSharedRules + "\n" + consPrivateRule9 + "\n" + consClosing
+	consGroupSystemPrompt = consGroupOpening + "\n\n" + consSharedRules + "\n" + consGroupRule9 + "\n" + consClosing
 )
 
-// consStyle is how a conversation is consolidated: the system prompt and the
-// storage limits of its summary and notes.
+// consPrivateSystemPrompt is the group prompt with the private opening and
+// rule 9, and the group's wording of the other rules turned to the one
+// person a private chat is with.
+var consPrivateSystemPrompt = consPrivateOpening + "\n\n" + consPrivateWording.Replace(consSharedRules) + "\n" +
+	consPrivateRule9 + "\n" + consPrivateWording.Replace(consClosing)
+
+var consPrivateWording = strings.NewReplacer("这位群友", "对方", "没有变化的群友可以省略", "对方没有变化时可以省略",
+	"群聊摘要", "对话摘要", "群友", "对方")
+
+// consStyle is how a conversation is consolidated: the system prompt, the
+// section labels, the name of a member without one and the storage limits of
+// its summary and notes.
 type consStyle struct {
-	system              string
-	summaryMax, noteMax int
+	system, summaryLabel, membersLabel, unnamed string
+	summaryMax, noteMax                         int
 }
 
 // consStyleFor is the consolidation style of convKey's conversation type.
 func consStyleFor(convKey string) consStyle {
 	t := convTypeOf(convKey)
-	system := consGroupSystemPrompt
 	if t == conloomapi.ConvPrivate {
-		system = consPrivateSystemPrompt
+		return consStyle{consPrivateSystemPrompt, LabelPrivateSummary, LabelPrivateMembers, consUnnamedPrivate,
+			SummaryLimit(t), NoteLimit(t)}
 	}
-	return consStyle{system: system, summaryMax: SummaryLimit(t), noteMax: NoteLimit(t)}
+	return consStyle{consGroupSystemPrompt, LabelSummary, LabelMembers, consUnnamedGroup, SummaryLimit(t), NoteLimit(t)}
 }
 
 // promptMember is a member shown in the consolidation input; a nil Affinity
@@ -73,17 +91,17 @@ type promptMember struct {
 	Affinity        *int
 }
 
-// buildPrompt returns the neutral consolidation system prompt and a user
+// buildPrompt returns style's neutral consolidation system prompt and a user
 // message with the old summary, the members' notes and affinity, and lines.
-func buildPrompt(system, summary string, members []promptMember, lines []string) []openai.ChatMessage {
+func buildPrompt(style consStyle, summary string, members []promptMember, lines []string) []openai.ChatMessage {
 	var b strings.Builder
-	b.WriteString(LabelSummary + "\n")
+	b.WriteString(style.summaryLabel + "\n")
 	if summary = strings.TrimSpace(summary); summary != "" {
 		b.WriteString(summary)
 	} else {
 		b.WriteString(consNone)
 	}
-	b.WriteString("\n\n" + LabelMembers + "\n")
+	b.WriteString("\n\n" + style.membersLabel + "\n")
 	if len(members) == 0 {
 		b.WriteString(consNone + "\n")
 	}
@@ -93,7 +111,7 @@ func buildPrompt(system, summary string, members []promptMember, lines []string)
 	b.WriteString("\n" + LabelBatch + "\n")
 	b.WriteString(strings.Join(lines, "\n"))
 	return []openai.ChatMessage{
-		{Role: "system", Content: system},
+		{Role: "system", Content: style.system},
 		{Role: "user", Content: b.String()},
 	}
 }

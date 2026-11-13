@@ -227,14 +227,14 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 		return consOutcome{}, err
 	}
 	style := consStyleFor(convKey)
-	base := consPromptTokens(buildPrompt(style.system, g.Summary, nil, nil), c.d.Config.ModelProfiles[string(router.RoleLong)].TokenEstimateFactor)
+	base := consPromptTokens(buildPrompt(style, g.Summary, nil, nil), c.d.Config.ModelProfiles[string(router.RoleLong)].TokenEstimateFactor)
 	d, err := c.d.Router.Route(router.Request{AllowLong: true, Exclude: []router.Role{router.RoleShort}, BaseTokens: base})
 	if err != nil {
 		c.d.Logger.Info("memory consolidation skipped: long-context model unavailable", "conversation", convKey, "error", err)
 		return consOutcome{skipped: "long_unavailable"}, nil
 	}
 	p := d.Profile
-	in.BotName, in.Location = botName, c.d.Location
+	in.BotName, in.Location, in.Unnamed = botName, c.d.Location, style.unnamed
 	in.BaseTokens, in.Budget, in.TokenFactor = base, d.PromptBudget, p.Config.TokenEstimateFactor
 	memberCap := consMemberCap(d.MaxOutputTokens)
 	in.MaxMembers = c.memberLimit(convKey, memberCap)
@@ -253,9 +253,9 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 
 	members := make([]promptMember, len(b.Members))
 	for i, m := range b.Members {
-		members[i] = consPromptMember(m.Memory, m.Ref, m.Name)
+		members[i] = consPromptMember(m.Memory, m.Ref, m.Name, style.unnamed)
 	}
-	prompt := buildPrompt(style.system, g.Summary, members, b.Lines)
+	prompt := buildPrompt(style, g.Summary, members, b.Lines)
 	tokens := consPromptTokens(prompt, p.Config.TokenEstimateFactor) + d.MaxOutputTokens + p.Config.Context.SafetyMarginTokens
 	lease, err := c.acquire(ctx, p, convKey, tokens)
 	if err != nil {
