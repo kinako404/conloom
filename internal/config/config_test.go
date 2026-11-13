@@ -77,21 +77,87 @@ var exampleEnv = map[string]string{
 	"CONLOOM_GROUP_ID":             "10001",
 	"CONLOOM_NAPCAT_WS_URL":        "ws://127.0.0.1:9",
 	"CONLOOM_NAPCAT_TOKEN":         "fake-napcat-token",
-	"CONLOOM_TG_BOT_TOKEN":         "30002:fake-telegram-token",
-	"CONLOOM_TG_ADAPTER_TOKEN":     "fake-tg-adapter-token",
-	"CONLOOM_TG_BOT_ID":            "30002",
-	"CONLOOM_TG_ADMIN_ID":          "20001",
-	"CONLOOM_TG_GROUP_ID":          "-1001234567890",
-	"CONLOOM_TG_FRIEND_ID":         "20002",
 }
 
-func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
-	for k, v := range exampleEnv {
-		t.Setenv(k, v)
+// telegramEnv holds the variables the example's Telegram parts use.
+var telegramEnv = map[string]string{
+	"CONLOOM_TG_BOT_TOKEN":     "30002:fake-telegram-token",
+	"CONLOOM_TG_ADAPTER_TOKEN": "fake-tg-adapter-token",
+	"CONLOOM_TG_BOT_ID":        "30002",
+	"CONLOOM_TG_ADMIN_ID":      "20001",
+	"CONLOOM_TG_GROUP_ID":      "-1001234567890",
+	"CONLOOM_TG_FRIEND_ID":     "20002",
+}
+
+// setExampleEnv sets the variables of envs and unsets every other variable
+// the example config uses.
+func setExampleEnv(t *testing.T, envs ...map[string]string) {
+	t.Helper()
+	for _, m := range []map[string]string{exampleEnv, telegramEnv} {
+		for k := range m {
+			t.Setenv(k, "")
+			if err := os.Unsetenv(k); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
+	for _, m := range envs {
+		for k, v := range m {
+			t.Setenv(k, v)
+		}
+	}
+}
+
+// Markers around the commented-out Telegram parts of the example config.
+const (
+	tgExampleStart = "Telegram 示例开始"
+	tgExampleEnd   = "Telegram 示例结束"
+)
+
+// uncommentTelegramExample writes a copy of the example config with its
+// Telegram parts uncommented, the way docs/telegram.md tells users to, and
+// returns its path.
+func uncommentTelegramExample(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile("../../conloom.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	blocks, in := 0, false
+	for _, line := range strings.Split(string(data), "\n") {
+		switch {
+		case strings.Contains(line, tgExampleStart):
+			blocks, in = blocks+1, true
+		case strings.Contains(line, tgExampleEnd):
+			in = false
+		case in:
+			body := strings.TrimLeft(line, " ")
+			rest, ok := strings.CutPrefix(body, "# ")
+			if !ok {
+				t.Fatalf("line %q inside a Telegram example block is not commented out with \"# \"", line)
+			}
+			line = line[:len(line)-len(body)] + rest
+		}
+		out = append(out, line)
+	}
+	if blocks != 2 || in {
+		t.Fatalf("found %d Telegram example blocks (unterminated: %v), want 2: the adapter token and bot_tg", blocks, in)
+	}
+	path := filepath.Join(t.TempDir(), "conloom.yaml")
+	if err := os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestLoad_ExampleFileParsesWithEnv loads the example as the QQ quick start
+// does: only the QQ variables are set, and the Telegram parts stay commented.
+func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
+	setExampleEnv(t, exampleEnv)
 	cfg := mustLoad(t, "../../conloom.example.yaml")
-	if len(cfg.MissingEnv) != 0 {
-		t.Fatalf("MissingEnv = %v", cfg.MissingEnv)
+	if got := slices.Sorted(slices.Values(cfg.MissingEnv)); !slices.Equal(got, []string{"CONLOOM_TG_ADAPTER_TOKEN", "CONLOOM_TG_BOT_TOKEN"}) {
+		t.Fatalf("MissingEnv = %v, want only the two variables of adapters.telegram", cfg.MissingEnv)
 	}
 	if err := cfg.ValidateServe(); err != nil {
 		t.Fatalf("ValidateServe: %v", err)
@@ -102,24 +168,12 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 	if err := cfg.ValidateMock(); err != nil {
 		t.Fatalf("ValidateMock: %v", err)
 	}
-	if err := cfg.ValidateTelegram(); err != nil {
-		t.Fatalf("ValidateTelegram: %v", err)
+	err := cfg.ValidateTelegram()
+	if err == nil || !strings.Contains(err.Error(), "adapters.telegram.token") || !strings.Contains(err.Error(), "CONLOOM_TG_BOT_TOKEN") {
+		t.Errorf("ValidateTelegram = %v, want the unset token reported", err)
 	}
-
-	tgBot, ok := cfg.Bot("bot_tg")
-	if !ok {
-		t.Fatal("bot_tg not found")
-	}
-	wantTGConvs := []conloomapi.ConversationRef{{Type: "group", PlatformID: "-1001234567890"}, {Type: "private", PlatformID: "20002"}}
-	if tgBot.Platform != "telegram" || tgBot.PlatformSelfID != "30002" || !slices.Equal(tgBot.Admins, []string{"20001"}) ||
-		tgBot.PrivateChat != "allowlist" || !reflect.DeepEqual(tgBot.EnabledConversations, wantTGConvs) {
-		t.Errorf("bot_tg = %+v", tgBot)
-	}
-	tg := cfg.Adapters.Telegram
-	if tg.Token != "30002:fake-telegram-token" || tg.APIBase != "https://api.telegram.org" ||
-		tg.PollTimeout.Duration != 50*time.Second || tg.CoreURL != "http://127.0.0.1:8787" ||
-		tg.CoreToken != "fake-tg-adapter-token" || tg.BotInstanceID != "bot_tg" {
-		t.Errorf("telegram = %+v", tg)
+	if _, ok := cfg.Bot("bot_tg"); ok {
+		t.Error("bot_tg is active, want it commented out")
 	}
 
 	bot, ok := cfg.Bot("bot_main")
@@ -157,7 +211,7 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 		t.Errorf("long_context = %+v", long)
 	}
 
-	if len(cfg.APITokens) != 3 {
+	if len(cfg.APITokens) != 2 {
 		t.Fatalf("api_tokens = %+v", cfg.APITokens)
 	}
 	adapterScopes := []string{"events:write", "tasks:read", "outbox:read", "outbox:ack", "persona:read"}
@@ -166,10 +220,6 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 		case "napcat":
 			if tok.Token != "fake-adapter-token" || !slices.Equal(tok.Scopes, adapterScopes) {
 				t.Errorf("napcat token = %+v", tok)
-			}
-		case "telegram":
-			if tok.Token != "fake-tg-adapter-token" || tok.BotInstanceID != "bot_tg" || !slices.Equal(tok.Scopes, adapterScopes) {
-				t.Errorf("telegram token = %+v", tok)
 			}
 		case "admin":
 			if tok.Token != "fake-admin-token" || !slices.Equal(tok.Scopes, allScopes) {
@@ -198,6 +248,49 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 	nc := cfg.Adapters.NapCat
 	if nc.CoreURL != "http://127.0.0.1:8787" || nc.WSURL != "ws://127.0.0.1:9" || nc.AccessToken != "fake-napcat-token" {
 		t.Errorf("napcat = %+v", nc)
+	}
+}
+
+// TestLoad_ExampleTelegramUncommented loads the example with its Telegram
+// parts uncommented and every variable set.
+func TestLoad_ExampleTelegramUncommented(t *testing.T) {
+	setExampleEnv(t, exampleEnv, telegramEnv)
+	cfg := mustLoad(t, uncommentTelegramExample(t))
+	if len(cfg.MissingEnv) != 0 {
+		t.Fatalf("MissingEnv = %v", cfg.MissingEnv)
+	}
+	for name, validate := range map[string]func() error{
+		"serve": cfg.ValidateServe, "napcat": cfg.ValidateNapCat, "telegram": cfg.ValidateTelegram,
+	} {
+		if err := validate(); err != nil {
+			t.Fatalf("validate %s: %v", name, err)
+		}
+	}
+	tgBot, ok := cfg.Bot("bot_tg")
+	if !ok {
+		t.Fatal("bot_tg not found")
+	}
+	wantTGConvs := []conloomapi.ConversationRef{{Type: "group", PlatformID: "-1001234567890"}, {Type: "private", PlatformID: "20002"}}
+	if tgBot.Platform != "telegram" || tgBot.PlatformSelfID != "30002" || !slices.Equal(tgBot.Admins, []string{"20001"}) ||
+		tgBot.PrivateChat != "allowlist" || !reflect.DeepEqual(tgBot.EnabledConversations, wantTGConvs) {
+		t.Errorf("bot_tg = %+v", tgBot)
+	}
+	var tgToken *APIToken
+	for i := range cfg.APITokens {
+		if cfg.APITokens[i].Name == "telegram" {
+			tgToken = &cfg.APITokens[i]
+		}
+	}
+	adapterScopes := []string{"events:write", "tasks:read", "outbox:read", "outbox:ack", "persona:read"}
+	if len(cfg.APITokens) != 3 || tgToken == nil || tgToken.Token != "fake-tg-adapter-token" ||
+		tgToken.BotInstanceID != "bot_tg" || !slices.Equal(tgToken.Scopes, adapterScopes) {
+		t.Errorf("api_tokens = %+v, want the telegram adapter token added", cfg.APITokens)
+	}
+	tg := cfg.Adapters.Telegram
+	if tg.Token != "30002:fake-telegram-token" || tg.APIBase != "https://api.telegram.org" ||
+		tg.PollTimeout.Duration != 50*time.Second || tg.CoreURL != "http://127.0.0.1:8787" ||
+		tg.CoreToken != "fake-tg-adapter-token" || tg.BotInstanceID != "bot_tg" {
+		t.Errorf("telegram = %+v", tg)
 	}
 }
 

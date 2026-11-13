@@ -13,7 +13,11 @@
 
 ## 2. 配置
 
-在 `.env`（`chmod 600 .env`）里加上：
+`conloom.example.yaml` 默认只接 QQ，Telegram 用到的三段里有两段是注释掉的，用 `# ---- Telegram 示例开始` 和 `# ---- Telegram 示例结束` 标出：
+
+1. **取消注释** `api_tokens` 里的 `telegram` 令牌，和 `bots` 里的 `bot_tg` 整段：把两个标记之间每行开头的 `# ` 删掉，缩进保持不变。标记行本身是注释，留着或删掉都可以。
+2. `adapters.telegram` 段本来就没有注释，不用改。它只在运行 `conloom adapter telegram` 时才校验，所以只接 QQ 时它的变量留空也不影响 `serve`。
+3. 在 `.env`（`chmod 600 .env`）里设置这些变量：
 
 ```sh
 CONLOOM_TG_BOT_TOKEN=<BotFather 给的 token>
@@ -24,7 +28,9 @@ CONLOOM_TG_GROUP_ID=<要开启的群的 ID，负数，如 -100 开头>
 CONLOOM_TG_FRIEND_ID=<允许私聊的另一个人的用户 ID>
 ```
 
-`conloom.example.yaml` 已经包含所需的三段，复制过去即可：
+暂时不开群或不放行别人私聊时，删掉 `bot_tg` 里对应的那一行，也就不需要设置对应的变量（取消注释之后，被引用的变量不能为空，否则启动时报错）。
+
+取消注释之后，这三段是这样的：
 
 ```yaml
 api_tokens:

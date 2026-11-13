@@ -57,6 +57,8 @@ CONLOOM_NAPCAT_WS_URL=ws://<NapCat 地址>:<端口>
 CONLOOM_NAPCAT_TOKEN=<NapCat access token>
 ```
 
+这样配好的是 QQ。接 Telegram 见 [接入 Telegram](docs/telegram.md)：要在示例配置里取消注释两段，并另设几个变量。
+
 **3. 启动核心**（默认只监听本机 8787 端口）：
 
 ```sh

@@ -20,11 +20,12 @@ api_tokens:
     token: ${CONLOOM_ADAPTER_TOKEN}
     bot_instance_id: bot_main
     scopes: [events:write, tasks:read, outbox:read, outbox:ack, persona:read]
-  # Telegram Adapter 使用的令牌：scope 与 NapCat 的相同，绑定 bot_tg。
-  - name: telegram
-    token: ${CONLOOM_TG_ADAPTER_TOKEN}
-    bot_instance_id: bot_tg
-    scopes: [events:write, tasks:read, outbox:read, outbox:ack, persona:read]
+  # ---- Telegram 示例开始：使用 Telegram 时取消注释下面几行，并在 .env 里设置 CONLOOM_TG_* 变量（见 docs/telegram.md）----
+  # - name: telegram    # Telegram Adapter 使用的令牌：scope 与 NapCat 的相同，绑定 bot_tg
+  #   token: ${CONLOOM_TG_ADAPTER_TOKEN}
+  #   bot_instance_id: bot_tg
+  #   scopes: [events:write, tasks:read, outbox:read, outbox:ack, persona:read]
+  # ---- Telegram 示例结束 ----
   # 管理员令牌：拥有全部 scope。
   - name: admin
     token: ${CONLOOM_ADMIN_TOKEN}
@@ -56,18 +57,19 @@ bots:
     # private 项只在 allowlist 下生效。
     private_chat: admins
     persona_template: default
-  # Telegram 机器人：platform_self_id 是 Bot 的数字 ID（token 冒号前的部分），admins 填 Telegram 用户 ID。
-  - id: bot_tg
-    platform: telegram
-    platform_self_id: ${CONLOOM_TG_BOT_ID}
-    admins: ["${CONLOOM_TG_ADMIN_ID}"]
-    # group 项是开启的群（Telegram 的群 ID 是负数，要加引号）；private 项是允许私聊的人（用户 ID），
-    # 只在 private_chat: allowlist 时生效。
-    enabled_conversations:
-      - {type: group, platform_id: "${CONLOOM_TG_GROUP_ID}"}
-      - {type: private, platform_id: "${CONLOOM_TG_FRIEND_ID}"}
-    # allowlist：管理员和上面列出的人可以私聊；想对所有人开放改成 all。
-    private_chat: allowlist
+  # Telegram 机器人：platform_self_id 是 Bot 的数字 ID（token 冒号前的部分），admins 填 Telegram 用户 ID；
+  # group 项是开启的群（Telegram 的群 ID 是负数，要加引号），private 项是允许私聊的人（用户 ID），
+  # 只在 private_chat: allowlist 时生效；allowlist 表示管理员和列出的人可以私聊，想对所有人开放改成 all。
+  # ---- Telegram 示例开始：使用 Telegram 时取消注释下面几行，并在 .env 里设置 CONLOOM_TG_* 变量（见 docs/telegram.md）----
+  # - id: bot_tg
+  #   platform: telegram
+  #   platform_self_id: ${CONLOOM_TG_BOT_ID}
+  #   admins: ["${CONLOOM_TG_ADMIN_ID}"]
+  #   enabled_conversations:
+  #     - {type: group, platform_id: "${CONLOOM_TG_GROUP_ID}"}
+  #     - {type: private, platform_id: "${CONLOOM_TG_FRIEND_ID}"}
+  #   private_chat: allowlist
+  # ---- Telegram 示例结束 ----
 
 # 模型 Profile：按角色配置，换模型只需改这里。short_context 为必需项。
 model_profiles:
@@ -258,7 +260,8 @@ adapters:
     core_token: ${CONLOOM_ADAPTER_TOKEN}
     bot_instance_id: bot_main
     # state_dir 默认与 storage.data_dir 相同。
-  # Telegram（Bot API 长轮询，私聊和群聊；频道跳过）。
+  # Telegram（Bot API 长轮询，私聊和群聊；频道跳过）。只有 conloom adapter telegram 会校验这一段，
+  # 不用 Telegram 时变量留空即可。
   telegram:
     token: ${CONLOOM_TG_BOT_TOKEN}       # BotFather 给的 token，只放在 .env 里
     api_base: https://api.telegram.org   # 可省略
