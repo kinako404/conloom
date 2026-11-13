@@ -80,7 +80,7 @@ adapters:
 
 - 会话：私聊为 `Type=private`、`ID="private_<user_id>"`；群为 `Type=group`、`ID="group_<chat_id>"`（群的 chat_id 是负数，实施时要确认 ID 校验允许 `-`，不允许的话就换一种无损编码）。`PlatformConversationID` 一律填 `<chat_id>`。
 - 群里的 @ 和回复：消息 entities 里的 `mention`，如果文本等于 `@<bot用户名>`，算 @ 机器人，其他 `mention` 和 `text_mention` 算 @ 群友；`reply_to_message` 映射成 reply_to。核心靠消息 ID 判断是不是在回复机器人。
-- 群里的隐私模式：Telegram 默认只把命令、@ 机器人、回复机器人的消息发给机器人。在聊会话和主动加入需要看到所有消息，要在 BotFather 里执行 `/setprivacy` 设为 Disable，这一点写进 docs/telegram.md。
+- 群里的隐私模式：隐私模式开着时，机器人在群里只收到发给它的命令（如 `/help@bot`）、回复它的消息和服务消息，**单纯 @ 机器人的消息收不到**。要正常使用群聊（@ 回复、在聊会话、主动加入），需要在 BotFather 里执行 `/setprivacy` 设为 Disable，或者把机器人设为群管理员。这一点写进 docs/telegram.md。
 - 发送者：`Actor.PlatformUserID=<from.id>`，显示名为 `first_name + " " + last_name`，去掉首尾空白；都为空时用 `username`。
 - 消息 ID：Telegram 的 message_id 只在单个会话内唯一。标准 ID 为 `msg_<chat_id>_<message_id>`，回复关系也用这个格式。核心记录机器人自己的消息时用的是 ACK 里的平台消息 ID，所以适配器 ACK 时上报的平台消息 ID 也必须是 `<chat_id>_<message_id>`，保证两边对得上。实施时先核对核心怎么从平台消息 ID 生成 `msg_…`，再按它对齐。
 - 正文：
