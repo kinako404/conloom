@@ -103,6 +103,110 @@ nssm set ConLoomNapCat DependOnService ConLoom
 nssm start ConLoomNapCat
 ```
 
+## 向量服务
+
+语义检索是可选的（[配置参考](configuration.md#embedding)，工作方式见 [架构 5.7 节](architecture.md#57-长期检索)）。核心只调用 OpenAI 兼容的 `POST <endpoint>/embeddings`，任何兼容的服务都可以用。下面是一种做法：在另一台机器（下文的 `<向量主机>`）上用 [Ollama](https://ollama.com/) 纯 CPU 运行 bge-m3，核心通过一条专用的 SSH 隧道访问它，向量服务本身不对外开放端口。
+
+实测参考（Ollama 0.40.16、bge-m3、纯 CPU）：单句约 50ms，向量 1024 维；经隧道访问 `http://127.0.0.1:11434/v1` 时单次往返约 440ms，其中网络约 184ms。批量请求时每条仍约 50ms，但省掉了多次网络往返，所以 `batch_size` 默认 16。检索时把查询句转成向量另有 2 秒超时，向量服务慢或不可用时语义检索返回空结果，不影响回复。
+
+**1. 在向量主机上运行 Ollama（纯 CPU）**
+
+按 Ollama 的官方说明安装，然后让它只用 CPU、只监听本机，二选一：
+
+- 删掉安装目录里的 GPU 运行库（例如 `lib/ollama/` 下的 `cuda_*`、`rocm` 等目录；升级 Ollama 后要重新删）；
+- 或者在服务环境里设 `CUDA_VISIBLE_DEVICES=-1`（AMD 显卡另设 `ROCR_VISIBLE_DEVICES=-1`）：
+
+```sh
+sudo systemctl edit ollama
+```
+
+```ini
+[Service]
+Environment=CUDA_VISIBLE_DEVICES=-1
+Environment=OLLAMA_HOST=127.0.0.1:11434
+```
+
+```sh
+sudo systemctl restart ollama
+ollama pull bge-m3
+curl -s http://127.0.0.1:11434/v1/embeddings -d '{"model":"bge-m3","input":["你好"]}' | head -c 200
+```
+
+`ollama ps` 的 PROCESSOR 一列应当是 `100% CPU`。
+
+**2. 准备隧道专用的用户和密钥**
+
+在核心所在的机器上建一个只用来开隧道的系统用户，生成没有口令的专用密钥：
+
+```sh
+sudo useradd --system --create-home --home-dir /var/lib/conloom-tunnel --shell /usr/sbin/nologin conloom-tunnel
+sudo -u conloom-tunnel mkdir -m 700 /var/lib/conloom-tunnel/.ssh
+sudo -u conloom-tunnel ssh-keygen -t ed25519 -N '' -C conloom-embed-tunnel -f /var/lib/conloom-tunnel/.ssh/id_ed25519
+```
+
+在向量主机上同样建一个用户（下文为 `embed-tunnel`），把公钥写进它的 `~/.ssh/authorized_keys`，并加上限制：
+
+```text
+restrict,port-forwarding,permitopen="127.0.0.1:11434",command="/bin/false" ssh-ed25519 AAAA…（公钥） conloom-embed-tunnel
+```
+
+`restrict` 关掉终端、代理转发、X11 和端口转发等一切功能，`port-forwarding` 只把本地端口转发加回来，`permitopen` 限定只能转发到向量主机本机的 11434 端口，`command="/bin/false"` 让这把钥匙登录后什么也执行不了。向量主机的 sshd 要允许这个用户做 TCP 转发（`AllowTcpForwarding` 默认为 `yes`）。
+
+然后在核心机器上记下向量主机的主机密钥（请核对指纹），并试连一次：
+
+```sh
+sudo -u conloom-tunnel sh -c 'ssh-keyscan -t ed25519 <向量主机> >> /var/lib/conloom-tunnel/.ssh/known_hosts'
+sudo -u conloom-tunnel ssh -N -L 127.0.0.1:11434:127.0.0.1:11434 embed-tunnel@<向量主机>
+```
+
+**3. 用 systemd 保持隧道**
+
+保存为 `/etc/systemd/system/conloom-embed-tunnel.service`：
+
+```ini
+[Unit]
+Description=SSH tunnel from ConLoom to the embedding service
+Wants=network-online.target
+After=network-online.target
+Before=conloom.service
+
+[Service]
+User=conloom-tunnel
+ExecStart=/usr/bin/ssh -N -T \
+  -o BatchMode=yes -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -o StrictHostKeyChecking=yes \
+  -i /var/lib/conloom-tunnel/.ssh/id_ed25519 -o IdentitiesOnly=yes \
+  -L 127.0.0.1:11434:127.0.0.1:11434 \
+  embed-tunnel@<向量主机>
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now conloom-embed-tunnel
+```
+
+隧道只监听核心机器的 `127.0.0.1:11434`。如果核心机器上本来就有服务占用这个端口，换一个本地端口（例如 `-L 127.0.0.1:11435:127.0.0.1:11434`），配置里的 `endpoint` 跟着改。
+
+**4. 打开语义检索**
+
+在 `conloom.yaml` 里加上：
+
+```yaml
+embedding:
+  endpoint: http://127.0.0.1:11434/v1
+  model: bge-m3
+```
+
+重启核心。之后每分钟一轮，后台为记忆已生效的会话生成向量，每轮最多 200 段，所以历史较长的会话要一段时间才能补齐。可以看 `/metrics` 的 `conloom_embedding_requests_total{result="ok"}` 是否在增长、`conloom_embedding_backlog`（待生成段数的估计值）是否在下降。隧道断开或 Ollama 停止时，日志里出现 `embedding round failed`，后台按 1、2、4、8 分钟直到最长 10 分钟的间隔重试，恢复后自动继续；语义检索在这期间返回空结果。
+
+换模型时改 `model` 后重启即可：后台按会话从新到旧重新生成向量，补齐之前旧模型的向量不参与检索，全部补齐后删除。
+
 ## 数据目录与权限
 
 全部状态在一个数据目录里，全部配置在 `conloom.yaml` 加可选的 `.env`，二进制没有其他依赖：
@@ -144,6 +248,12 @@ nssm start ConLoomNapCat
 
 **升级**：先备份，再替换二进制并重启（先核心后适配器）。核心启动时自动按顺序应用新的表结构迁移，迁移只能前进、没有回滚脚本，所以回退到旧版本时要用升级前的备份。升级前请对照 [配置参考](configuration.md#群策略) 检查已移除的配置字段（例如 `proactive.contact_cooldown`），配置文件里残留未知字段会导致启动失败。
 
+**回退到没有语义检索的旧版本**：迁移 `0007_memory_chunks.sql` 只新增三张表，旧二进制会忽略它们，配置里要先删掉 `embedding` 段。但旧二进制处理 `/忘记我` 时不会删除这些表里的段，所以如果在旧版本运行期间有人用过 `/忘记我`（或通过 API 删除了群友记忆），再升级回来之前，用 `sqlite3` 清空这三张表，让后台从头重新生成：
+
+```sh
+sqlite3 <data_dir>/conloom.db 'DELETE FROM memory_chunks; DELETE FROM memory_chunk_state; DELETE FROM memory_chunk_rebuild;'
+```
+
 **回退到没有记忆层的旧版本**：记忆层的迁移（`0005_memory.sql`）只新增三张表，旧二进制可以直接在升级后的库上运行，会忽略这些表；要完全回到升级前的状态，仍然用升级前的备份。回退时注意：
 
 - 不要在 `conloom.yaml` 里写 `memory` 段（包括 `default_group_policy.memory`），否则旧二进制会因为未知字段启动失败。回退到没有私聊记忆的版本时同理，要去掉 `default_private_policy` 段和 `memory.consolidate_min`。
@@ -167,6 +277,7 @@ nssm start ConLoomNapCat
 - 日志默认**不记录**消息正文，只记 ID、长度、会话、路由和耗时；本地调试时可以设 `observability.log_message_content: true`。
 - 只有 `enabled_conversations` 中的会话（以及按 `private_chat` 开放的私聊）的消息会被保存。其他会话的消息不转发、正文不落库，只留一条不含正文的幂等记录（幂等键、请求哈希和响应），按 `idempotency_retention` 清理。
 - 消息保存在本机 `<data_dir>/conloom.db` 中，用作对话上下文；被处理的事件原文（含正文）在幂等记录里保留 `idempotency_retention`。请像对待聊天记录一样保护数据目录和备份文件。
+- 配置了 `embedding` 时，段落文本会发给向量服务：它和 `recall` 能看到的内容一样（命令、被忘记的内容和被审查拦截的消息不收，联系方式打码，不带 ID），但仍然是聊天原文，所以向量服务应当部署在你自己控制的机器上，并像上文那样只通过隧道或内网访问。库里只存向量和文本的哈希，不另存段落文本。
 - 主动搭话的兴趣画像（每位 @ 过机器人的群友最多 50 个关键词及权重）、档位和最近一次 @ 机器人的时间保存在 `conloom.db` 中，不写入日志，也不会出现在群消息里；加入群聊时只把在场目标资格人合并后的前 5 个兴趣词放进发给模型的提示。在聊会话和停顿计时器只在内存里，不落库。
 - 组装好的上下文会发送到你配置的模型 endpoint，也就是说消息内容会离开本机（除非模型部署在本机）。
 - 模型输出会剥离平台控制码，并对密钥形态的字符串和配置中的任何密钥打码后才发送。

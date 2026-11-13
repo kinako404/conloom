@@ -434,6 +434,34 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - **身份**：工具通过 `skills.Invocation` 得知调用者，永远是当前任务的说话人和会话，以及本次回复所回应的触发消息 ID（按时间顺序，remember 据此确认是本人要求记住、recall 据此排除当前这一轮；时区为 `server.timezone`）；参数里不带任何身份信息。
 - **输出**：只有最终回复走 5.4 的输出处理链并发送；中间轮次模型写的文字只回传给模型。
 
+### 5.7 长期检索
+
+`recall` 之外，配置了 `embedding` 段（[配置参考](configuration.md#embedding)）时，核心还维护一份语义检索：把会话切成段，为每段生成向量，按语义找出和查询最接近的几段。没配置时不生成向量，也不请求任何服务（下面三张表照常由迁移建好，保持为空）。代码在 `internal/search/vector`（切段、后台生成、检索）、`internal/embedding`（向量服务客户端）和 `internal/store/sqlite/chunks.go`；对外的接口是 `internal/search` 的 `VectorSearcher`，由 `app.App.VectorSearcher()` 提供，没配置时为 nil。`recall` 目前还没有接入它。
+
+**存储**（迁移 `0007_memory_chunks.sql`，全部按 `conversation_key` 隔离）：
+
+- `memory_chunks`：每段一行，段内首末消息的 `seq` 和时间、段落文本的 SHA-256、模型名、维数和向量（float32 小端）。段落文本本身不存，需要时从 `messages` 重新生成；
+- `memory_chunk_state`：每个会话一行，切段游标 `cursor_seq`（之前的消息都已切段）和当前模型；
+- `memory_chunk_rebuild`：待重建的段落范围（首末 `seq`），由忘记和换模型产生。
+
+**切段**（`chunk.go`）：段落文本和 `recall` 用同一套规则生成（`tools.Transcript`，复用 `recall` 的过滤函数）：命令和机器人对命令的回复不收；被忘记的人在忘记时间之前的消息不收（私聊里是忘记之前的全部消息）；联系方式打码、过一遍会话的输出审查，被拦截的消息不收；每行是 `[MM-DD HH:MM] 名字：正文`（`server.timezone`），正文最长 200 字，不带任何 ID。为了让命令和它的回复正确配对，每次切段都多读游标之前的 20 条消息，过滤后再丢掉。相邻两行间隔超过 30 分钟、已有 8 行、或再加一行会超过 400 字时另起一段。
+
+**后台生成**（`Indexer`）：一个后台协程每分钟一轮，随 `App.Start` 启动、`App.Close` 停止。每轮按会话键依次处理群聊和私聊里记忆已生效（`memory.enabled && concurrency.allow_long_requests`）的会话，全轮最多生成 200 段：
+
+1. 库里的模型和配置不同时，把这个会话所有其他模型的段加入重建队列，并记下新模型。
+2. 先处理重建队列，按结束 `seq` 从新到旧：重新读取这个范围的消息切段（这时全部视为已关闭），写入时在同一个事务里删掉范围内当前模型的旧段、写入新段、删掉队列记录。队列清空后删除这个会话其他模型的段。
+3. 再从游标往后读最多 1000 条新消息切段。只有已关闭的段才生成向量：后面还有段，或者已满 8 行，或者最后一行距现在超过 30 分钟；读满 1000 条时最后一段一律视为未关闭。游标推进到未关闭的那段之前；没有未关闭的段时推进到读到的最后一条；本轮额度用完时推进到最后写入的那段为止。
+4. 每批最多 `batch_size` 段请求一次向量服务。任何一步出错都结束本轮，下一轮从头再来；连续失败时暂停 1、2、4、8、10、10… 分钟（最长 10 分钟），成功一轮后恢复每分钟一轮。
+
+**忘记**：`Store.ForgetMember`（群聊）在同一个事务里删除包含这个人在忘记时间之前所发消息的段（按段的 `seq` 范围查 `messages`），并把这些段加入重建队列，重建时他的那些消息不再收进段落；`Store.ForgetPrivate`（私聊）删除开始时间早于忘记时间的全部段，其中跨过忘记时间的段加入重建队列，用剩下的消息重建。后台切段读消息之前先记下这个会话的“忘记戳”（所有被忘记成员及其忘记时间），写入的事务里再核对一次；期间有人被忘记就整批不写、不推进游标，下一轮按新的忘记状态重来。所以被忘记的内容不会留在向量里，也不会被写回去。
+
+**检索**（`Searcher`）：
+
+- 先把查询句转成向量，最多等 2 秒（`DefaultQueryTimeout`，和 `embedding.timeout` 无关）。超时或出错时记一条 Warn 日志（不含查询内容）并返回空结果，不返回错误，调用方只用关键词结果。
+- 只用当前模型的段：换模型后，新向量补齐之前这个会话的语义检索结果会变少，旧向量不参与比较（维数不同，不能混用）。
+- 在内存里对这个会话的全部段计算余弦相似度，按时间范围过滤（段的时间区间和 `[After, Before]` 有重叠即可，零值表示不限），从高到低取前 `limit` 个，返回段的首末 `seq` 和分数。
+- 最近检索过的 8 个会话的向量缓存在内存里（LRU）。每次检索先查一次库里这个会话当前模型的段数、最大 ID 和缓存范围内还剩几段：只多了新段时只读新段，有段被删掉（忘记、重建）时整段重读，所以缓存不会留下已删除的段。
+
 ## 6. 状态边界
 
 | 状态 | 位置 | 重启后 |
@@ -444,6 +472,8 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | 成员资格、档位、兴趣画像 | SQLite `conversation_members` | 保留 |
 | 主动搭话的评估 / 发出记录 | SQLite `proactive_log` | 保留 7 天，预算照常生效 |
 | 群聊和私聊的摘要与整理游标、笔记和好感度、记忆修改记录 | SQLite `group_memory`、`member_memory`、`memory_revisions` | 保留；修改记录保留 30 天 |
+| 语义检索的段和向量、切段游标、重建队列 | SQLite `memory_chunks`、`memory_chunk_state`、`memory_chunk_rebuild` | 保留 |
+| 语义检索的向量缓存、生成向量的失败退避 | 内存 | 丢失；缓存在下次检索时重读 |
 | 记忆整理的排队请求、积压跳转标记、失败计数和退避、缩小后的批次上限 | 内存 | 丢失；手动整理要重新触发。重新开启记忆后、下一次整理前重启的群，跳转标记丢失，按原游标整理完整积压（每轮最多 10 批） |
 | 调度队列、合并窗口、挂起标记、`lastFinish` | 内存 | 丢失；任务按库里记录重新入队 |
 | 在聊会话 | 内存 | 清空，需要重新 @ 机器人 |
@@ -505,6 +535,9 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | `memory_consolidation_seconds` | —（只记成功的整理） |
 | `memory_affinity_changes_total` | source：consolidate / rule / command / api |
 | `skill_calls_total` | tool（模型编造的工具名记为 unknown）、result：ok / error / unknown / invalid |
+| `search_seconds` | path：vector（每次语义检索，包括失败的） |
+| `embedding_requests_total` | result：ok / error / timeout（每次请求向量服务，后台生成和查询都算） |
+| `embedding_backlog` | —（估计值：待重建的段数，加上各会话游标之后的消息数按 8 条一段折算；每轮结束时更新） |
 
 关键原因代码：
 
@@ -513,6 +546,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - **其他日志**：`join evaluation`（建了加入任务，会话外提问带 `guest=true`）、`turn deferred`（接话冷却挂起）、`turn dropped`（一轮在调用模型前被丢弃；挂起超过上限时带 `reason=held_too_long`）、`model call failed; re-routing`。
 - **记忆日志**：每次成功整理一行 `memory consolidated`（会话、批数、消息条数、prompt token 数、更新了几位成员、用时），失败时 `memory consolidation failed` 带类别和连续失败次数；注入失败记 `memory not injected: …`。记忆相关日志不写笔记和摘要正文。
 - **技能日志**：每次执行工具一行 `skill call`（`task_id`、`tool`、`duration_ms`、`ok`、`result`），不记参数和结果；带工具的 `model call` 多出 `round`、`final` 和 `tool_calls`，`task finished` 带 `skill_calls`（如 `now:1`）。
+- **语义检索日志**：后台一轮失败记 `embedding round failed`（带下次重试的等待时间），查询转向量失败记 `embedding the query failed; no semantic hits`（带会话和结果类别）；都不写段落和查询的正文。
 - **任务 meta**：`selected_model_role`、`route_reason`（`fits_short_context` 等）、`review_result`（skipped / blocked / 审查结论）、错误码。
 
 ## 9. 已知限制和后续方向

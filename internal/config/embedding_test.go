@@ -113,3 +113,39 @@ func TestValidateServe_Embedding(t *testing.T) {
 		t.Errorf("batch_size 1: %v", err)
 	}
 }
+
+// TestLoad_ExampleEmbedding checks that the example leaves semantic search off
+// and that its embedding block, uncommented, is valid.
+func TestLoad_ExampleEmbedding(t *testing.T) {
+	setExampleEnv(t, exampleEnv)
+	if cfg := mustLoad(t, "../../conloom.example.yaml"); cfg.Embedding != nil {
+		t.Fatalf("example Embedding = %+v, want it commented out", cfg.Embedding)
+	}
+	data, err := os.ReadFile("../../conloom.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	inBlock := false
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "# embedding:" {
+			inBlock = true
+		} else if inBlock && !strings.HasPrefix(line, "#   ") {
+			inBlock = false
+		}
+		if inBlock {
+			line = strings.TrimPrefix(line, "# ")
+		}
+		out = append(out, line)
+	}
+	t.Setenv("CONLOOM_EMBEDDING_KEY", "fake-embed-key")
+	cfg := mustLoad(t, writeConfig(t, strings.Join(out, "\n")))
+	want := EmbeddingConfig{Endpoint: "http://127.0.0.1:11434/v1", Model: "bge-m3", APIKey: "fake-embed-key",
+		Timeout: dur(10 * time.Second), BatchSize: 16}
+	if cfg.Embedding == nil || *cfg.Embedding != want {
+		t.Fatalf("uncommented example Embedding = %+v, want %+v", cfg.Embedding, want)
+	}
+	if err := cfg.ValidateServe(); err != nil {
+		t.Fatalf("ValidateServe: %v", err)
+	}
+}
