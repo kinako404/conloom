@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -590,18 +591,42 @@ func TestSkills_InvocationIsTheSpeaker(t *testing.T) {
 	now := &recTool{name: "now"}
 	env := skillEnv(t, testOpts{shortTools: callOnceThen("好", fakeopenai.ToolCall{ID: "a", Name: "now", Arguments: "{}"})},
 		[]string{"time"}, now)
-	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "几点", withName("小明"), mentionBot)).TaskID)
+	ev := env.groupEvent("20001", "几点", withName("小明"), mentionBot)
+	task := env.waitTask(t, env.submit(t, ev).TaskID)
 	inv := now.invs[0]
 	if inv.TaskID != task.TaskID || inv.BotInstanceID != testBot || inv.ConversationKey != testConvKey ||
 		inv.ConversationType != conloomapi.ConvGroup || inv.PlatformUserID != "20001" || inv.DisplayName != "小明" ||
+		!slices.Equal(inv.TriggerMessageIDs, []string{ev.Message.ID}) ||
 		inv.IsAdmin || inv.Location != env.o.loc || inv.Now.IsZero() {
 		t.Errorf("group invocation = %+v", inv)
 	}
 
-	env.waitTask(t, env.submit(t, env.event(conloomapi.ConvPrivate, "29999", "29999", "几点")).TaskID)
+	priv := env.event(conloomapi.ConvPrivate, "29999", "29999", "几点")
+	env.waitTask(t, env.submit(t, priv).TaskID)
 	inv = now.invs[1]
-	if inv.ConversationType != conloomapi.ConvPrivate || inv.PlatformUserID != "29999" || !inv.IsAdmin {
+	if inv.ConversationType != conloomapi.ConvPrivate || inv.PlatformUserID != "29999" || !inv.IsAdmin ||
+		!slices.Equal(inv.TriggerMessageIDs, []string{priv.Message.ID}) {
 		t.Errorf("private invocation = %+v", inv)
+	}
+}
+
+func TestSkills_InvocationNamesMergedTriggersInOrder(t *testing.T) {
+	now := &recTool{name: "now"}
+	env := skillEnv(t, testOpts{
+		shortTools: callOnceThen("好", fakeopenai.ToolCall{ID: "a", Name: "now", Arguments: "{}"}),
+		configure: func(c *config.Config) {
+			c.DefaultGroupPolicy.Reply.Debounce = conloomapi.Duration{Duration: 400 * time.Millisecond}
+		},
+	}, []string{"time"}, now)
+	first := env.groupEvent("20001", "在吗", mentionBot)
+	second := env.groupEvent("20001", "记住我喜欢草莓", mentionBot)
+	r1, r2 := env.submit(t, first), env.submit(t, second)
+	if !r2.Merged || r2.TaskID != r1.TaskID {
+		t.Fatalf("second message not merged: %+v / %+v", r1, r2)
+	}
+	env.waitTask(t, r1.TaskID)
+	if got := now.invs[0].TriggerMessageIDs; !slices.Equal(got, []string{first.Message.ID, second.Message.ID}) {
+		t.Errorf("TriggerMessageIDs = %v, want both messages in order", got)
 	}
 }
 

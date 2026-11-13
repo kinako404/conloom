@@ -98,15 +98,21 @@ func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, 
 	}
 	schema, _ := json.Marshal(run.tools)
 	run.schema = string(schema)
+	// triggers are the stored trigger messages in seq order, i.e. as they happened.
+	ids := make([]string, len(triggers))
+	for i, m := range triggers {
+		ids[i] = m.ID
+	}
 	run.inv = skills.Invocation{
-		TaskID:           task.ID,
-		BotInstanceID:    task.BotInstanceID,
-		ConversationKey:  task.ConversationKey,
-		ConversationType: conv.Type,
-		PlatformUserID:   task.ActorPlatformUserID,
-		DisplayName:      triggers[len(triggers)-1].DisplayName,
-		IsAdmin:          slices.Contains(bot.Admins, task.ActorPlatformUserID),
-		Location:         o.loc,
+		TaskID:            task.ID,
+		BotInstanceID:     task.BotInstanceID,
+		ConversationKey:   task.ConversationKey,
+		ConversationType:  conv.Type,
+		PlatformUserID:    task.ActorPlatformUserID,
+		DisplayName:       triggers[len(triggers)-1].DisplayName,
+		TriggerMessageIDs: ids,
+		IsAdmin:           slices.Contains(bot.Admins, task.ActorPlatformUserID),
+		Location:          o.loc,
 	}
 	return run
 }
