@@ -35,11 +35,17 @@ func TestLoad_EmbeddingDefaults(t *testing.T) {
 		t.Fatal("Embedding = nil, want the section")
 	}
 	if e.Endpoint != "http://127.0.0.1:11434/v1" || e.Model != "bge-m3" || e.APIKey != "" ||
-		e.Timeout.Duration != 10*time.Second || e.BatchSize != 16 || e.MinScore != 0.48 {
+		e.Timeout.Duration != 10*time.Second || e.BatchSize != 16 || e.MinScore != DefaultEmbeddingMinScore {
 		t.Errorf("Embedding = %+v", *e)
 	}
 	if err := cfg.ValidateServe(); err != nil {
 		t.Fatalf("ValidateServe: %v", err)
+	}
+}
+
+func TestDefaultEmbeddingMinScore(t *testing.T) {
+	if DefaultEmbeddingMinScore != 0.48 {
+		t.Fatalf("DefaultEmbeddingMinScore = %v, want 0.48 (calibrated on bge-m3)", DefaultEmbeddingMinScore)
 	}
 }
 

@@ -27,11 +27,6 @@ const (
 	// skip the service for breakerCooldown; then one query tries it again.
 	breakerFailures = 3
 	breakerCooldown = 60 * time.Second
-	// DefaultMinScore is the cosine similarity below which a chunk counts as
-	// unrelated, the default of embedding.min_score. Calibrated on bge-m3:
-	// related chunks scored about 0.50–0.63, most unrelated pairs below 0.46.
-	// Another model needs calibrating again.
-	DefaultMinScore = 0.48
 	// DefaultMargin is how far below the best chunk of a search others may
 	// score and still be hits.
 	DefaultMargin = 0.05

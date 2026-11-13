@@ -72,8 +72,13 @@ type EmbeddingConfig struct {
 	MinScore  float64             `yaml:"min_score"`
 }
 
+// DefaultEmbeddingMinScore is the default of embedding.min_score, calibrated
+// on bge-m3: related chunks scored about 0.50–0.63, most unrelated pairs
+// below 0.46. Another model needs calibrating again.
+const DefaultEmbeddingMinScore = 0.48
+
 func defaultEmbedding() EmbeddingConfig {
-	return EmbeddingConfig{Model: "bge-m3", Timeout: dur(10 * time.Second), BatchSize: 16, MinScore: 0.48}
+	return EmbeddingConfig{Model: "bge-m3", Timeout: dur(10 * time.Second), BatchSize: 16, MinScore: DefaultEmbeddingMinScore}
 }
 
 type APIToken struct {

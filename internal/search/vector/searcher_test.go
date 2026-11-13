@@ -129,12 +129,6 @@ func TestSearcher_KeepsOnlyScoresNearTheBest(t *testing.T) {
 	}
 }
 
-func TestDefaultMinScore(t *testing.T) {
-	if DefaultMinScore != 0.48 {
-		t.Fatalf("DefaultMinScore = %v, want 0.48 (calibrated on bge-m3)", DefaultMinScore)
-	}
-}
-
 func TestSearcher_EmptyWhenTheServiceFails(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
