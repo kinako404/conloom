@@ -12,7 +12,8 @@ import (
 // the given order. ReplyTargets maps message IDs to the messages they reply
 // to; MentionNames maps mentioned actors' IDs to their display names; Refs
 // maps actor IDs to codes such as "P1". A member without a code is shown only
-// as genericMemberName.
+// as Unnamed, which is also the name of a member without a usable one;
+// genericMemberName when empty.
 type TranscriptInput struct {
 	Messages     []store.MessageRecord
 	ReplyTargets map[string]store.MessageRecord
@@ -20,12 +21,13 @@ type TranscriptInput struct {
 	Refs         map[string]string
 	BotName      string
 	Location     *time.Location
+	Unnamed      string
 }
 
 // Transcript renders each message as one third-person line,
 // "[HH:MM] 名字（P1）（回复 …）（@了 …）：正文": the bot is "<BotName>（机器人）",
-// a member with a code is "名字（P1）" (genericMemberName for the name when it
-// is empty or only their ID) and one without is genericMemberName. A
+// a member with a code is "名字（P1）" (Unnamed for the name when it is empty
+// or only their ID) and one without is Unnamed. A
 // reply target missing from ReplyTargets is "（回复了一条更早的消息）". Bodies
 // are capped at HistoryMessageMaxRunes and put on one line; the bot's have
 // echoed transcript prefixes stripped first. No ID is ever shown.
@@ -56,15 +58,23 @@ func (in TranscriptInput) label(rec store.MessageRecord) string {
 	if rec.FromBot {
 		return in.botLabel()
 	}
-	return in.memberLabel(rec.ActorID, speakerName(rec))
+	return in.memberLabel(rec.ActorID, in.speakerName(rec))
 }
 
-// speakerName is rec's display name, or genericMemberName when it is empty or
-// only the sender's platform user ID or actor ID.
-func speakerName(rec store.MessageRecord) string {
+// unnamed is the name shown for a member without a usable one.
+func (in TranscriptInput) unnamed() string {
+	if in.Unnamed != "" {
+		return in.Unnamed
+	}
+	return genericMemberName
+}
+
+// speakerName is rec's display name, or unnamed when it is empty or only the
+// sender's platform user ID or actor ID.
+func (in TranscriptInput) speakerName(rec store.MessageRecord) string {
 	name := oneLine(rec.DisplayName)
 	if name == "" || name == rec.PlatformUserID || name == rec.ActorID {
-		return genericMemberName
+		return in.unnamed()
 	}
 	return name
 }
@@ -79,7 +89,7 @@ func (in TranscriptInput) botLabel() string {
 func (in TranscriptInput) memberLabel(actorID, name string) string {
 	ref, ok := in.Refs[actorID]
 	if !ok {
-		return genericMemberName
+		return in.unnamed()
 	}
 	return oneLine(name) + "（" + ref + "）"
 }
@@ -103,7 +113,7 @@ func (in TranscriptInput) mentionAnnotation(rec store.MessageRecord) string {
 		case "all":
 			label = "全体成员"
 		case "user":
-			name := genericMemberName
+			name := in.unnamed()
 			for _, n := range []string{in.MentionNames[m.ID], m.Name} {
 				if n = mentionName(n, m.ID); n != "" {
 					name = n

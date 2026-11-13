@@ -16,15 +16,16 @@ import (
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
-// memoryConversation resolves the {id} path value to a group conversation of
-// the token's bot, reporting an error response itself on failure.
+// memoryConversation resolves the {id} path value to a group or private
+// conversation of the token's bot, reporting an error response itself on
+// failure.
 func (s *Server) memoryConversation(w http.ResponseWriter, r *http.Request, tok *token) (store.ConversationRecord, bool) {
 	conv, ok := s.conversation(w, r, tok)
 	if !ok {
 		return conv, false
 	}
-	if conv.Type != conloomapi.ConvGroup {
-		s.invalid(w, r, "memory is only kept for group conversations")
+	if conv.Type != conloomapi.ConvGroup && conv.Type != conloomapi.ConvPrivate {
+		s.invalid(w, r, "memory is only kept for group and private conversations")
 		return conv, false
 	}
 	return conv, true
@@ -105,8 +106,8 @@ func (s *Server) putMemberMemory(w http.ResponseWriter, r *http.Request, tok *to
 	var note string
 	if put.Note != nil {
 		note = strings.TrimSpace(*put.Note)
-		if n := utf8.RuneCountInString(note); n > memory.NoteMaxRunes {
-			s.invalid(w, r, "note must be at most "+strconv.Itoa(memory.NoteMaxRunes)+" characters, got "+strconv.Itoa(n))
+		if limit, n := memory.NoteLimit(conv.Type), utf8.RuneCountInString(note); n > limit {
+			s.invalid(w, r, "note must be at most "+strconv.Itoa(limit)+" characters, got "+strconv.Itoa(n))
 			return
 		}
 	}
@@ -159,7 +160,8 @@ func (s *Server) putMemberMemory(w http.ResponseWriter, r *http.Request, tok *to
 	writeJSON(w, http.StatusOK, memberState(m))
 }
 
-// deleteMemberMemory forgets a member as /忘记我 does. It works whether or not
+// deleteMemberMemory forgets a member as /忘记我 does (memory.Forget, which
+// also clears a private conversation's summary). It works whether or not
 // memory is on.
 func (s *Server) deleteMemberMemory(w http.ResponseWriter, r *http.Request, tok *token) {
 	conv, ok := s.memoryConversation(w, r, tok)
@@ -172,7 +174,7 @@ func (s *Server) deleteMemberMemory(w http.ResponseWriter, r *http.Request, tok 
 		s.fail(w, r, err)
 		return
 	}
-	if err := s.d.Store.ForgetMember(r.Context(), conv.Key, userID, time.Now()); err != nil {
+	if err := memory.Forget(r.Context(), s.d.Store, conv.Key, userID, time.Now()); err != nil {
 		s.fail(w, r, err)
 		return
 	}

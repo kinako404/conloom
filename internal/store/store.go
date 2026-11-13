@@ -77,9 +77,16 @@ type Store interface {
 	// ApplyMemoryWrite writes w in one transaction. A member is written only if
 	// its stored version equals m.Version (0 for no row) and then gets the next
 	// version; mismatched members are skipped with their revisions and returned
-	// as conflicts. Parts keyed to another conversation, or a member listed
+	// as conflicts. A broken summary guard keeps the stored summary (see
+	// MemoryWrite), and the cursor never moves back. Parts keyed to another conversation, or a member listed
 	// twice, fail the whole write.
 	ApplyMemoryWrite(ctx context.Context, w MemoryWrite) (conflicts []string, err error)
+	// ForgetPrivate forgets the user of a private conversation in one
+	// transaction: what ForgetMember does, plus emptying the conversation's
+	// summary, deleting its summary revisions and moving its cursor up to the
+	// newest message, so nothing said before (by either side) is consolidated
+	// again. A conversation without a memory row gets one.
+	ForgetPrivate(ctx context.Context, convKey, userID string, at time.Time) error
 	// ForgetMember clears the user's memory, marks it forgotten at at (creating
 	// the row if needed) and deletes the user's revisions in the conversation.
 	ForgetMember(ctx context.Context, convKey, userID string, at time.Time) error

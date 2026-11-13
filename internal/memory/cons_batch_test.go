@@ -205,7 +205,7 @@ func TestConsolidate_SplitsBatchesByBudget(t *testing.T) {
 	text := strings.Repeat("猫", 100)
 	lineCost := contextbuilder.Estimate("[09:00] 小明（P1）："+text+"\n", 1)
 	memberCost := contextbuilder.Estimate(consMemberLine(promptMember{Ref: "P1", Name: "小明"})+"\n", 1)
-	base := consPromptTokens(buildPrompt("S1", nil, nil), 1)
+	base := consPromptTokens(buildPrompt(consStyleFor(testConvKey), "S1", nil, nil), 1)
 	e := newConsEnv(t, consOpts{softBudget: base + 2*memberCost + 25*lineCost})
 
 	var msgs []store.MessageRecord
@@ -466,7 +466,7 @@ func TestConsPlanBatch_NameThatIsTheUserIDShownGenerically(t *testing.T) {
 		if m.Name != "" {
 			t.Errorf("member %s Name = %q, want empty (an ID is not a name)", m.UserID, m.Name)
 		}
-		members = append(members, consMemberLine(consPromptMember(m.Memory, m.Ref, m.Name)))
+		members = append(members, consMemberLine(consPromptMember(m.Memory, m.Ref, m.Name, "")))
 	}
 	want := []string{"P1 一位群友：笔记：暂无；好感度：未建立", "P2 一位群友：笔记：暂无；好感度：未建立"}
 	if !slices.Equal(members, want) {

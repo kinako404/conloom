@@ -146,6 +146,7 @@ func (c *Consolidator) Run(ctx context.Context, convKey string, manual bool) (Re
 }
 
 func (c *Consolidator) run(ctx context.Context, convKey string, manual bool) (Result, int, error) {
+	runStart := c.d.Now()
 	pv, err := c.d.Policies.Current(ctx, convKey)
 	if err != nil {
 		return Result{}, 0, err
@@ -171,7 +172,13 @@ func (c *Consolidator) run(ctx context.Context, convKey string, manual bool) (Re
 
 	var res Result
 	promptTokens := 0
+	private := convTypeOf(convKey) == conloomapi.ConvPrivate
 	for res.Batches < maxBatchesPerRun {
+		if private {
+			if err := c.refreshGroup(ctx, &g); err != nil {
+				return res, promptTokens, err
+			}
+		}
 		msgs, err := c.d.Store.MessagesAfter(ctx, convKey, g.CursorSeq, c.messageLimit(convKey))
 		if err != nil {
 			return res, promptTokens, err
@@ -179,7 +186,7 @@ func (c *Consolidator) run(ctx context.Context, convKey string, manual bool) (Re
 		if len(msgs) == 0 {
 			break
 		}
-		out, err := c.batch(ctx, &g, mp, botName, msgs)
+		out, err := c.batch(ctx, &g, mp, botName, msgs, runStart)
 		if err != nil {
 			return res, promptTokens, err
 		}
@@ -207,21 +214,32 @@ type consOutcome struct {
 }
 
 // batch consolidates the batch planned from msgs and, once it is written,
-// moves *g to the written state.
-func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conloomapi.MemoryPolicy, botName string, msgs []store.MessageRecord) (consOutcome, error) {
+// moves *g to the written state. Writes that are not meant to change the
+// summary keep the stored one. A private conversation is about its one
+// member, and forgetting them (memory.Forget) moves its cursor past
+// everything said before: run reads its memory row afresh before every
+// batch, a batch whose member was forgotten since runStart is abandoned
+// before the model call ("forgotten": nothing written, the cursor left
+// where it is), and one whose member is forgotten during the call writes no
+// summary (store.MemoryWrite's SummaryGuards) and never moves the cursor
+// back.
+func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conloomapi.MemoryPolicy, botName string,
+	msgs []store.MessageRecord, runStart time.Time) (consOutcome, error) {
 	convKey := g.ConversationKey
+	private := convTypeOf(convKey) == conloomapi.ConvPrivate
 	in, err := c.gather(ctx, convKey, msgs)
 	if err != nil {
 		return consOutcome{}, err
 	}
-	base := consPromptTokens(buildPrompt(g.Summary, nil, nil), c.d.Config.ModelProfiles[string(router.RoleLong)].TokenEstimateFactor)
+	style := consStyleFor(convKey)
+	base := consPromptTokens(buildPrompt(style, g.Summary, nil, nil), c.d.Config.ModelProfiles[string(router.RoleLong)].TokenEstimateFactor)
 	d, err := c.d.Router.Route(router.Request{AllowLong: true, Exclude: []router.Role{router.RoleShort}, BaseTokens: base})
 	if err != nil {
 		c.d.Logger.Info("memory consolidation skipped: long-context model unavailable", "conversation", convKey, "error", err)
 		return consOutcome{skipped: "long_unavailable"}, nil
 	}
 	p := d.Profile
-	in.BotName, in.Location = botName, c.d.Location
+	in.BotName, in.Location, in.Unnamed = botName, c.d.Location, style.unnamed
 	in.BaseTokens, in.Budget, in.TokenFactor = base, d.PromptBudget, p.Config.TokenEstimateFactor
 	memberCap := consMemberCap(d.MaxOutputTokens)
 	in.MaxMembers = c.memberLimit(convKey, memberCap)
@@ -231,18 +249,25 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 	if b.MemberMessages == 0 {
 		next := *g
 		next.CursorSeq, next.LastRunAt, next.LastError = b.LastSeq, now, ""
-		if err := c.d.Store.PutGroupMemory(ctx, next); err != nil {
+		if err := c.putGroupState(ctx, next); err != nil {
 			return consOutcome{}, err
 		}
 		*g = next
 		return consOutcome{messages: b.Messages}, nil
 	}
 
+	if private && slices.ContainsFunc(b.Members, func(m consBatchMember) bool {
+		return !m.Memory.ForgottenAt.IsZero() && !m.Memory.ForgottenAt.Before(runStart)
+	}) {
+		c.d.Logger.Info("memory consolidation stopped: the member was forgotten during the run", "conversation", convKey)
+		return consOutcome{skipped: "forgotten"}, nil
+	}
+
 	members := make([]promptMember, len(b.Members))
 	for i, m := range b.Members {
-		members[i] = consPromptMember(m.Memory, m.Ref, m.Name)
+		members[i] = consPromptMember(m.Memory, m.Ref, m.Name, style.unnamed)
 	}
-	prompt := buildPrompt(g.Summary, members, b.Lines)
+	prompt := buildPrompt(style, g.Summary, members, b.Lines)
 	tokens := consPromptTokens(prompt, p.Config.TokenEstimateFactor) + d.MaxOutputTokens + p.Config.Context.SafetyMarginTokens
 	lease, err := c.acquire(ctx, p, convKey, tokens)
 	if err != nil {
@@ -286,15 +311,25 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 	for _, t := range in.ReplyTargets {
 		written = append(written, t.Text)
 	}
-	out = consResolveRefs(out, names, consLiteralCodes(written...))
+	out = consResolveRefs(out, names, consLiteralCodes(written...), style.summaryMax, style.noteMax)
 
 	day := LocalDay(now, c.d.Location)
 	w, entries := c.compose(*g, b, out, mp.Affinity, day, now)
+	if private {
+		for _, m := range b.Members {
+			w.SummaryGuards = append(w.SummaryGuards, store.MemberVersion{PlatformUserID: m.UserID, Version: m.Memory.Version})
+		}
+	}
 	conflicts, err := c.d.Store.ApplyMemoryWrite(ctx, w)
 	if err != nil {
 		return consOutcome{}, err
 	}
 	*g = *w.Group
+	if private {
+		if err := c.refreshGroup(ctx, g); err != nil {
+			return consOutcome{}, err
+		}
+	}
 	c.grow(convKey, memberCap)
 	updated := c.settle(ctx, convKey, entries, conflicts, mp.Affinity, day)
 	return consOutcome{messages: b.Messages, membersUpdated: updated, promptTokens: resp.PromptTokens}, nil
@@ -479,12 +514,34 @@ func (c *Consolidator) settle(ctx context.Context, convKey string, entries []con
 func (c *Consolidator) fail(ctx context.Context, g store.GroupMemory, category string, cause error, resp openai.ChatResponse) error {
 	n := c.recordFailure(g.ConversationKey)
 	g.LastError = category
-	if err := c.d.Store.PutGroupMemory(ctx, g); err != nil {
+	if err := c.putGroupState(ctx, g); err != nil {
 		c.d.Logger.Warn("record memory consolidation failure failed", "conversation", g.ConversationKey, "error", err)
 	}
 	c.d.Logger.Warn("memory consolidation failed", "conversation", g.ConversationKey, "category", category,
 		"failures", n, "finish_reason", resp.FinishReason, "completion_tokens", resp.CompletionTokens, "error", cause)
 	return fmt.Errorf("memory: consolidate %s: %s: %w", g.ConversationKey, category, cause)
+}
+
+// putGroupState stores g's cursor, run time and error, keeping the stored
+// summary.
+func (c *Consolidator) putGroupState(ctx context.Context, g store.GroupMemory) error {
+	_, err := c.d.Store.ApplyMemoryWrite(ctx, store.MemoryWrite{ConversationKey: g.ConversationKey, Group: &g, KeepSummary: true})
+	return err
+}
+
+// refreshGroup replaces g with the stored row; without one, g's summary is
+// emptied and the rest kept.
+func (c *Consolidator) refreshGroup(ctx context.Context, g *store.GroupMemory) error {
+	stored, err := c.d.Store.GetGroupMemory(ctx, g.ConversationKey)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		g.Summary = ""
+	case err != nil:
+		return err
+	default:
+		*g = stored
+	}
+	return nil
 }
 
 func (c *Consolidator) messageLimit(convKey string) int {

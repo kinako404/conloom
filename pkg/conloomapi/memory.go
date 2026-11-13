@@ -2,7 +2,7 @@ package conloomapi
 
 import "time"
 
-// MemoryState is what the bot remembers about a group conversation. Enabled
+// MemoryState is what the bot remembers about a conversation. Enabled
 // reports whether memory is in effect for the conversation; the stored data
 // is shown either way. LastRunAt is nil before the first consolidation.
 type MemoryState struct {

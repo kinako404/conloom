@@ -127,22 +127,24 @@ func (s *consSyncBuffer) String() string {
 type consOpts struct {
 	softBudget     int
 	reservedOutput int
+	private        bool
 	noLong         bool
 	memory         func(*conloomapi.MemoryPolicy)
 }
 
 type consEnv struct {
-	st     *sqlite.DB
-	short  *consFake
-	long   *consFake
-	router *router.Router
-	adm    *admission.Controller
-	reg    *prometheus.Registry
-	logs   *consSyncBuffer
-	c      *Consolidator
-	mu     sync.Mutex
-	now    time.Time
-	seq    int
+	st      *sqlite.DB
+	short   *consFake
+	long    *consFake
+	router  *router.Router
+	adm     *admission.Controller
+	reg     *prometheus.Registry
+	logs    *consSyncBuffer
+	c       *Consolidator
+	convKey string
+	mu      sync.Mutex
+	now     time.Time
+	seq     int
 }
 
 func newConsEnv(t *testing.T, opts consOpts) *consEnv {
@@ -154,7 +156,10 @@ func newConsEnv(t *testing.T, opts consOpts) *consEnv {
 		opts.reservedOutput = 4096
 	}
 	e := &consEnv{st: newTestStore(t), short: &consFake{}, long: &consFake{}, reg: prometheus.NewRegistry(),
-		logs: &consSyncBuffer{}, now: consNow}
+		logs: &consSyncBuffer{}, now: consNow, convKey: testConvKey}
+	if opts.private {
+		e.convKey = testPrivateKey
+	}
 	profile := func(soft int) config.ModelProfile {
 		return config.ModelProfile{
 			Model: "fake",
@@ -212,7 +217,7 @@ func (e *consEnv) msg(user, name, text string, at time.Time) store.MessageRecord
 	e.seq++
 	id := fmt.Sprintf("msg_%03d", e.seq)
 	return store.MessageRecord{
-		ID: id, BotInstanceID: "bot_test", ConversationKey: testConvKey, Platform: "qq", PlatformMessageID: "p" + id,
+		ID: id, BotInstanceID: "bot_test", ConversationKey: e.convKey, Platform: "qq", PlatformMessageID: "p" + id,
 		ActorID: "user_" + user, PlatformUserID: user, DisplayName: name, Text: text, OccurredAt: at,
 	}
 }
@@ -247,7 +252,7 @@ func (e *consEnv) add(t *testing.T, msgs ...store.MessageRecord) []store.Message
 
 func (e *consEnv) group(t *testing.T) store.GroupMemory {
 	t.Helper()
-	g, err := e.st.GetGroupMemory(context.Background(), testConvKey)
+	g, err := e.st.GetGroupMemory(context.Background(), e.convKey)
 	if err != nil {
 		t.Fatalf("GetGroupMemory: %v", err)
 	}
@@ -277,7 +282,7 @@ func (e *consEnv) counter(t *testing.T, name, label string) float64 {
 
 func (e *consEnv) run(t *testing.T, manual bool) Result {
 	t.Helper()
-	res, err := e.c.Run(context.Background(), testConvKey, manual)
+	res, err := e.c.Run(context.Background(), e.convKey, manual)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -800,7 +805,7 @@ func consDuringModelCall(t *testing.T, e *consEnv, reply string, during func()) 
 	})
 	done := make(chan Result, 1)
 	go func() {
-		res, err := e.c.Run(context.Background(), testConvKey, false)
+		res, err := e.c.Run(context.Background(), e.convKey, false)
 		if err != nil {
 			t.Errorf("Run: %v", err)
 		}

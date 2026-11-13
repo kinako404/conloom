@@ -95,8 +95,8 @@ func (o *Orchestrator) execCommand(ctx context.Context, task store.TaskRecord, t
 		return CopyResumed, nil
 	case "主动", "proactive":
 		return o.proactiveCommand(ctx, task, isAdmin, commandArgs(triggers))
-	case "好感度", "affinity", "记忆", "memory", "忘记我", "forgetme":
-		return o.memCmd(ctx, task, isAdmin, task.Command, commandArgs(triggers))
+	case "好感度", "affinity", "记忆", "memory", "记住", "remember", "忘记我", "forgetme":
+		return o.memCmd(ctx, task, isAdmin, task.Command, triggers)
 	}
 	return "", fmt.Errorf("core: unknown command %q", task.Command)
 }

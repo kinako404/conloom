@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/policy"
 	"github.com/kinako404/conloom/internal/store"
@@ -17,20 +19,20 @@ import (
 
 const (
 	// CheckEvery is how often the scheduler looks for groups due for consolidation.
-	CheckEvery = 2 * time.Minute
-	// MinIntervalMessages is the fewest new messages consolidated because
-	// ConsolidateInterval has passed.
-	MinIntervalMessages = 20
-	revisionRetention   = 30 * 24 * time.Hour
+	CheckEvery        = 2 * time.Minute
+	revisionRetention = 30 * 24 * time.Hour
 )
 
 // SchedulerDeps are the Scheduler's collaborators. Store, Policies and Runner
-// are required. Nil Metrics are registered on a private registry, a nil Logger
-// discards, a nil Location is UTC and a nil Now is time.Now.
+// are required. Config decides which private chats may be consolidated (see
+// config.BotConfig.PrivateAllowed); without it all may. Nil Metrics are
+// registered on a private registry, a nil Logger discards, a nil Location is
+// UTC and a nil Now is time.Now.
 type SchedulerDeps struct {
 	Store    store.Store
 	Policies *policy.Service
 	Runner   Runner
+	Config   *config.Config
 	Metrics  *obs.Metrics
 	Logger   *slog.Logger
 	Location *time.Location
@@ -38,7 +40,8 @@ type SchedulerDeps struct {
 }
 
 // Scheduler runs consolidations one at a time on a single worker goroutine:
-// groups that are due on every check, groups an admin triggered, and the daily
+// group and private conversations that are due on every check, conversations
+// an admin triggered, and the daily
 // affinity decay and revision purge.
 type Scheduler struct {
 	d SchedulerDeps
@@ -166,9 +169,9 @@ func (s *Scheduler) runTriggered(ctx context.Context) {
 	}
 }
 
-// tick consolidates every group that is due.
+// tick consolidates every group and private conversation that is due.
 func (s *Scheduler) tick(ctx context.Context) {
-	convs, err := s.d.Store.ListConversations(ctx, conloomapi.ConvGroup)
+	convs, err := s.conversations(ctx)
 	if err != nil {
 		s.logError(ctx, "memory: list conversations failed", "error", err)
 		return
@@ -181,9 +184,13 @@ func (s *Scheduler) tick(ctx context.Context) {
 	}
 }
 
-// consolidate runs the Runner for convKey if memory is on and the group is
-// not paused; a scheduled run also needs the group to be due.
+// consolidate runs the Runner for convKey if memory is on, the conversation
+// is not paused and, for a private chat, the bot still chats with that user
+// privately; a scheduled run also needs the conversation to be due.
 func (s *Scheduler) consolidate(ctx context.Context, convKey string, manual bool) {
+	if !s.privateAllowed(ctx, convKey) {
+		return
+	}
 	pv, err := s.d.Policies.Current(ctx, convKey)
 	if err != nil {
 		s.logError(ctx, "memory: read policy failed", "conversation", convKey, "error", err)
@@ -254,13 +261,15 @@ func (s *Scheduler) ensureCursor(ctx context.Context, convKey string, backlog in
 	return g, nil
 }
 
-// due reports whether a group with pending new messages, last consolidated at
-// lastRun (zero for never), should be consolidated now.
+// due reports whether a conversation with pending new messages, last
+// consolidated at lastRun (zero for never), should be consolidated now: at
+// ConsolidateEvery messages, or at ConsolidateMin once ConsolidateInterval
+// has passed.
 func due(pending int, lastRun time.Time, p conloomapi.MemoryPolicy, now time.Time) bool {
 	if pending >= p.ConsolidateEvery {
 		return true
 	}
-	return pending >= MinIntervalMessages && (lastRun.IsZero() || now.Sub(lastRun) >= p.ConsolidateInterval.Duration)
+	return pending >= p.ConsolidateMin && (lastRun.IsZero() || now.Sub(lastRun) >= p.ConsolidateInterval.Duration)
 }
 
 func (s *Scheduler) dailyIfNewDay(ctx context.Context) {
@@ -272,12 +281,12 @@ func (s *Scheduler) dailyIfNewDay(ctx context.Context) {
 	s.daily(ctx)
 }
 
-// daily applies affinity decay in every group with memory and affinity on,
+// daily applies affinity decay in every conversation with memory and affinity on,
 // then purges revisions older than 30 days.
 func (s *Scheduler) daily(ctx context.Context) {
 	now := s.d.Now()
 	today := LocalDay(now, s.d.Location)
-	convs, err := s.d.Store.ListConversations(ctx, conloomapi.ConvGroup)
+	convs, err := s.conversations(ctx)
 	if err != nil {
 		s.logError(ctx, "memory: list conversations failed", "error", err)
 	}
@@ -295,6 +304,19 @@ func (s *Scheduler) daily(ctx context.Context) {
 	if n > 0 {
 		s.d.Logger.Info("memory: purged revisions", "count", n)
 	}
+}
+
+// conversations lists the group conversations, then the private ones.
+func (s *Scheduler) conversations(ctx context.Context) ([]store.ConversationRecord, error) {
+	var all []store.ConversationRecord
+	for _, t := range []string{conloomapi.ConvGroup, conloomapi.ConvPrivate} {
+		convs, err := s.d.Store.ListConversations(ctx, t)
+		if err != nil {
+			return all, err
+		}
+		all = append(all, convs...)
+	}
+	return all, nil
 }
 
 func (s *Scheduler) decayGroup(ctx context.Context, convKey, today string) {
@@ -333,6 +355,25 @@ func (s *Scheduler) decayGroup(ctx context.Context, convKey, today string) {
 			s.d.Metrics.MemoryAffinityChanges.WithLabelValues(store.RevisionRule).Inc()
 		}
 	}
+}
+
+// privateAllowed reports whether convKey is not a private chat, or one whose
+// user the bot's private_chat setting still allows.
+func (s *Scheduler) privateAllowed(ctx context.Context, convKey string) bool {
+	parts := strings.SplitN(convKey, ":", 4)
+	if s.d.Config == nil || len(parts) != 4 || parts[2] != conloomapi.ConvPrivate {
+		return true
+	}
+	bot, ok := s.d.Config.Bot(parts[0])
+	if !ok {
+		return false
+	}
+	conv, err := s.d.Store.GetConversation(ctx, parts[0], parts[3])
+	if err != nil {
+		s.logError(ctx, "memory: read private conversation failed", "conversation", convKey, "error", err)
+		return false
+	}
+	return bot.PrivateAllowed(conv.PlatformConversationID)
 }
 
 func (s *Scheduler) logError(ctx context.Context, msg string, args ...any) {

@@ -214,12 +214,24 @@ type MemoryRevision struct {
 }
 
 // MemoryWrite is everything written for one conversation's memory in one
-// transaction. A nil Group is left unchanged.
+// transaction. A nil Group is left unchanged. With KeepSummary, or when a
+// member of SummaryGuards no longer has the stored version given (0 for no
+// row), Group's summary is not written: the stored summary is kept (empty
+// without a row), the rest of Group is written and summary revisions are
+// dropped.
 type MemoryWrite struct {
 	ConversationKey string
 	Group           *GroupMemory
 	Members         []MemberMemory
 	Revisions       []MemoryRevision
+	KeepSummary     bool
+	SummaryGuards   []MemberVersion
+}
+
+// MemberVersion is a member's memory version as read (0 for no row).
+type MemberVersion struct {
+	PlatformUserID string
+	Version        int64
 }
 
 // Ingest is everything written for one incoming event. Nil parts are skipped.

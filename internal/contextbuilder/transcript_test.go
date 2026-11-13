@@ -140,3 +140,24 @@ func TestTranscript_OneCappedLinePerMessage(t *testing.T) {
 	}
 	assertNoneContain(t, got, "\n", "你")
 }
+
+func TestTranscript_UnnamedOverride(t *testing.T) {
+	xm := memberRec("m1", "20001", "", "你见过他吗", at(9, 0))
+	xm.Mentions = []conloomapi.Mention{{Type: "user", ID: "user_20003"}}
+	other := memberRec("m2", "20002", "小红", "在", at(9, 1))
+	in := TranscriptInput{
+		Messages: []store.MessageRecord{xm, other},
+		Refs:     map[string]string{"user_20001": "P1"},
+		BotName:  "织语",
+		Location: shanghai,
+		Unnamed:  "某人",
+	}
+	want := []string{"[09:00] 某人（P1）（@了 某人）：你见过他吗", "[09:01] 某人：在"}
+	if got := Transcript(in); !slices.Equal(got, want) {
+		t.Errorf("Transcript with Unnamed = %q, want %q", got, want)
+	}
+	in.Unnamed = ""
+	if got := Transcript(in); got[0] != "[09:00] 一位群友（P1）（@了 一位群友）：你见过他吗" {
+		t.Errorf("Transcript without Unnamed = %q", got)
+	}
+}

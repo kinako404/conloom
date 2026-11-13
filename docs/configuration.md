@@ -39,6 +39,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `model_profiles` | 模型配置，按角色 |
 | `persona_templates` | 人设模板 |
 | `default_group_policy` | 新会话的初始群策略 |
+| `default_private_policy` | 私聊会话的初始策略，省略时沿用 `default_group_policy` |
 | `runtime` | 投递、过时判定、合并窗口等运行时参数 |
 | `adapters` | NapCat 和 Mock 适配器 |
 | `observability` | 日志 |
@@ -64,7 +65,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `persona:read` | 读取人格 |
 | `policy:write` | 写入人格和群策略 |
 | `admin:read` | 读取群策略 |
-| `memory:read` | 读取群聊摘要、整理进度和群友记忆 |
+| `memory:read` | 读取群聊或私聊的摘要、整理进度和群友记忆 |
 | `memory:write` | 修改、删除群友记忆，立即整理一次记忆 |
 
 适配器令牌通常只需要 `events:write tasks:read outbox:read outbox:ack persona:read`；管理令牌另加 `policy:write admin:read`，要通过 API 查看或管理记忆时再加 `memory:read memory:write`（示例配置已经加上）。各端点需要的 scope 见 [HTTP API](api.md)。
@@ -171,11 +172,27 @@ default_group_policy:
     enabled: false                # 是否开启记忆（群聊摘要、群友笔记、好感度）；默认关闭，开启时要求 concurrency.allow_long_requests: true
     affinity: true                # 开启记忆时是否计算好感度
     consolidate_every: 150        # 新消息达到这么多条就整理一次，30~2000
-    consolidate_interval: 6h      # 新消息不足条数时，距上次整理超过这么久且至少有 20 条新消息也整理一次，30m~48h
+    consolidate_interval: 6h      # 新消息不足条数时，距上次整理超过这么久且至少有 consolidate_min 条新消息也整理一次，30m~48h
+    consolidate_min: 20           # 按时间整理时至少要有的新消息条数，1~2000
     backlog: 1000                 # 第一次开启时往回整理多少条旧消息，0~5000
 ```
 
 各字段的具体行为见 [使用指南](usage.md#机器人在群里怎么说话)，汇总表见 [架构 4.9 节](architecture.md#49-阈值一览)。
+
+**私聊默认策略**：`default_private_policy` 的结构和 `default_group_policy` 相同，私聊会话没有存库版本时用它，库里已有版本时仍以库里为准；整段省略时私聊沿用 `default_group_policy`。私聊只有机器人和一个人，适合开启记忆、带更长的历史。示例配置的建议值：
+
+```yaml
+default_private_policy:
+  context:
+    max_recent_messages: 200
+  memory:
+    enabled: true
+    consolidate_every: 40
+    consolidate_interval: 1h
+    consolidate_min: 6
+```
+
+私聊的记忆、`/记住` 等用法见 [使用指南：记忆与好感度](usage.md#记忆与好感度)。
 
 **审查**：基础审查不可关闭。触发消息会清理控制字符并限制长度（4000 字）；模型输出会剥离平台控制码（如 `[CQ:…]`）、对密钥打码、按 `review.action` 处理屏蔽词，并截断到 1500 字。被拦截的回复不发送，只写一条不含正文的审计记录。详见 [架构 5.4 节](architecture.md#54-输出处理链)。
 
@@ -183,11 +200,12 @@ default_group_policy:
 
 - YAML 配置里省略的任何字段（或省略整个 `proactive` 段）都保持上面的默认值。
 - 已存库的策略版本缺少 `proactive` 段时，读取时按默认值补齐，即主动搭话默认开启、档位默认为低。
-- 已存库的版本或 API 请求里缺少 `reply.turn_gap`、`turn_max_wait`、`turn_cooldown`、`max_unprompted_replies`、`max_consecutive_skips`、`quote` 或 `proactive.join_*` 时，逐字段按默认值补齐（`quote` 补为 `auto`，`turn_cooldown` 补为 45s）；这些字段的零值本身都不合法，所以不会覆盖有意的设置。补齐用的是配置里 `default_group_policy` 的值。
+- 已存库的版本或 API 请求里缺少 `reply.turn_gap`、`turn_max_wait`、`turn_cooldown`、`max_unprompted_replies`、`max_consecutive_skips`、`quote` 或 `proactive.join_*` 时，逐字段按默认值补齐（`quote` 补为 `auto`，`turn_cooldown` 补为 45s）；这些字段的零值本身都不合法，所以不会覆盖有意的设置。补齐用的是会话类型对应的默认策略：群聊用 `default_group_policy`，私聊用 `default_private_policy`（没配置时也是 `default_group_policy`）。
 - `continuation_window` 不补，旧版本里的 `0s` 仍表示不开启在聊模式；它不为 0 时必须大于 `turn_cooldown`，否则校验失败（否则挂起的一轮会在会话超时后才放行，然后被丢弃）。
-- 已存库的策略版本缺少整个 `memory` 段时，读取时用配置里 `default_group_policy.memory` 的值补齐，即记忆按配置默认关闭。
-- `memory` 段内缺少的键取内置默认值（`affinity: true`、`consolidate_every: 150`、`consolidate_interval: 6h`、`backlog: 1000`，`enabled` 为 `false`）；显式写出的 `0` 和 `false` 保留。
+- 已存库的策略版本缺少整个 `memory` 段时，读取时用会话类型对应的默认策略里的 `memory` 补齐，即群聊记忆按配置默认关闭，私聊按 `default_private_policy.memory`。
+- `memory` 段内缺少的键取内置默认值（`affinity: true`、`consolidate_every: 150`、`consolidate_interval: 6h`、`consolidate_min: 20`、`backlog: 1000`，`enabled` 为 `false`）；显式写出的 `0` 和 `false` 保留。加入 `consolidate_min` 之前存库的版本读出来是 20，和原来写死的条数一致。
 - 群策略 API 对 `proactive` 和 `memory` 段的处理不同于 YAML，见 [API：群策略](api.md#群策略)。
+- `default_private_policy` 段里省略的字段同样取上面的内置默认值（不是 `default_group_policy` 的值），校验规则也一样；整段省略时，私聊会话直接沿用 `default_group_policy`。
 - `proactive.contact_cooldown` 已移除：已存库的旧版本里的这个键在读取时被忽略；但配置文件不接受未知字段，升级后要从 `conloom.yaml` 里删掉这一行，否则启动时报错。
 
 ## runtime
