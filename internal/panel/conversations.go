@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/store"
 )
 
@@ -92,7 +91,7 @@ func (s *Server) conversationView(ctx context.Context, st store.ConversationStat
 		ProactiveEnabled: p.Proactive.Enabled,
 		MemoryEnabled:    p.Memory.Enabled && p.Concurrency.AllowLongRequests,
 	}
-	if bot, ok := s.configuredBot(st.BotInstanceID); ok {
+	if bot, ok := s.d.Config.Bot(st.BotInstanceID); ok {
 		v.BotName = bot.Name
 	}
 	persona, err := s.d.Store.LatestPersona(ctx, st.Key)
@@ -103,23 +102,4 @@ func (s *Server) conversationView(ctx context.Context, st store.ConversationStat
 		return conversationView{}, err
 	}
 	return v, nil
-}
-
-// configuredBot is the bot with the given ID in the configuration.
-func (s *Server) configuredBot(id string) (config.BotConfig, bool) {
-	for _, b := range s.d.Config.Bots {
-		if b.ID == id {
-			return b, true
-		}
-	}
-	return config.BotConfig{}, false
-}
-
-// nullTime is t in UTC, or nil when t is zero.
-func nullTime(t time.Time) *time.Time {
-	if t.IsZero() {
-		return nil
-	}
-	t = t.UTC()
-	return &t
 }

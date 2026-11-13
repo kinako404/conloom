@@ -9,38 +9,6 @@ import (
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
-// policyVersionView is a policy version; CreatedAt is null for the defaults
-// of a conversation without a stored policy (version 0).
-type policyVersionView struct {
-	Version   int                    `json:"version"`
-	Policy    conloomapi.GroupPolicy `json:"policy"`
-	Reason    string                 `json:"reason"`
-	UpdatedBy string                 `json:"updated_by"`
-	CreatedAt *time.Time             `json:"created_at"`
-}
-
-func newPolicyVersionView(pv store.PolicyVersion) policyVersionView {
-	return policyVersionView{
-		Version: pv.Version, Policy: pv.Policy, Reason: pv.Reason, UpdatedBy: pv.UpdatedBy, CreatedAt: nullTime(pv.CreatedAt),
-	}
-}
-
-type personaVersionView struct {
-	Version   int                   `json:"version"`
-	Template  string                `json:"template"`
-	Persona   conloomapi.PersonaDoc `json:"persona"`
-	Reason    string                `json:"reason"`
-	UpdatedBy string                `json:"updated_by"`
-	CreatedAt time.Time             `json:"created_at"`
-}
-
-func newPersonaVersionView(pv store.PersonaVersion) personaVersionView {
-	return personaVersionView{
-		Version: pv.Version, Template: pv.TemplateName, Persona: pv.Persona, Reason: pv.Reason,
-		UpdatedBy: pv.UpdatedBy, CreatedAt: pv.CreatedAt.UTC(),
-	}
-}
-
 // getPolicy returns the current policy, the defaults as version 0 when none is
 // stored (policy.Service.Current stores nothing), and the stored versions
 // newest first.
@@ -94,7 +62,7 @@ func (s *Server) getPersona(w http.ResponseWriter, r *http.Request, _ *Session) 
 		resp.Current = &cur
 	case errors.Is(err, store.ErrNotFound):
 		name := "default"
-		if bot, ok := s.configuredBot(conv.BotInstanceID); ok && bot.PersonaTemplate != "" {
+		if bot, ok := s.d.Config.Bot(conv.BotInstanceID); ok && bot.PersonaTemplate != "" {
 			name = bot.PersonaTemplate
 		}
 		resp.PendingTemplate = &name

@@ -39,8 +39,8 @@ func TestPersona_ReadOnlyWhenMissing(t *testing.T) {
 	group := dh.seedConv("qq", conloomapi.ConvGroup, "10001")
 
 	var got personaResp
-	raw := dh.get(convPath(group.Key, "persona"), &got)
-	if n, err := dh.st.ListPersonaVersions(ctx, group.Key); err != nil || len(n) != 0 {
+	raw := dh.getJSON(convPath(group.Key, "persona"), &got)
+	if n, err := dh.db.ListPersonaVersions(ctx, group.Key); err != nil || len(n) != 0 {
 		t.Fatalf("GET persona wrote versions: %v, %v", n, err)
 	}
 	if got.Current != nil || !bytes.Contains(raw, []byte(`"current":null`)) {
@@ -57,12 +57,12 @@ func TestPersona_ReadOnlyWhenMissing(t *testing.T) {
 	}
 
 	dh.cfg.Bots[0].PersonaTemplate = ""
-	dh.get(convPath(group.Key, "persona"), &got)
+	dh.getJSON(convPath(group.Key, "persona"), &got)
 	if got.PendingTemplate == nil || *got.PendingTemplate != "default" ||
 		got.TemplateDoc == nil || !reflect.DeepEqual(*got.TemplateDoc, conloomapi.DefaultPersona()) {
 		t.Errorf("bot without a template: pending %v doc %+v, want default", got.PendingTemplate, got.TemplateDoc)
 	}
-	if n, err := dh.st.ListPersonaVersions(ctx, group.Key); err != nil || len(n) != 0 {
+	if n, err := dh.db.ListPersonaVersions(ctx, group.Key); err != nil || len(n) != 0 {
 		t.Fatalf("GET persona wrote versions: %v, %v", n, err)
 	}
 }
@@ -81,7 +81,7 @@ func TestPersona_CurrentAndVersions(t *testing.T) {
 	}
 
 	var got personaResp
-	raw := dh.get(convPath(group.Key, "persona"), &got)
+	raw := dh.getJSON(convPath(group.Key, "persona"), &got)
 	if got.Current == nil || got.Current.Version != 2 || got.Current.Template != "lighthouse" ||
 		!reflect.DeepEqual(got.Current.Persona, custom) || got.Current.Reason != "改描述" ||
 		got.Current.UpdatedBy != "panel:admin" || got.Current.CreatedAt.IsZero() {
@@ -116,12 +116,12 @@ func TestPolicy_CurrentAndVersions(t *testing.T) {
 	group := dh.seedConv("qq", conloomapi.ConvGroup, "10001")
 
 	var got policyResp
-	raw := dh.get(convPath(group.Key, "policy"), &got)
+	raw := dh.getJSON(convPath(group.Key, "policy"), &got)
 	if got.Current.Version != 0 || !reflect.DeepEqual(got.Current.Policy, conloomapi.DefaultGroupPolicy()) ||
 		got.Current.CreatedAt != nil || got.Versions == nil || len(got.Versions) != 0 {
 		t.Errorf("no stored policy: %s, want the defaults as version 0 with created_at null and no versions", raw)
 	}
-	if n, err := dh.st.ListPolicyVersions(ctx, group.Key); err != nil || len(n) != 0 {
+	if n, err := dh.db.ListPolicyVersions(ctx, group.Key); err != nil || len(n) != 0 {
 		t.Fatalf("GET policy wrote versions: %v, %v", n, err)
 	}
 
@@ -133,7 +133,7 @@ func TestPolicy_CurrentAndVersions(t *testing.T) {
 	if _, err := dh.policies.Pause(ctx, group.Key, "panel:admin"); err != nil {
 		t.Fatal(err)
 	}
-	dh.get(convPath(group.Key, "policy"), &got)
+	dh.getJSON(convPath(group.Key, "policy"), &got)
 	if got.Current.Version != 2 || got.Current.Policy.Concurrency.MaxInteractiveRequests != 0 ||
 		got.Current.Policy.Context.MaxRecentMessages != 30 || got.Current.Reason != "pause" ||
 		got.Current.UpdatedBy != "panel:admin" || got.Current.CreatedAt == nil {
@@ -150,7 +150,7 @@ func TestMemory_ViewMatchesAPI(t *testing.T) {
 	ctx := context.Background()
 	group := dh.seedConv("qq", conloomapi.ConvGroup, "10001")
 	dh.seedMessage(group, "我喜欢爬山", time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC), false)
-	if err := dh.st.PutGroupMemory(ctx, store.GroupMemory{ConversationKey: group.Key, Summary: "群里常聊爬山", CursorSeq: 1,
+	if err := dh.db.PutGroupMemory(ctx, store.GroupMemory{ConversationKey: group.Key, Summary: "群里常聊爬山", CursorSeq: 1,
 		LastRunAt: time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)}); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestMemory_ViewMatchesAPI(t *testing.T) {
 		Config: &config.Config{APITokens: []config.APIToken{{
 			Name: "reader", Token: apiToken, BotInstanceID: dataBot, Scopes: []string{conloomapi.ScopeMemoryRead},
 		}}},
-		Store: dh.st, Policies: dh.policies, MemoryAdmin: dh.memAdmin,
+		Store: dh.db, Policies: dh.policies, MemoryAdmin: dh.memAdmin,
 	})
 	r := httptest.NewRequest(http.MethodGet, "http://"+testHost+"/api/v1/conversations/"+group.ID+"/memory", nil)
 	r.Header.Set("Authorization", "Bearer "+apiToken)
@@ -175,7 +175,7 @@ func TestMemory_ViewMatchesAPI(t *testing.T) {
 		t.Fatalf("API memory: status %d, body %s", w.Code, w.Body)
 	}
 
-	panelBody := dh.get(convPath(group.Key, "memory"), nil)
+	panelBody := dh.getJSON(convPath(group.Key, "memory"), nil)
 	if !bytes.Equal(panelBody, w.Body.Bytes()) {
 		t.Errorf("panel memory\n%s\ndiffers from API memory\n%s", panelBody, w.Body)
 	}
@@ -216,7 +216,7 @@ func TestMemory_Revisions(t *testing.T) {
 	var got struct {
 		Revisions []revision `json:"revisions"`
 	}
-	dh.get(convPath(group.Key, "memory", "revisions")+"?user_id=20001", &got)
+	dh.getJSON(convPath(group.Key, "memory", "revisions")+"?user_id=20001", &got)
 	if len(got.Revisions) != 2 {
 		t.Fatalf("revisions = %+v, want 2", got.Revisions)
 	}
@@ -229,7 +229,7 @@ func TestMemory_Revisions(t *testing.T) {
 		t.Errorf("second revision = %+v", second)
 	}
 
-	if body := string(dh.get(convPath(group.Key, "memory", "revisions"), nil)); body != "{\"revisions\":[]}\n" {
+	if body := string(dh.getJSON(convPath(group.Key, "memory", "revisions"), nil)); body != "{\"revisions\":[]}\n" {
 		t.Errorf("summary revisions: body %q, want none", body)
 	}
 	dh.getErr(convPath("qq-main:qq:group:missing", "memory", "revisions"), http.StatusNotFound, conloomapi.CodeNotFound)

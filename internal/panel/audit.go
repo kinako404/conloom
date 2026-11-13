@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/kinako404/conloom/internal/store"
-	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 // auditView is an audit event; Detail is the stored detail as JSON when it
@@ -36,7 +35,7 @@ func newAuditView(a store.AuditEvent) auditView {
 func (s *Server) listAudit(w http.ResponseWriter, r *http.Request, _ *Session) {
 	limit, err := pageLimit(r)
 	if err != nil {
-		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, err.Error())
+		s.badRequest(w, r, err)
 		return
 	}
 	q := r.URL.Query()

@@ -59,27 +59,27 @@ func TestMessages_BrowseAndSearch(t *testing.T) {
 	m5 := dh.seedMessage(group, "晚安", day2.Add(time.Minute), false)
 
 	var page browseResp
-	dh.get(convPath(group.Key, "messages")+"?limit=2", &page)
+	dh.getJSON(convPath(group.Key, "messages")+"?limit=2", &page)
 	if got := msgIDs(page.Messages); fmt.Sprint(got) != fmt.Sprint([]string{m5.ID, m4.ID}) {
 		t.Fatalf("page 1 = %v, want %v", got, []string{m5.ID, m4.ID})
 	}
 	if page.NextBefore == nil || *page.NextBefore != m4.Seq {
 		t.Fatalf("page 1 next_before = %v, want %d", page.NextBefore, m4.Seq)
 	}
-	dh.get(convPath(group.Key, "messages")+fmt.Sprintf("?before=%d&limit=2", *page.NextBefore), &page)
+	dh.getJSON(convPath(group.Key, "messages")+fmt.Sprintf("?before=%d&limit=2", *page.NextBefore), &page)
 	if got := msgIDs(page.Messages); fmt.Sprint(got) != fmt.Sprint([]string{m3.ID, m2.ID}) || page.NextBefore == nil || *page.NextBefore != m2.Seq {
 		t.Fatalf("page 2 = %v next %v, want %v next %d", got, page.NextBefore, []string{m3.ID, m2.ID}, m2.Seq)
 	}
-	dh.get(convPath(group.Key, "messages")+fmt.Sprintf("?before=%d&limit=2", *page.NextBefore), &page)
+	dh.getJSON(convPath(group.Key, "messages")+fmt.Sprintf("?before=%d&limit=2", *page.NextBefore), &page)
 	if got := msgIDs(page.Messages); fmt.Sprint(got) != fmt.Sprint([]string{m1.ID}) || page.NextBefore != nil {
 		t.Fatalf("page 3 = %v next %v, want [%s] and no next", got, page.NextBefore, m1.ID)
 	}
-	if body := string(dh.get(convPath(group.Key, "messages")+fmt.Sprintf("?before=%d", m1.Seq), nil)); body != "{\"messages\":[],\"next_before\":null}\n" {
+	if body := string(dh.getJSON(convPath(group.Key, "messages")+fmt.Sprintf("?before=%d", m1.Seq), nil)); body != "{\"messages\":[],\"next_before\":null}\n" {
 		t.Errorf("before the first message: body %q", body)
 	}
 
 	var all browseResp
-	dh.get(convPath(group.Key, "messages"), &all)
+	dh.getJSON(convPath(group.Key, "messages"), &all)
 	if len(all.Messages) != 5 || all.NextBefore != nil {
 		t.Fatalf("default page = %v next %v, want all 5 and no next", msgIDs(all.Messages), all.NextBefore)
 	}
@@ -95,12 +95,12 @@ func TestMessages_BrowseAndSearch(t *testing.T) {
 	groupIDs := map[string]bool{m1.ID: true, m2.ID: true, m3.ID: true, m4.ID: true, m5.ID: true}
 	q := "?q=" + "%E5%91%A8%E6%9C%AB" // 周末
 	var hits searchResp
-	dh.get(convPath(group.Key, "messages")+q+"&limit=2", &hits)
+	dh.getJSON(convPath(group.Key, "messages")+q+"&limit=2", &hits)
 	if len(hits.Messages) != 2 || hits.NextOffset == nil || *hits.NextOffset != 2 {
 		t.Fatalf("search page 1 = %v next %v, want 2 hits and next_offset 2", msgIDs(hits.Messages), hits.NextOffset)
 	}
 	found := msgIDs(hits.Messages)
-	dh.get(convPath(group.Key, "messages")+q+"&limit=2&offset=2", &hits)
+	dh.getJSON(convPath(group.Key, "messages")+q+"&limit=2&offset=2", &hits)
 	if len(hits.Messages) != 1 || hits.NextOffset != nil {
 		t.Fatalf("search page 2 = %v next %v, want 1 hit and no next", msgIDs(hits.Messages), hits.NextOffset)
 	}
@@ -114,15 +114,15 @@ func TestMessages_BrowseAndSearch(t *testing.T) {
 		seen[id] = true
 	}
 
-	dh.get(convPath(group.Key, "messages")+q+"&from=2026-11-13&to=2026-11-13", &hits)
+	dh.getJSON(convPath(group.Key, "messages")+q+"&from=2026-11-13&to=2026-11-13", &hits)
 	if got := msgIDs(hits.Messages); fmt.Sprint(got) != fmt.Sprint([]string{m4.ID}) || hits.NextOffset != nil {
 		t.Errorf("search on 2026-11-13 (server time) = %v, want [%s]", got, m4.ID)
 	}
-	dh.get(convPath(group.Key, "messages")+q+"&to=2026-11-12", &hits)
+	dh.getJSON(convPath(group.Key, "messages")+q+"&to=2026-11-12", &hits)
 	if len(hits.Messages) != 2 {
 		t.Errorf("search up to 2026-11-12 = %v, want m1 and m3", msgIDs(hits.Messages))
 	}
-	if body := string(dh.get(convPath(group.Key, "messages")+q+"&from=2026-11-14", nil)); body != "{\"messages\":[],\"next_offset\":null}\n" {
+	if body := string(dh.getJSON(convPath(group.Key, "messages")+q+"&from=2026-11-14", nil)); body != "{\"messages\":[],\"next_offset\":null}\n" {
 		t.Errorf("search after the last message: body %q", body)
 	}
 
@@ -137,13 +137,13 @@ func TestMessages_BrowseAndSearch(t *testing.T) {
 func TestMessages_SearchBoundsSeqsByLimit(t *testing.T) {
 	dh := newDataHarness(t)
 	var calls []int
-	dh.srv.d.Store = &seqCountingStore{Store: dh.st, calls: &calls}
+	dh.srv.d.Store = &seqCountingStore{Store: dh.db, calls: &calls}
 	group := dh.seedConv("qq", conloomapi.ConvGroup, "10001")
 	for i := range 5 {
 		dh.seedMessage(group, fmt.Sprintf("周末 %d", i), time.Date(2026, 11, 12, 9, i, 0, 0, time.UTC), false)
 	}
 	var hits searchResp
-	dh.get(convPath(group.Key, "messages")+"?q=%E5%91%A8%E6%9C%AB&limit=3", &hits)
+	dh.getJSON(convPath(group.Key, "messages")+"?q=%E5%91%A8%E6%9C%AB&limit=3", &hits)
 	if len(hits.Messages) != 3 || fmt.Sprint(calls) != "[3]" || hits.NextOffset == nil || *hits.NextOffset != 3 {
 		t.Errorf("hits %d next %v, MessagesBySeq sizes %v; want 3 hits from one call of 3 seqs, next_offset 3",
 			len(hits.Messages), hits.NextOffset, calls)

@@ -16,7 +16,7 @@ func TestAudit_List(t *testing.T) {
 	dh := newDataHarness(t)
 	ctx := context.Background()
 
-	if body := string(dh.get("/panel/api/audit", nil)); body != "{\"events\":[],\"next_before\":null}\n" {
+	if body := string(dh.getJSON("/panel/api/audit", nil)); body != "{\"events\":[],\"next_before\":null}\n" {
 		t.Errorf("no events: body %q", body)
 	}
 
@@ -28,7 +28,7 @@ func TestAudit_List(t *testing.T) {
 			Detail: `not json <script>alert(1)</script>`, CreatedAt: at.Add(time.Minute)},
 		{ID: "aud_03", Kind: "panel.login", Actor: "panel:admin", Detail: ``, CreatedAt: at.Add(2 * time.Minute)},
 	} {
-		if err := dh.st.InsertAudit(ctx, e); err != nil {
+		if err := dh.db.InsertAudit(ctx, e); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -54,7 +54,7 @@ func TestAudit_List(t *testing.T) {
 		return fmt.Sprint(out)
 	}
 
-	dh.get("/panel/api/audit?limit=2", &page)
+	dh.getJSON("/panel/api/audit?limit=2", &page)
 	if ids() != "[aud_03 aud_02]" || page.NextBefore == nil || *page.NextBefore != "aud_02" {
 		t.Fatalf("page 1 = %s next %v, want [aud_03 aud_02] next aud_02", ids(), page.NextBefore)
 	}
@@ -64,7 +64,7 @@ func TestAudit_List(t *testing.T) {
 	if d := string(page.Events[0].Detail); d != `""` {
 		t.Errorf("empty detail = %s, want an empty string", d)
 	}
-	dh.get("/panel/api/audit?limit=2&before=aud_02", &page)
+	dh.getJSON("/panel/api/audit?limit=2&before=aud_02", &page)
 	if ids() != "[aud_01]" || page.NextBefore != nil {
 		t.Fatalf("page 2 = %s next %v, want [aud_01] and no next", ids(), page.NextBefore)
 	}
@@ -78,7 +78,7 @@ func TestAudit_List(t *testing.T) {
 		t.Errorf("JSON detail = %s, want it as an object", e.Detail)
 	}
 
-	dh.get("/panel/api/audit?kind=policy.update&bot=tg-main", &page)
+	dh.getJSON("/panel/api/audit?kind=policy.update&bot=tg-main", &page)
 	if ids() != "[aud_02]" {
 		t.Errorf("kind and bot filter = %s, want [aud_02]", ids())
 	}

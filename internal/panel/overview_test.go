@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,64 +12,37 @@ import (
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/store"
-	"github.com/kinako404/conloom/internal/store/sqlite"
 )
 
 // overviewZone is the server time zone of overviewHarness: 08:00 UTC on
 // 2026-11-13, the harness's now, is 16:00 there.
 var overviewZone = time.FixedZone("UTC+8", 8*3600)
 
-// overviewHarness is a harness whose server reads a real SQLite store, live
-// metrics from gatherer and bot presence from presence, logged in as testUser.
+// overviewHarness is a storeHarness whose server also reads live metrics from
+// gatherer and bot presence from presence.
 type overviewHarness struct {
-	*harness
-	db       *sqlite.DB
+	*storeHarness
 	gatherer *prometheus.Registry
 	presence *obs.Presence
-	cookie   *http.Cookie
 }
 
 // newOverviewHarness serves the bots qq-main and tg-main in overviewZone; mutate,
 // when not nil, adjusts the dependencies before the server is built.
 func newOverviewHarness(t *testing.T, mutate func(*Deps)) *overviewHarness {
 	t.Helper()
-	db, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "conloom.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	h := &overviewHarness{harness: newHarness(t, nil), db: db, gatherer: prometheus.NewRegistry(), presence: obs.NewPresence()}
-	h.cfg.Bots = []config.BotConfig{
+	h := &overviewHarness{gatherer: prometheus.NewRegistry(), presence: obs.NewPresence()}
+	bots := []config.BotConfig{
 		{ID: "qq-main", Platform: "qq", Name: "小织"},
 		{ID: "tg-main", Platform: "telegram", Name: "织语"},
 	}
-	d := h.srv.d
-	d.Store, d.Gatherer, d.Presence, d.Location = db, h.gatherer, h.presence, overviewZone
-	d.Version, d.Commit, d.StartedAt = "v0.9.0", "abc1234", h.now.Add(-time.Hour)
-	if mutate != nil {
-		mutate(&d)
-	}
-	h.srv = New(d)
-	h.h = h.srv.Handler()
-	h.cookie, _ = h.loginOK()
+	h.storeHarness = newStoreHarness(t, bots, nil, func(d *Deps) {
+		d.Gatherer, d.Presence, d.Location = h.gatherer, h.presence, overviewZone
+		d.Version, d.Commit, d.StartedAt = "v0.9.0", "abc1234", d.Now().Add(-time.Hour)
+		if mutate != nil {
+			mutate(d)
+		}
+	})
 	return h
-}
-
-func (h *overviewHarness) get(path string) *httptest.ResponseRecorder {
-	h.t.Helper()
-	return h.do(http.MethodGet, path, "", withCookie(h.cookie))
-}
-
-// getJSON GETs path, which must answer 200, and decodes the body into v.
-func (h *overviewHarness) getJSON(path string, v any) {
-	h.t.Helper()
-	w := h.get(path)
-	if w.Code != http.StatusOK {
-		h.t.Fatalf("GET %s: status %d, body %s", path, w.Code, w.Body)
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), v); err != nil {
-		h.t.Fatalf("GET %s: decode %s: %v", path, w.Body, err)
-	}
 }
 
 func (h *overviewHarness) insertCalls(calls ...store.ModelCall) {

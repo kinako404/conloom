@@ -4,57 +4,22 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
-// writePolicyView is a policy version as the write API returns it.
-type writePolicyView struct {
-	Version   int                    `json:"version"`
-	Policy    conloomapi.GroupPolicy `json:"policy"`
-	Reason    string                 `json:"reason"`
-	UpdatedBy string                 `json:"updated_by"`
-	CreatedAt *time.Time             `json:"created_at"`
-}
-
-// writePersonaView is a persona version as the write API returns it.
-type writePersonaView struct {
-	Version   int                   `json:"version"`
-	Template  string                `json:"template"`
-	Persona   conloomapi.PersonaDoc `json:"persona"`
-	Reason    string                `json:"reason"`
-	UpdatedBy string                `json:"updated_by"`
-	CreatedAt *time.Time            `json:"created_at"`
-}
-
-// writeTime is t in UTC, nil when zero (the defaults, version 0, were never
-// stored).
-func writeTime(t time.Time) *time.Time {
-	if t.IsZero() {
-		return nil
-	}
-	t = t.UTC()
-	return &t
-}
-
 func (s *Server) writePolicy(w http.ResponseWriter, pv store.PolicyVersion) {
 	s.writeJSON(w, http.StatusOK, struct {
-		Current writePolicyView `json:"current"`
-	}{writePolicyView{
-		Version: pv.Version, Policy: pv.Policy, Reason: pv.Reason, UpdatedBy: pv.UpdatedBy, CreatedAt: writeTime(pv.CreatedAt),
-	}})
+		Current policyVersionView `json:"current"`
+	}{newPolicyVersionView(pv)})
 }
 
 func (s *Server) writePersona(w http.ResponseWriter, pv store.PersonaVersion) {
 	s.writeJSON(w, http.StatusOK, struct {
-		Current writePersonaView `json:"current"`
-	}{writePersonaView{
-		Version: pv.Version, Template: pv.TemplateName, Persona: pv.Persona, Reason: pv.Reason,
-		UpdatedBy: pv.UpdatedBy, CreatedAt: writeTime(pv.CreatedAt),
-	}})
+		Current personaVersionView `json:"current"`
+	}{newPersonaVersionView(pv)})
 }
 
 // versionStored reports whether a policy or persona change succeeded. An
@@ -85,8 +50,6 @@ func (s *Server) memoryStored(w http.ResponseWriter, r *http.Request, err error)
 	s.fail(w, r, err)
 	return false
 }
-
-func panelActor(sess *Session) string { return "panel:" + sess.User }
 
 func (s *Server) putPolicy(w http.ResponseWriter, r *http.Request, sess *Session) {
 	conv, ok := s.conversation(w, r)

@@ -42,7 +42,7 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request, _ *Session
 	}
 	limit, err := pageLimit(r)
 	if err != nil {
-		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, err.Error())
+		s.badRequest(w, r, err)
 		return
 	}
 	if q := strings.TrimSpace(r.URL.Query().Get("q")); q != "" {
@@ -87,7 +87,7 @@ func (s *Server) searchMessages(w http.ResponseWriter, r *http.Request, conv sto
 	}
 	rng, err := searchRange(s.location(), query.Get("from"), query.Get("to"))
 	if err != nil {
-		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, err.Error())
+		s.badRequest(w, r, err)
 		return
 	}
 	hits, err := s.d.Store.SearchMessages(r.Context(), conv.Key, search.Terms(q, nil), rng, offset, limit)

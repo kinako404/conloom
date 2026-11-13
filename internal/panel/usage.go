@@ -50,7 +50,7 @@ func (s *Server) usageReport(w http.ResponseWriter, r *http.Request, _ *Session)
 	}
 	start, end, err := usage.Range(loc, from, to)
 	if err != nil {
-		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, err.Error())
+		s.badRequest(w, r, err)
 		return
 	}
 	// Rounding absorbs the hour a daylight saving change adds or removes.
@@ -82,36 +82,9 @@ func (s *Server) usageReport(w http.ResponseWriter, r *http.Request, _ *Session)
 	s.writeJSON(w, http.StatusOK, rep)
 }
 
-type usageCall struct {
-	ID               int64     `json:"id"`
-	At               time.Time `json:"at"`
-	BotInstanceID    string    `json:"bot_instance_id"`
-	ConversationKey  string    `json:"conversation_key"`
-	TaskID           string    `json:"task_id"`
-	Purpose          string    `json:"purpose"`
-	Role             string    `json:"role"`
-	Model            string    `json:"model"`
-	PromptTokens     int       `json:"prompt_tokens"`
-	CompletionTokens int       `json:"completion_tokens"`
-	ReasoningTokens  int       `json:"reasoning_tokens"`
-	EstimatedTokens  int       `json:"estimated_tokens"`
-	LatencyMS        int64     `json:"latency_ms"`
-	Outcome          string    `json:"outcome"`
-	FinishReason     string    `json:"finish_reason"`
-}
-
-func newUsageCall(c store.ModelCall) usageCall {
-	return usageCall{
-		ID: c.ID, At: c.At.UTC(), BotInstanceID: c.BotInstanceID, ConversationKey: c.ConversationKey, TaskID: c.TaskID,
-		Purpose: c.Purpose, Role: c.Role, Model: c.Model, PromptTokens: c.PromptTokens,
-		CompletionTokens: c.CompletionTokens, ReasoningTokens: c.ReasoningTokens, EstimatedTokens: c.EstimatedTokens,
-		LatencyMS: c.LatencyMS, Outcome: c.Outcome, FinishReason: c.FinishReason,
-	}
-}
-
 type usageCallsResponse struct {
-	Calls      []usageCall `json:"calls"`
-	NextBefore *int64      `json:"next_before"` // the before of the next page, null on the last
+	Calls      []modelCallView `json:"calls"`
+	NextBefore *int64          `json:"next_before"` // the before of the next page, null on the last
 }
 
 // usageCalls serves model calls, newest first, a page at a time. from and to
@@ -121,7 +94,7 @@ func (s *Server) usageCalls(w http.ResponseWriter, r *http.Request, _ *Session) 
 	q := r.URL.Query()
 	limit, err := pageLimit(r)
 	if err != nil {
-		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, err.Error())
+		s.badRequest(w, r, err)
 		return
 	}
 	f := store.ModelCallFilter{
@@ -130,13 +103,13 @@ func (s *Server) usageCalls(w http.ResponseWriter, r *http.Request, _ *Session) 
 	loc := s.location()
 	if v := q.Get("from"); v != "" {
 		if f.From, _, err = usage.Range(loc, v, v); err != nil {
-			s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, err.Error())
+			s.badRequest(w, r, err)
 			return
 		}
 	}
 	if v := q.Get("to"); v != "" {
 		if _, f.To, err = usage.Range(loc, v, v); err != nil {
-			s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, err.Error())
+			s.badRequest(w, r, err)
 			return
 		}
 	}
@@ -156,14 +129,14 @@ func (s *Server) usageCalls(w http.ResponseWriter, r *http.Request, _ *Session) 
 		s.fail(w, r, err)
 		return
 	}
-	resp := usageCallsResponse{Calls: make([]usageCall, 0, min(len(calls), limit))}
+	resp := usageCallsResponse{Calls: make([]modelCallView, 0, min(len(calls), limit))}
 	if len(calls) > limit {
 		calls = calls[:limit]
 		next := calls[limit-1].ID
 		resp.NextBefore = &next
 	}
 	for _, c := range calls {
-		resp.Calls = append(resp.Calls, newUsageCall(c))
+		resp.Calls = append(resp.Calls, newModelCallView(c))
 	}
 	s.writeJSON(w, http.StatusOK, resp)
 }

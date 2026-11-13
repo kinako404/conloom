@@ -32,6 +32,11 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, status int, 
 	s.respondError(w, r, status, code, message, nil)
 }
 
+// badRequest writes 400 INVALID_EVENT with err's text.
+func (s *Server) badRequest(w http.ResponseWriter, r *http.Request, err error) {
+	s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, err.Error())
+}
+
 // respondError is writeError that also logs cause, which is never sent.
 func (s *Server) respondError(w http.ResponseWriter, r *http.Request, status int, code, message string, cause error) {
 	level := slog.LevelDebug
@@ -105,6 +110,10 @@ func (s *Server) decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
+// panelActor is who a change made through the panel by sess's user is
+// recorded as.
+func panelActor(sess *Session) string { return "panel:" + sess.User }
+
 // audit records a change made through the panel by sess's user. A failed
 // write is only logged: the change is already stored.
 func (s *Server) audit(r *http.Request, sess *Session, botID, kind, target string, detail any) {
@@ -114,7 +123,7 @@ func (s *Server) audit(r *http.Request, sess *Session, botID, kind, target strin
 		b = []byte("null")
 	}
 	err = s.d.Audit.InsertAudit(context.WithoutCancel(r.Context()), store.AuditEvent{
-		ID: ids.New("aud"), BotInstanceID: botID, Kind: kind, Actor: "panel:" + sess.User, Target: target,
+		ID: ids.New("aud"), BotInstanceID: botID, Kind: kind, Actor: panelActor(sess), Target: target,
 		Detail: string(b), CreatedAt: s.now().UTC(),
 	})
 	if err != nil {

@@ -34,39 +34,12 @@ func newTaskView(t store.TaskRecord) taskView {
 	}
 }
 
-type modelCallView struct {
-	ID               int64     `json:"id"`
-	At               time.Time `json:"at"`
-	BotInstanceID    string    `json:"bot_instance_id"`
-	ConversationKey  string    `json:"conversation_key"`
-	TaskID           string    `json:"task_id"`
-	Purpose          string    `json:"purpose"`
-	Role             string    `json:"role"`
-	Model            string    `json:"model"`
-	PromptTokens     int       `json:"prompt_tokens"`
-	CompletionTokens int       `json:"completion_tokens"`
-	ReasoningTokens  int       `json:"reasoning_tokens"`
-	EstimatedTokens  int       `json:"estimated_tokens"`
-	LatencyMS        int64     `json:"latency_ms"`
-	Outcome          string    `json:"outcome"`
-	FinishReason     string    `json:"finish_reason"`
-}
-
-func newModelCallView(c store.ModelCall) modelCallView {
-	return modelCallView{
-		ID: c.ID, At: c.At.UTC(), BotInstanceID: c.BotInstanceID, ConversationKey: c.ConversationKey, TaskID: c.TaskID,
-		Purpose: c.Purpose, Role: c.Role, Model: c.Model, PromptTokens: c.PromptTokens,
-		CompletionTokens: c.CompletionTokens, ReasoningTokens: c.ReasoningTokens, EstimatedTokens: c.EstimatedTokens,
-		LatencyMS: c.LatencyMS, Outcome: c.Outcome, FinishReason: c.FinishReason,
-	}
-}
-
 // listTasks pages through tasks newest first, filtered by status, bot and
 // conversation key.
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request, _ *Session) {
 	limit, err := pageLimit(r)
 	if err != nil {
-		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, err.Error())
+		s.badRequest(w, r, err)
 		return
 	}
 	q := r.URL.Query()

@@ -47,15 +47,14 @@ type callResp struct {
 }
 
 // seedTask stores a task of conv with its trigger message.
-func (dh *dataHarness) seedTask(conv store.ConversationRecord, id, status string, meta conloomapi.TaskMeta, at time.Time) {
-	dh.t.Helper()
-	dh.pmid++
-	msgID := fmt.Sprintf("msg_%d", dh.pmid)
-	_, err := dh.st.Ingest(context.Background(), store.Ingest{
-		Event: store.EventRecord{BotInstanceID: dataBot, IdempotencyKey: fmt.Sprintf("seed:%d", dh.pmid), EventID: fmt.Sprintf("evt_%d", dh.pmid)},
+func (h *storeHarness) seedTask(conv store.ConversationRecord, id, status string, meta conloomapi.TaskMeta, at time.Time) {
+	h.t.Helper()
+	h.seeded++
+	msgID := fmt.Sprintf("msg_%d", h.seeded)
+	h.ingest(h.seeded, store.Ingest{
 		Message: &store.MessageRecord{
 			ID: msgID, BotInstanceID: dataBot, ConversationKey: conv.Key, Platform: conv.Platform,
-			PlatformMessageID: fmt.Sprint(dh.pmid), ActorID: "user_20001", PlatformUserID: "20001", DisplayName: "小明",
+			PlatformMessageID: fmt.Sprint(h.seeded), ActorID: "user_20001", PlatformUserID: "20001", DisplayName: "小明",
 			Text: "在吗", OccurredAt: at, CreatedAt: at,
 		},
 		NewTask: &store.TaskRecord{
@@ -63,9 +62,6 @@ func (dh *dataHarness) seedTask(conv store.ConversationRecord, id, status string
 			Command: "", TriggerMessageIDs: []string{msgID}, Priority: 1, Meta: meta, EventOccurredAt: at, CreatedAt: at, UpdatedAt: at,
 		},
 	})
-	if err != nil {
-		dh.t.Fatalf("seed task: %v", err)
-	}
 }
 
 func containsAll(s string, subs ...string) bool {
@@ -89,7 +85,7 @@ func TestTasks_ListAndDetail(t *testing.T) {
 	dh := newDataHarness(t)
 	ctx := context.Background()
 
-	if body := string(dh.get("/panel/api/tasks", nil)); body != "{\"tasks\":[],\"next_before\":null}\n" {
+	if body := string(dh.getJSON("/panel/api/tasks", nil)); body != "{\"tasks\":[],\"next_before\":null}\n" {
 		t.Errorf("no tasks: body %q", body)
 	}
 
@@ -101,7 +97,7 @@ func TestTasks_ListAndDetail(t *testing.T) {
 	meta := conloomapi.TaskMeta{SelectedModelRole: "chat", SelectedModel: "model-a", Trigger: "mention", TraceID: "trace_1"}
 	dh.seedTask(group, "task_03", conloomapi.TaskQueued, meta, at.Add(2*time.Minute))
 	actionAt := at.Add(3 * time.Minute)
-	if err := dh.st.CompleteTask(ctx, store.TaskCompletion{TaskID: "task_03", Status: conloomapi.TaskSucceeded, Meta: meta,
+	if err := dh.db.CompleteTask(ctx, store.TaskCompletion{TaskID: "task_03", Status: conloomapi.TaskSucceeded, Meta: meta,
 		Actions: []store.OutboxRecord{{
 			Action: conloomapi.Action{ActionID: "act_1", Type: conloomapi.ActionMessageSend, ConversationID: group.ID,
 				Content: conloomapi.ActionContent{Text: "在的"}, CreatedAt: actionAt},
@@ -109,7 +105,7 @@ func TestTasks_ListAndDetail(t *testing.T) {
 		}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := dh.st.InsertModelCalls(ctx, []store.ModelCall{
+	if err := dh.db.InsertModelCalls(ctx, []store.ModelCall{
 		{At: actionAt, BotInstanceID: dataBot, ConversationKey: group.Key, TaskID: "task_03", Purpose: store.PurposeChat,
 			Role: "chat", Model: "model-a", PromptTokens: 100, CompletionTokens: 20, LatencyMS: 900, Outcome: store.OutcomeOK, FinishReason: "stop"},
 		{At: actionAt, BotInstanceID: dataBot, ConversationKey: group.Key, TaskID: "task_01", Purpose: store.PurposeChat,
@@ -122,7 +118,7 @@ func TestTasks_ListAndDetail(t *testing.T) {
 		Tasks      []taskResp `json:"tasks"`
 		NextBefore *string    `json:"next_before"`
 	}
-	dh.get("/panel/api/tasks?limit=2", &page)
+	dh.getJSON("/panel/api/tasks?limit=2", &page)
 	if fmt.Sprint(taskIDs(page.Tasks)) != "[task_03 task_02]" || page.NextBefore == nil || *page.NextBefore != "task_02" {
 		t.Fatalf("page 1 = %v next %v, want [task_03 task_02] next task_02", taskIDs(page.Tasks), page.NextBefore)
 	}
@@ -132,19 +128,19 @@ func TestTasks_ListAndDetail(t *testing.T) {
 		!got.CreatedAt.Equal(at.Add(2*time.Minute)) || got.UpdatedAt.IsZero() {
 		t.Errorf("task_03 = %+v", got)
 	}
-	dh.get("/panel/api/tasks?limit=2&before="+*page.NextBefore, &page)
+	dh.getJSON("/panel/api/tasks?limit=2&before="+*page.NextBefore, &page)
 	if fmt.Sprint(taskIDs(page.Tasks)) != "[task_01]" || page.NextBefore != nil {
 		t.Fatalf("page 2 = %v next %v, want [task_01] and no next", taskIDs(page.Tasks), page.NextBefore)
 	}
-	dh.get("/panel/api/tasks?conversation="+url.QueryEscape(group.Key), &page)
+	dh.getJSON("/panel/api/tasks?conversation="+url.QueryEscape(group.Key), &page)
 	if fmt.Sprint(taskIDs(page.Tasks)) != "[task_03 task_01]" {
 		t.Errorf("conversation filter = %v", taskIDs(page.Tasks))
 	}
-	dh.get("/panel/api/tasks?status=queued&bot="+dataBot, &page)
+	dh.getJSON("/panel/api/tasks?status=queued&bot="+dataBot, &page)
 	if fmt.Sprint(taskIDs(page.Tasks)) != "[task_02 task_01]" {
 		t.Errorf("status filter = %v", taskIDs(page.Tasks))
 	}
-	dh.get("/panel/api/tasks?bot=tg-main", &page)
+	dh.getJSON("/panel/api/tasks?bot=tg-main", &page)
 	if len(page.Tasks) != 0 {
 		t.Errorf("other bot = %v, want none", taskIDs(page.Tasks))
 	}
@@ -156,7 +152,7 @@ func TestTasks_ListAndDetail(t *testing.T) {
 		Actions    []conloomapi.Action `json:"actions"`
 		ModelCalls []callResp          `json:"model_calls"`
 	}
-	dh.get("/panel/api/tasks/task_03", &detail)
+	dh.getJSON("/panel/api/tasks/task_03", &detail)
 	if detail.Task.ID != "task_03" || detail.Task.Status != conloomapi.TaskSucceeded || detail.Meta != meta {
 		t.Errorf("detail task %+v meta %+v", detail.Task, detail.Meta)
 	}
@@ -173,7 +169,7 @@ func TestTasks_ListAndDetail(t *testing.T) {
 		t.Errorf("model call = %+v", c)
 	}
 
-	if body := string(dh.get("/panel/api/tasks/task_02", nil)); !containsAll(body, `"actions":[]`, `"model_calls":[]`, `"meta":{}`) {
+	if body := string(dh.getJSON("/panel/api/tasks/task_02", nil)); !containsAll(body, `"actions":[]`, `"model_calls":[]`, `"meta":{}`) {
 		t.Errorf("task without actions or calls: body %s", body)
 	}
 	dh.getErr("/panel/api/tasks/task_99", http.StatusNotFound, conloomapi.CodeNotFound)

@@ -2,140 +2,13 @@ package panel
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"net/http"
-	"net/url"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/kinako404/conloom/internal/config"
-	"github.com/kinako404/conloom/internal/memory"
-	"github.com/kinako404/conloom/internal/persona"
-	"github.com/kinako404/conloom/internal/policy"
 	"github.com/kinako404/conloom/internal/store"
-	"github.com/kinako404/conloom/internal/store/sqlite"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
-
-const dataBot = "qq-main"
-
-// dataHarness is a harness whose server reads a real SQLite store through the
-// real policy, persona and memory services, with a logged-in session.
-type dataHarness struct {
-	*harness
-	st       *sqlite.DB
-	policies *policy.Service
-	personas *persona.Service
-	memAdmin *memory.Admin
-	cookie   *http.Cookie
-	pmid     int
-}
-
-func lighthousePersona() conloomapi.PersonaDoc {
-	p := conloomapi.DefaultPersona()
-	p.PersonaName = "灯塔"
-	return p
-}
-
-func newDataHarness(t *testing.T) *dataHarness {
-	t.Helper()
-	h := newHarness(t, nil)
-	st, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "conloom.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	h.cfg.Bots = []config.BotConfig{{ID: dataBot, Platform: "qq", Name: "织语", PersonaTemplate: "lighthouse"}}
-	h.cfg.PersonaTemplates = map[string]conloomapi.PersonaDoc{
-		"default": conloomapi.DefaultPersona(), "lighthouse": lighthousePersona(),
-	}
-	dh := &dataHarness{harness: h, st: st}
-	dh.policies = policy.NewService(st, conloomapi.DefaultGroupPolicy())
-	dh.personas = persona.NewService(st, h.cfg.PersonaTemplates)
-	dh.memAdmin = memory.NewAdmin(memory.AdminDeps{Store: st, Policies: dh.policies, Now: func() time.Time { return h.now }})
-	d := h.srv.d
-	d.Store, d.Policies, d.Personas, d.MemoryAdmin = st, dh.policies, dh.personas, dh.memAdmin
-	h.srv = New(d)
-	h.h = h.srv.Handler()
-	dh.cookie, _ = h.loginOK()
-	return dh
-}
-
-// seedConv stores a conversation of dataBot with conversation ID convID.
-func (dh *dataHarness) seedConv(platform, convType, convID string) store.ConversationRecord {
-	dh.t.Helper()
-	conv := store.ConversationRecord{
-		BotInstanceID: dataBot, ID: convID, Key: store.ConversationKey(dataBot, platform, convType, convID),
-		Type: convType, Platform: platform, PlatformConversationID: convID,
-	}
-	dh.pmid++
-	_, err := dh.st.Ingest(context.Background(), store.Ingest{
-		Event:        store.EventRecord{BotInstanceID: dataBot, IdempotencyKey: fmt.Sprintf("seed:%d", dh.pmid), EventID: fmt.Sprintf("evt_%d", dh.pmid)},
-		Conversation: &conv,
-	})
-	if err != nil {
-		dh.t.Fatalf("seed conversation: %v", err)
-	}
-	return conv
-}
-
-// seedMessage stores a message in conv from user 20001 (小明), or from the
-// bot when fromBot, and returns it with its seq.
-func (dh *dataHarness) seedMessage(conv store.ConversationRecord, text string, at time.Time, fromBot bool) store.MessageRecord {
-	dh.t.Helper()
-	dh.pmid++
-	m := store.MessageRecord{
-		ID: fmt.Sprintf("msg_%d", dh.pmid), BotInstanceID: dataBot, ConversationKey: conv.Key, Platform: conv.Platform,
-		PlatformMessageID: fmt.Sprint(dh.pmid), ActorID: "user_20001", PlatformUserID: "20001", DisplayName: "小明",
-		Text: text, FromBot: fromBot, OccurredAt: at.UTC(), CreatedAt: at.UTC(),
-	}
-	if fromBot {
-		m.ActorID, m.PlatformUserID, m.DisplayName = "bot_"+dataBot, "30001", "织语"
-	}
-	_, err := dh.st.Ingest(context.Background(), store.Ingest{
-		Event:   store.EventRecord{BotInstanceID: dataBot, IdempotencyKey: fmt.Sprintf("seed:%d", dh.pmid), EventID: fmt.Sprintf("evt_%d", dh.pmid)},
-		Message: &m,
-	})
-	if err != nil {
-		dh.t.Fatalf("seed message: %v", err)
-	}
-	got, err := dh.st.GetMessage(context.Background(), dataBot, m.ID)
-	if err != nil {
-		dh.t.Fatalf("read seeded message: %v", err)
-	}
-	return got
-}
-
-// get requests path as the logged-in user and decodes a 200 response into v.
-func (dh *dataHarness) get(path string, v any) []byte {
-	dh.t.Helper()
-	w := dh.do(http.MethodGet, path, "", withCookie(dh.cookie))
-	if w.Code != http.StatusOK {
-		dh.t.Fatalf("GET %s: status %d, body %s", path, w.Code, w.Body)
-	}
-	if v != nil {
-		if err := json.Unmarshal(w.Body.Bytes(), v); err != nil {
-			dh.t.Fatalf("GET %s: decode %s: %v", path, w.Body, err)
-		}
-	}
-	return w.Body.Bytes()
-}
-
-// getErr requests path as the logged-in user and checks the error response.
-func (dh *dataHarness) getErr(path string, status int, code string) {
-	dh.t.Helper()
-	errorBody(dh.t, dh.do(http.MethodGet, path, "", withCookie(dh.cookie)), status, code)
-}
-
-func convPath(key string, rest ...string) string {
-	p := "/panel/api/conversations/" + url.PathEscape(key)
-	for _, r := range rest {
-		p += "/" + r
-	}
-	return p
-}
 
 type convResp struct {
 	Key                    string     `json:"key"`
@@ -157,7 +30,7 @@ func TestConversations_ListAndDetail(t *testing.T) {
 	dh := newDataHarness(t)
 	ctx := context.Background()
 
-	if body := string(dh.get("/panel/api/conversations", nil)); body != "{\"conversations\":[]}\n" {
+	if body := string(dh.getJSON("/panel/api/conversations", nil)); body != "{\"conversations\":[]}\n" {
 		t.Fatalf("empty store: body %q, want {\"conversations\":[]}", body)
 	}
 
@@ -187,7 +60,7 @@ func TestConversations_ListAndDetail(t *testing.T) {
 	var list struct {
 		Conversations []convResp `json:"conversations"`
 	}
-	dh.get("/panel/api/conversations", &list)
+	dh.getJSON("/panel/api/conversations", &list)
 	if len(list.Conversations) != 2 {
 		t.Fatalf("conversations = %+v, want 2", list.Conversations)
 	}
@@ -212,18 +85,18 @@ func TestConversations_ListAndDetail(t *testing.T) {
 	}
 
 	var one convResp
-	dh.get(convPath(group.Key), &one)
+	dh.getJSON(convPath(group.Key), &one)
 	if one.Key != g.Key || one.MessageCount != g.MessageCount || !one.LastMessageAt.Equal(*g.LastMessageAt) ||
 		one.Paused != g.Paused || *one.PersonaVersion != *g.PersonaVersion || one.BotName != g.BotName {
 		t.Errorf("detail = %+v, want %+v", one, g)
 	}
 	var none convResp
-	dh.get(convPath(private.Key), &none)
+	dh.getJSON(convPath(private.Key), &none)
 	if none.MessageCount != 0 || none.LastMessageAt != nil || none.PersonaVersion != nil {
 		t.Errorf("private detail = %+v", none)
 	}
 
-	if n, err := dh.st.ListPersonaVersions(ctx, private.Key); err != nil || len(n) != 0 {
+	if n, err := dh.db.ListPersonaVersions(ctx, private.Key); err != nil || len(n) != 0 {
 		t.Errorf("listing wrote persona versions for the private chat: %v, %v", n, err)
 	}
 }
@@ -239,21 +112,21 @@ func TestConversation_KeyRoundTrip(t *testing.T) {
 
 	for _, conv := range []store.ConversationRecord{tg, pct} {
 		var got convResp
-		dh.get(convPath(conv.Key), &got)
+		dh.getJSON(convPath(conv.Key), &got)
 		if got.Key != conv.Key || got.PlatformConversationID != conv.PlatformConversationID {
 			t.Errorf("GET %s = %+v, want key %q", convPath(conv.Key), got, conv.Key)
 		}
 	}
 	// As encodeURIComponent sends it.
 	var colons convResp
-	dh.get("/panel/api/conversations/qq-main%3Atelegram%3Agroup%3A-1001234", &colons)
+	dh.getJSON("/panel/api/conversations/qq-main%3Atelegram%3Agroup%3A-1001234", &colons)
 	if colons.Key != tg.Key {
 		t.Errorf("colon-escaped key = %+v, want %q", colons, tg.Key)
 	}
 	var msgs struct {
 		Messages []msgResp `json:"messages"`
 	}
-	dh.get(convPath(tg.Key, "messages"), &msgs)
+	dh.getJSON(convPath(tg.Key, "messages"), &msgs)
 	if len(msgs.Messages) != 1 || msgs.Messages[0].Text != "你好" {
 		t.Errorf("messages of %s = %+v", tg.Key, msgs.Messages)
 	}

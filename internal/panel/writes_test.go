@@ -7,19 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
-	"testing/fstest"
 	"time"
-
-	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/memory"
-	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/internal/policy"
 	"github.com/kinako404/conloom/internal/store"
@@ -27,16 +21,14 @@ import (
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
-const writeBot = "qq-main"
-
 var (
 	writeGroup = store.ConversationRecord{
-		BotInstanceID: writeBot, ID: "conv_10001", Type: conloomapi.ConvGroup, Platform: "qq",
-		PlatformConversationID: "10001", Key: store.ConversationKey(writeBot, "qq", conloomapi.ConvGroup, "conv_10001"),
+		BotInstanceID: dataBot, ID: "conv_10001", Type: conloomapi.ConvGroup, Platform: "qq",
+		PlatformConversationID: "10001", Key: store.ConversationKey(dataBot, "qq", conloomapi.ConvGroup, "conv_10001"),
 	}
 	writeChannel = store.ConversationRecord{
-		BotInstanceID: writeBot, ID: "conv_10002", Type: "channel", Platform: "qq",
-		PlatformConversationID: "10002", Key: store.ConversationKey(writeBot, "qq", "channel", "conv_10002"),
+		BotInstanceID: dataBot, ID: "conv_10002", Type: "channel", Platform: "qq",
+		PlatformConversationID: "10002", Key: store.ConversationKey(dataBot, "qq", "channel", "conv_10002"),
 	}
 )
 
@@ -64,16 +56,11 @@ func (failingAuditDB) InsertAudit(context.Context, store.AuditEvent) error {
 	return errors.New("database is locked")
 }
 
-// writeHarness is a harness backed by a real SQLite store and the real
-// policy, persona and memory services, logged in as testUser.
+// writeHarness is a storeHarness that audits to its store and records
+// consolidation requests in trigger, with writeGroup and writeChannel stored.
 type writeHarness struct {
-	*harness
-	db       *sqlite.DB
-	policies *policy.Service
-	personas *persona.Service
-	trigger  *fakeTrigger
-	cookie   *http.Cookie
-	csrf     string
+	*storeHarness
+	trigger *fakeTrigger
 }
 
 var catPersona = func() conloomapi.PersonaDoc {
@@ -85,67 +72,19 @@ var catPersona = func() conloomapi.PersonaDoc {
 
 func newWriteHarness(t *testing.T, mutate func(*Deps)) *writeHarness {
 	t.Helper()
-	ctx := context.Background()
-	db, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "conloom.db"))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	for i, c := range []store.ConversationRecord{writeGroup, writeChannel} {
-		if _, err := db.Ingest(ctx, store.Ingest{
-			Event:        store.EventRecord{BotInstanceID: writeBot, IdempotencyKey: fmt.Sprintf("seed:%d", i), EventID: fmt.Sprintf("evt_%d", i)},
-			Conversation: &c,
-		}); err != nil {
-			t.Fatalf("seed conversation: %v", err)
-		}
-	}
-
-	policies := policy.NewService(db, conloomapi.DefaultGroupPolicy())
-	h := &writeHarness{
-		harness: &harness{
-			t: t,
-			cfg: &config.Config{
-				Panel: &config.PanelConfig{
-					Users:       []config.PanelUser{{Name: testUser, PasswordHash: testHash(t)}},
-					SessionTTL:  dur(config.DefaultPanelSessionTTL),
-					IdleTimeout: dur(config.DefaultPanelIdleTimeout),
-				},
-				Bots: []config.BotConfig{{ID: writeBot, Platform: "qq", Name: "织语", PersonaTemplate: "default"}},
-			},
-			sessions: &fakeSessions{m: map[string]store.PanelSession{}},
-			audit:    &fakeAudit{},
-			reg:      prometheus.NewRegistry(),
-			now:      time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC),
-		},
-		db:       db,
-		policies: policies,
-		personas: persona.NewService(db, map[string]conloomapi.PersonaDoc{"cat": catPersona}),
-		trigger:  &fakeTrigger{},
-	}
-	d := Deps{
-		Config:      h.cfg,
-		Sessions:    h.sessions,
-		Audit:       db,
-		Assets:      fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}},
-		Metrics:     obs.NewMetrics(h.reg),
-		Now:         func() time.Time { return h.now },
-		Store:       db,
-		Policies:    policies,
-		Personas:    h.personas,
-		MemoryAdmin: memory.NewAdmin(memory.AdminDeps{Store: db, Policies: policies}),
-		Memory:      h.trigger,
-	}
-	if mutate != nil {
-		mutate(&d)
-	}
-	h.srv = New(d)
-	h.h = h.srv.Handler()
-	h.cookie, h.csrf = h.loginOK()
+	h := &writeHarness{trigger: &fakeTrigger{}}
+	h.storeHarness = newStoreHarness(t,
+		[]config.BotConfig{{ID: dataBot, Platform: "qq", Name: "织语", PersonaTemplate: "default"}},
+		map[string]conloomapi.PersonaDoc{"cat": catPersona},
+		func(d *Deps) {
+			d.Audit, d.Memory = d.Store.(*sqlite.DB), h.trigger
+			if mutate != nil {
+				mutate(d)
+			}
+		})
+	h.storeConv(writeGroup)
+	h.storeConv(writeChannel)
 	return h
-}
-
-func convPath(c store.ConversationRecord, rest string) string {
-	return "/panel/api/conversations/" + url.PathEscape(c.Key) + rest
 }
 
 // write sends an authenticated request carrying the CSRF token.
@@ -184,14 +123,6 @@ func (h *writeHarness) currentPolicy() store.PolicyVersion {
 	return pv
 }
 
-type testPolicyView struct {
-	Version   int                    `json:"version"`
-	Policy    conloomapi.GroupPolicy `json:"policy"`
-	Reason    string                 `json:"reason"`
-	UpdatedBy string                 `json:"updated_by"`
-	CreatedAt *time.Time             `json:"created_at"`
-}
-
 type testPersonaView struct {
 	Version   int                   `json:"version"`
 	Template  string                `json:"template"`
@@ -224,8 +155,8 @@ func policyWith(edit func(*conloomapi.GroupPolicy)) conloomapi.GroupPolicy {
 func TestPutPolicy_UpdatesAndAudits(t *testing.T) {
 	h := newWriteHarness(t, nil)
 	p := policyWith(func(p *conloomapi.GroupPolicy) { p.Context.MaxRecentMessages = 30 })
-	w := h.write(http.MethodPut, convPath(writeGroup, "/policy"), conloomapi.PolicyPut{Policy: p, Reason: "收紧上下文"})
-	got := decodeCurrent[testPolicyView](t, w, http.StatusOK)
+	w := h.write(http.MethodPut, convPath(writeGroup.Key, "policy"), conloomapi.PolicyPut{Policy: p, Reason: "收紧上下文"})
+	got := decodeCurrent[policyVersionResp](t, w, http.StatusOK)
 	if got.Version != 1 || got.Reason != "收紧上下文" || got.UpdatedBy != "panel:"+testUser ||
 		got.Policy.Context.MaxRecentMessages != 30 || got.CreatedAt == nil || got.CreatedAt.Location() != time.UTC {
 		t.Errorf("current = %+v", got)
@@ -234,7 +165,7 @@ func TestPutPolicy_UpdatesAndAudits(t *testing.T) {
 		t.Errorf("Current = v%d with max_recent_messages %d, want v1 with 30", cur.Version, cur.Policy.Context.MaxRecentMessages)
 	}
 	events := h.audits("policy.update")
-	if len(events) != 1 || events[0].Actor != "panel:"+testUser || events[0].BotInstanceID != writeBot || events[0].Target != writeGroup.Key {
+	if len(events) != 1 || events[0].Actor != "panel:"+testUser || events[0].BotInstanceID != dataBot || events[0].Target != writeGroup.Key {
 		t.Errorf("audit = %+v, want one policy.update by panel:%s", events, testUser)
 	}
 
@@ -243,7 +174,7 @@ func TestPutPolicy_UpdatesAndAudits(t *testing.T) {
 	if want == nil {
 		t.Fatal("test policy is valid")
 	}
-	body := errorBody(t, h.write(http.MethodPut, convPath(writeGroup, "/policy"), conloomapi.PolicyPut{Policy: bad}),
+	body := errorBody(t, h.write(http.MethodPut, convPath(writeGroup.Key, "policy"), conloomapi.PolicyPut{Policy: bad}),
 		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
 	if body.Message != want.Error() || body.Retryable {
 		t.Errorf("invalid policy error = %+v, want message %q", body, want.Error())
@@ -252,18 +183,18 @@ func TestPutPolicy_UpdatesAndAudits(t *testing.T) {
 		t.Errorf("invalid policy stored v%d", cur.Version)
 	}
 
-	errorBody(t, h.write(http.MethodPut, convPath(writeGroup, "/policy"), `{"policy":{},"extra":1}`),
+	errorBody(t, h.write(http.MethodPut, convPath(writeGroup.Key, "policy"), `{"policy":{},"extra":1}`),
 		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
 	errorBody(t, h.write(http.MethodPut, "/panel/api/conversations/qq-main:qq:group:nope/policy", conloomapi.PolicyPut{Policy: p}),
 		http.StatusNotFound, conloomapi.CodeNotFound)
-	errorBody(t, h.do(http.MethodPut, convPath(writeGroup, "/policy"), `{}`, withCookie(h.cookie)),
+	errorBody(t, h.do(http.MethodPut, convPath(writeGroup.Key, "policy"), `{}`, withCookie(h.cookie)),
 		http.StatusForbidden, conloomapi.CodeForbidden)
 
 	t.Run("audit failure is still success", func(t *testing.T) {
 		h := newWriteHarness(t, func(d *Deps) {
 			d.Policies = policy.NewService(failingAuditDB{d.Store.(*sqlite.DB)}, conloomapi.DefaultGroupPolicy())
 		})
-		got := decodeCurrent[testPolicyView](t, h.write(http.MethodPost, convPath(writeGroup, "/pause"), nil), http.StatusOK)
+		got := decodeCurrent[policyVersionResp](t, h.write(http.MethodPost, convPath(writeGroup.Key, "pause"), nil), http.StatusOK)
 		if got.Version != 1 {
 			t.Errorf("pause with failing audit = %+v, want v1", got)
 		}
@@ -278,7 +209,7 @@ func TestRestorePolicy(t *testing.T) {
 		p.Proactive.Enabled = false
 	})
 	for _, p := range []conloomapi.GroupPolicy{v1, v2} {
-		if w := h.write(http.MethodPut, convPath(writeGroup, "/policy"), conloomapi.PolicyPut{Policy: p}); w.Code != http.StatusOK {
+		if w := h.write(http.MethodPut, convPath(writeGroup.Key, "policy"), conloomapi.PolicyPut{Policy: p}); w.Code != http.StatusOK {
 			t.Fatalf("PUT policy: %d %s", w.Code, w.Body)
 		}
 	}
@@ -287,8 +218,8 @@ func TestRestorePolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w := h.write(http.MethodPost, convPath(writeGroup, "/policy/restore"), map[string]any{"version": 1, "reason": "回到第一版"})
-	got := decodeCurrent[testPolicyView](t, w, http.StatusOK)
+	w := h.write(http.MethodPost, convPath(writeGroup.Key, "policy", "restore"), map[string]any{"version": 1, "reason": "回到第一版"})
+	got := decodeCurrent[policyVersionResp](t, w, http.StatusOK)
 	if got.Version != 3 || got.Reason != "回到第一版" || got.UpdatedBy != "panel:"+testUser {
 		t.Errorf("current = %+v, want v3 by panel:%s", got, testUser)
 	}
@@ -300,15 +231,15 @@ func TestRestorePolicy(t *testing.T) {
 		t.Errorf("response policy %+v differs from stored %+v", got.Policy, cur.Policy)
 	}
 
-	got = decodeCurrent[testPolicyView](t, h.write(http.MethodPost, convPath(writeGroup, "/policy/restore"), map[string]any{"version": 2}),
+	got = decodeCurrent[policyVersionResp](t, h.write(http.MethodPost, convPath(writeGroup.Key, "policy", "restore"), map[string]any{"version": 2}),
 		http.StatusOK)
 	if got.Version != 4 || got.Reason != "restore v2" || got.Policy.Proactive.Enabled {
 		t.Errorf("restore v2 = %+v, want v4 with reason \"restore v2\"", got)
 	}
 
-	errorBody(t, h.write(http.MethodPost, convPath(writeGroup, "/policy/restore"), map[string]any{"version": 9}),
+	errorBody(t, h.write(http.MethodPost, convPath(writeGroup.Key, "policy", "restore"), map[string]any{"version": 9}),
 		http.StatusNotFound, conloomapi.CodeNotFound)
-	errorBody(t, h.write(http.MethodPost, convPath(writeGroup, "/policy/restore"), map[string]any{"reason": "x"}),
+	errorBody(t, h.write(http.MethodPost, convPath(writeGroup.Key, "policy", "restore"), map[string]any{"reason": "x"}),
 		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
 	if n := len(h.audits("policy.update")); n != 4 {
 		t.Errorf("policy.update audits = %d, want 4", n)
@@ -317,15 +248,15 @@ func TestRestorePolicy(t *testing.T) {
 
 func TestPauseResume(t *testing.T) {
 	h := newWriteHarness(t, nil)
-	got := decodeCurrent[testPolicyView](t, h.write(http.MethodPost, convPath(writeGroup, "/pause"), nil), http.StatusOK)
+	got := decodeCurrent[policyVersionResp](t, h.write(http.MethodPost, convPath(writeGroup.Key, "pause"), nil), http.StatusOK)
 	if got.Version != 1 || got.Policy.Concurrency.MaxInteractiveRequests != 0 || got.UpdatedBy != "panel:"+testUser {
 		t.Errorf("pause = %+v", got)
 	}
-	got = decodeCurrent[testPolicyView](t, h.write(http.MethodPost, convPath(writeGroup, "/pause"), nil), http.StatusOK)
+	got = decodeCurrent[policyVersionResp](t, h.write(http.MethodPost, convPath(writeGroup.Key, "pause"), nil), http.StatusOK)
 	if got.Version != 1 {
 		t.Errorf("pausing again = v%d, want v1 unchanged", got.Version)
 	}
-	got = decodeCurrent[testPolicyView](t, h.write(http.MethodPost, convPath(writeGroup, "/resume"), nil), http.StatusOK)
+	got = decodeCurrent[policyVersionResp](t, h.write(http.MethodPost, convPath(writeGroup.Key, "resume"), nil), http.StatusOK)
 	if got.Version != 2 || got.Policy.Concurrency.MaxInteractiveRequests != 1 {
 		t.Errorf("resume = %+v, want v2 with max_interactive_requests 1", got)
 	}
@@ -343,7 +274,7 @@ func TestPauseResume(t *testing.T) {
 	}
 
 	fresh := newWriteHarness(t, nil)
-	got = decodeCurrent[testPolicyView](t, fresh.write(http.MethodPost, convPath(writeGroup, "/resume"), nil), http.StatusOK)
+	got = decodeCurrent[policyVersionResp](t, fresh.write(http.MethodPost, convPath(writeGroup.Key, "resume"), nil), http.StatusOK)
 	if got.Version != 0 || got.CreatedAt != nil || got.Policy.Concurrency.MaxInteractiveRequests != 1 {
 		t.Errorf("resume of a running default policy = %+v, want v0 with null created_at", got)
 	}
@@ -355,7 +286,7 @@ func TestPutPersona_TemplateAndRollback(t *testing.T) {
 	h := newWriteHarness(t, nil)
 	own := conloomapi.DefaultPersona()
 	own.CharacterName = "小织"
-	path := convPath(writeGroup, "/persona")
+	path := convPath(writeGroup.Key, "persona")
 
 	got := decodeCurrent[testPersonaView](t, h.write(http.MethodPut, path, conloomapi.PersonaPut{Persona: &own, Reason: "改名"}), http.StatusOK)
 	if got.Version != 1 || got.Template != "default" || got.Persona.CharacterName != "小织" || got.Reason != "改名" ||
@@ -373,7 +304,7 @@ func TestPutPersona_TemplateAndRollback(t *testing.T) {
 	}
 
 	events := h.audits("persona.update")
-	if len(events) != 3 || events[0].Actor != "panel:"+testUser || events[0].BotInstanceID != writeBot {
+	if len(events) != 3 || events[0].Actor != "panel:"+testUser || events[0].BotInstanceID != dataBot {
 		t.Errorf("audit = %+v, want three persona.update by panel:%s", events, testUser)
 	}
 
@@ -396,7 +327,7 @@ func TestPutPersona_TemplateAndRollback(t *testing.T) {
 func TestMemberEditAndForget(t *testing.T) {
 	h := newWriteHarness(t, nil)
 	ctx := context.Background()
-	path := convPath(writeGroup, "/memory/members/20001")
+	path := convPath(writeGroup.Key, "memory", "members", "20001")
 
 	w := h.write(http.MethodPut, path, map[string]any{"note": "  喜欢猫  ", "affinity": 60, "reason": "面板修正"})
 	if w.Code != http.StatusOK {
@@ -421,7 +352,7 @@ func TestMemberEditAndForget(t *testing.T) {
 			t.Errorf("revision = %+v, want source %q", r, store.RevisionPanel)
 		}
 	}
-	if e := h.audits("memory.update"); len(e) != 1 || e[0].Actor != "panel:"+testUser || e[0].BotInstanceID != writeBot {
+	if e := h.audits("memory.update"); len(e) != 1 || e[0].Actor != "panel:"+testUser || e[0].BotInstanceID != dataBot {
 		t.Errorf("memory.update audit = %+v", e)
 	}
 
@@ -430,7 +361,7 @@ func TestMemberEditAndForget(t *testing.T) {
 		t.Errorf("message = %q", body.Message)
 	}
 	errorBody(t, h.write(http.MethodPut, path, `{}`), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
-	errorBody(t, h.write(http.MethodPut, convPath(writeChannel, "/memory/members/20001"), map[string]any{"note": "x"}),
+	errorBody(t, h.write(http.MethodPut, convPath(writeChannel.Key, "memory", "members", "20001"), map[string]any{"note": "x"}),
 		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
 	errorBody(t, h.do(http.MethodPut, path, `{"note":"x"}`, withCookie(h.cookie)), http.StatusForbidden, conloomapi.CodeForbidden)
 	errorBody(t, h.do(http.MethodDelete, path, "", withCookie(h.cookie)), http.StatusForbidden, conloomapi.CodeForbidden)
@@ -468,11 +399,11 @@ func TestMemberEditAndForget(t *testing.T) {
 
 func TestConsolidate_TriggersAndAudits(t *testing.T) {
 	h := newWriteHarness(t, nil)
-	path := convPath(writeGroup, "/memory/consolidate")
+	path := convPath(writeGroup.Key, "memory", "consolidate")
 
 	errorBody(t, h.write(http.MethodPost, path, nil), http.StatusConflict, conloomapi.CodeMemoryDisabled)
 	on := policyWith(func(p *conloomapi.GroupPolicy) { p.Memory.Enabled = true })
-	if w := h.write(http.MethodPut, convPath(writeGroup, "/policy"), conloomapi.PolicyPut{Policy: on}); w.Code != http.StatusOK {
+	if w := h.write(http.MethodPut, convPath(writeGroup.Key, "policy"), conloomapi.PolicyPut{Policy: on}); w.Code != http.StatusOK {
 		t.Fatalf("enable memory: %d %s", w.Code, w.Body)
 	}
 
@@ -488,15 +419,15 @@ func TestConsolidate_TriggersAndAudits(t *testing.T) {
 		t.Errorf("triggers = %v, want one for %s", got, writeGroup.Key)
 	}
 	events := h.audits("memory.consolidate")
-	if len(events) != 1 || events[0].Actor != "panel:"+testUser || events[0].BotInstanceID != writeBot || events[0].Target != writeGroup.Key {
+	if len(events) != 1 || events[0].Actor != "panel:"+testUser || events[0].BotInstanceID != dataBot || events[0].Target != writeGroup.Key {
 		t.Errorf("audit = %+v, want one memory.consolidate by panel:%s", events, testUser)
 	}
 
-	if w := h.write(http.MethodPost, convPath(writeGroup, "/pause"), nil); w.Code != http.StatusOK {
+	if w := h.write(http.MethodPost, convPath(writeGroup.Key, "pause"), nil); w.Code != http.StatusOK {
 		t.Fatalf("pause: %d", w.Code)
 	}
 	errorBody(t, h.write(http.MethodPost, path, nil), http.StatusConflict, conloomapi.CodePaused)
-	errorBody(t, h.write(http.MethodPost, convPath(writeChannel, "/memory/consolidate"), nil),
+	errorBody(t, h.write(http.MethodPost, convPath(writeChannel.Key, "memory", "consolidate"), nil),
 		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
 	errorBody(t, h.do(http.MethodPost, path, "", withCookie(h.cookie)), http.StatusForbidden, conloomapi.CodeForbidden)
 	if n := len(h.trigger.all()); n != 1 {
