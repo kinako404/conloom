@@ -51,11 +51,17 @@ func BenchmarkSearchMessages(b *testing.B) {
 		}
 	}
 	terms := search.Terms("周末出去玩", []string{"旅行", "海边"})
-	r := search.Range{After: time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)}
-	for b.Loop() {
-		hits, err := db.SearchMessages(context.Background(), testConvKey, terms, r, 50)
-		if err != nil || len(hits) != 50 {
-			b.Fatalf("SearchMessages = %d hits, %v", len(hits), err)
-		}
+	for name, r := range map[string]search.Range{
+		"all":   {},
+		"range": {After: time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)},
+	} {
+		b.Run(name, func(b *testing.B) {
+			for b.Loop() {
+				hits, err := db.SearchMessages(context.Background(), testConvKey, terms, r, 50)
+				if err != nil || len(hits) != 50 {
+					b.Fatalf("SearchMessages = %d hits, %v", len(hits), err)
+				}
+			}
+		})
 	}
 }

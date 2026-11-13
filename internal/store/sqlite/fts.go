@@ -48,6 +48,17 @@ func (db *DB) SearchMessages(ctx context.Context, convKey string, terms []string
 	if match == "" || limit <= 0 {
 		return nil, nil
 	}
+	if r.After.IsZero() && r.Before.IsZero() {
+		// Ranking the index alone saves joining every match; the mark already
+		// keeps to the conversation, and the check below drops the rare rows of
+		// other conversations whose text holds the mark.
+		hits, err := db.rankedHits(ctx, `SELECT rowid, bm25(message_fts) FROM message_fts
+			WHERE message_fts MATCH ? ORDER BY bm25(message_fts), rowid DESC LIMIT ?`, match, 2*limit)
+		if err != nil {
+			return nil, err
+		}
+		return db.inConversation(ctx, convKey, hits, limit)
+	}
 	query := `SELECT m.seq, bm25(message_fts) FROM message_fts JOIN messages m ON m.seq = message_fts.rowid
 		WHERE message_fts MATCH ? AND m.conversation_key = ?`
 	args := []any{match, convKey}
@@ -60,7 +71,13 @@ func (db *DB) SearchMessages(ctx context.Context, convKey string, terms []string
 		args = append(args, fmtTime(r.Before))
 	}
 	query += ` ORDER BY bm25(message_fts), m.seq DESC LIMIT ?`
-	rows, err := db.r.QueryContext(ctx, query, append(args, limit)...)
+	return db.rankedHits(ctx, query, append(args, limit)...)
+}
+
+// rankedHits runs query, which selects a seq and its bm25, into hits scored
+// by -bm25.
+func (db *DB) rankedHits(ctx context.Context, query string, args ...any) ([]store.MessageHit, error) {
+	rows, err := db.r.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -76,6 +93,36 @@ func (db *DB) SearchMessages(ctx context.Context, convKey string, terms []string
 		hits = append(hits, h)
 	}
 	return hits, rows.Err()
+}
+
+// inConversation keeps the first limit of hits that are messages of convKey.
+func (db *DB) inConversation(ctx context.Context, convKey string, hits []store.MessageHit, limit int) ([]store.MessageHit, error) {
+	if len(hits) == 0 {
+		return nil, nil
+	}
+	args := []any{convKey}
+	for _, h := range hits {
+		args = append(args, h.Seq)
+	}
+	rows, err := db.r.QueryContext(ctx, `SELECT seq FROM messages WHERE conversation_key = ? AND seq IN (`+
+		strings.TrimSuffix(strings.Repeat("?, ", len(hits)), ", ")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ours := map[int64]bool{}
+	for rows.Next() {
+		var seq int64
+		if err := rows.Scan(&seq); err != nil {
+			return nil, err
+		}
+		ours[seq] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	hits = slices.DeleteFunc(hits, func(h store.MessageHit) bool { return !ours[h.Seq] })
+	return hits[:min(len(hits), limit)], nil
 }
 
 func (db *DB) MessagesAround(ctx context.Context, convKey string, fromSeq, toSeq int64, before, after int) ([]store.MessageRecord, error) {
