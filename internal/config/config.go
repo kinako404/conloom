@@ -154,6 +154,12 @@ type RuntimeConfig struct {
 	IdempotencyRetention conloomapi.Duration `yaml:"idempotency_retention"`
 	MaxMergeWindow       conloomapi.Duration `yaml:"max_merge_window"`
 	SessionIdle          conloomapi.Duration `yaml:"session_idle"`
+	// OpsRetention is how long finished tasks and their acked or expired
+	// outbox actions are kept; never shorter than IdempotencyRetention, whose
+	// stored responses name the tasks.
+	OpsRetention conloomapi.Duration `yaml:"ops_retention"`
+	// AuditRetention is how long audit events are kept.
+	AuditRetention conloomapi.Duration `yaml:"audit_retention"`
 }
 
 type AdaptersConfig struct {
@@ -195,6 +201,16 @@ type ObservabilityConfig struct {
 	LogMessageContent bool   `yaml:"log_message_content"`
 }
 
+// Defaults and allowed ranges of runtime.ops_retention and runtime.audit_retention.
+const (
+	DefaultOpsRetention   = 720 * time.Hour
+	DefaultAuditRetention = 2160 * time.Hour
+	MinOpsRetention       = 24 * time.Hour
+	MaxOpsRetention       = 8760 * time.Hour
+	MinAuditRetention     = 24 * time.Hour
+	MaxAuditRetention     = 87600 * time.Hour
+)
+
 func dur(d time.Duration) conloomapi.Duration { return conloomapi.Duration{Duration: d} }
 
 func defaultConfig() *Config {
@@ -208,6 +224,8 @@ func defaultConfig() *Config {
 			IdempotencyRetention: dur(168 * time.Hour),
 			MaxMergeWindow:       dur(4500 * time.Millisecond),
 			SessionIdle:          dur(5 * time.Minute),
+			OpsRetention:         dur(DefaultOpsRetention),
+			AuditRetention:       dur(DefaultAuditRetention),
 		},
 		Adapters: AdaptersConfig{
 			Telegram: TelegramConfig{APIBase: "https://api.telegram.org", PollTimeout: dur(50 * time.Second)},

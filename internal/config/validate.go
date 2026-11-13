@@ -78,6 +78,18 @@ func (p *problems) observability(o ObservabilityConfig) {
 	}
 }
 
+// retention requires d to be within [lo, hi].
+func (p *problems) retention(path string, d, lo, hi time.Duration) {
+	if d < lo || d > hi {
+		p.addf(path, "must be in [%s, %s], got %s", hours(lo), hours(hi), d)
+	}
+}
+
+// hours formats a whole number of hours as "<n>h".
+func hours(d time.Duration) string {
+	return fmt.Sprintf("%dh", int64(d/time.Hour))
+}
+
 func (p *problems) err(c *Config, command string) error {
 	if len(p.list) == 0 {
 		return nil
@@ -98,6 +110,8 @@ func (c *Config) ValidateServe() error {
 		}
 	}
 	p.observability(c.Observability)
+	p.retention("runtime.ops_retention", c.Runtime.OpsRetention.Duration, MinOpsRetention, MaxOpsRetention)
+	p.retention("runtime.audit_retention", c.Runtime.AuditRetention.Duration, MinAuditRetention, MaxAuditRetention)
 
 	if len(c.Bots) == 0 {
 		p.addf("bots", "at least one bot is required")

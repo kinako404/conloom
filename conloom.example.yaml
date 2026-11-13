@@ -257,6 +257,9 @@ runtime:
   idempotency_retention: 168h   # 幂等记录保留时长
   max_merge_window: 4.5s        # 连续消息最长合并窗口
   session_idle: 5m              # 会话空闲回收时长
+  # 流水表清理（每小时一次，分批删除）。聊天消息、记忆、群策略和人格版本永不清理。
+  ops_retention: 720h           # 已结束的任务及其已确认/已过期的发件箱动作保留时长，24h~8760h；至少保留到 idempotency_retention
+  audit_retention: 2160h        # 审计记录保留时长，24h~87600h
 
 # Adapter：独立进程，通过公开 REST API 与核心交互。
 adapters:

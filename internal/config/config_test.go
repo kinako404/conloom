@@ -381,6 +381,8 @@ func TestLoad_DefaultsApplied(t *testing.T) {
 		IdempotencyRetention: conloomapi.Duration{Duration: 168 * time.Hour},
 		MaxMergeWindow:       conloomapi.Duration{Duration: 4500 * time.Millisecond},
 		SessionIdle:          conloomapi.Duration{Duration: 5 * time.Minute},
+		OpsRetention:         conloomapi.Duration{Duration: 720 * time.Hour},
+		AuditRetention:       conloomapi.Duration{Duration: 2160 * time.Hour},
 	}
 	if cfg.Runtime != wantRuntime {
 		t.Errorf("runtime = %+v", cfg.Runtime)
@@ -836,6 +838,18 @@ func TestValidateServe_Rules(t *testing.T) {
 		{"empty skill name", func(c *Config) { c.Bots[0].Skills = []string{"time", " "} }, []string{"bots[0].skills[1]"}},
 		{"duplicate skill", func(c *Config) { c.Bots[0].Skills = []string{"time", "memory", "time"} },
 			[]string{"bots[0].skills[2]", `duplicate skill "time"`}},
+		{"zero ops_retention", func(c *Config) { c.Runtime.OpsRetention.Duration = 0 },
+			[]string{"runtime.ops_retention", "[24h, 8760h]", "0s"}},
+		{"short ops_retention", func(c *Config) { c.Runtime.OpsRetention.Duration = 23 * time.Hour },
+			[]string{"runtime.ops_retention", "23h0m0s"}},
+		{"long ops_retention", func(c *Config) { c.Runtime.OpsRetention.Duration = 8761 * time.Hour },
+			[]string{"runtime.ops_retention"}},
+		{"negative audit_retention", func(c *Config) { c.Runtime.AuditRetention.Duration = -time.Hour },
+			[]string{"runtime.audit_retention", "[24h, 87600h]"}},
+		{"short audit_retention", func(c *Config) { c.Runtime.AuditRetention.Duration = 23 * time.Hour },
+			[]string{"runtime.audit_retention"}},
+		{"long audit_retention", func(c *Config) { c.Runtime.AuditRetention.Duration = 87601 * time.Hour },
+			[]string{"runtime.audit_retention"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1010,6 +1024,12 @@ func TestValidateServe_AcceptsBoundaryValues(t *testing.T) {
 	cfg.Bots[0].EnabledConversations = append(cfg.Bots[0].EnabledConversations,
 		conloomapi.ConversationRef{Type: "private", PlatformID: "20001"})
 	cfg.Server.Timezone = "UTC"
+	for _, r := range [][2]time.Duration{{24 * time.Hour, 24 * time.Hour}, {8760 * time.Hour, 87600 * time.Hour}} {
+		cfg.Runtime.OpsRetention.Duration, cfg.Runtime.AuditRetention.Duration = r[0], r[1]
+		if err := cfg.ValidateServe(); err != nil {
+			t.Errorf("ops_retention %s, audit_retention %s: %v", r[0], r[1], err)
+		}
+	}
 	for _, o := range []ObservabilityConfig{
 		{LogLevel: "", LogFormat: ""},
 		{LogLevel: "debug", LogFormat: "text"},
