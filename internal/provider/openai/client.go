@@ -211,7 +211,7 @@ func (c *Client) attempt(ctx context.Context, body []byte) (ChatResponse, bool, 
 	}
 	out := ChatResponse{
 		Content:          CleanOutput(cr.Choices[0].Message.Content),
-		ToolCalls:        withIDs(cr.Choices[0].Message.ToolCalls),
+		ToolCalls:        cr.Choices[0].Message.ToolCalls,
 		Model:            cr.Model,
 		FinishReason:     cr.Choices[0].FinishReason,
 		PromptTokens:     cr.Usage.PromptTokens,

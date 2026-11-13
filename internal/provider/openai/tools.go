@@ -3,7 +3,6 @@ package openai
 import (
 	"bytes"
 	"encoding/json"
-	"strconv"
 )
 
 // Tool is a function the model may call. Nil Parameters is a function without
@@ -15,7 +14,8 @@ type Tool struct {
 }
 
 // ToolCall is one function call requested by the model. Arguments is the JSON
-// text of the arguments as the model wrote it.
+// text of the arguments as the model wrote it; ID is empty when the server
+// sent none.
 type ToolCall struct {
 	ID        string
 	Name      string
@@ -108,15 +108,4 @@ func (m *ChatMessage) UnmarshalJSON(b []byte) error {
 		m.Content = *w.Content
 	}
 	return nil
-}
-
-// withIDs gives every call without an ID a synthetic one, so the tool results
-// sent back can always refer to their call.
-func withIDs(calls []ToolCall) []ToolCall {
-	for i := range calls {
-		if calls[i].ID == "" {
-			calls[i].ID = "call_" + strconv.Itoa(i)
-		}
-	}
-	return calls
 }

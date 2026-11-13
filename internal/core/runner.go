@@ -499,47 +499,58 @@ func speaker(triggers []store.MessageRecord) string {
 }
 
 // call builds the context for the routed profile and calls the model. With
-// skills (run not nil) it offers their tools and runs the tool calls the model
-// makes, feeding the results back, for at most maxToolRounds rounds; the
-// request after the last round forbids further calls. Every request waits for
-// its own admission. The response is the model's final answer.
+// skills (run not nil) the history leaves room for one worst-case tool round;
+// requests offer the tools and the calls the model makes are run, their
+// results fed back, after any progress run made with an earlier model. The
+// final request offers no tools: it comes after maxToolRounds rounds, after
+// toolLoopTimeout, or when another round could overflow the prompt limit.
+// Every request waits for its own admission. The response is the model's final
+// answer.
 func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router.Decision, in contextbuilder.Input, run *skillRun) (openai.ChatResponse, error) {
 	p := d.Profile
 	in.Budget = d.PromptBudget
 	in.TokenFactor = p.Config.TokenEstimateFactor
+	worst := 0
+	if run != nil {
+		worst = worstRound(d, in.TokenFactor)
+		in.Budget -= worst
+	}
 	built := contextbuilder.Build(in)
 	req := openai.ChatRequest{Messages: built.Messages, MaxTokens: d.MaxOutputTokens}
 	if run == nil {
 		return o.chat(ctx, task, d, req, built, built.EstimatedTokens, nil)
 	}
-	req.Tools = run.tools
-	estimate := built.EstimatedTokens
-	for round := 0; ; round++ {
-		if round == maxToolRounds {
-			req.ToolChoice = "none"
+	if run.deadline.IsZero() {
+		run.deadline = o.now().Add(toolLoopTimeout)
+	}
+	req.Messages = append(slices.Clip(req.Messages), run.msgs...)
+	estimate := built.EstimatedTokens + estimateMessages(run.msgs, in.TokenFactor)
+	for {
+		final := o.lastRequest(run, estimate, worst, d)
+		req.Tools = run.tools
+		if final {
+			req.Tools = nil
 		}
-		resp, err := o.chat(ctx, task, d, req, built, estimate, []any{"round", round})
+		resp, err := o.chat(ctx, task, d, req, built, estimate, []any{"round", run.rounds, "final", final})
 		if err != nil || len(resp.ToolCalls) == 0 {
 			return resp, err
 		}
-		if round == maxToolRounds {
-			// The model called tools although told not to: keep its text.
+		if final {
+			// Calls without tools offered: keep the text.
 			if resp.Content == "" {
-				return openai.ChatResponse{}, fmt.Errorf("model %s: %w: tool calls after the last round", p.Role, openai.ErrEmptyOutput)
+				return openai.ChatResponse{}, fmt.Errorf("model %s: %w: tool calls in the final request", p.Role, openai.ErrEmptyOutput)
 			}
 			resp.ToolCalls = nil
 			return resp, nil
 		}
-		added := append([]openai.ChatMessage{{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls}},
-			o.runTools(ctx, task, run, resp.ToolCalls)...)
-		req.Messages = append(slices.Clip(req.Messages), added...)
-		for _, m := range added {
-			text := m.Content
-			for _, c := range m.ToolCalls {
-				text += c.Name + c.Arguments
-			}
-			estimate += contextbuilder.Estimate(text, in.TokenFactor) + contextbuilder.MessageOverhead
+		if !o.now().Before(run.deadline) {
+			continue // out of time: these calls are not run; ask for the final answer
 		}
+		added := o.toolRound(ctx, task, run, resp)
+		run.msgs = append(run.msgs, added...)
+		run.rounds++
+		req.Messages = append(slices.Clip(req.Messages), added...)
+		estimate += estimateMessages(added, in.TokenFactor)
 	}
 }
 

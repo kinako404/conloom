@@ -129,7 +129,7 @@ func TestChat_ParsesToolCalls(t *testing.T) {
 		{"content kept", `{"role":"assistant","content":"稍等","tool_calls":[{"id":"x","type":"function","function":{"name":"now","arguments":"{}"}}]}`,
 			ChatResponse{Content: "稍等", ToolCalls: []ToolCall{{ID: "x", Name: "now", Arguments: "{}"}}}},
 		{"object arguments and missing id", `{"role":"assistant","content":"","tool_calls":[{"type":"function","function":{"name":"recall","arguments":{"query":"草莓"}}}]}`,
-			ChatResponse{ToolCalls: []ToolCall{{ID: "call_0", Name: "recall", Arguments: `{"query":"草莓"}`}}}},
+			ChatResponse{ToolCalls: []ToolCall{{ID: "", Name: "recall", Arguments: `{"query":"草莓"}`}}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
