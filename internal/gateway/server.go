@@ -25,7 +25,9 @@ import (
 // consolidations asked for through the API; when nil they are accepted but
 // nothing runs. Counters records affinity changes made through the API; nil
 // records nothing. MemoryAdmin serves the memory endpoints; when nil one is
-// built from Store, Policies and Counters.
+// built from Store, Policies and Counters. Presence records each bot whose
+// token authenticated a request; nil records nothing. Panel, when not nil, is
+// served at /panel and under /panel/.
 type Deps struct {
 	Orchestrator *core.Orchestrator
 	Outbox       *outbox.Service
@@ -38,6 +40,8 @@ type Deps struct {
 	Memory       interface{ Trigger(convKey string) }
 	Counters     *obs.Metrics
 	MemoryAdmin  *memory.Admin
+	Presence     *obs.Presence
+	Panel        http.Handler
 }
 
 type Server struct {
@@ -96,6 +100,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.healthz)
 	if s.d.Config.Server.MetricsEnabled && s.d.Metrics != nil {
 		s.mux.Handle("GET /metrics", s.d.Metrics)
+	}
+	if s.d.Panel != nil {
+		s.mux.Handle("/panel", s.d.Panel)
+		s.mux.Handle("/panel/", s.d.Panel)
 	}
 }
 

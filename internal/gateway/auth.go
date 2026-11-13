@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -50,7 +51,7 @@ func (s *Server) authenticate(r *http.Request) *token {
 type authedHandler func(w http.ResponseWriter, r *http.Request, tok *token)
 
 // handle registers h behind authentication; a non-empty scope must be held by
-// the token.
+// the token. An authenticated request marks the token's bot as present.
 func (s *Server) handle(pattern, scope string, h authedHandler) {
 	s.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		tok := s.authenticate(r)
@@ -58,6 +59,7 @@ func (s *Server) handle(pattern, scope string, h authedHandler) {
 			s.writeError(w, r, http.StatusUnauthorized, conloomapi.CodeUnauthorized, "missing or invalid bearer token", false, nil)
 			return
 		}
+		s.d.Presence.Seen(tok.botID, time.Now())
 		if scope != "" && !slices.Contains(tok.scopes, scope) {
 			s.writeError(w, r, http.StatusForbidden, conloomapi.CodeForbidden, "token lacks scope "+scope, false, nil)
 			return

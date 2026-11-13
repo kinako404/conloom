@@ -78,7 +78,7 @@ func TestServe_ShutdownEndsLongPollPromptly(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	served := make(chan error, 1)
-	go func() { served <- Serve(ctx, cfg, logger) }()
+	go func() { served <- Serve(ctx, cfg, logger, Options{}) }()
 
 	var addr string
 	for deadline := time.Now().Add(5 * time.Second); addr == ""; {

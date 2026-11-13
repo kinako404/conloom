@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -23,6 +24,8 @@ import (
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/outbox"
+	"github.com/kinako404/conloom/internal/panel"
+	"github.com/kinako404/conloom/internal/panel/web"
 	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/internal/policy"
 	"github.com/kinako404/conloom/internal/provider/openai"
@@ -31,12 +34,15 @@ import (
 	"github.com/kinako404/conloom/internal/search"
 	"github.com/kinako404/conloom/internal/search/vector"
 	"github.com/kinako404/conloom/internal/skills"
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/internal/store/sqlite"
+	"github.com/kinako404/conloom/internal/usage"
 )
 
 // Options override defaults: a nil Registry is a fresh registry, a nil
 // HTTPClient is http.DefaultClient (used for model calls), a nil Now is
-// time.Now and nil Tools are the built-in tools.
+// time.Now and nil Tools are the built-in tools. Version, Commit and
+// StartedAt (the process start, New's time when zero) are shown in the panel.
 type Options struct {
 	Registry   *prometheus.Registry
 	HTTPClient *http.Client
@@ -45,13 +51,21 @@ type Options struct {
 	// EmbeddingInterval is how often semantic search embeds new chunks,
 	// every minute when 0.
 	EmbeddingInterval time.Duration
+
+	Version, Commit string
+	StartedAt       time.Time
 }
+
+// usageFlushTimeout bounds how long Close waits for queued model calls to be
+// written.
+const usageFlushTimeout = 5 * time.Second
 
 // App is the assembled core service.
 type App struct {
 	st      *sqlite.DB
 	orch    *core.Orchestrator
 	sched   *memory.Scheduler
+	usage   *usage.Recorder
 	handler http.Handler
 	// indexer and vectors are semantic search, both nil without an
 	// embedding section in the config.
@@ -64,8 +78,9 @@ type App struct {
 
 // New loads the skills, opens the database in the configured data directory
 // (creating the directory if needed), registers the configured bots and wires
-// every component. An invalid skill configuration is an error wrapping
-// skills.ErrInvalid. The caller must Close the App.
+// every component, with the web panel when the config has a panel section. An
+// invalid skill configuration is an error wrapping skills.ErrInvalid. The
+// caller must Close the App.
 func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -76,6 +91,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	now := opts.Now
 	if now == nil {
 		now = time.Now
+	}
+	if opts.StartedAt.IsZero() {
+		opts.StartedAt = now()
 	}
 	loadedSkills, err := skills.Load(cfg.Skills.Dir)
 	if err != nil {
@@ -116,6 +134,12 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	personas := persona.NewService(st, cfg.PersonaTemplates)
 	policies := policy.NewService(st, cfg.DefaultGroupPolicy).WithPrivateDefaults(cfg.PrivatePolicy())
 	ob := outbox.New(st, outbox.Config{Lease: cfg.Runtime.OutboxLease.Duration}, metrics, now)
+	rec := usage.NewRecorder(st, usage.RecorderOptions{Metrics: metrics, Logger: logger})
+	fail := func(err error) (*App, error) {
+		_ = rec.Close(ctx)
+		_ = st.Close()
+		return nil, fmt.Errorf("app: %w", err)
+	}
 	cons := memory.NewConsolidator(memory.ConsolidatorDeps{
 		Store:     st,
 		Router:    rt,
@@ -127,6 +151,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Logger:    logger,
 		Location:  loc,
 		Now:       now,
+		Usage:     rec,
 	})
 	sched := memory.NewScheduler(memory.SchedulerDeps{
 		Store:    st,
@@ -144,10 +169,11 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	var vectors search.VectorSearcher
 	if e := cfg.Embedding; e != nil {
 		emb := embedding.New(*e, nil)
-		indexer = vector.NewIndexer(vector.IndexerDeps{Interval: opts.EmbeddingInterval, Store: st, Embedder: emb, Policies: policies, Reviewer: reviewer,
+		indexer = vector.NewIndexer(vector.IndexerDeps{Interval: opts.EmbeddingInterval, Store: st,
+			Embedder: usage.NewEmbedder(emb, rec, store.PurposeEmbedIndex), Policies: policies, Reviewer: reviewer,
 			IsCommand: isCommand, Location: loc, Config: cfg, Metrics: metrics, Logger: logger})
-		vectors = vector.NewSearcher(vector.SearcherDeps{Store: st, Embedder: emb, MinScore: e.MinScore, Margin: vector.DefaultMargin,
-			Metrics: metrics, Logger: logger})
+		vectors = vector.NewSearcher(vector.SearcherDeps{Store: st, Embedder: usage.NewEmbedder(emb, rec, store.PurposeEmbedQuery),
+			MinScore: e.MinScore, Margin: vector.DefaultMargin, Metrics: metrics, Logger: logger})
 		logger.Info("semantic search enabled", "embedding_model", e.Model, "batch_size", e.BatchSize)
 	}
 	tools := opts.Tools
@@ -156,8 +182,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	}
 	skillReg, err := registerSkills(cfg, loadedSkills, tools)
 	if err != nil {
-		_ = st.Close()
-		return nil, fmt.Errorf("app: %w", err)
+		return fail(err)
 	}
 	orch, err := core.New(core.Deps{
 		Store:         st,
@@ -174,10 +199,35 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Now:           now,
 		MemoryTrigger: sched,
 		Skills:        skillReg,
+		Usage:         rec,
 	})
 	if err != nil {
-		_ = st.Close()
-		return nil, fmt.Errorf("app: %w", err)
+		return fail(err)
+	}
+	memAdmin := memory.NewAdmin(memory.AdminDeps{Store: st, Policies: policies, Metrics: metrics, Now: now})
+	presence := obs.NewPresence()
+	var panelHandler http.Handler
+	if cfg.Panel != nil {
+		panelHandler = panel.New(panel.Deps{
+			Config:      cfg,
+			Sessions:    st,
+			Audit:       st,
+			Assets:      web.FS,
+			Metrics:     metrics,
+			Logger:      logger,
+			Now:         now,
+			Store:       st,
+			Policies:    policies,
+			Personas:    personas,
+			MemoryAdmin: memAdmin,
+			Memory:      sched,
+			Gatherer:    opts.Registry,
+			Presence:    presence,
+			Location:    loc,
+			Version:     opts.Version,
+			Commit:      opts.Commit,
+			StartedAt:   opts.StartedAt,
+		}).Handler()
 	}
 	gw := gateway.New(gateway.Deps{
 		Orchestrator: orch,
@@ -190,8 +240,11 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Logger:       logger,
 		Memory:       sched,
 		Counters:     metrics,
+		MemoryAdmin:  memAdmin,
+		Presence:     presence,
+		Panel:        panelHandler,
 	})
-	return &App{st: st, orch: orch, sched: sched, handler: gw.Handler(), indexer: indexer, vectors: vectors}, nil
+	return &App{st: st, orch: orch, sched: sched, usage: rec, handler: gw.Handler(), indexer: indexer, vectors: vectors}, nil
 }
 
 // location is the time zone tz, falling back to Asia/Shanghai, then UTC.
@@ -207,7 +260,8 @@ func location(tz string) *time.Location {
 	return time.UTC
 }
 
-// Handler serves the Bot Interaction API, /healthz and (if enabled) /metrics.
+// Handler serves the Bot Interaction API, /healthz and, if enabled, /metrics
+// and the web panel.
 func (a *App) Handler() http.Handler { return a.handler }
 
 // VectorSearcher is the semantic search over the conversations' chunks, or
@@ -230,8 +284,9 @@ func (a *App) Start(ctx context.Context) error {
 	return nil
 }
 
-// Close stops memory consolidation, embedding and the orchestrator, then
-// closes the database. Further calls return the first result.
+// Close stops memory consolidation, embedding and the orchestrator, writes the
+// queued model calls (giving up after 5s) and closes the database. Further
+// calls return the first result.
 func (a *App) Close() error {
 	a.closeOnce.Do(func() {
 		a.sched.Close()
@@ -239,7 +294,13 @@ func (a *App) Close() error {
 			a.indexer.Close()
 		}
 		a.orch.Close()
-		a.closeErr = a.st.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), usageFlushTimeout)
+		defer cancel()
+		var usageErr error
+		if err := a.usage.Close(ctx); err != nil {
+			usageErr = fmt.Errorf("app: write queued model calls: %w", err)
+		}
+		a.closeErr = errors.Join(usageErr, a.st.Close())
 	})
 	return a.closeErr
 }
