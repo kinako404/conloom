@@ -13,9 +13,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/ids"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/obs"
+	"github.com/kinako404/conloom/internal/persona"
+	"github.com/kinako404/conloom/internal/policy"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -34,6 +39,11 @@ type Auditor interface {
 // Deps are the panel's collaborators. Config.Panel must be non-nil. Assets is
 // the web root, with index.html at the top. A nil Metrics records nothing, a
 // nil Logger discards and a nil Now is time.Now.
+//
+// The fields after Now serve the API beyond logging in. Memory starts a
+// memory consolidation; Gatherer is the registry the live metrics are read
+// from; Presence holds when each bot's adapter last called the core; a nil
+// Location is UTC; StartedAt is when the process started.
 type Deps struct {
 	Config   *config.Config
 	Sessions SessionStore
@@ -42,6 +52,17 @@ type Deps struct {
 	Metrics  *obs.Metrics
 	Logger   *slog.Logger
 	Now      func() time.Time
+
+	Store           Store
+	Policies        *policy.Service
+	Personas        *persona.Service
+	MemoryAdmin     *memory.Admin
+	Memory          interface{ Trigger(convKey string) }
+	Gatherer        prometheus.Gatherer
+	Presence        *obs.Presence
+	Location        *time.Location
+	Version, Commit string
+	StartedAt       time.Time
 }
 
 type Server struct {
@@ -135,6 +156,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /panel/api/login", s.login)
 	s.api("GET /panel/api/session", s.session)
 	s.api("POST /panel/api/logout", s.logout)
+	s.overviewRoutes()
+	s.dataRoutes()
+	s.writeRoutes()
 	s.mux.HandleFunc("/panel/api/", func(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusNotFound, conloomapi.CodeNotFound, "no such API")
 	})
