@@ -67,8 +67,8 @@ func TestNewMetrics_RegistersOnFreshRegistry(t *testing.T) {
 			t.Fatalf("%s missing; got %v", name, names)
 		}
 	}
-	if len(mfs) != 18 {
-		t.Errorf("gathered %d metric families, want 18: %v", len(mfs), names)
+	if len(mfs) != 19 {
+		t.Errorf("gathered %d metric families, want 19: %v", len(mfs), names)
 	}
 }
 
@@ -90,6 +90,28 @@ func TestMetrics_MemoryRegistered(t *testing.T) {
 	}
 	for _, name := range []string{"conloom_memory_consolidations_total", "conloom_memory_consolidation_seconds",
 		"conloom_memory_affinity_changes_total", "conloom_skill_calls_total"} {
+		if !names[name] {
+			t.Errorf("%s missing; got %v", name, names)
+		}
+	}
+}
+
+func TestMetrics_SearchRegistered(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+	m.SearchSeconds.WithLabelValues("vector").Observe(0.05)
+	m.EmbeddingRequests.WithLabelValues("timeout").Inc()
+	m.EmbeddingBacklog.Set(12)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	names := map[string]bool{}
+	for _, mf := range mfs {
+		names[mf.GetName()] = true
+	}
+	for _, name := range []string{"conloom_search_seconds", "conloom_embedding_requests_total", "conloom_embedding_backlog"} {
 		if !names[name] {
 			t.Errorf("%s missing; got %v", name, names)
 		}

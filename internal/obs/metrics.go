@@ -24,6 +24,10 @@ type Metrics struct {
 	MemoryAffinityChanges      *prometheus.CounterVec // source
 
 	SkillCalls *prometheus.CounterVec // tool, result: ok|error|unknown|invalid
+
+	SearchSeconds     *prometheus.HistogramVec // path
+	EmbeddingRequests *prometheus.CounterVec   // result: ok|error|timeout
+	EmbeddingBacklog  prometheus.Gauge
 }
 
 // NewMetrics creates all ConLoom metrics and registers them on reg; it panics
@@ -91,6 +95,16 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		SkillCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "conloom_skill_calls_total", Help: "Tool calls made by the model, by tool and result (ok|error|unknown|invalid).",
 		}, []string{"tool", "result"}),
+		SearchSeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "conloom_search_seconds", Help: "Search duration by path.",
+			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+		}, []string{"path"}),
+		EmbeddingRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "conloom_embedding_requests_total", Help: "Embedding service requests by result (ok|error|timeout).",
+		}, []string{"result"}),
+		EmbeddingBacklog: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "conloom_embedding_backlog", Help: "Estimated chunks waiting to be embedded.",
+		}),
 	}
 	reg.MustRegister(
 		m.Events, m.Tasks, m.ModelLatency, m.ModelTokens, m.EstimateRatio,
@@ -99,6 +113,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.Review, m.BreakerOpen, m.ContinuationExits, m.Proactive,
 		m.MemoryConsolidations, m.MemoryConsolidationSeconds, m.MemoryAffinityChanges,
 		m.SkillCalls,
+		m.SearchSeconds, m.EmbeddingRequests, m.EmbeddingBacklog,
 	)
 	return m
 }
