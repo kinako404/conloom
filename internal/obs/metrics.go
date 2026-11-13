@@ -22,6 +22,8 @@ type Metrics struct {
 	MemoryConsolidations       *prometheus.CounterVec // result: ok|error|skipped
 	MemoryConsolidationSeconds prometheus.Histogram
 	MemoryAffinityChanges      *prometheus.CounterVec // source
+
+	SkillCalls *prometheus.CounterVec // tool, result: ok|error|unknown|invalid
 }
 
 // NewMetrics creates all ConLoom metrics and registers them on reg; it panics
@@ -86,6 +88,9 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		MemoryAffinityChanges: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "conloom_memory_affinity_changes_total", Help: "Affinity changes by source.",
 		}, []string{"source"}),
+		SkillCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "conloom_skill_calls_total", Help: "Tool calls made by the model, by tool and result (ok|error|unknown|invalid).",
+		}, []string{"tool", "result"}),
 	}
 	reg.MustRegister(
 		m.Events, m.Tasks, m.ModelLatency, m.ModelTokens, m.EstimateRatio,
@@ -93,6 +98,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.OutboxDelivered, m.OutboxRedelivered, m.OutboxExpired,
 		m.Review, m.BreakerOpen, m.ContinuationExits, m.Proactive,
 		m.MemoryConsolidations, m.MemoryConsolidationSeconds, m.MemoryAffinityChanges,
+		m.SkillCalls,
 	)
 	return m
 }

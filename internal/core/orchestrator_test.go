@@ -26,6 +26,7 @@ import (
 	"github.com/kinako404/conloom/internal/provider/openai"
 	"github.com/kinako404/conloom/internal/review"
 	"github.com/kinako404/conloom/internal/router"
+	"github.com/kinako404/conloom/internal/skills"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/internal/store/sqlite"
 	"github.com/kinako404/conloom/internal/testutil/fakeopenai"
@@ -80,9 +81,14 @@ type handlerFunc = func(req map[string]any) (int, string)
 
 type testOpts struct {
 	short, long handlerFunc
-	configure   func(*config.Config)
+	// shortTools and longTools, when set, replace short and long with
+	// handlers that may answer with tool calls.
+	shortTools, longTools func(req map[string]any) fakeopenai.Reply
+	configure             func(*config.Config)
 	// now is the orchestrator's clock; nil means time.Now.
 	now func() time.Time
+	// skills is the orchestrator's skill registry; nil offers no tools.
+	skills *skills.Registry
 }
 
 type testEnv struct {
@@ -277,7 +283,13 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 	}
 	env := &testEnv{notifier: &memNotifier{}, logs: &syncBuffer{}}
 	env.short = fakeopenai.New(t, opts.short)
+	if opts.shortTools != nil {
+		env.short = fakeopenai.NewWithTools(t, opts.shortTools)
+	}
 	env.long = fakeopenai.New(t, opts.long)
+	if opts.longTools != nil {
+		env.long = fakeopenai.NewWithTools(t, opts.longTools)
+	}
 
 	dir := t.TempDir()
 	yml := strings.NewReplacer("SHORT_URL", env.short.URL, "LONG_URL", env.long.URL).Replace(baseTestConfig)
@@ -326,6 +338,7 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 		Logger:    slog.New(slog.NewTextHandler(env.logs, nil)),
 		Config:    cfg,
 		Now:       opts.now,
+		Skills:    opts.skills,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

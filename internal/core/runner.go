@@ -60,6 +60,8 @@ type outcome struct {
 	meta     conloomapi.TaskMeta
 	conv     store.ConversationRecord
 	triggers []store.MessageRecord
+	// skillCalls counts the task's tool calls by tool.
+	skillCalls map[string]int
 }
 
 // run is the scheduler's Runner: it executes one reply task and stores its
@@ -113,10 +115,14 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 			o.metrics.Proactive.WithLabelValues(proactiveSkipped).Inc()
 		}
 	}
-	o.log.Info("task finished", "task_id", task.ID, "conversation", task.ConversationKey, "status", out.status,
+	attrs := []any{"task_id", task.ID, "conversation", task.ConversationKey, "status", out.status,
 		"error_code", out.code, "role", out.meta.SelectedModelRole, "model", out.meta.SelectedModel,
 		"route_reason", out.meta.RouteReason, "review", out.meta.ReviewResult, "trace_id", out.meta.TraceID,
-		"duration_ms", time.Since(start).Milliseconds(), obs.MessageAttr(o.cfg.Observability, out.text))
+		"duration_ms", time.Since(start).Milliseconds(), obs.MessageAttr(o.cfg.Observability, out.text)}
+	if len(out.skillCalls) > 0 {
+		attrs = append(attrs, "skill_calls", skillCallSummary(out.skillCalls))
+	}
+	o.log.Info("task finished", attrs...)
 }
 
 // finish stores the task's outcome and reports whether an action was stored.
@@ -262,6 +268,12 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		Directive:        directive,
 		Memory:           o.injectMemory(ctx, task, pol, triggers, targets, names, speakerRows),
 	}
+	run := o.newSkillRun(task, bot, conv, triggers, &out)
+	if run != nil {
+		in.SystemPrompt += "\n\n" + run.set.Section
+		in.ToolSchema = run.schema
+		out.skillCalls = run.counts
+	}
 	req := router.Request{
 		Sensitive:             conv.Type == conloomapi.ConvPrivate,
 		AllowLong:             pol.Concurrency.AllowLongRequests,
@@ -285,7 +297,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	speakers := append(in.SpeakerNames(), bot.Name)
 	strip := func(s string) string { return contextbuilder.StripTranscriptPrefix(s, system.BotName, speakers...) }
 	call := func(d router.Decision) (openai.ChatResponse, error) {
-		resp, err := o.call(ctx, task, d, in)
+		resp, err := o.call(ctx, task, d, in, run)
 		if err == nil && direct && !isSkip(resp.Content) && strip(resp.Content) == "" {
 			o.log.Info("model output only echoed the transcript format", "task_id", task.ID, "role", d.Profile.Role, "output_len", len(resp.Content))
 			return openai.ChatResponse{}, fmt.Errorf("model %s: %w", d.Profile.Role, errEchoOnly)
@@ -486,24 +498,66 @@ func speaker(triggers []store.MessageRecord) string {
 	return directiveName(last.DisplayName)
 }
 
-// call builds the context for the routed profile, waits for admission and
-// calls the model. Model errors (not admission errors) count against the
-// role's circuit breaker.
-func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router.Decision, in contextbuilder.Input) (openai.ChatResponse, error) {
+// call builds the context for the routed profile and calls the model. With
+// skills (run not nil) it offers their tools and runs the tool calls the model
+// makes, feeding the results back, for at most maxToolRounds rounds; the
+// request after the last round forbids further calls. Every request waits for
+// its own admission. The response is the model's final answer.
+func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router.Decision, in contextbuilder.Input, run *skillRun) (openai.ChatResponse, error) {
 	p := d.Profile
-	role := string(p.Role)
 	in.Budget = d.PromptBudget
 	in.TokenFactor = p.Config.TokenEstimateFactor
 	built := contextbuilder.Build(in)
+	req := openai.ChatRequest{Messages: built.Messages, MaxTokens: d.MaxOutputTokens}
+	if run == nil {
+		return o.chat(ctx, task, d, req, built, built.EstimatedTokens, nil)
+	}
+	req.Tools = run.tools
+	estimate := built.EstimatedTokens
+	for round := 0; ; round++ {
+		if round == maxToolRounds {
+			req.ToolChoice = "none"
+		}
+		resp, err := o.chat(ctx, task, d, req, built, estimate, []any{"round", round})
+		if err != nil || len(resp.ToolCalls) == 0 {
+			return resp, err
+		}
+		if round == maxToolRounds {
+			// The model called tools although told not to: keep its text.
+			if resp.Content == "" {
+				return openai.ChatResponse{}, fmt.Errorf("model %s: %w: tool calls after the last round", p.Role, openai.ErrEmptyOutput)
+			}
+			resp.ToolCalls = nil
+			return resp, nil
+		}
+		added := append([]openai.ChatMessage{{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls}},
+			o.runTools(ctx, task, run, resp.ToolCalls)...)
+		req.Messages = append(slices.Clip(req.Messages), added...)
+		for _, m := range added {
+			text := m.Content
+			for _, c := range m.ToolCalls {
+				text += c.Name + c.Arguments
+			}
+			estimate += contextbuilder.Estimate(text, in.TokenFactor) + contextbuilder.MessageOverhead
+		}
+	}
+}
 
-	lease, err := o.acquire(ctx, task, p, built.EstimatedTokens+d.MaxOutputTokens+p.Config.Context.SafetyMarginTokens)
+// chat waits for admission for a request estimated at estimate prompt tokens
+// and calls the model. Model errors (not admission errors) count against the
+// role's circuit breaker. logAttrs are added to the model call log.
+func (o *Orchestrator) chat(ctx context.Context, task store.TaskRecord, d router.Decision, req openai.ChatRequest,
+	built contextbuilder.Output, estimate int, logAttrs []any) (openai.ChatResponse, error) {
+	p := d.Profile
+	role := string(p.Role)
+	lease, err := o.acquire(ctx, task, p, estimate+d.MaxOutputTokens+p.Config.Context.SafetyMarginTokens)
 	if err != nil {
 		return openai.ChatResponse{}, err
 	}
 	defer lease.Release()
 
 	start := time.Now()
-	resp, err := p.Client.Chat(ctx, openai.ChatRequest{Messages: built.Messages, MaxTokens: d.MaxOutputTokens})
+	resp, err := p.Client.Chat(ctx, req)
 	if err != nil {
 		if ctx.Err() == nil {
 			o.router.ReportFailure(p.Role)
@@ -519,14 +573,19 @@ func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router
 	o.metrics.ModelTokens.WithLabelValues(role, resp.Model, "prompt").Add(float64(resp.PromptTokens))
 	o.metrics.ModelTokens.WithLabelValues(role, resp.Model, "completion").Add(float64(resp.CompletionTokens))
 	o.metrics.ModelTokens.WithLabelValues(role, resp.Model, "reasoning").Add(float64(resp.ReasoningTokens))
-	if built.EstimatedTokens > 0 && resp.PromptTokens > 0 {
-		o.metrics.EstimateRatio.WithLabelValues(role).Observe(float64(resp.PromptTokens) / float64(built.EstimatedTokens))
+	if estimate > 0 && resp.PromptTokens > 0 {
+		o.metrics.EstimateRatio.WithLabelValues(role).Observe(float64(resp.PromptTokens) / float64(estimate))
 	}
-	o.log.Info("model call", "task_id", task.ID, "role", role, "model", resp.Model,
-		"latency_ms", latency.Milliseconds(), "estimated_tokens", built.EstimatedTokens,
+	attrs := []any{"task_id", task.ID, "role", role, "model", resp.Model,
+		"latency_ms", latency.Milliseconds(), "estimated_tokens", estimate,
 		"prompt_tokens", resp.PromptTokens, "completion_tokens", resp.CompletionTokens,
 		"reasoning_tokens", resp.ReasoningTokens, "included_history", built.IncludedHistory,
-		"dropped_history", built.DroppedHistory, "finish_reason", resp.FinishReason)
+		"dropped_history", built.DroppedHistory, "finish_reason", resp.FinishReason}
+	if logAttrs != nil {
+		attrs = append(attrs, logAttrs...)
+		attrs = append(attrs, "tool_calls", len(resp.ToolCalls))
+	}
+	o.log.Info("model call", attrs...)
 	return resp, nil
 }
 

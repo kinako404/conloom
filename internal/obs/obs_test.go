@@ -78,6 +78,7 @@ func TestMetrics_MemoryRegistered(t *testing.T) {
 	m.MemoryConsolidations.WithLabelValues("skipped").Inc()
 	m.MemoryConsolidationSeconds.Observe(600)
 	m.MemoryAffinityChanges.WithLabelValues("consolidate").Inc()
+	m.SkillCalls.WithLabelValues("now", "ok").Inc()
 
 	mfs, err := reg.Gather()
 	if err != nil {
@@ -88,7 +89,7 @@ func TestMetrics_MemoryRegistered(t *testing.T) {
 		names[mf.GetName()] = true
 	}
 	for _, name := range []string{"conloom_memory_consolidations_total", "conloom_memory_consolidation_seconds",
-		"conloom_memory_affinity_changes_total"} {
+		"conloom_memory_affinity_changes_total", "conloom_skill_calls_total"} {
 		if !names[name] {
 			t.Errorf("%s missing; got %v", name, names)
 		}
