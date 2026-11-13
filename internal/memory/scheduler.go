@@ -17,11 +17,8 @@ import (
 
 const (
 	// CheckEvery is how often the scheduler looks for groups due for consolidation.
-	CheckEvery = 2 * time.Minute
-	// MinIntervalMessages is the fewest new messages consolidated because
-	// ConsolidateInterval has passed.
-	MinIntervalMessages = 20
-	revisionRetention   = 30 * 24 * time.Hour
+	CheckEvery        = 2 * time.Minute
+	revisionRetention = 30 * 24 * time.Hour
 )
 
 // SchedulerDeps are the Scheduler's collaborators. Store, Policies and Runner
@@ -254,13 +251,15 @@ func (s *Scheduler) ensureCursor(ctx context.Context, convKey string, backlog in
 	return g, nil
 }
 
-// due reports whether a group with pending new messages, last consolidated at
-// lastRun (zero for never), should be consolidated now.
+// due reports whether a conversation with pending new messages, last
+// consolidated at lastRun (zero for never), should be consolidated now: at
+// ConsolidateEvery messages, or at ConsolidateMin once ConsolidateInterval
+// has passed.
 func due(pending int, lastRun time.Time, p conloomapi.MemoryPolicy, now time.Time) bool {
 	if pending >= p.ConsolidateEvery {
 		return true
 	}
-	return pending >= MinIntervalMessages && (lastRun.IsZero() || now.Sub(lastRun) >= p.ConsolidateInterval.Duration)
+	return pending >= p.ConsolidateMin && (lastRun.IsZero() || now.Sub(lastRun) >= p.ConsolidateInterval.Duration)
 }
 
 func (s *Scheduler) dailyIfNewDay(ctx context.Context) {

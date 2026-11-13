@@ -25,7 +25,10 @@ type MemoryPolicy struct {
 	Affinity            bool     `json:"affinity" yaml:"affinity"`
 	ConsolidateEvery    int      `json:"consolidate_every" yaml:"consolidate_every"`
 	ConsolidateInterval Duration `json:"consolidate_interval" yaml:"consolidate_interval"`
-	Backlog             int      `json:"backlog" yaml:"backlog"`
+	// ConsolidateMin is the fewest new messages consolidated because
+	// ConsolidateInterval has passed.
+	ConsolidateMin int `json:"consolidate_min" yaml:"consolidate_min"`
+	Backlog        int `json:"backlog" yaml:"backlog"`
 }
 
 func DefaultMemoryPolicy() MemoryPolicy {
@@ -34,6 +37,7 @@ func DefaultMemoryPolicy() MemoryPolicy {
 		Affinity:            true,
 		ConsolidateEvery:    150,
 		ConsolidateInterval: Duration{6 * time.Hour},
+		ConsolidateMin:      20,
 		Backlog:             1000,
 	}
 }
@@ -432,6 +436,9 @@ func (p GroupPolicy) Validate() error {
 	}
 	if m.ConsolidateInterval.Duration < 30*time.Minute || m.ConsolidateInterval.Duration > 48*time.Hour {
 		fail("memory.consolidate_interval must be in [30m, 48h], got %s", m.ConsolidateInterval)
+	}
+	if m.ConsolidateMin < 1 || m.ConsolidateMin > 2000 {
+		fail("memory.consolidate_min must be in [1, 2000], got %d", m.ConsolidateMin)
 	}
 	if m.Backlog < 0 || m.Backlog > 5000 {
 		fail("memory.backlog must be in [0, 5000], got %d", m.Backlog)

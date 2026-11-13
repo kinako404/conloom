@@ -219,6 +219,22 @@ func TestDue(t *testing.T) {
 			t.Errorf("due(%d, %v) = %v, want %v", c.pending, c.lastRun, got, c.want)
 		}
 	}
+	p.ConsolidateMin, p.ConsolidateEvery, p.ConsolidateInterval = 6, 40, conloomapi.Duration{Duration: time.Hour}
+	for _, c := range []struct {
+		pending int
+		lastRun time.Time
+		want    bool
+	}{
+		{6, now.Add(-time.Hour), true},
+		{5, now.Add(-2 * time.Hour), false},
+		{6, now.Add(-59 * time.Minute), false},
+		{40, now.Add(-time.Minute), true},
+		{6, time.Time{}, true},
+	} {
+		if got := due(c.pending, c.lastRun, p, now); got != c.want {
+			t.Errorf("consolidate_min 6: due(%d, %v) = %v, want %v", c.pending, c.lastRun, got, c.want)
+		}
+	}
 }
 
 func TestScheduler_TickRunsDueGroupsOneAtATime(t *testing.T) {
