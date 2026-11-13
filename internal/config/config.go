@@ -111,8 +111,21 @@ type RuntimeConfig struct {
 }
 
 type AdaptersConfig struct {
-	NapCat NapCatConfig `yaml:"napcat"`
-	Mock   MockConfig   `yaml:"mock"`
+	NapCat   NapCatConfig   `yaml:"napcat"`
+	Telegram TelegramConfig `yaml:"telegram"`
+	Mock     MockConfig     `yaml:"mock"`
+}
+
+// TelegramConfig configures the Telegram Bot API adapter. PollTimeout is the
+// getUpdates long-poll time, in whole seconds.
+type TelegramConfig struct {
+	Token         string              `yaml:"token"`
+	APIBase       string              `yaml:"api_base"`
+	PollTimeout   conloomapi.Duration `yaml:"poll_timeout"`
+	CoreURL       string              `yaml:"core_url"`
+	CoreToken     string              `yaml:"core_token"`
+	BotInstanceID string              `yaml:"bot_instance_id"`
+	StateDir      string              `yaml:"state_dir"`
 }
 
 type NapCatConfig struct {
@@ -149,6 +162,9 @@ func defaultConfig() *Config {
 			IdempotencyRetention: dur(168 * time.Hour),
 			MaxMergeWindow:       dur(4500 * time.Millisecond),
 			SessionIdle:          dur(5 * time.Minute),
+		},
+		Adapters: AdaptersConfig{
+			Telegram: TelegramConfig{APIBase: "https://api.telegram.org", PollTimeout: dur(50 * time.Second)},
 		},
 		Observability: ObservabilityConfig{LogLevel: "info", LogFormat: "json"},
 	}
@@ -230,10 +246,12 @@ func Load(path string) (*Config, error) {
 		cfg.Storage.DataDir = "./data"
 	}
 	cfg.Storage.DataDir = resolveDir(dir, cfg.Storage.DataDir)
-	if cfg.Adapters.NapCat.StateDir == "" {
-		cfg.Adapters.NapCat.StateDir = cfg.Storage.DataDir
-	} else {
-		cfg.Adapters.NapCat.StateDir = resolveDir(dir, cfg.Adapters.NapCat.StateDir)
+	for _, stateDir := range []*string{&cfg.Adapters.NapCat.StateDir, &cfg.Adapters.Telegram.StateDir} {
+		if *stateDir == "" {
+			*stateDir = cfg.Storage.DataDir
+		} else {
+			*stateDir = resolveDir(dir, *stateDir)
+		}
 	}
 	return cfg, nil
 }
@@ -312,7 +330,7 @@ func (c *Config) DBPath() string {
 }
 
 // Secrets returns every non-empty credential in the config (model API keys, API
-// tokens, adapter access and core tokens), without duplicates.
+// tokens, adapter access, bot and core tokens), without duplicates.
 func (c *Config) Secrets() []string {
 	var out []string
 	seen := map[string]bool{}
@@ -330,6 +348,8 @@ func (c *Config) Secrets() []string {
 	}
 	add(c.Adapters.NapCat.AccessToken)
 	add(c.Adapters.NapCat.CoreToken)
+	add(c.Adapters.Telegram.Token)
+	add(c.Adapters.Telegram.CoreToken)
 	add(c.Adapters.Mock.CoreToken)
 	return out
 }

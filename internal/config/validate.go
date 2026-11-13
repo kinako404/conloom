@@ -219,6 +219,25 @@ func (c *Config) ValidateNapCat() error {
 	return p.err(c, "adapter napcat")
 }
 
+// ValidateTelegram checks the fields the Telegram adapter needs. Problems
+// never quote the bot token.
+func (c *Config) ValidateTelegram() error {
+	var p problems
+	tg := c.Adapters.Telegram
+	p.required("adapters.telegram.token", tg.Token)
+	p.required("adapters.telegram.api_base", tg.APIBase)
+	p.absURL("adapters.telegram.api_base", tg.APIBase, "http", "https")
+	if d := tg.PollTimeout.Duration; d < time.Second || d > 60*time.Second {
+		p.addf("adapters.telegram.poll_timeout", "must be between 1s and 60s, got %s", d)
+	}
+	p.required("adapters.telegram.core_url", tg.CoreURL)
+	p.absURL("adapters.telegram.core_url", tg.CoreURL, "http", "https")
+	p.required("adapters.telegram.core_token", tg.CoreToken)
+	p.required("adapters.telegram.bot_instance_id", tg.BotInstanceID)
+	p.observability(c.Observability)
+	return p.err(c, "adapter telegram")
+}
+
 // ValidateMock checks the fields the mock adapter needs.
 func (c *Config) ValidateMock() error {
 	var p problems

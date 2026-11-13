@@ -41,6 +41,11 @@ adapters:
     core_url: http://127.0.0.1:8787
     core_token: fake-adapter-token
     bot_instance_id: bot_main
+  telegram:
+    token: 30001:fake-telegram-token
+    core_url: http://127.0.0.1:8787
+    core_token: fake-adapter-token
+    bot_instance_id: bot_main
   mock:
     core_url: http://127.0.0.1:8787
     core_token: fake-adapter-token

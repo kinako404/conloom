@@ -77,6 +77,10 @@ var exampleEnv = map[string]string{
 	"CONLOOM_GROUP_ID":             "10001",
 	"CONLOOM_NAPCAT_WS_URL":        "ws://127.0.0.1:9",
 	"CONLOOM_NAPCAT_TOKEN":         "fake-napcat-token",
+	"CONLOOM_TG_BOT_TOKEN":         "30002:fake-telegram-token",
+	"CONLOOM_TG_ADAPTER_TOKEN":     "fake-tg-adapter-token",
+	"CONLOOM_TG_BOT_ID":            "30002",
+	"CONLOOM_TG_ADMIN_ID":          "20001",
 }
 
 func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
@@ -95,6 +99,24 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 	}
 	if err := cfg.ValidateMock(); err != nil {
 		t.Fatalf("ValidateMock: %v", err)
+	}
+	if err := cfg.ValidateTelegram(); err != nil {
+		t.Fatalf("ValidateTelegram: %v", err)
+	}
+
+	tgBot, ok := cfg.Bot("bot_tg")
+	if !ok {
+		t.Fatal("bot_tg not found")
+	}
+	if tgBot.Platform != "telegram" || tgBot.PlatformSelfID != "30002" || !slices.Equal(tgBot.Admins, []string{"20001"}) ||
+		tgBot.PrivateChat != "admins" || len(tgBot.EnabledConversations) != 0 {
+		t.Errorf("bot_tg = %+v", tgBot)
+	}
+	tg := cfg.Adapters.Telegram
+	if tg.Token != "30002:fake-telegram-token" || tg.APIBase != "https://api.telegram.org" ||
+		tg.PollTimeout.Duration != 50*time.Second || tg.CoreURL != "http://127.0.0.1:8787" ||
+		tg.CoreToken != "fake-tg-adapter-token" || tg.BotInstanceID != "bot_tg" {
+		t.Errorf("telegram = %+v", tg)
 	}
 
 	bot, ok := cfg.Bot("bot_main")
@@ -132,15 +154,19 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 		t.Errorf("long_context = %+v", long)
 	}
 
-	if len(cfg.APITokens) != 2 {
+	if len(cfg.APITokens) != 3 {
 		t.Fatalf("api_tokens = %+v", cfg.APITokens)
 	}
+	adapterScopes := []string{"events:write", "tasks:read", "outbox:read", "outbox:ack", "persona:read"}
 	for _, tok := range cfg.APITokens {
 		switch tok.Name {
 		case "napcat":
-			want := []string{"events:write", "tasks:read", "outbox:read", "outbox:ack", "persona:read"}
-			if tok.Token != "fake-adapter-token" || !slices.Equal(tok.Scopes, want) {
+			if tok.Token != "fake-adapter-token" || !slices.Equal(tok.Scopes, adapterScopes) {
 				t.Errorf("napcat token = %+v", tok)
+			}
+		case "telegram":
+			if tok.Token != "fake-tg-adapter-token" || tok.BotInstanceID != "bot_tg" || !slices.Equal(tok.Scopes, adapterScopes) {
+				t.Errorf("telegram token = %+v", tok)
 			}
 		case "admin":
 			if tok.Token != "fake-admin-token" || !slices.Equal(tok.Scopes, allScopes) {
@@ -238,6 +264,14 @@ func TestLoad_DefaultsApplied(t *testing.T) {
 	if cfg.Adapters.NapCat.StateDir != wantData {
 		t.Errorf("napcat.state_dir = %q, want %q", cfg.Adapters.NapCat.StateDir, wantData)
 	}
+	wantTG := TelegramConfig{
+		APIBase:     "https://api.telegram.org",
+		PollTimeout: conloomapi.Duration{Duration: 50 * time.Second},
+		StateDir:    wantData,
+	}
+	if cfg.Adapters.Telegram != wantTG {
+		t.Errorf("telegram = %+v, want %+v", cfg.Adapters.Telegram, wantTG)
+	}
 
 	bot := cfg.Bots[0]
 	if bot.Name != "织语" || bot.PrivateChat != "admins" || bot.PersonaTemplate != "default" {
@@ -292,6 +326,11 @@ model_profiles:
     runtime:
       max_retries: 0
       timeout: 5s
+adapters:
+  telegram:
+    api_base: http://127.0.0.1:9
+    poll_timeout: 5s
+    state_dir: tg-state
 `)
 	t.Setenv("CONLOOM_TEST_WINDOW", "4096")
 	t.Setenv("CONLOOM_TEST_KEY", "null")
@@ -319,6 +358,11 @@ model_profiles:
 	}
 	if p.Context.NativeWindow != 4096 {
 		t.Errorf("native_window = %d, want env-expanded 4096", p.Context.NativeWindow)
+	}
+	tg := cfg.Adapters.Telegram
+	if tg.APIBase != "http://127.0.0.1:9" || tg.PollTimeout.Duration != 5*time.Second ||
+		tg.StateDir != filepath.Join(filepath.Dir(path), "tg-state") {
+		t.Errorf("telegram = %+v, want explicit api_base, poll_timeout and a resolved state_dir", tg)
 	}
 }
 
@@ -651,6 +695,64 @@ func TestValidateMock(t *testing.T) {
 	}
 }
 
+func TestValidateTelegram(t *testing.T) {
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	if err := cfg.ValidateTelegram(); err != nil {
+		t.Fatalf("valid config: %v", err)
+	}
+	for _, d := range []time.Duration{time.Second, 60 * time.Second} {
+		cfg.Adapters.Telegram.PollTimeout.Duration = d
+		if err := cfg.ValidateTelegram(); err != nil {
+			t.Errorf("poll_timeout %v: %v", d, err)
+		}
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(c *Config)
+		want   []string
+	}{
+		{"missing fields", func(c *Config) {
+			c.Adapters.Telegram.Token = ""
+			c.Adapters.Telegram.CoreURL = ""
+			c.Adapters.Telegram.CoreToken = ""
+			c.Adapters.Telegram.BotInstanceID = ""
+			c.MissingEnv = []string{"CONLOOM_TG_BOT_TOKEN"}
+		}, []string{"adapters.telegram.token", "adapters.telegram.core_url", "adapters.telegram.core_token",
+			"adapters.telegram.bot_instance_id", "CONLOOM_TG_BOT_TOKEN"}},
+		{"api_base scheme", func(c *Config) { c.Adapters.Telegram.APIBase = "ws://127.0.0.1:9" },
+			[]string{"adapters.telegram.api_base", "http"}},
+		{"empty api_base", func(c *Config) { c.Adapters.Telegram.APIBase = "" },
+			[]string{"adapters.telegram.api_base"}},
+		{"core_url scheme", func(c *Config) { c.Adapters.Telegram.CoreURL = "127.0.0.1:8787" },
+			[]string{"adapters.telegram.core_url"}},
+		{"poll_timeout too short", func(c *Config) { c.Adapters.Telegram.PollTimeout.Duration = 500 * time.Millisecond },
+			[]string{"adapters.telegram.poll_timeout", "1s", "60s"}},
+		{"poll_timeout too long", func(c *Config) { c.Adapters.Telegram.PollTimeout.Duration = 61 * time.Second },
+			[]string{"adapters.telegram.poll_timeout"}},
+		{"log format", func(c *Config) { c.Observability.LogFormat = "xml" },
+			[]string{"observability.log_format"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := mustLoad(t, "testdata/valid.yaml")
+			tc.mutate(cfg)
+			err := cfg.ValidateTelegram()
+			if err == nil {
+				t.Fatal("ValidateTelegram succeeded, want error")
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error %q does not contain %q", err, w)
+				}
+			}
+			if strings.Contains(err.Error(), "fake-telegram-token") {
+				t.Errorf("error %q leaks the bot token", err)
+			}
+		})
+	}
+}
+
 func TestValidateServe_AcceptsBoundaryValues(t *testing.T) {
 	cfg := mustLoad(t, "testdata/valid.yaml")
 	p := cfg.ModelProfiles["short_context"]
@@ -745,13 +847,14 @@ func TestSecrets(t *testing.T) {
 			"long_context":  {APIKey: ""},
 		},
 		Adapters: AdaptersConfig{
-			NapCat: NapCatConfig{AccessToken: "napcat-access", CoreToken: "tok-a"},
-			Mock:   MockConfig{CoreToken: "mock-core"},
+			NapCat:   NapCatConfig{AccessToken: "napcat-access", CoreToken: "tok-a"},
+			Mock:     MockConfig{CoreToken: "mock-core"},
+			Telegram: TelegramConfig{Token: "30001:tg-bot", CoreToken: "tg-core"},
 		},
 	}
 	got := cfg.Secrets()
 	slices.Sort(got)
-	want := []string{"key-short", "mock-core", "napcat-access", "tok-a", "tok-b"}
+	want := []string{"30001:tg-bot", "key-short", "mock-core", "napcat-access", "tg-core", "tok-a", "tok-b"}
 	if !slices.Equal(got, want) {
 		t.Errorf("Secrets() = %v, want %v", got, want)
 	}
