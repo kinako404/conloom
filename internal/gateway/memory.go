@@ -60,7 +60,7 @@ func (s *Server) deleteMemberMemory(w http.ResponseWriter, r *http.Request, tok 
 	if !ok {
 		return
 	}
-	err := s.d.MemoryAdmin.ForgetMember(r.Context(), conv, r.PathValue("user_id"), tok.name)
+	err := s.d.MemoryAdmin.ForgetMember(r.Context(), conv, r.PathValue("user_id"), store.RevisionAPI, tok.name)
 	if !s.memoryChanged(w, r, err) {
 		return
 	}

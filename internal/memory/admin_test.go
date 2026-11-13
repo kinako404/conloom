@@ -195,8 +195,14 @@ func TestAdmin_ForgetMember(t *testing.T) {
 	putMember(t, e.st, store.MemberMemory{ConversationKey: adminConv.Key, PlatformUserID: "20002", DisplayName: "小红",
 		Note: "喜欢猫"})
 
-	if err := e.admin.ForgetMember(ctx, adminConv, "20001", "panel:admin"); err != nil {
+	if err := e.admin.ForgetMember(ctx, adminConv, "20001", store.RevisionPanel, "panel:admin"); err != nil {
 		t.Fatalf("ForgetMember: %v", err)
+	}
+	if n := e.affinityChanges(t, store.RevisionPanel); n != 1 {
+		t.Fatalf("affinity changes{panel} = %v, want 1", n)
+	}
+	if n := e.affinityChanges(t, store.RevisionAPI); n != 0 {
+		t.Fatalf("affinity changes{api} = %v, want 0", n)
 	}
 	m := getMember(t, e.st, adminConv.Key, "20001")
 	if m.Note != "" || m.Affinity != nil || m.DisplayName != "" || !m.ForgottenAt.Equal(e.now) {
@@ -216,7 +222,7 @@ func TestAdmin_ForgetMember(t *testing.T) {
 	}
 
 	e.st.fail = errors.New("disk full")
-	if err := e.admin.ForgetMember(ctx, adminConv, "20002", "panel:admin"); !errors.Is(err, ErrAudit) {
+	if err := e.admin.ForgetMember(ctx, adminConv, "20002", store.RevisionPanel, "panel:admin"); !errors.Is(err, ErrAudit) {
 		t.Fatalf("ForgetMember with a failing audit = %v, want ErrAudit", err)
 	}
 	if m := getMember(t, e.st, adminConv.Key, "20002"); m.Note != "" || m.ForgottenAt.IsZero() {

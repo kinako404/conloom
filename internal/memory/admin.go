@@ -144,9 +144,9 @@ func (a *Admin) EditMember(ctx context.Context, conv store.ConversationRecord, u
 // ForgetMember forgets userID in conv as /忘记我 does (Forget, which also
 // clears a private conversation's summary) and audits it as "memory.forget"
 // by actor. A forgotten affinity is counted as an affinity change from
-// store.RevisionAPI. A failed audit is returned wrapping ErrAudit; the member
-// is forgotten all the same.
-func (a *Admin) ForgetMember(ctx context.Context, conv store.ConversationRecord, userID, actor string) error {
+// source. A failed audit is returned wrapping ErrAudit; the member is
+// forgotten all the same.
+func (a *Admin) ForgetMember(ctx context.Context, conv store.ConversationRecord, userID, source, actor string) error {
 	before, err := a.d.Store.GetMemberMemories(ctx, conv.Key, []string{userID})
 	if err != nil {
 		return err
@@ -155,7 +155,7 @@ func (a *Admin) ForgetMember(ctx context.Context, conv store.ConversationRecord,
 		return err
 	}
 	if before[userID].Affinity != nil && a.d.Metrics != nil {
-		a.d.Metrics.MemoryAffinityChanges.WithLabelValues(store.RevisionAPI).Inc()
+		a.d.Metrics.MemoryAffinityChanges.WithLabelValues(source).Inc()
 	}
 	return a.audit(ctx, conv, actor, "memory.forget", struct {
 		UserID string `json:"user_id"`
