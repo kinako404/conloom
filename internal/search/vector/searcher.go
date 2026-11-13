@@ -26,6 +26,10 @@ const (
 	// skip the service for breakerCooldown; then one query tries it again.
 	breakerFailures = 3
 	breakerCooldown = 60 * time.Second
+	// DefaultMinScore is the cosine similarity below which the app drops a
+	// chunk as unrelated. It suits bge-m3, where a paraphrase scores about
+	// 0.8; another model may need another value.
+	DefaultMinScore = 0.5
 )
 
 // ChunkReader is what the Searcher reads; *sqlite.DB is one.
@@ -35,11 +39,14 @@ type ChunkReader interface {
 }
 
 // SearcherDeps are what the Searcher needs. QueryTimeout defaults to
-// DefaultQueryTimeout; Metrics and Logger may be nil.
+// DefaultQueryTimeout; chunks less similar to the query than MinScore are
+// never returned (0 returns the closest ones however distant); Metrics and
+// Logger may be nil.
 type SearcherDeps struct {
 	Store        ChunkReader
 	Embedder     Embedder
 	QueryTimeout time.Duration
+	MinScore     float64
 	Metrics      *obs.Metrics
 	Logger       *slog.Logger
 }
@@ -94,7 +101,7 @@ type entry struct {
 
 // Search returns the up to limit chunks of convKey that overlap r (a chunk
 // ending at After counts, one starting at Before does not) and are
-// closest to query by cosine similarity, best first. When the query cannot be
+// closest to query by cosine similarity, at least MinScore, best first. When the query cannot be
 // embedded in time it logs why and returns no hits, without an error; so it
 // does while the breaker is open.
 func (s *Searcher) Search(ctx context.Context, convKey, query string, r search.Range, limit int) ([]search.Hit, error) {
@@ -137,7 +144,9 @@ func (s *Searcher) Search(ctx context.Context, convKey, query string, r search.R
 			!r.After.IsZero() && c.endAt.Before(r.After) || !r.Before.IsZero() && !c.startAt.Before(r.Before) {
 			continue
 		}
-		hits = append(hits, search.Hit{FromSeq: c.from, ToSeq: c.to, Score: dot(q, c.vec) / (qnorm * c.norm)})
+		if score := dot(q, c.vec) / (qnorm * c.norm); score >= s.d.MinScore {
+			hits = append(hits, search.Hit{FromSeq: c.from, ToSeq: c.to, Score: score})
+		}
 	}
 	slices.SortFunc(hits, func(a, b search.Hit) int {
 		return cmp.Or(cmp.Compare(b.Score, a.Score), cmp.Compare(b.ToSeq, a.ToSeq))

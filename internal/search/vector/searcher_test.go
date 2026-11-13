@@ -71,6 +71,27 @@ func TestSearcher_RanksByCosine(t *testing.T) {
 	}
 }
 
+func TestSearcher_MinScore(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.say(groupKey, "20001", "小明", "我养了一只猫", at(0))
+	berry := e.say(groupKey, "20001", "小明", "我喜欢草莓", at(60))
+	e.run(e.indexer("m1", 16))
+
+	all, err := e.searcher("m1").Search(ctx, groupKey, "草莓", search.Range{}, 10)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("hits without a floor = %v, %v", all, err)
+	}
+	s := NewSearcher(SearcherDeps{Store: e.st, Embedder: e.emb.client("m1", 16), MinScore: 0.5})
+	hits, err := s.Search(ctx, groupKey, "草莓", search.Range{}, 10)
+	if err != nil || len(hits) != 1 || hits[0].FromSeq != berry {
+		t.Fatalf("hits with MinScore 0.5 = %+v, %v; want only the 草莓 chunk", hits, err)
+	}
+	if hits, _ := s.Search(ctx, groupKey, "旅行", search.Range{}, 10); len(hits) != 0 {
+		t.Fatalf("unrelated query hits = %+v, want none", hits)
+	}
+}
+
 func TestSearcher_EmptyWhenTheServiceFails(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
