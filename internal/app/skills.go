@@ -26,7 +26,8 @@ type toolDeps struct {
 func builtinTools(d toolDeps) []skills.Tool {
 	return []skills.Tool{
 		tools.NewRemember(tools.RememberDeps{Store: d.Store, Policies: d.Policies, Reviewer: d.Reviewer, Metrics: d.Metrics}),
-		tools.NewRecall(tools.RecallDeps{Store: d.Store, Policies: d.Policies, Reviewer: d.Reviewer, IsCommand: isCommand}),
+		tools.NewRecall(tools.RecallDeps{Store: d.Store, Policies: d.Policies, Reviewer: d.Reviewer, IsCommand: isCommand,
+			Metrics: d.Metrics}),
 		tools.NewGetAffinity(tools.AffinityDeps{Store: d.Store, Policies: d.Policies}),
 		tools.NewNow(),
 	}
