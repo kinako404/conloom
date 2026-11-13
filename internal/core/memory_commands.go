@@ -8,6 +8,7 @@ import (
 
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/persona"
+	"github.com/kinako404/conloom/internal/review"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -62,7 +63,7 @@ func (o *Orchestrator) memCmd(ctx context.Context, task store.TaskRecord, isAdmi
 		}
 		return o.memCmdAffinity(ctx, task)
 	case "记住", "remember":
-		return o.memCmdRemember(ctx, task, args, triggers)
+		return o.memCmdRemember(ctx, task, args, triggers, pol.Review)
 	}
 	fields := strings.Fields(strings.ToLower(args))
 	switch {
@@ -130,14 +131,27 @@ func (o *Orchestrator) memCmdAffinity(ctx context.Context, task store.TaskRecord
 }
 
 // memCmdRemember appends what the sender asked to remember to their note (see
-// memory.AppendRemembered), within the conversation's note limit.
-func (o *Orchestrator) memCmdRemember(ctx context.Context, task store.TaskRecord, args string, triggers []store.MessageRecord) (string, error) {
+// memory.AppendRemembered), within the conversation's note limit. Contact
+// details and identity numbers are refused; the rest goes through the review
+// of incoming messages and then the redaction and blocked words of outgoing
+// ones, as it may be shown to the reply model.
+func (o *Orchestrator) memCmdRemember(ctx context.Context, task store.TaskRecord, args string, triggers []store.MessageRecord,
+	pol conloomapi.ReviewPolicy) (string, error) {
 	content := strings.Join(strings.Fields(args), " ")
 	switch n := utf8.RuneCountInString(content); {
 	case n == 0:
 		return CopyRememberUsage, nil
 	case n > memory.RememberMaxRunes:
 		return CopyRememberTooLong, nil
+	case memory.LooksLikeContactOrID(content):
+		return CopyRememberSensitive, nil
+	}
+	in := o.reviewer.Input(content, pol)
+	o.metrics.Review.WithLabelValues("input", in.Verdict).Inc()
+	out := o.reviewer.Output(in.Text, pol)
+	o.metrics.Review.WithLabelValues("output", out.Verdict).Inc()
+	if content = strings.Join(strings.Fields(out.Text), " "); out.Verdict == review.VerdictBlock || content == "" {
+		return CopyRememberBlocked, nil
 	}
 	limit := memory.NoteLimit(convType(task.ConversationKey))
 	user, name := task.ActorPlatformUserID, ""

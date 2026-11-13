@@ -22,7 +22,9 @@ type injectPerson struct{ userID, name string }
 // of the speaker, then of the member the current message replies to and the
 // members it mentions, at most injectMaxOthers of them; in a private chat
 // (memory.RenderPrivateBlock) the conversation summary and only the speaker's
-// note. Tiers are shown when the policy's affinity is on. targets and names
+// note. Others' notes leave out what they asked the bot to remember
+// (memory.WithoutRemembered); only the speaker's own note shows it. Tiers are
+// shown when the policy's affinity is on. targets and names
 // are the task's reply targets and mention names. A read error is logged and
 // leaves the block out.
 func (o *Orchestrator) injectMemory(ctx context.Context, task store.TaskRecord, pol conloomapi.GroupPolicy,
@@ -69,6 +71,9 @@ func (o *Orchestrator) injectMemory(ctx context.Context, task store.TaskRecord, 
 	for _, p := range people {
 		m := rows[p.userID]
 		e := memory.BlockEntry{Name: p.name, Note: m.Note}
+		if p.userID != speaker {
+			e.Note = memory.WithoutRemembered(m.Note)
+		}
 		if pol.Memory.Affinity && m.Affinity != nil {
 			e.Tier = memory.TierName(*m.Affinity)
 		}

@@ -71,9 +71,11 @@ const (
 	CopyMemoryNoPrivateSummary = "还没有我们的对话摘要。"
 	CopyMemoryUsagePrivate     = "用法：/记忆 查看我记得的关于你的事；/记忆 摘要 查看我们的对话摘要；/记住 <内容> 让我记住一件事；/好感度 查看好感度；/忘记我 清空你的记忆；管理员：/记忆 整理。"
 
-	CopyRemembered      = "记住了。"
-	CopyRememberUsage   = "用法：/记住 <想让我记住的事>，例如 /记住 我下周三考试。一次最多 100 字。"
-	CopyRememberTooLong = "太长了，/记住 一次最多 100 字，可以分几次告诉我。"
+	CopyRemembered        = "记住了。"
+	CopyRememberUsage     = "用法：/记住 <想让我记住的事>，例如 /记住 我下周三考试。一次最多 100 字。"
+	CopyRememberTooLong   = "太长了，/记住 一次最多 100 字，可以分几次告诉我。"
+	CopyRememberSensitive = "这类联系方式、证件信息我不记哦。"
+	CopyRememberBlocked   = "这句话我不能记。"
 )
 
 // CopyAffinity tells a member how name, the bot, feels about them: the tier
