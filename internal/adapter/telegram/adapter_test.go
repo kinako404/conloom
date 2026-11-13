@@ -3,6 +3,7 @@ package telegram
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -664,10 +665,26 @@ func TestAdapter_InvalidTokenStops(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	err = a.Run(ctx)
-	if err == nil || ctx.Err() != nil {
-		t.Fatalf("Run = %v, want an error before the deadline", err)
+	if err == nil || ctx.Err() != nil || !errors.Is(err, ErrConfig) {
+		t.Fatalf("Run = %v, want a configuration error before the deadline", err)
 	}
 	requireNoToken(t, "error", err.Error(), cfg.Token)
+}
+
+func TestAdapter_InvalidCoreTokenStops(t *testing.T) {
+	tg, core := newFakeTG(t), newFakeCore(t)
+	cfg := tgConfig(tg.URL, core.URL, t.TempDir())
+	cfg.CoreToken = "wrong-core-token"
+	logger, _ := testLogger(t, "adapter")
+	a, err := New(cfg, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.Run(ctx); err == nil || ctx.Err() != nil || !errors.Is(err, ErrConfig) {
+		t.Fatalf("Run = %v, want a configuration error before the deadline", err)
+	}
 }
 
 func TestAdapter_CoreTokenForAnotherBotStops(t *testing.T) {
@@ -681,8 +698,8 @@ func TestAdapter_CoreTokenForAnotherBotStops(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	err = a.Run(ctx)
-	if err == nil || !strings.Contains(err.Error(), "bot_main") || !strings.Contains(err.Error(), testBotID) {
-		t.Fatalf("Run = %v, want an error naming both bot instances", err)
+	if err == nil || !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "bot_main") || !strings.Contains(err.Error(), testBotID) {
+		t.Fatalf("Run = %v, want a configuration error naming both bot instances", err)
 	}
 	if n := len(tg.Calls("getUpdates")); n != 0 {
 		t.Errorf("getUpdates called %d times, want none before the core is checked", n)

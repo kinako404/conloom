@@ -223,7 +223,11 @@ func runTelegram(ctx context.Context, args []string, sio stdio) error {
 		return configErr(err)
 	}
 	logger.Info("starting telegram adapter", "version", version, "commit", commit, "config", cfg.Path)
-	return a.Run(ctx)
+	err = a.Run(ctx)
+	if errors.Is(err, telegram.ErrConfig) {
+		return configErr(err)
+	}
+	return err
 }
 
 func runMock(ctx context.Context, args []string, sio stdio) error {

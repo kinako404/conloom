@@ -5,6 +5,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -181,5 +184,59 @@ observability:
 	}
 	if _, err := os.Stat(filepath.Join(dir, "data", "telegram-dedup.log")); err != nil {
 		t.Errorf("dedup log not created in the default state_dir: %v", err)
+	}
+}
+
+func TestAdapterTelegram_RejectedTokenExitsWithConfigCode(t *testing.T) {
+	const token = "30001:AArejected-token_value"
+	tg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"ok":false,"error_code":401,"description":"Unauthorized"}`)
+	}))
+	t.Cleanup(tg.Close)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "conloom.yaml")
+	cfg := `storage:
+  data_dir: ./data
+adapters:
+  telegram:
+    token: ` + token + `
+    api_base: ` + tg.URL + `
+    core_url: http://127.0.0.1:9
+    core_token: fake-tg-adapter-token
+    bot_instance_id: bot_tg
+`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	code, _, stderr := runCommand(ctx, "adapter", "telegram", "-c", cfgPath)
+	if code != exitConfig || ctx.Err() != nil {
+		t.Fatalf("exit %d, want %d before the deadline; stderr %s", code, exitConfig, stderr)
+	}
+	if !strings.Contains(stderr, "rejected") || strings.Contains(stderr, "AArejected-token_value") {
+		t.Errorf("stderr = %q, want the rejection reported without the token", stderr)
+	}
+}
+
+// TestSystemdUnits_DoNotRestartOnConfigErrors checks that every unit keeps
+// systemd from restarting a process that exited with exitConfig, which a
+// restart cannot fix.
+func TestSystemdUnits_DoNotRestartOnConfigErrors(t *testing.T) {
+	units, err := filepath.Glob("../../deploy/systemd/*.service")
+	if err != nil || len(units) != 3 {
+		t.Fatalf("units = %v (err %v), want the core, napcat and telegram units", units, err)
+	}
+	want := fmt.Sprintf("RestartPreventExitStatus=%d", exitConfig)
+	for _, u := range units {
+		data, err := os.ReadFile(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "\n"+want+"\n") {
+			t.Errorf("%s lacks %s", filepath.Base(u), want)
+		}
 	}
 }

@@ -35,6 +35,11 @@ const (
 	outcomeUnknown = "delivery outcome unknown; not resent to avoid a duplicate"
 )
 
+// ErrConfig marks a Run error that only a configuration change can fix: the
+// bot token or the core token was refused, or the core token belongs to
+// another bot instance.
+var ErrConfig = errors.New("telegram: configuration error")
+
 // Adapter connects one Telegram bot to the ConLoom core: it long-polls
 // getUpdates, forwards private messages to the core and delivers outbox
 // actions with sendMessage.
@@ -113,9 +118,10 @@ func New(cfg config.TelegramConfig, logger *slog.Logger) (*Adapter, error) {
 }
 
 // Run serves until ctx is done and then returns nil, once an in-flight send
-// has its result. It returns an error if the dedup log cannot be opened,
-// Telegram rejects the bot token, or the core token belongs to another bot
-// instance. Other failures are retried with exponential backoff.
+// has its result. It returns an error if the dedup log cannot be opened, and
+// an error wrapping ErrConfig if Telegram rejects the bot token, the core
+// rejects the core token, or the core token belongs to another bot instance.
+// Other failures are retried with exponential backoff.
 func (a *Adapter) Run(ctx context.Context) error {
 	sent, err := dedup.Open(filepath.Join(a.cfg.StateDir, dedupFileName), dedupRetention, time.Now)
 	if err != nil {
@@ -179,7 +185,7 @@ func (a *Adapter) getMe(ctx context.Context) (botUser, error) {
 		defer cancel()
 		err := a.api.call(cctx, "getMe", nil, &me)
 		if ae := (*apiError)(nil); errors.As(err, &ae) && (ae.Code == http.StatusUnauthorized || ae.Code == http.StatusNotFound) {
-			return true, fmt.Errorf("telegram: the bot token was rejected (%s); check adapters.telegram.token", ae.Description)
+			return true, fmt.Errorf("%w: the bot token was rejected (%s); check adapters.telegram.token", ErrConfig, ae.Description)
 		}
 		return false, err
 	})
@@ -203,10 +209,13 @@ func (a *Adapter) checkCore(ctx context.Context) error {
 	return a.retry(ctx, "reading core capabilities", func() (bool, error) {
 		caps, err := a.core.Capabilities(ctx)
 		if err != nil {
-			return !client.IsRetryable(err), err
+			if client.IsRetryable(err) {
+				return false, err
+			}
+			return true, fmt.Errorf("%w: the core refused adapters.telegram.core_token: %v", ErrConfig, err)
 		}
 		if caps.BotInstanceID != a.cfg.BotInstanceID {
-			return true, fmt.Errorf("telegram: core_token belongs to bot instance %q, not %q", caps.BotInstanceID, a.cfg.BotInstanceID)
+			return true, fmt.Errorf("%w: core_token belongs to bot instance %q, not %q", ErrConfig, caps.BotInstanceID, a.cfg.BotInstanceID)
 		}
 		if self := strconv.FormatInt(a.self.ID, 10); caps.PlatformSelfID != self {
 			a.log.Error("the Telegram bot differs from the bot instance's platform_self_id",
