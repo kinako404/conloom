@@ -129,6 +129,15 @@ model_profiles:
 # skills:
 #   dir: ./skills
 
+# 语义检索（可选）：OpenAI 兼容的向量服务，请求发往 <endpoint>/embeddings。整段省略时只用关键词检索。
+# 后台每分钟为记忆已生效的会话生成一批向量；改 model 后会全部重新生成。部署方式见 docs/deployment.md 的“向量服务”。
+# embedding:
+#   endpoint: http://127.0.0.1:11434/v1
+#   model: bge-m3
+#   api_key: ${CONLOOM_EMBEDDING_KEY:-}
+#   timeout: 10s
+#   batch_size: 16
+
 # 人格模板：Bot 通过 persona_template 引用；省略 default 时使用内置默认人格。
 persona_templates:
   default:

@@ -28,6 +28,8 @@ type Metrics struct {
 	CleanupDeleted       *prometheus.CounterVec   // table
 	SearchSeconds        *prometheus.HistogramVec // path: keyword|vector
 	FTSBackfillRemaining prometheus.Gauge
+	EmbeddingRequests    *prometheus.CounterVec // result: ok|error|timeout
+	EmbeddingBacklog     prometheus.Gauge
 }
 
 // NewMetrics creates all ConLoom metrics and registers them on reg; it panics
@@ -106,6 +108,12 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		FTSBackfillRemaining: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "conloom_fts_backfill_remaining", Help: "Messages after the keyword index backfill mark.",
 		}),
+		EmbeddingRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "conloom_embedding_requests_total", Help: "Embedding service requests by result (ok|error|timeout).",
+		}, []string{"result"}),
+		EmbeddingBacklog: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "conloom_embedding_backlog", Help: "Estimated chunks waiting to be embedded.",
+		}),
 	}
 	reg.MustRegister(
 		m.Events, m.Tasks, m.ModelLatency, m.ModelTokens, m.EstimateRatio,
@@ -114,7 +122,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.Review, m.BreakerOpen, m.ContinuationExits, m.Proactive,
 		m.MemoryConsolidations, m.MemoryConsolidationSeconds, m.MemoryAffinityChanges,
 		m.SkillCalls,
-		m.SearchSeconds, m.FTSBackfillRemaining,
+		m.SearchSeconds, m.FTSBackfillRemaining, m.EmbeddingRequests, m.EmbeddingBacklog,
 	)
 	reg.MustRegister(m.CleanupDeleted)
 	return m

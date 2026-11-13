@@ -267,6 +267,31 @@ func TestRecall_TimeRange(t *testing.T) {
 	}
 }
 
+func TestRecall_VectorStretchIsClippedToTheRange(t *testing.T) {
+	st := newStore(t)
+	msgs := []store.MessageRecord{
+		message(groupKey, "20001", "小明", "周末打算出门逛逛", local(2026, 3, 1, 23, 50)),
+		message(groupKey, "20002", "小红", "去哪里呀", local(2026, 3, 1, 23, 55)),
+		message(groupKey, "20001", "小明", "公园吧", local(2026, 3, 2, 0, 5)),
+		message(groupKey, "20002", "小红", "好", local(2026, 3, 2, 0, 10)),
+	}
+	addMessages(t, st, msgs...)
+	vec := &fakeVectors{hits: []search.Hit{{FromSeq: seq(t, st, msgs[0]), ToSeq: seq(t, st, msgs[3]), Score: 0.8}}}
+	tool := newRecallWith(st, vec)
+	inv := invocation(groupKey, "20003", "小刚")
+	before := "—— 2026-03-01 ——\n[03-01 23:50] 小明：周末打算出门逛逛\n[03-01 23:55] 小红：去哪里呀"
+	if got := call(t, tool, inv, `{"query":"出去玩","before":"2026-03-01"}`); got != before {
+		t.Fatalf("stretch before 03-02 =\n%s\nwant\n%s", got, before)
+	}
+	after := "—— 2026-03-02 ——\n[03-02 00:05] 小明：公园吧\n[03-02 00:10] 小红：好"
+	if got := call(t, tool, inv, `{"query":"出去玩","after":"2026-03-02"}`); got != after {
+		t.Fatalf("stretch from 03-02 =\n%s\nwant\n%s", got, after)
+	}
+	if got := call(t, tool, inv, `{"query":"出去玩"}`); strings.Count(got, "\n") != 4 {
+		t.Fatalf("whole stretch =\n%s", got)
+	}
+}
+
 func TestRecall_DateHeaders(t *testing.T) {
 	st := newStore(t)
 	addMessages(t, st,

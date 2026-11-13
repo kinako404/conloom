@@ -42,6 +42,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `default_private_policy` | 私聊会话的初始策略，省略时沿用 `default_group_policy` |
 | `runtime` | 投递、过时判定、合并窗口等运行时参数 |
 | `skills` | 额外技能文件所在的目录 |
+| `embedding` | 语义检索用的向量服务，可选 |
 | `adapters` | NapCat、Telegram 和 Mock 适配器 |
 | `observability` | 日志 |
 
@@ -234,6 +235,24 @@ default_private_policy:
 | `skills.dir` | 空 | 额外技能的目录，相对路径按配置文件所在目录解析。目录里每个 `<名字>/SKILL.md` 与内置技能同名时替换它，否则作为新技能加入。留空只用内置技能（`memory`、`time`） |
 
 目录不存在、子目录里没有 `SKILL.md`、技能文件格式不对时，`serve` 启动失败，退出码 78。技能文件格式和启用方式见 [技能](skills.md)。
+
+## embedding
+
+可选。配置后，核心在后台把记忆已生效的会话切成段，为每段生成向量，供 `recall` 的语义检索使用（和关键词检索的结果融合，见 [技能：recall](skills.md#recall)）；初次开启时从每个会话的第一条消息回溯全部历史，每段约 4KB，量级见 [部署：向量服务](deployment.md#向量服务)；整段省略时不做语义检索，也不会请求任何向量服务。工作方式见 [架构 5.7 节](architecture.md#57-长期回忆的检索)，部署向量服务见 [部署：向量服务](deployment.md#向量服务)。
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `endpoint` | 必填 | OpenAI 兼容的向量接口地址，`http://` 或 `https://`；请求发往 `<endpoint>/embeddings`，所以一般写到 `/v1` 为止 |
+| `model` | `bge-m3` | 向量模型名，不能为空。改了以后后台按会话重新生成全部向量，新向量补齐之前，旧模型的向量不参与检索；全部补齐后删除旧向量。**换向量服务时也要改这个名字**（哪怕新服务上的模型同名），这个名字会原样发给服务，所以要在新服务上给模型起一个新名字（Ollama 可以用 `ollama cp bge-m3 bge-m3-b`），否则新旧向量会被当成同一个模型：后台发现向量维数和库里不一致时会重建这些段并记一条 Warn 日志，但维数相同、算法不同的向量没法发现 |
+| `api_key` | 空 | 有值时以 `Authorization: Bearer` 发送；日志和错误信息里不会出现，审查也会把它从回复里抹掉 |
+| `timeout` | 10s | 后台生成向量时单次请求的超时，> 0 且 ≤ 5m。检索时把查询句转成向量另有 2 秒的固定超时 |
+| `batch_size` | 16 | 一次请求最多带几段，1~256 |
+
+```yaml
+embedding:
+  endpoint: http://127.0.0.1:11434/v1
+  model: bge-m3
+```
 
 ## adapters
 

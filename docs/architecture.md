@@ -452,7 +452,8 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - **补建**（`BackfillMessageIndex`，`internal/store/sqlite/fts.go`；后台循环是 `internal/core/recover.go` 的 `backfillMessageIndex`，在 `Recover` 时启动）：从旧到新，每批 500 条，批与批之间停 200ms；补完后每小时再查一次。进度记在 `message_fts_progress.backfilled_seq`，表示这个 seq 及以前的消息都已经进了索引，所以中途停下、重启后能接着做。每批找的是进度之后、还不在索引里的消息，所以回滚到旧版本二进制期间写入、没进索引的消息，换回新版本后也会补上。失败时退避，从 5 秒开始翻倍，最长 10 分钟。剩余条数（进度之后的消息数）记在 `conloom_fts_backfill_remaining`。
 - **查询**（`SearchMessages(…, offset, limit)`）：每个查询词（`search.Terms`，见 [技能](skills.md#recall)）按 `search.TermPhrase` 转成 FTS5 短语，词与词之间用 OR 连接，写成 `conv : "c…" AND seg : (…)`。按只计 `seg` 列的 bm25 排序，同分时新的在前，支持 offset 分页。以单个字（汉字、假名、韩文）或 3 个字母以上的单词结尾的词做前缀匹配。会话标记只在 `conv` 列里查，所以正文里写了别的会话的标记也匹配不到那个会话。没有时间范围时只在索引里排序；有时间范围时联表，按 `occurred_at` 和 `conversation_key` 过滤。
 - **recall 融合**（`internal/skills/tools/recall.go`）：
-  - 两路检索：关键词取前 50 条消息；配置了 `search.VectorSearcher` 时，语义检索取前 20 段，限时 3 秒，出错或超时就只用关键词结果。
+  - 两路检索：关键词取前 50 条消息；配置了 `embedding` 段时（`app` 把 `App.VectorSearcher()` 传给 `RecallDeps.Vectors`），语义检索再取前 20 段（下文的 `Searcher`；它自己等查询向量最多 2 秒，recall 外面再限 3 秒），出错、超时或熔断时只用关键词结果。没配置时只走关键词。
+  - 时间范围：两路都按 `[After, Before)`，After 包含、Before 不包含（recall 把 `before` 那天的次日 0 点作为 Before）。语义命中是整段的，展开显示时把段里不在范围内的消息裁掉。
   - 融合用 RRF（k=60）：命中范围重叠的消息和段合并成一个候选，分数相加；再按新旧略加分，最多加 2%。
   - 私聊里如果说话人被忘记过，两路检索的起点都设为 `max(after, 忘记时间)`，忘记之前的消息根本不进候选。
   - 依次展开候选，直到凑满 6 个能显示的组：消息命中带上前后各 2 条，段命中整段显示，相接或重叠的组合并。第一页的候选展开完还不到 6 组，并且关键词检索返回的是满页（50 条）时，再取下一页，最多再取 3 页。后面这几页的名次接着往下排，和已经看过的候选重叠的跳过。
@@ -460,6 +461,37 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
   - 输出：每组前面加 `—— YYYY-MM-DD ——`。
   - 指标：关键词检索的耗时记在 `conloom_search_seconds{path="keyword"}`。
 - **性能**（基准测试，E5-2680 v4）：一个会话 10 万条消息、库里另有 2 万条时，`SearchMessages` 约 57ms，加时间范围约 70ms，9 个单字前缀约 136ms；在 10 万条的会话里调用一次 recall 约 140ms。
+
+**语义检索**：配置了 `embedding` 段（[配置参考](configuration.md#embedding)）时，核心还维护一份语义检索：把会话切成段，为每段生成向量，按语义找出和查询最接近的几段。没配置时不生成向量，也不请求任何服务（下面四张表照常由迁移建好，保持为空）。代码在 `internal/search/vector`（切段、后台生成、检索）、`internal/embedding`（向量服务客户端）和 `internal/store/sqlite/chunks.go`；对外的接口是 `internal/search` 的 `VectorSearcher`，由 `app.App.VectorSearcher()` 提供，没配置时为 nil；`recall` 通过它做两路检索（见上文“recall 融合”）。
+
+**存储**（迁移 `0007_memory_chunks.sql`，全部按 `conversation_key` 隔离）：
+
+- `memory_chunks`：每段一行，段内首末消息的 `seq` 和时间、段落文本的 SHA-256、模型名、维数和向量（float32 小端）。段落文本本身不存，需要时从 `messages` 重新生成；
+- `memory_chunk_state`：每个会话一行，切段游标 `cursor_seq`（之前的消息都已切段）和当前模型；
+- `memory_chunk_rebuild`：待重建的段落范围（首末 `seq`），由忘记和换模型产生。
+- `memory_chunk_forgets`：每个被忘记的成员一行，记下段落已经按哪一次忘记（忘记时间）处理过，用于启动时的对账。
+
+**切段**（`chunk.go`）：段落文本和 `recall` 用同一套规则、同一组函数生成（`tools.Transcript`，和 recall 一样经过 `withoutHidden` 和 `entries`）：命令和机器人对命令的回复不收；被忘记的人在忘记时间之前的消息不收（私聊里是忘记之前的全部消息）；联系方式打码、过一遍会话的输出审查，被拦截的消息不收；每行是 `[MM-DD HH:MM] 名字：正文`（`server.timezone`），正文最长 200 字，不带任何 ID。为了让命令和它的回复正确配对，切段和 recall 一样往前多读，直到找到一个前 2 分钟内没有命令的位置（最多多读 500 条，找不到时命令之后 2 分钟内的机器人消息一律不收），过滤后再丢掉多读的部分。相邻两行间隔超过 30 分钟、已有 8 行、或再加一行会超过 400 字时另起一段。
+
+**后台生成**（`Indexer`）：一个后台协程每分钟一轮，随 `App.Start` 启动、`App.Close` 停止。一个会话第一次被处理时（初次配置 `embedding`，或会话的记忆刚开启），从它的第一条消息开始回溯全部历史，和关键词索引的补建一样；按每轮 200 段算，每小时最多约 1.2 万段。每轮按会话键依次处理群聊和私聊里记忆已生效（`memory.enabled && concurrency.allow_long_requests`）的会话（私聊还要求机器人仍允许这个人私聊，和记忆整理一样按 `bots[].private_chat` 和白名单判断，`config.BotConfig.PrivateAllowed`），全轮最多生成 200 段：
+
+1. 库里的模型和配置不同时，把这个会话所有其他模型的段加入重建队列，并记下新模型。
+   模型名相同、向量维数却和库里的段不同时（换了向量服务却没改模型名），把维数不同的段加入重建队列，并记一条 Warn 日志。服务的维数从这一轮已经得到的向量里取；还没有时，先请求一次探测（文本“维度”）。检索时维数不同的段本来就不参与比较。
+2. 先处理重建队列，按结束 `seq` 从新到旧：重新读取这个范围的消息切段（这时全部视为已关闭），写入时在同一个事务里删掉范围内当前模型的旧段、写入新段、删掉队列记录。队列清空后删除这个会话其他模型的段。
+3. 再从游标往后读最多 1000 条新消息切段。只有已关闭的段才生成向量：后面还有段，或者已满 8 行，或者最后一行距现在超过 30 分钟；读满 1000 条时最后一段一律视为未关闭。游标推进到未关闭的那段之前；没有未关闭的段时推进到读到的最后一条；本轮额度用完时推进到最后写入的那段为止。
+4. 每批最多 `batch_size` 段请求一次向量服务。服务返回的向量里有 NaN、无穷大或超出 float32 范围的值时，整批按出错处理，不写入，`embedding_requests_total{result="error"}` 加一。任何一步出错都结束本轮，下一轮从头再来；连续失败时暂停 1、2、4、8、10、10… 分钟（最长 10 分钟），成功一轮后恢复每分钟一轮。
+
+**忘记**：`Store.ForgetMember`（群聊）在同一个事务里删除包含这个人在忘记时间之前所发消息的段（按段的 `seq` 范围查 `messages`），并把这些段加入重建队列，重建时他的那些消息不再收进段落；`Store.ForgetPrivate`（私聊）删除开始时间早于忘记时间的全部段，其中跨过忘记时间的段加入重建队列，用剩下的消息重建。后台切段读消息之前先记下这个会话的“忘记戳”（所有被忘记成员及其忘记时间），写入的事务里再核对一次；期间有人被忘记就整批不写、不推进游标，下一轮按新的忘记状态重来。所以被忘记的内容不会留在向量里，也不会被写回去。群聊忘记的开销：删段要按段的 `seq` 范围逐段查一遍 `messages`，和这个群的段数成正比，并且在忘记的写事务里完成，期间其他写入排队。本机实测一个有 9 万段、36 万条消息的群，`/忘记我` 的事务约 0.7 秒（这个人没发过言时）到 1.3 秒（删掉并排队 7200 段时）。
+
+**启动时对账**：`Indexer` 每次启动后的第一轮，先调用 `ReconcileForgottenChunks`：找出 `member_memory` 里已被忘记（`forgotten_at` 非零）、但 `memory_chunk_forgets` 里没有同一忘记时间记录的成员，按他的忘记时间重新执行上面的删段和排队重建，再记下这条记录。新版本的 `ForgetMember`、`ForgetPrivate` 在原事务里就写这条记录，所以只有旧版本二进制（回滚期间）做过的忘记会被补上；重复执行不会再动已经处理过的成员。之所以不对所有被忘记的成员每次都重做：群聊里重建后的段的 `seq` 范围仍可能夹着被隐去的那条消息，每次重做都会把它删掉再重建一遍。
+
+**检索**（`Searcher`）：
+
+- 先把查询句转成向量，最多等 2 秒（`DefaultQueryTimeout`，和 `embedding.timeout` 无关）。超时或出错时记一条 Warn 日志（不含查询内容）并返回空结果，不返回错误，调用方只用关键词结果。连续 3 次失败（`breakerFailures`）后熔断 60 秒（`breakerCooldown`）：这期间直接返回空结果，不请求服务；时间到了只放一个请求试探，成功就恢复，失败再熔断 60 秒。调用方自己取消的请求不计入失败。
+- 只用当前模型的段：换模型后，新向量补齐之前这个会话的语义检索结果会变少，旧向量不参与比较（维数不同，不能混用）。
+- 在内存里对这个会话的全部段计算余弦相似度，按时间范围过滤（段的时间区间和 `[After, Before)` 有重叠即可：After 包含、Before 不包含，恰好从 Before 开始的段不算；零值表示不限），相似度低于 `MinScore` 的段不要（`app` 设为 `DefaultMinScore` = 0.5：bge-m3 里换个说法的同义句约 0.8，换别的模型可能要调整），从高到低取前 `limit` 个，返回段的首末 `seq` 和分数。没有这道门槛时，语义检索总会凑出 20 段，recall 就永远“查得到”。
+- **内存量级**：bge-m3 的向量 1024 维，每段约 4KB（库里和内存里都是）。一个很活跃的大群一年约 9 万段，约 370MB；缓存最多 8 个会话，最坏情况是这 8 个会话之和。冷缓存第一次检索这样的会话要整段读入，本机实测 8 万多段约 1.2 秒，之后只读新增的段。
+- 最近检索过的 8 个会话的向量缓存在内存里（LRU）。每次检索先查一次库里这个会话当前模型的段数、最大 ID 和缓存范围内还剩几段：只多了新段时只读新段，有段被删掉（忘记、重建）时整段重读，所以缓存不会留下已删除的段。
 
 ## 6. 状态边界
 
@@ -474,6 +506,8 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | 主动搭话的评估 / 发出记录 | SQLite `proactive_log` | 保留 7 天，预算照常生效 |
 | 群聊和私聊的摘要与整理游标、笔记和好感度、记忆修改记录 | SQLite `group_memory`、`member_memory`、`memory_revisions` | 保留；修改记录保留 30 天 |
 | 消息的关键词索引和补建进度 | SQLite `message_fts`、`message_fts_progress` | 保留；没进索引的消息由后台补建补上 |
+| 语义检索的段和向量、切段游标、重建队列 | SQLite `memory_chunks`、`memory_chunk_state`、`memory_chunk_rebuild`、`memory_chunk_forgets` | 保留 |
+| 语义检索的向量缓存、生成向量的失败退避 | 内存 | 丢失；缓存在下次检索时重读 |
 | 记忆整理的排队请求、积压跳转标记、失败计数和退避、缩小后的批次上限 | 内存 | 丢失；手动整理要重新触发。重新开启记忆后、下一次整理前重启的群，跳转标记丢失，按原游标整理完整积压（每轮最多 10 批） |
 | 调度队列、合并窗口、挂起标记、`lastFinish` | 内存 | 丢失；任务按库里记录重新入队 |
 | 在聊会话 | 内存 | 清空，需要重新 @ 机器人 |
@@ -536,8 +570,10 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | `memory_affinity_changes_total` | source：consolidate / rule / command / api |
 | `skill_calls_total` | tool（模型编造的工具名记为 unknown）、result：ok / error / unknown / invalid |
 | `cleanup_deleted_total` | table：tasks / outbox_actions / audit_events / events / proactive_log |
-| `search_seconds` | path：keyword / vector（recall 的两路检索耗时） |
+| `search_seconds` | path：keyword（recall 的每页关键词检索）/ vector（每次语义检索，包括失败的） |
 | `fts_backfill_remaining` | —（关键词索引补建进度之后的消息数） |
+| `embedding_requests_total` | result：ok / error / timeout（每次请求向量服务，后台生成和查询都算） |
+| `embedding_backlog` | —（估计值：待重建的段数，加上各会话游标之后的消息数按 8 条一段折算；每轮结束时更新） |
 
 关键原因代码：
 
@@ -548,6 +584,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - **记忆日志**：每次成功整理一行 `memory consolidated`（会话、批数、消息条数、prompt token 数、更新了几位成员、用时），失败时 `memory consolidation failed` 带类别和连续失败次数；注入失败记 `memory not injected: …`。记忆相关日志不写笔记和摘要正文。
 - **检索日志**：关键词索引补建完成时记一行 `keyword index backfilled`（补了多少条），失败时记 `keyword index backfill failed`（带下次重试的间隔）；不写正文。
 - **技能日志**：每次执行工具一行 `skill call`（`task_id`、`tool`、`duration_ms`、`ok`、`result`），不记参数和结果；带工具的 `model call` 多出 `round`、`final` 和 `tool_calls`，`task finished` 带 `skill_calls`（如 `now:1`）。
+- **语义检索日志**：后台一轮失败记 `embedding round failed`（带下次重试的等待时间），查询转向量失败记 `embedding the query failed; no semantic hits`（带会话和结果类别）；都不写段落和查询的正文。
 - **任务 meta**：`selected_model_role`、`route_reason`（`fits_short_context` 等）、`review_result`（skipped / blocked / 审查结论）、错误码。
 
 ## 9. 已知限制和后续方向

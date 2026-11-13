@@ -188,7 +188,7 @@ func (t *recallTool) Call(ctx context.Context, inv skills.Invocation, args json.
 				continue
 			}
 			seen = append(seen, c)
-			g, ok, err := t.expand(ctx, inv, pv.Policy, members, terms, c)
+			g, ok, err := t.expand(ctx, inv, pv.Policy, members, terms, rng, c)
 			if err != nil {
 				return err
 			}
@@ -399,12 +399,13 @@ type recallGroup struct {
 	prev, next int64
 }
 
-// expand turns a candidate into its group: its stretch whole, and each
+// expand turns a candidate into its group: its stretch whole as far as it
+// lies within rng, and each
 // keyword hit whose shown text still holds a term with recallContext
 // visible messages on either side. ok is false when nothing of it can be
 // shown.
 func (t *recallTool) expand(ctx context.Context, inv skills.Invocation, pol conloomapi.GroupPolicy,
-	members []store.MemberMemory, terms []string, c recallCandidate) (recallGroup, bool, error) {
+	members []store.MemberMemory, terms []string, rng search.Range, c recallCandidate) (recallGroup, bool, error) {
 	entries, err := t.region(ctx, inv, pol, members, c.from, c.to)
 	if err != nil {
 		return recallGroup{}, false, err
@@ -412,7 +413,7 @@ func (t *recallTool) expand(ctx context.Context, inv skills.Invocation, pol conl
 	g := recallGroup{score: c.score}
 	lo, hi := len(entries), -1
 	for i, e := range entries {
-		if c.vector && e.seq >= c.from && e.seq <= c.to {
+		if c.vector && e.seq >= c.from && e.seq <= c.to && inRange(e.at, rng) {
 			g.hits = append(g.hits, e.seq)
 			lo, hi = min(lo, i), max(hi, i)
 		}
@@ -434,6 +435,12 @@ func (t *recallTool) expand(ctx context.Context, inv skills.Invocation, pol conl
 	return g, true, nil
 }
 
+// inRange reports whether at lies within r: After inclusive, Before
+// exclusive, a zero side open.
+func inRange(at time.Time, r search.Range) bool {
+	return (r.After.IsZero() || !at.Before(r.After)) && (r.Before.IsZero() || at.Before(r.Before))
+}
+
 func holdsTerm(text string, terms []string) bool {
 	for _, term := range terms {
 		if strings.Contains(text, strings.ReplaceAll(term, " ", "")) {
@@ -445,10 +452,7 @@ func holdsTerm(text string, terms []string) bool {
 
 // region loads the messages from..to of the invocation's conversation with
 // recallContext+recallMargin more on either side and returns those that may
-// be shown, as entries. To tell the bot's replies to commands exactly, it
-// first looks back for a quiet point, where no earlier command can still be
-// waiting for a reply; without one within recallLookbackMax messages, every
-// bot message within recallReplyWindow after a command is dropped.
+// be shown (withoutHidden, then without the current turn), as entries.
 func (t *recallTool) region(ctx context.Context, inv skills.Invocation, pol conloomapi.GroupPolicy,
 	members []store.MemberMemory, from, to int64) ([]recallEntry, error) {
 	span := recallContext + recallMargin
@@ -456,9 +460,36 @@ func (t *recallTool) region(ctx context.Context, inv skills.Invocation, pol conl
 	if err != nil || len(msgs) == 0 {
 		return nil, err
 	}
-	isCommand := t.isCommand(pol.Reply.CommandPrefix)
-	ext, first := msgs, 0
 	atStart := slices.IndexFunc(msgs, func(m store.MessageRecord) bool { return m.Seq >= from }) < span
+	earlier := func(ctx context.Context, beforeSeq int64, n int) ([]store.MessageRecord, error) {
+		more, err := t.d.Store.MessagesAround(ctx, inv.ConversationKey, beforeSeq, beforeSeq, n, 0)
+		return slices.DeleteFunc(more, func(m store.MessageRecord) bool { return m.Seq >= beforeSeq }), err
+	}
+	kept, err := withoutHidden(ctx, msgs, atStart, earlier, t.isCommand(pol.Reply.CommandPrefix), members, inv)
+	if err != nil {
+		return nil, err
+	}
+	return t.entries(withoutCurrentTurn(kept, inv), pol), nil
+}
+
+// Earlier loads up to n of a conversation's messages just before the message
+// beforeSeq, in Seq order.
+type Earlier func(ctx context.Context, beforeSeq int64, n int) ([]store.MessageRecord, error)
+
+// withoutHidden drops from msgs, a stretch of one conversation in Seq order,
+// the members' commands, the bot's replies to them (withoutCommands) and the
+// messages hidden by forgetting (visible). To tell the replies exactly it
+// first looks back through earlier, unless atStart says msgs begin the
+// conversation, for a quiet point where no earlier command can still be
+// waiting for a reply; without one within recallLookbackMax messages, every
+// bot message within recallReplyWindow after a command is dropped. recall
+// and the semantic search's transcripts (Transcript) both use it.
+func withoutHidden(ctx context.Context, msgs []store.MessageRecord, atStart bool, earlier Earlier, isCommand func(string) bool,
+	members []store.MemberMemory, inv skills.Invocation) ([]store.MessageRecord, error) {
+	if len(msgs) == 0 {
+		return nil, nil
+	}
+	ext, first := msgs, 0
 	broad := false
 	for !atStart {
 		if q, ok := quietPoint(ext, first, isCommand); ok {
@@ -469,18 +500,16 @@ func (t *recallTool) region(ctx context.Context, inv skills.Invocation, pol conl
 			broad = true
 			break
 		}
-		more, err := t.d.Store.MessagesAround(ctx, inv.ConversationKey, ext[0].Seq, ext[0].Seq, recallLookback, 0)
+		more, err := earlier(ctx, ext[0].Seq, recallLookback)
 		if err != nil {
 			return nil, err
 		}
-		more = more[:len(more)-1]
 		atStart = len(more) < recallLookback
 		ext, first = append(more, ext...), first+len(more)
 	}
 	kept := withoutCommands(ext, isCommand, broad)
 	kept = slices.DeleteFunc(kept, func(m store.MessageRecord) bool { return m.Seq < msgs[0].Seq })
-	kept = withoutCurrentTurn(visible(kept, members, inv), inv)
-	return t.entries(kept, pol), nil
+	return visible(kept, members, inv), nil
 }
 
 // quietPoint finds the latest index q <= first of msgs such that msgs covers
