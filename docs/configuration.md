@@ -220,8 +220,12 @@ default_private_policy:
 | `idempotency_retention` | 168h | 事件幂等记录的保留时长 |
 | `max_merge_window` | 4.5s | 直接对话合并连续消息的最长窗口 |
 | `session_idle` | 5m | 调度会话（每个会话的任务队列）空闲多久后回收，最小 1m |
+| `ops_retention` | 720h | 已结束（成功、失败、取消）的任务和它们已确认或已过期的发件箱动作的保留时长，24h~8760h。实际保留时长取它和 `idempotency_retention` 中较长的一个，保证重放的事件响应里的 `task_id` 仍能查到 |
+| `audit_retention` | 2160h | 审计记录（策略和人格修改、审查拦截）的保留时长，24h~87600h |
 
-这些字段不做范围校验，≤ 0 时回落到默认值。不要把 `action_ttl` 配到 24 小时以上：适配器的去重记录只保留 24 小时，超过后可能重发。
+`ops_retention` 和 `audit_retention` 会在启动时校验范围，超出范围（包括显式写 0）时启动失败，退出码 78；省略时取默认值。其余字段不做范围校验，≤ 0 时回落到默认值。不要把 `action_ttl` 配到 24 小时以上：适配器的去重记录只保留 24 小时，超过后可能重发。
+
+清理在核心的维护循环里执行：启动时一次，之后每小时一次。每张表每个事务最多删 1000 行，每轮最多 10 个事务，删不完的留到下一轮，所以不会长时间占用数据库写锁。每轮在日志里记一行 `cleaned up operational records`（各表删除条数，`more=true` 表示还有没删完的），删除条数计入指标 `conloom_cleanup_deleted_total{table}`。哪些表会被清理、哪些永远保留，见 [部署：数据目录与权限](deployment.md#数据目录与权限)。
 
 ## skills
 

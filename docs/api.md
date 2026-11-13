@@ -42,7 +42,7 @@
 
 ## 任务
 
-- `GET /api/v1/tasks/{task_id}` 返回任务和它产生的动作（`actions` 总是数组）。状态为 `queued`、`running`、`succeeded`、`failed`、`cancelled`。
+- `GET /api/v1/tasks/{task_id}` 返回任务和它产生的动作（`actions` 总是数组）。状态为 `queued`、`running`、`succeeded`、`failed`、`cancelled`。已结束的任务超过 `runtime.ops_retention`（且超过 `idempotency_retention`）后连同动作一起被清理，再查返回 404（见 [配置：runtime](configuration.md#runtime)）。
 - 任务的 `trigger` 可能是 `private`、`mention`、`reply`、`command`，还可能是 `continuation`（在聊模式的一轮）或 `proactive`（加入群聊）。后两者只在核心内部产生，不出现在能力协商的 `trigger_types` 里。
 - `meta.review_result` 为 `skipped` 表示模型选择不回复或任务在调用模型前被丢弃，为 `blocked` 表示输出被审查拦截；两者都没有动作。
 - `POST /api/v1/tasks/{task_id}/cancel` 取消排队中或运行中的任务；正在执行的命令无法取消，只能等它结束。

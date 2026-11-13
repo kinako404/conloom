@@ -115,7 +115,19 @@ nssm start ConLoomNapCat
 
 - `napcat-dedup.log` 写在 `adapters.napcat.state_dir` 下，默认与 `storage.data_dir` 相同；适配器部署在另一台机器时，它在适配器那台机器上。
 - 核心第一次创建数据目录时权限为 0700，但目录已经存在时不会修改它。数据库文件按进程的 umask 创建（常见的 umask 022 下是 0644），所以请自己把数据目录设为 0700，或在服务单元里设置 `UMask=0077`。去重记录文件为 0600。
-- 数据库里的消息、任务、发件箱记录目前没有自动清理，会随使用增长；事件幂等记录保留 `runtime.idempotency_retention`（默认 7 天），主动搭话记录保留 7 天。
+- 核心每小时（以及启动时）清理一次流水数据，分批删除，不长时间占用写锁：
+
+  | 数据 | 表 | 保留 |
+  |---|---|---|
+  | 已结束（成功、失败、取消）的任务，连同它们的发件箱动作 | `tasks`、`outbox_actions` | `runtime.ops_retention`（默认 30 天），且不短于 `idempotency_retention`；还有待投递或已租出动作的任务不删 |
+  | 已确认或已过期、所属任务已不存在的发件箱动作 | `outbox_actions` | 同上 |
+  | 审计记录 | `audit_events` | `runtime.audit_retention`（默认 90 天） |
+  | 事件幂等记录（含被处理事件的原文） | `events` | `runtime.idempotency_retention`（默认 7 天） |
+  | 主动搭话记录 | `proactive_log` | 7 天 |
+  | 记忆修订历史 | `memory_revisions` | 30 天（由记忆层清理，不受 `ops_retention` 影响） |
+
+- **永远保留**：聊天消息 `messages`（长期记忆的来源）、会话和用户、记忆（`group_memory`、`member_memory`）、群策略版本、人格版本、群友的主动档位和兴趣画像（`conversation_members`）。它们会随使用增长，删除只能靠 `/忘记我` 等功能或手工处理。排队中和运行中的任务也不会被清理，重启后照常恢复。
+- 清理以后，`GET /api/v1/tasks/{task_id}` 查询已删除的任务返回 404；聊天消息、引用回复的解析和记忆整理都不依赖这些表。清理只删行，不收缩数据库文件；删掉的空间会被之后的写入复用。
 
 ## 备份、迁移与升级
 
@@ -124,6 +136,8 @@ nssm start ConLoomNapCat
 ```sh
 ./conloom backup -c conloom.yaml -o conloom-backup.db
 ```
+
+备份是数据库当时的完整快照，已经被清理的任务、发件箱动作和审计记录不在其中；需要更久的任务或审计历史时，调大 `runtime.ops_retention` / `runtime.audit_retention`，或者定期保留备份文件。从备份恢复后，核心照常按当前配置清理过期的流水数据。
 
 `conloom backup` 会以当前二进制的版本打开数据库，必要时先执行表结构迁移。所以不要用更新版本的二进制去备份一个仍由旧版本运行的库。数据库的恢复方法始终是把备份文件放到 `<data_dir>/conloom.db`（确认该目录下没有遗留的 `conloom.db-wal`、`conloom.db-shm`）。
 
@@ -142,7 +156,7 @@ nssm start ConLoomNapCat
 
 备份之后到停止旧实例之前收到的消息不会出现在备份里；如果要一条不丢，可以先停止旧实例再执行 `conloom backup`（服务停止时同样可用）。核心和适配器可以分别迁移：适配器只需要能访问 NapCat 和核心的 API 地址。
 
-**升级**：先备份，再替换二进制并重启（先核心后适配器）。核心启动时自动按顺序应用新的表结构迁移，迁移只能前进、没有回滚脚本，所以回退到旧版本时要用升级前的备份。升级前请对照 [配置参考](configuration.md#群策略) 检查已移除的配置字段（例如 `proactive.contact_cooldown`），配置文件里残留未知字段会导致启动失败。
+**升级**：先备份，再替换二进制并重启（先核心后适配器）。核心启动时自动按顺序应用新的表结构迁移，迁移只能前进、没有回滚脚本，所以回退到旧版本时要用升级前的备份。升级前请对照 [配置参考](configuration.md#群策略) 检查已移除的配置字段（例如 `proactive.contact_cooldown`），配置文件里残留未知字段会导致启动失败。流水表清理没有新增表结构迁移，旧二进制可以直接在同一个库上运行；但回退到没有流水表清理的版本时，要先从 `conloom.yaml` 里删掉 `runtime.ops_retention` 和 `runtime.audit_retention`。
 
 **回退到没有记忆层的旧版本**：记忆层的迁移（`0005_memory.sql`）只新增三张表，旧二进制可以直接在升级后的库上运行，会忽略这些表；要完全回到升级前的状态，仍然用升级前的备份。回退时注意：
 

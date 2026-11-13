@@ -159,7 +159,7 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 
 ### 3.6 重启恢复
 
-`Recover`（`internal/core/recover.go:46`）在开始对外服务前运行一次：列出 `queued` / `running` 任务，事件距今已超过 `stale_task_after` 的记为 `failed/STALE`、不发任何东西；命令立即重跑；其余重新入队，立刻可执行。合并窗口、接话冷却、在聊会话等内存状态不会恢复（第 6 节）。之后维护协程每 30 秒让过期的 Outbox 动作失效，每小时清理过期的幂等记录和 7 天前的主动搭话日志。
+`Recover`（`internal/core/recover.go:46`）在开始对外服务前运行一次：列出 `queued` / `running` 任务，事件距今已超过 `stale_task_after` 的记为 `failed/STALE`、不发任何东西；命令立即重跑；其余重新入队，立刻可执行。合并窗口、接话冷却、在聊会话等内存状态不会恢复（第 6 节）。之后维护协程每 30 秒让过期的 Outbox 动作失效，每小时清理过期的幂等记录和 7 天前的主动搭话日志，并分批清理过期的流水数据（`internal/core/cleanup.go`）：结束超过 `ops_retention`（且超过 `idempotency_retention`）的任务连同它们的 Outbox 动作、已确认或已过期且任务已不存在的动作、超过 `audit_retention` 的审计记录。每张表每个事务最多 1000 行、每轮最多 10 个事务；还有待投递或已租出动作的任务不删；排队中和运行中的任务不删，所以 `Recover` 不受影响。这些清理在维护开始时也各执行一次。
 
 ## 4. 群聊参与
 
@@ -439,8 +439,10 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | 状态 | 位置 | 重启后 |
 |---|---|---|
 | 事件幂等记录 | SQLite `events` | 保留 `idempotency_retention`（168h） |
-| 消息、任务、Outbox 动作 | SQLite | 保留；未完成任务由 `Recover` 恢复 |
-| 群策略、人格版本、审计 | SQLite | 保留 |
+| 消息 | SQLite `messages` | 永久保留 |
+| 任务、Outbox 动作 | SQLite `tasks`、`outbox_actions` | 未完成任务由 `Recover` 恢复；已结束的任务和已确认 / 已过期的动作保留 `ops_retention`（720h，且不短于 `idempotency_retention`） |
+| 群策略、人格版本 | SQLite | 永久保留 |
+| 审计 | SQLite `audit_events` | 保留 `audit_retention`（2160h） |
 | 成员资格、档位、兴趣画像 | SQLite `conversation_members` | 保留 |
 | 主动搭话的评估 / 发出记录 | SQLite `proactive_log` | 保留 7 天，预算照常生效 |
 | 群聊和私聊的摘要与整理游标、笔记和好感度、记忆修改记录 | SQLite `group_memory`、`member_memory`、`memory_revisions` | 保留；修改记录保留 30 天 |
@@ -505,11 +507,13 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | `memory_consolidation_seconds` | —（只记成功的整理） |
 | `memory_affinity_changes_total` | source：consolidate / rule / command / api |
 | `skill_calls_total` | tool（模型编造的工具名记为 unknown）、result：ok / error / unknown / invalid |
+| `cleanup_deleted_total` | table：tasks / outbox_actions / audit_events / events / proactive_log |
 
 关键原因代码：
 
 - **202 响应的 `suppressed_reason`**：`rate_limited`、`queue_full`、`paused`、`stale`、`not_enabled`、`private_not_allowed`、`self_message`。限流和队列满不作为 HTTP 错误返回。
 - **`join skipped` 日志的 `reason`**：`disabled`、`paused`、`session`、`busy`、`cooldown`、`budget`、`few_messages`、`stale`、`no_eligible`、`irrelevant`、`no_target`、`closed`、`error`，附窗口消息数和目标资格人数。
+- **清理日志**：每轮一行 `cleaned up operational records`（`tasks`、`outbox_actions`、`audit_events` 删除条数，`more=true` 表示本轮批数用完、还有没删完的）。
 - **其他日志**：`join evaluation`（建了加入任务，会话外提问带 `guest=true`）、`turn deferred`（接话冷却挂起）、`turn dropped`（一轮在调用模型前被丢弃；挂起超过上限时带 `reason=held_too_long`）、`model call failed; re-routing`。
 - **记忆日志**：每次成功整理一行 `memory consolidated`（会话、批数、消息条数、prompt token 数、更新了几位成员、用时），失败时 `memory consolidation failed` 带类别和连续失败次数；注入失败记 `memory not injected: …`。记忆相关日志不写笔记和摘要正文。
 - **技能日志**：每次执行工具一行 `skill call`（`task_id`、`tool`、`duration_ms`、`ok`、`result`），不记参数和结果；带工具的 `model call` 多出 `round`、`final` 和 `tool_calls`，`task finished` 带 `skill_calls`（如 `now:1`）。
@@ -523,7 +527,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - 挂起后才执行的轮次，触发消息更容易超过 60 秒，在 `auto` 模式下更容易被引用；加入群聊时目标消息之后通常已有别人发言，默认也多半会引用。
 - 恢复的任务丢失合并窗口和接话冷却；推断（无测试覆盖）：重启时正处于暂停的群，未过时的任务会一直排队，`/resume` 后执行，执行前不再检查是否过时。
 - 准入没有防饥饿：后台优先级的加入群聊任务可能被持续的直接对话压住，统一等 60 秒后失败。
-- `messages`、`tasks`、`outbox_actions` 等表没有清理机制，库会一直增长。数据库文件以 0644 创建，权限依赖 umask。
+- `messages`、会话和用户、记忆、群策略和人格版本、`conversation_members` 没有清理机制，库会一直增长；清理只删行，不收缩数据库文件。数据库文件以 0644 创建，权限依赖 umask。
 - 文档与代码的主要出入（以代码为准）：
   - P1 设计 §5.3 写“Gateway 丢弃机器人自身消息”“消息先落库，再判定”。实际是适配器和核心 `Decide` 过滤自身消息，先判定再在一个事务里写入，`ignore` 的消息正文不落库。
   - `continuation_exits_total` 的 Help 文本写的是 `(rule|model)`，实际还有 `limit`、`idle`（`internal/obs/metrics.go:70`）。
