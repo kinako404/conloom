@@ -25,10 +25,12 @@ type injectPerson struct{ userID, name string }
 // note. Others' notes leave out what they asked the bot to remember
 // (memory.WithoutRemembered); only the speaker's own note shows it. Tiers are
 // shown when the policy's affinity is on. targets and names
-// are the task's reply targets and mention names. A read error is logged and
-// leaves the block out.
+// are the task's reply targets and mention names; known, when not nil, holds
+// a private sender's row already read. A read error is logged and leaves the
+// block out.
 func (o *Orchestrator) injectMemory(ctx context.Context, task store.TaskRecord, pol conloomapi.GroupPolicy,
-	triggers []store.MessageRecord, targets map[string]store.MessageRecord, names map[string]string) string {
+	triggers []store.MessageRecord, targets map[string]store.MessageRecord, names map[string]string,
+	known map[string]store.MemberMemory) string {
 	if !pol.Memory.Enabled || !pol.Concurrency.AllowLongRequests || len(triggers) == 0 {
 		return ""
 	}
@@ -63,9 +65,12 @@ func (o *Orchestrator) injectMemory(ctx context.Context, task store.TaskRecord, 
 	for i, p := range people {
 		ids[i] = p.userID
 	}
-	rows, err := o.st.GetMemberMemories(ctx, task.ConversationKey, ids)
-	if err != nil {
-		return warn("load member memories", err)
+	rows := known
+	if !private || rows == nil {
+		var err error
+		if rows, err = o.st.GetMemberMemories(ctx, task.ConversationKey, ids); err != nil {
+			return warn("load member memories", err)
+		}
 	}
 	entries := make([]memory.BlockEntry, 0, len(people))
 	for _, p := range people {

@@ -228,6 +228,11 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	if err != nil {
 		return fail(conloomapi.CodeInternal, CopyUnavailable, err)
 	}
+	var speakerRows map[string]store.MemberMemory
+	if conv.Type == conloomapi.ConvPrivate {
+		speakerRows = o.privateSpeakerRow(ctx, task)
+		history = sinceForgotten(history, speakerRows[task.ActorPlatformUserID].ForgottenAt)
+	}
 	current := slices.Clone(triggers)
 	for i := range current {
 		res := o.reviewer.Input(current[i].Text, pol.Review)
@@ -239,6 +244,9 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		return fail(conloomapi.CodeInternal, CopyUnavailable, err)
 	}
 	targets := o.replyTargets(ctx, task, history, triggers)
+	if at := speakerRows[task.ActorPlatformUserID].ForgottenAt; !at.IsZero() {
+		maps.DeleteFunc(targets, func(_ string, m store.MessageRecord) bool { return m.OccurredAt.Before(at) })
+	}
 	names := o.mentionNames(ctx, task, history, triggers)
 	in := contextbuilder.Input{
 		SystemPrompt:     system.Text,
@@ -252,7 +260,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		TokenFactor:      o.tokenFactor,
 		Location:         o.loc,
 		Directive:        directive,
-		Memory:           o.injectMemory(ctx, task, pol, triggers, targets, names),
+		Memory:           o.injectMemory(ctx, task, pol, triggers, targets, names, speakerRows),
 	}
 	req := router.Request{
 		Sensitive:             conv.Type == conloomapi.ConvPrivate,
@@ -347,6 +355,27 @@ func (o *Orchestrator) history(ctx context.Context, convKey string, maxRecent in
 		}
 	}
 	return history, nil
+}
+
+// privateSpeakerRow reads the memory row of a private task's sender, keyed by
+// user ID (empty when there is none): its ForgottenAt cuts the context, and
+// injectMemory reuses it. A read error is logged and leaves both alone.
+func (o *Orchestrator) privateSpeakerRow(ctx context.Context, task store.TaskRecord) map[string]store.MemberMemory {
+	rows, err := o.st.GetMemberMemories(ctx, task.ConversationKey, []string{task.ActorPlatformUserID})
+	if err != nil {
+		o.log.Warn("load private member memory failed", "task_id", task.ID, "conversation", task.ConversationKey, "error", err)
+		return nil
+	}
+	return rows
+}
+
+// sinceForgotten drops the messages, from either side, that happened before
+// at (none when at is zero): a private chat after /忘记我 starts afresh.
+func sinceForgotten(history []store.MessageRecord, at time.Time) []store.MessageRecord {
+	if at.IsZero() {
+		return history
+	}
+	return slices.DeleteFunc(history, func(m store.MessageRecord) bool { return m.OccurredAt.Before(at) })
 }
 
 // replyTargets loads, in one query, the stored messages of the task's
