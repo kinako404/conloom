@@ -11,6 +11,7 @@ import (
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/ids"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/outbox"
 	"github.com/kinako404/conloom/internal/persona"
@@ -23,7 +24,8 @@ import (
 // Config.Server.MetricsEnabled is set; a nil Logger discards. Memory starts
 // consolidations asked for through the API; when nil they are accepted but
 // nothing runs. Counters records affinity changes made through the API; nil
-// records nothing.
+// records nothing. MemoryAdmin serves the memory endpoints; when nil one is
+// built from Store, Policies and Counters.
 type Deps struct {
 	Orchestrator *core.Orchestrator
 	Outbox       *outbox.Service
@@ -35,6 +37,7 @@ type Deps struct {
 	Logger       *slog.Logger
 	Memory       interface{ Trigger(convKey string) }
 	Counters     *obs.Metrics
+	MemoryAdmin  *memory.Admin
 }
 
 type Server struct {
@@ -45,6 +48,9 @@ type Server struct {
 }
 
 func New(d Deps) *Server {
+	if d.MemoryAdmin == nil {
+		d.MemoryAdmin = memory.NewAdmin(memory.AdminDeps{Store: d.Store, Policies: d.Policies, Metrics: d.Counters})
+	}
 	s := &Server{d: d, log: d.Logger, tokens: newTokens(d.Config.APITokens), mux: http.NewServeMux()}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
