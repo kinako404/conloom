@@ -21,6 +21,8 @@ const (
 	recallScan         = 5000
 	recallQueryRunes   = 100
 	recallMaxTokens    = 8
+	recallMaxKeywords  = 8
+	recallMaxTerms     = 16
 	recallKeywordRunes = 20
 	recallHits         = 6
 	recallContext      = 2
@@ -28,6 +30,7 @@ const (
 	recallBodyRunes    = 200
 	recallNameRunes    = 20
 	recallTurnWindow   = 2 * time.Minute
+	recallReplyWindow  = 2 * time.Minute
 	recallNotFound     = "没有找到相关的聊天记录。"
 	recallNoName       = "一位群友"
 )
@@ -58,7 +61,8 @@ type recallTool struct{ d RecallDeps }
 // NewRecall returns the recall tool: a keyword search of the newest 5000
 // messages of the invocation's conversation when memory is in effect.
 //
-// Skipped are commands, messages blocked by the conversation's review, the
+// Skipped are commands and the bot's replies to them, messages blocked by the
+// conversation's review, the
 // current turn (the trigger messages, or without them the speaker's messages
 // of the last two minutes) and messages hidden by forgetting: in private chats
 // everything before the speaker was forgotten, in groups what each forgotten
@@ -119,6 +123,7 @@ func (t *recallTool) Call(ctx context.Context, inv skills.Invocation, args json.
 	if err != nil {
 		return "", err
 	}
+	msgs = withoutCommands(msgs, t.isCommand(pv.Policy.Reply.CommandPrefix))
 	msgs = withoutCurrentTurn(visible(msgs, members, inv), inv)
 	entries := t.entries(msgs, pv.Policy)
 	groups := recallGroups(entries, terms)
@@ -147,7 +152,7 @@ func keywordsArg(args json.RawMessage) ([]string, string) {
 	if err := json.Unmarshal(raw, &keywords); err != nil || keywords == nil {
 		return nil, "keywords 需要是字符串列表。"
 	}
-	if len(keywords) > recallMaxTokens {
+	if len(keywords) > recallMaxKeywords {
 		return nil, "keywords 最多 8 个。"
 	}
 	for i, k := range keywords {
@@ -160,16 +165,22 @@ func keywordsArg(args json.RawMessage) ([]string, string) {
 	return keywords, ""
 }
 
-// searchTerms is recallTokens(query) followed by the lower-cased keywords,
-// each matched whole, without repeats and at most recallMaxTokens.
+// searchTerms is the lower-cased keywords, each matched whole, followed by
+// recallTokens(query), without repeats and at most recallMaxTerms, so that
+// a long query never crowds out the keywords.
 func searchTerms(query string, keywords []string) []string {
-	terms := recallTokens(query)
+	var terms []string
 	for _, k := range keywords {
 		if k = strings.ToLower(k); !slices.Contains(terms, k) {
 			terms = append(terms, k)
 		}
 	}
-	return terms[:min(len(terms), recallMaxTokens)]
+	for _, tok := range recallTokens(query) {
+		if !slices.Contains(terms, tok) {
+			terms = append(terms, tok)
+		}
+	}
+	return terms[:min(len(terms), recallMaxTerms)]
 }
 
 // recallTokens splits query into at most recallMaxTokens distinct search
@@ -270,21 +281,51 @@ type recallEntry struct {
 	name, body, search string
 }
 
-// entries prepares msgs for searching and showing, dropping commands and
-// messages that the review blocks.
-func (t *recallTool) entries(msgs []store.MessageRecord, pol conloomapi.GroupPolicy) []recallEntry {
-	prefix := pol.Reply.CommandPrefix
-	isCommand := t.d.IsCommand
-	if isCommand == nil {
-		isCommand = func(text, prefix string) bool {
-			return prefix != "" && strings.HasPrefix(strings.TrimSpace(text), prefix)
-		}
+// isCommand reports whether a member's text is a command under prefix:
+// IsCommand when given, otherwise any text starting with prefix.
+func (t *recallTool) isCommand(prefix string) func(text string) bool {
+	if t.d.IsCommand != nil {
+		return func(text string) bool { return t.d.IsCommand(text, prefix) }
 	}
-	out := make([]recallEntry, 0, len(msgs))
-	for _, m := range msgs {
-		if !m.FromBot && isCommand(m.Text, prefix) {
+	return func(text string) bool { return prefix != "" && strings.HasPrefix(strings.TrimSpace(text), prefix) }
+}
+
+// withoutCommands drops members' commands and the bot's replies to them,
+// which may show memory that was since forgotten. msgs are in Seq order; each
+// command claims the first bot message after it not claimed by an earlier
+// command, when that comes within recallReplyWindow. It runs before
+// forgetting hides a member's commands, so their replies go too.
+func withoutCommands(msgs []store.MessageRecord, isCommand func(string) bool) []store.MessageRecord {
+	var pending []time.Time
+	drop := make([]bool, len(msgs))
+	for i, m := range msgs {
+		if !m.FromBot {
+			if isCommand(m.Text) {
+				drop[i] = true
+				pending = append(pending, m.OccurredAt)
+			}
 			continue
 		}
+		pending = slices.DeleteFunc(pending, func(at time.Time) bool { return m.OccurredAt.Sub(at) > recallReplyWindow })
+		if len(pending) > 0 {
+			drop[i] = true
+			pending = pending[1:]
+		}
+	}
+	kept := msgs[:0:0]
+	for i, m := range msgs {
+		if !drop[i] {
+			kept = append(kept, m)
+		}
+	}
+	return kept
+}
+
+// entries prepares msgs for searching and showing, dropping messages that
+// the review blocks.
+func (t *recallTool) entries(msgs []store.MessageRecord, pol conloomapi.GroupPolicy) []recallEntry {
+	out := make([]recallEntry, 0, len(msgs))
+	for _, m := range msgs {
 		body := oneLine(m.Text)
 		for _, a := range m.Attachments {
 			if a.Type == "image" {

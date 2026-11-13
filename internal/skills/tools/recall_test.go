@@ -67,10 +67,12 @@ func TestSearchTerms(t *testing.T) {
 		want     []string
 	}{
 		{"旅游", nil, []string{"旅游"}},
-		{"旅游", []string{"出去玩", "旅游", "Go 语言", "旅行"}, []string{"旅游", "出去玩", "go 语言", "旅行"}},
+		{"旅游", []string{"出去玩", "旅游", "Go 语言", "旅行"}, []string{"出去玩", "旅游", "go 语言", "旅行"}},
 		{"？", []string{"出去玩"}, []string{"出去玩"}},
-		{"一二三四五六七八", []string{"出去玩"}, []string{"一二", "二三", "三四", "四五", "五六", "六七", "七八", "出去玩"}},
-		{"一二三四五六七八九", []string{"出去玩"}, []string{"一二", "二三", "三四", "四五", "五六", "六七", "七八", "八九"}},
+		{"一二三四五六七八九", []string{"出去玩"}, []string{"出去玩", "一二", "二三", "三四", "四五", "五六", "六七", "七八", "八九"}},
+		{"一二三四五六七八九十", []string{"甲", "乙", "丙", "丁", "戊", "己", "庚", "辛"},
+			[]string{"甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "一二", "二三", "三四", "四五", "五六", "六七", "七八", "八九"}},
+		{"一二三", []string{"二三", "x"}, []string{"二三", "x", "一二"}},
 	} {
 		if got := searchTerms(c.query, c.keywords); !slices.Equal(got, c.want) {
 			t.Errorf("searchTerms(%q, %q) = %q, want %q", c.query, c.keywords, got, c.want)
@@ -170,12 +172,74 @@ func TestRecall_Keywords(t *testing.T) {
 	if got := call(t, tool, inv, `{"query":"旅游计划"}`); got != recallNotFound {
 		t.Fatalf("recall without keywords = %q", got)
 	}
-	got := call(t, tool, inv, `{"query":"旅游计划","keywords":["旅行","出去玩"]}`)
-	if want := "[11-13 09:00] 小明：下周去旅行\n[11-13 09:01] 小红：周末一起出去玩吧"; got != want {
+	want := "[11-13 09:00] 小明：下周去旅行\n[11-13 09:01] 小红：周末一起出去玩吧"
+	if got := call(t, tool, inv, `{"query":"旅游计划","keywords":["旅行","出去玩"]}`); got != want {
 		t.Fatalf("recall with keywords =\n%s\nwant\n%s", got, want)
 	}
 	if got := call(t, tool, inv, `{"query":"旅游计划","keywords":null}`); got != recallNotFound {
 		t.Fatalf("recall with null keywords = %q", got)
+	}
+	long := `{"query":"我们之前在群里讨论过的那个暑假计划安排","keywords":["旅行","出去玩"]}`
+	if got := call(t, tool, inv, long); got != want {
+		t.Fatalf("recall with a long query and keywords =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestRecall_SkipsBotRepliesToCommands(t *testing.T) {
+	ctx := context.Background()
+	isCommand := func(text, prefix string) bool {
+		for _, c := range []string{"记忆", "好感度", "忘记我"} {
+			if strings.HasPrefix(strings.TrimSpace(text), prefix+c) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, name := range []string{"prefix fallback", "command recognizer"} {
+		st := newStore(t)
+		addMessages(t, st,
+			message(groupKey, "20001", "小明", "/记忆", at(0)),
+			message(groupKey, "", "", "我记得关于你的：喜欢草莓蛋糕，养了一只叫团子的猫", at(0).Add(10*time.Second)),
+			message(groupKey, "20001", "小明", "/忘记我", at(1)),
+			message(groupKey, "", "", "好，我把关于你的都忘了。", at(1).Add(5*time.Second)),
+		)
+		if err := st.ForgetMember(ctx, groupKey, "20001", at(2)); err != nil {
+			t.Fatal(err)
+		}
+		deps := RecallDeps{Store: st, Policies: newPolicies(st, true, true), Reviewer: review.New(nil, review.Options{})}
+		if name == "command recognizer" {
+			deps.IsCommand = isCommand
+		}
+		inv := invocation(groupKey, "20002", "小红")
+		for _, q := range []string{`{"query":"团子"}`, `{"query":"草莓蛋糕"}`, `{"query":"忘了"}`} {
+			if got := call(t, NewRecall(deps), inv, q); got != recallNotFound {
+				t.Errorf("%s: recall%s found a reply to a command:\n%s", name, q, got)
+			}
+		}
+	}
+}
+
+func TestRecall_KeepsOrdinaryBotReplies(t *testing.T) {
+	st := newStore(t)
+	addMessages(t, st,
+		message(groupKey, "20001", "小明", "我喜欢草莓蛋糕", at(0)),
+		message(groupKey, "", "", "草莓蛋糕很好吃", at(0).Add(10*time.Second)),
+		message(groupKey, "20003", "", "/记忆", at(10)),
+		message(groupKey, "20003", "", "/好感度", at(10).Add(time.Second)),
+		message(groupKey, "", "", "我记得关于你的：喜欢草莓蛋糕和秘密一", at(10).Add(5*time.Second)),
+		message(groupKey, "", "", "好感：熟悉（52/100）草莓蛋糕和秘密二", at(10).Add(6*time.Second)),
+		message(groupKey, "", "", "草莓蛋糕要配茶", at(11)),
+		message(groupKey, "20003", "", "/好感度", at(20)),
+		message(groupKey, "", "", "说起草莓蛋糕，我也想吃", at(23)),
+	)
+	got := call(t, newRecall(st, true), invocation(groupKey, "20002", "小红"), `{"query":"草莓蛋糕"}`)
+	for _, kept := range []string{"小明：我喜欢草莓蛋糕", "你：草莓蛋糕很好吃", "你：草莓蛋糕要配茶", "你：说起草莓蛋糕，我也想吃"} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("recall lacks the ordinary reply %q:\n%s", kept, got)
+		}
+	}
+	if strings.Contains(got, "秘密") || strings.Contains(got, "好感") {
+		t.Errorf("recall shows a reply to a command:\n%s", got)
 	}
 }
 
