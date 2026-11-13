@@ -18,10 +18,10 @@
 2. 私聊有记忆：私聊会话同样整理"对话摘要"和"关于对方的笔记"，回复时注入，好感度照常累计。
 3. 私聊默认参数单独配置：新增 `default_private_policy`，私聊会话的默认策略从这里取，没配置时退回 `default_group_policy`。
 4. 新增 `/记住 <内容>`：立即把一句话写进自己的笔记，不用等下次整理。
+5. 可以按需开启：Telegram 群聊按群开启（列入 `enabled_conversations`），私聊可以只对名单里的人开放（`private_chat: allowlist`）。
 
 **非目标（这次不做）**
 
-- Telegram 群聊。v1 只处理私聊，非私聊的更新记日志后跳过。
 - Webhook 方式（需要公网入口），图片下载和理解，消息编辑和撤回，内联按钮。
 - 跨会话记忆：同一个人在 QQ 和 Telegram 是两个会话，记忆互不相通。
 
@@ -66,7 +66,7 @@ adapters:
 ```
 
 - 机器人实例用 `platform: telegram`，`platform_self_id` 填 Bot 的数字 ID，`admins` 填 Telegram 用户 ID。
-- `private_chat` 的语义不变：`admins` 表示只有管理员能私聊，`all` 表示所有人都能私聊。
+- `private_chat` 原有三档语义不变，另新增 `allowlist`（见 4.4）。
 
 **收消息**
 
@@ -74,11 +74,13 @@ adapters:
 - 每条更新**提交给核心成功之后**才推进 offset（下一轮用 `update_id+1`）。提交失败就退避重试，不推进 offset，交给 Telegram 保存的未确认更新兜底，不丢消息。
 - offset 不需要在本地持久化：重启后 Telegram 会把未确认的更新重新发来，核心靠幂等键去重。
 - 幂等键为 `telegram:<bot_id>:<update_id>`。
-- 只处理 `chat.type == "private"`，其他类型记一条 Debug 日志后推进 offset。
+- 处理 `private`、`group`、`supergroup` 三种会话，`channel` 记一条 Debug 日志后推进 offset。群是否工作由核心按 `enabled_conversations` 判断，适配器不做过滤。
 
 **消息映射**
 
-- 会话：`Type=private`，`ID="private_<user_id>"`，`PlatformConversationID=<chat_id>`。
+- 会话：私聊为 `Type=private`、`ID="private_<user_id>"`；群为 `Type=group`、`ID="group_<chat_id>"`（群的 chat_id 是负数，实施时要确认 ID 校验允许 `-`，不允许的话就换一种无损编码）。`PlatformConversationID` 一律填 `<chat_id>`。
+- 群里的 @ 和回复：消息 entities 里的 `mention`，如果文本等于 `@<bot用户名>`，算 @ 机器人，其他 `mention` 和 `text_mention` 算 @ 群友；`reply_to_message` 映射成 reply_to。核心靠消息 ID 判断是不是在回复机器人。
+- 群里的隐私模式：Telegram 默认只把命令、@ 机器人、回复机器人的消息发给机器人。在聊会话和主动加入需要看到所有消息，要在 BotFather 里执行 `/setprivacy` 设为 Disable，这一点写进 docs/telegram.md。
 - 发送者：`Actor.PlatformUserID=<from.id>`，显示名为 `first_name + " " + last_name`，去掉首尾空白；都为空时用 `username`。
 - 消息 ID：Telegram 的 message_id 只在单个会话内唯一。标准 ID 为 `msg_<chat_id>_<message_id>`，回复关系也用这个格式。核心记录机器人自己的消息时用的是 ACK 里的平台消息 ID，所以适配器 ACK 时上报的平台消息 ID 也必须是 `<chat_id>_<message_id>`，保证两边对得上。实施时先核对核心怎么从平台消息 ID 生成 `msg_…`，再按它对齐。
 - 正文：
@@ -151,7 +153,13 @@ adapters:
   - 整理员提示词加一条：笔记里标有"（他让我记住）"的内容要保留，除非本人明确更正或要求忘记。
 - **API**：私聊会话不再返回 400，按会话本身的策略处理。
 
-### 4.4 文档
+### 4.4 私聊白名单
+
+- `bots[].private_chat` 新增一档 `allowlist`：管理员，以及 `enabled_conversations` 里以 `{type: private, platform_id: "<用户ID>"}` 列出的人可以私聊，其他人不回复。
+- 原有三档 `admins`、`all`、`off` 的行为不变。这三档下名单里的 private 条目不起作用，启动时打 Warn 提示。
+- 群和人都在同一个名单里配置，改名单需要重启核心。v1 不做运行时增删命令。
+
+### 4.5 文档
 
 - README 的特性、架构图里加上 Telegram。
 - 新增 `docs/telegram.md`：接入步骤，包括 BotFather、配置、令牌、systemd，以及如何在 BotFather 重新生成 token。
@@ -168,7 +176,8 @@ adapters:
 - 私聊笔记 500 字、摘要 1200 字。
 - `/start` 转成"你好"，让人设自己打招呼。
 - `/记住` 追加到笔记末尾并加标记，满了从前面删。
-- TG 机器人的 `private_chat` 先用 `admins`，只有管理员能聊，防止陌生人消耗模型额度；想开放时改成 `all`。
+- TG 机器人的 `private_chat` 先用 `allowlist`，只有管理员和名单里的人能聊，防止陌生人消耗模型额度；想开放时改成 `all`。
+- 名单写在配置里，改了要重启；运行时增删命令以后再做。
 
 ## 6. 测试要点
 

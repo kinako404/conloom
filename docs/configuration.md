@@ -79,8 +79,8 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `name` | `织语` | 显示名；人设设置了角色名时，在该会话里以角色名为准 |
 | `platform_self_id` | 必填 | 机器人自己的平台 ID，用于自回复防护 |
 | `admins` | 空 | 管理员的平台用户 ID 列表，每项不能为空 |
-| `enabled_conversations` | 空 | 只在这些会话里工作，每项 `{type: group\|private, platform_id: "<ID>"}`；未列出的群消息会被忽略 |
-| `private_chat` | `admins` | 私聊策略：`admins`（仅管理员）、`all`（所有人）、`off`（关闭） |
+| `enabled_conversations` | 空 | 只在这些会话里工作，每项 `{type: group\|private, platform_id: "<ID>"}`；未列出的群消息会被忽略。`private` 项的 `platform_id` 填用户的平台 ID，只在 `private_chat: allowlist` 时生效，用来放行这些人的私聊；其他档位下会被忽略，启动时打一条警告日志 |
+| `private_chat` | `admins` | 私聊策略：`admins`（仅管理员）、`allowlist`（管理员和 `enabled_conversations` 里列为 `private` 的人）、`all`（所有人）、`off`（关闭）。不被允许的私聊不回复 |
 | `persona_template` | `default` | 会话初始人格使用的模板名，必须存在于 `persona_templates` |
 
 ## model_profiles

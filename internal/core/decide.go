@@ -45,11 +45,15 @@ type DecideInput struct {
 	PlatformUserID   string
 	Text             string
 	CommandPrefix    string
-	PrivateChat      string // "off", "admins" or "all"
+	PrivateChat      string // "off", "admins", "allowlist" or "all"
 	Mentions         []conloomapi.Mention
 	Enabled          bool
 	IsAdmin          bool
-	ReplyToIsBot     bool
+	// PrivateListed is set when the sender is listed as a private
+	// conversation in the bot's enabled_conversations; only the "allowlist"
+	// private chat mode uses it.
+	PrivateListed bool
+	ReplyToIsBot  bool
 	// InContinuation is set when the sender takes part in the group's
 	// ongoing session with the bot.
 	InContinuation bool
@@ -81,7 +85,7 @@ func Decide(in DecideInput) Decision {
 	if !private && !in.Enabled {
 		return ignore(conloomapi.SuppressedNotEnabled)
 	}
-	if private && (in.PrivateChat == "off" || (in.PrivateChat == "admins" && !in.IsAdmin)) {
+	if private && privateDenied(in) {
 		return ignore(conloomapi.SuppressedPrivateNotAllowed)
 	}
 	if cmd, args, ok := ParseCommand(in.Text, in.CommandPrefix); ok {
@@ -105,6 +109,18 @@ func Decide(in DecideInput) Decision {
 		return reply(TriggerContinuation)
 	}
 	return Decision{Disposition: conloomapi.DispositionObserve}
+}
+
+func privateDenied(in DecideInput) bool {
+	switch in.PrivateChat {
+	case "off":
+		return true
+	case "admins":
+		return !in.IsAdmin
+	case "allowlist":
+		return !in.IsAdmin && !in.PrivateListed
+	}
+	return false
 }
 
 func ignore(reason string) Decision {

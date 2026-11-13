@@ -74,6 +74,10 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		return nil, fmt.Errorf("app: open database %s: %w", cfg.DBPath(), err)
 	}
 	for _, b := range cfg.Bots {
+		if ids := b.UnusedPrivateConversations(); len(ids) > 0 {
+			logger.Warn("private enabled_conversations take effect only when private_chat is allowlist; ignoring them",
+				"bot", b.ID, "private_chat", b.PrivateChat, "platform_ids", ids)
+		}
 		if err := st.UpsertBotInstance(ctx, b.ID, b.Platform, b.Name); err != nil {
 			_ = st.Close()
 			return nil, fmt.Errorf("app: register bot %s: %w", b.ID, err)

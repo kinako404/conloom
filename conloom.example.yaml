@@ -46,7 +46,9 @@ bots:
     # 只在这些会话中工作；未列出的群消息会被忽略。type 为 group 或 private。
     enabled_conversations:
       - {type: group, platform_id: "${CONLOOM_GROUP_ID}"}
-    # 私聊策略：admins（仅管理员）| all（所有人）| off（关闭）。
+    # 私聊策略：admins（仅管理员）| allowlist（管理员，以及上面以
+    # {type: private, platform_id: "<用户 ID>"} 列出的人）| all（所有人）| off（关闭）。
+    # private 项只在 allowlist 下生效。
     private_chat: admins
     persona_template: default
 

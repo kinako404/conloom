@@ -726,6 +726,44 @@ func TestValidateMock(t *testing.T) {
 	}
 }
 
+func TestValidateServe_PrivateChatValues(t *testing.T) {
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	for _, v := range []string{"admins", "allowlist", "all", "off"} {
+		cfg.Bots[0].PrivateChat = v
+		if err := cfg.ValidateServe(); err != nil {
+			t.Errorf("private_chat %q: %v", v, err)
+		}
+	}
+	cfg.Bots[0].PrivateChat = "everyone"
+	err := cfg.ValidateServe()
+	if err == nil || !strings.Contains(err.Error(), "admins|allowlist|all|off") {
+		t.Errorf("private_chat everyone: err = %v, want the accepted values listed", err)
+	}
+}
+
+func TestBotConfig_UnusedPrivateConversations(t *testing.T) {
+	b := BotConfig{EnabledConversations: []conloomapi.ConversationRef{
+		{Type: conloomapi.ConvGroup, PlatformID: "10001"},
+		{Type: conloomapi.ConvPrivate, PlatformID: "20001"},
+		{Type: conloomapi.ConvPrivate, PlatformID: "20002"},
+	}}
+	for _, mode := range []string{"admins", "all", "off"} {
+		b.PrivateChat = mode
+		if got := b.UnusedPrivateConversations(); !slices.Equal(got, []string{"20001", "20002"}) {
+			t.Errorf("private_chat %s: unused = %v, want [20001 20002]", mode, got)
+		}
+	}
+	b.PrivateChat = "allowlist"
+	if got := b.UnusedPrivateConversations(); len(got) != 0 {
+		t.Errorf("private_chat allowlist: unused = %v, want none", got)
+	}
+	b.PrivateChat = "admins"
+	b.EnabledConversations = b.EnabledConversations[:1]
+	if got := b.UnusedPrivateConversations(); len(got) != 0 {
+		t.Errorf("no private entries: unused = %v, want none", got)
+	}
+}
+
 func TestValidateServe_AcceptsBoundaryValues(t *testing.T) {
 	cfg := mustLoad(t, "testdata/valid.yaml")
 	p := cfg.ModelProfiles["short_context"]
