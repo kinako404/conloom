@@ -1,0 +1,27 @@
+[Unit]
+Description=ConLoom Telegram adapter
+Documentation=https://github.com/kinako404/conloom
+After=network-online.target conloom.service
+Wants=network-online.target conloom.service
+
+[Service]
+Type=simple
+User=conloom
+Group=conloom
+WorkingDirectory=/opt/conloom
+ExecStart=/opt/conloom/conloom adapter telegram -c /opt/conloom/conloom.yaml
+Restart=always
+RestartSec=3
+# Shutdown waits for an in-flight send (up to 30s per message part) and its
+# ACK (up to 10s).
+TimeoutStopSec=90
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+# adapters.telegram.state_dir (default: storage.data_dir) must be writable and
+# must exist before the service starts.
+ReadWritePaths=/opt/conloom/data
+
+[Install]
+WantedBy=multi-user.target
