@@ -29,6 +29,7 @@ type Config struct {
 	// when the file has no default_private_policy (see PrivatePolicy).
 	DefaultPrivatePolicy *conloomapi.GroupPolicy `yaml:"default_private_policy"`
 	Runtime              RuntimeConfig           `yaml:"runtime"`
+	Skills               SkillsConfig            `yaml:"skills"`
 	Adapters             AdaptersConfig          `yaml:"adapters"`
 	Observability        ObservabilityConfig     `yaml:"observability"`
 
@@ -48,6 +49,13 @@ type StorageConfig struct {
 	DataDir string `yaml:"data_dir"`
 }
 
+// SkillsConfig locates the skill files that add to or replace the built-in
+// skills. An empty Dir uses only the built-in skills; a relative Dir is
+// resolved against the configuration file's directory.
+type SkillsConfig struct {
+	Dir string `yaml:"dir"`
+}
+
 type APIToken struct {
 	Name          string   `yaml:"name"`
 	Token         string   `yaml:"token"`
@@ -64,6 +72,8 @@ type BotConfig struct {
 	EnabledConversations []conloomapi.ConversationRef `yaml:"enabled_conversations"`
 	PrivateChat          string                       `yaml:"private_chat"`
 	PersonaTemplate      string                       `yaml:"persona_template"`
+	// Skills names the skills the bot may use; none when empty.
+	Skills []string `yaml:"skills"`
 }
 
 // UnusedPrivateConversations returns the platform IDs of the private entries in
@@ -286,6 +296,9 @@ func Load(path string) (*Config, error) {
 		cfg.Storage.DataDir = "./data"
 	}
 	cfg.Storage.DataDir = resolveDir(dir, cfg.Storage.DataDir)
+	if cfg.Skills.Dir != "" {
+		cfg.Skills.Dir = resolveDir(dir, cfg.Skills.Dir)
+	}
 	for _, stateDir := range []*string{&cfg.Adapters.NapCat.StateDir, &cfg.Adapters.Telegram.StateDir} {
 		if *stateDir == "" {
 			*stateDir = cfg.Storage.DataDir
