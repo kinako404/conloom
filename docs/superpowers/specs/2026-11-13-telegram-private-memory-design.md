@@ -66,7 +66,7 @@ adapters:
 ```
 
 - 机器人实例用 `platform: telegram`，`platform_self_id` 填 Bot 的数字 ID，`admins` 填 Telegram 用户 ID。
-- `private_chat` 的语义不变：`admins` 表示只有管理员能私聊，`all` 表示所有人都能私聊。
+- `private_chat` 原有三档语义不变，另新增 `allowlist`（见 4.4）。
 
 **收消息**
 
