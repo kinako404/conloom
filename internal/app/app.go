@@ -3,7 +3,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -71,6 +70,11 @@ type App struct {
 	// embedding section in the config.
 	indexer *vector.Indexer
 	vectors search.VectorSearcher
+
+	logger *slog.Logger
+	// usageFlushTimeout is how long Close waits for queued model calls,
+	// the usageFlushTimeout constant except in tests.
+	usageFlushTimeout time.Duration
 
 	closeOnce sync.Once
 	closeErr  error
@@ -244,7 +248,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Presence:     presence,
 		Panel:        panelHandler,
 	})
-	return &App{st: st, orch: orch, sched: sched, usage: rec, handler: gw.Handler(), indexer: indexer, vectors: vectors}, nil
+	return &App{st: st, orch: orch, sched: sched, usage: rec, handler: gw.Handler(), indexer: indexer, vectors: vectors,
+		logger: logger, usageFlushTimeout: usageFlushTimeout}, nil
 }
 
 // location is the time zone tz, falling back to Asia/Shanghai, then UTC.
@@ -285,8 +290,9 @@ func (a *App) Start(ctx context.Context) error {
 }
 
 // Close stops memory consolidation, embedding and the orchestrator, writes the
-// queued model calls (giving up after 5s) and closes the database. Further
-// calls return the first result.
+// queued model calls and closes the database, returning the database's error.
+// Model calls not written within 5s are lost with a warning, like any other
+// failed usage write. Further calls return the first result.
 func (a *App) Close() error {
 	a.closeOnce.Do(func() {
 		a.sched.Close()
@@ -294,13 +300,13 @@ func (a *App) Close() error {
 			a.indexer.Close()
 		}
 		a.orch.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), usageFlushTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), a.usageFlushTimeout)
 		defer cancel()
-		var usageErr error
 		if err := a.usage.Close(ctx); err != nil {
-			usageErr = fmt.Errorf("app: write queued model calls: %w", err)
+			a.logger.Warn("queued model calls not written before shutdown; the rest are lost",
+				"timeout", a.usageFlushTimeout, "error", err)
 		}
-		a.closeErr = errors.Join(usageErr, a.st.Close())
+		a.closeErr = a.st.Close()
 	})
 	return a.closeErr
 }

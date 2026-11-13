@@ -605,7 +605,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
   - `internal/memory/consolidate.go` 的整理调用记 `memory`；
   - 向量调用经 `internal/usage` 的向量装饰器记录：`internal/search/vector` 的后台生成（`indexer.go`）记 `embed_index`，检索时把查询句转成向量（`searcher.go`）记 `embed_query`，`role` 为 `embedding`，token 取向量服务响应里的 `usage.prompt_tokens`（没有就记 0）。没配置 `embedding` 时不创建装饰器。
 - **归属**：`usage.WithAttribution(ctx, bot, convKey, taskID)` 把来源放进 ctx。Runner 执行任务时放入，所以工具调用里的查询向量化（如 recall）自动带上任务；Indexer 处理每个会话时放入会话。`vector.Embedder` 接口不变，装饰器从 ctx 里取归属。
-- **写入**（`usage.Recorder`）：`Record` 不阻塞，把记录放进容量 4096 的通道；后台协程攒够 200 条或每 2 秒，在一个事务里批量插入。通道满或已开始关闭时丢弃并计入 `usage_dropped_total`；写库失败记 warn 日志、计入 `usage_write_errors_total`，这一批丢弃。`App.Close` 在调度、编排和向量后台都停下以后、关库之前调用 `Recorder.Close`，最多等 5 秒写完剩下的。现有的 `model call` 日志和 `model_*` 指标不变。
+- **写入**（`usage.Recorder`）：`Record` 不阻塞，把记录放进容量 4096 的通道；后台协程攒够 200 条或每 2 秒，在一个事务里批量插入。通道满或已开始关闭时丢弃并计入 `usage_dropped_total`；写库失败记 warn 日志、计入 `usage_write_errors_total`，这一批丢弃。`App.Close` 在调度、编排和向量后台都停下以后、关库之前调用 `Recorder.Close`，最多等 5 秒写完剩下的；超时没写完的记录丢弃，只记一条 warn 日志（`queued model calls not written before shutdown`），不算关闭失败，`App.Close` 只返回关库的错误。现有的 `model call` 日志和 `model_*` 指标不变。
 - **清理**：超过 `runtime.usage_retention`（默认 9600h，即 400 天）的行由每小时的清理任务分批删除，计入 `cleanup_deleted_total{table="model_calls"}`。
 - **统计**（`usage.Summarize`）：SQL 按 UTC 15 分钟时间槽和 bot、用途、角色、模型聚合次数、失败数（`outcome` 不为 `ok`）和三类 token，Go 再把时间槽归并到 `server.timezone` 的自然日，所以半点、45 分的时区也分得对。延迟 p50 / p95 只取成功调用的原始耗时在 Go 里计算（最近秩法），只在范围不超过 90 天时计算；范围最长 400 天。
 - **体积**：连同索引每行几百字节，覆盖索引每 100 万行约 97MB。
