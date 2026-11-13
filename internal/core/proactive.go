@@ -326,6 +326,7 @@ func (o *Orchestrator) purgeProactiveLog() {
 		}
 		return
 	}
+	o.countCleanup(cleanupProactive, n)
 	if n > 0 {
 		o.log.Info("purged proactive log", "count", n)
 	}

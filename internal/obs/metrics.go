@@ -24,6 +24,8 @@ type Metrics struct {
 	MemoryAffinityChanges      *prometheus.CounterVec // source
 
 	SkillCalls *prometheus.CounterVec // tool, result: ok|error|unknown|invalid
+
+	CleanupDeleted *prometheus.CounterVec // table
 }
 
 // NewMetrics creates all ConLoom metrics and registers them on reg; it panics
@@ -91,6 +93,10 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		SkillCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "conloom_skill_calls_total", Help: "Tool calls made by the model, by tool and result (ok|error|unknown|invalid).",
 		}, []string{"tool", "result"}),
+		CleanupDeleted: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "conloom_cleanup_deleted_total",
+			Help: "Rows deleted by retention cleanup, by table (tasks|outbox_actions|audit_events|events|proactive_log).",
+		}, []string{"table"}),
 	}
 	reg.MustRegister(
 		m.Events, m.Tasks, m.ModelLatency, m.ModelTokens, m.EstimateRatio,
@@ -100,5 +106,6 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.MemoryConsolidations, m.MemoryConsolidationSeconds, m.MemoryAffinityChanges,
 		m.SkillCalls,
 	)
+	reg.MustRegister(m.CleanupDeleted)
 	return m
 }

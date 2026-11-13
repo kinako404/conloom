@@ -94,6 +94,10 @@ type Orchestrator struct {
 	actionTTL   time.Duration
 	staleAfter  time.Duration
 
+	// cleanupBatch is the most rows one cleanup transaction deletes from a
+	// table, cleanupMaxBatches the most such transactions per table per round.
+	cleanupBatch, cleanupMaxBatches int
+
 	closing   atomic.Bool
 	closeOnce sync.Once
 	recovered atomic.Bool
@@ -150,6 +154,8 @@ func New(d Deps) (*Orchestrator, error) {
 		loc: d.Location, now: d.Now, memTrigger: d.MemoryTrigger, skills: d.Skills,
 		limiter: NewRateLimiter(),
 		owners:  map[string]*taskOwner{},
+
+		cleanupBatch: defaultCleanupBatch, cleanupMaxBatches: defaultCleanupMaxBatches,
 	}
 	if o.notifier == nil {
 		o.notifier = nopNotifier{}

@@ -96,6 +96,26 @@ func TestMetrics_MemoryRegistered(t *testing.T) {
 	}
 }
 
+func TestMetrics_CleanupRegistered(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+	m.CleanupDeleted.WithLabelValues("tasks").Add(3)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == "conloom_cleanup_deleted_total" {
+			if l := mf.GetMetric()[0].GetLabel(); len(l) != 1 || l[0].GetName() != "table" {
+				t.Fatalf("labels = %v, want only table", l)
+			}
+			return
+		}
+	}
+	t.Fatal("conloom_cleanup_deleted_total missing")
+}
+
 func TestNewLogger_JSONFormat(t *testing.T) {
 	var buf bytes.Buffer
 	log := NewLogger(config.ObservabilityConfig{LogLevel: "info", LogFormat: "json"}, &buf)
