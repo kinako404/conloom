@@ -81,12 +81,22 @@ func TestFuse(t *testing.T) {
 	for _, x := range got {
 		shape = append(shape, c{x.from, x.to, x.anchors})
 	}
-	want := []c{{48, 52, []int64{50}}, {90, 99, nil}, {10, 10, []int64{10}}, {30, 30, []int64{30}}, {70, 70, []int64{70}}}
+	want := []c{{48, 52, []int64{50}}, {10, 10, []int64{10}}, {90, 99, nil}, {30, 30, []int64{30}}, {70, 70, []int64{70}}}
 	if fmt.Sprint(shape) != fmt.Sprint(want) {
 		t.Fatalf("fused = %v, want %v", shape, want)
 	}
 	if !(got[0].score > got[1].score && got[1].score > got[2].score) {
 		t.Fatalf("scores = %v", got)
+	}
+
+	rrf := func(rank int) float64 { return 1 / float64(recallRRFK+rank+1) }
+	only := fuse([]store.MessageHit{{Seq: 100, Score: 1}}, 0, []search.Hit{{FromSeq: 200, ToSeq: 205, Score: 0.9}})
+	if only[0].from != 100 || only[1].from != 200 || only[1].score > recallVectorOnlyWeight*rrf(0)*(1+recallRecencyWeight)+1e-12 {
+		t.Fatalf("keyword hit and vector-only hit at rank 0 = %+v, want the vector-only one at half weight, after", only)
+	}
+	both := fuse([]store.MessageHit{{Seq: 300, Score: 1}}, 0, []search.Hit{{FromSeq: 299, ToSeq: 301, Score: 0.9}})
+	if len(both) != 1 || both[0].score != 2*rrf(0) {
+		t.Fatalf("a hit on both paths = %+v, want the full %v", both, 2*rrf(0))
 	}
 
 	tied := fuse([]store.MessageHit{{Seq: 5, Score: 1}, {Seq: 900, Score: 1}}, 0, nil)
@@ -118,7 +128,7 @@ func TestRecall_VectorOnlyHitShowsTheWholeStretch(t *testing.T) {
 	if got != want {
 		t.Fatalf("recall =\n%s\nwant\n%s", got, want)
 	}
-	if len(vec.calls) != 1 || vec.calls[0] != (vectorCall{groupKey, "出去玩", search.Range{}, 20}) {
+	if len(vec.calls) != 1 || vec.calls[0] != (vectorCall{groupKey, "出去玩", search.Range{}, 6}) {
 		t.Fatalf("vector calls = %+v", vec.calls)
 	}
 	if got := call(t, newRecall(st, true), invocation(groupKey, "20003", "小刚"), `{"query":"出去玩"}`); got != recallNotFound {
@@ -147,8 +157,8 @@ func TestRecall_FusesKeywordAndVectorHits(t *testing.T) {
 	tool := newRecallWith(st, vec)
 	tool.maxGroups = 2
 	got := call(t, tool, invocation(groupKey, "20002", "小红"), `{"query":"草莓"}`)
-	if !strings.Contains(got, "第10句说到草莓") || !strings.Contains(got, "周末去摘果子") || strings.Contains(got, "第50句") {
-		t.Fatalf("recall kept the wrong two groups:\n%s", got)
+	if !strings.Contains(got, "第10句说到草莓") || !strings.Contains(got, "第50句说到草莓") || strings.Contains(got, "周末去摘果子") {
+		t.Fatalf("recall kept the wrong two groups, want the hit on both paths and the best keyword hit ahead of the vector-only one:\n%s", got)
 	}
 }
 

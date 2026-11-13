@@ -26,7 +26,7 @@ const (
 	// recallKeywordHits and recallVectorHits are how many messages and
 	// stretches each search path returns for fusion.
 	recallKeywordHits = 50
-	recallVectorHits  = 20
+	recallVectorHits  = 6
 	// recallMorePages is how many further pages of keyword hits are read
 	// when the candidates so far leave fewer than recallHits groups to show.
 	recallMorePages = 3
@@ -34,6 +34,10 @@ const (
 	// the most a hit gains for being the newest among the candidates.
 	recallRRFK          = 60
 	recallRecencyWeight = 0.02
+	// recallVectorOnlyWeight scales the fused score of a candidate found by
+	// semantic search alone, so that keyword hits come first; a candidate
+	// both searches found keeps its full score.
+	recallVectorOnlyWeight = 0.5
 	// recallHits is how many candidates are shown, each as a group.
 	recallHits    = 6
 	recallContext = 2
@@ -94,9 +98,10 @@ type recallTool struct {
 // range of local dates.
 //
 // The keyword index gives the best 50 messages and, when Vectors is set,
-// semantic search the best 20 stretches; reciprocal rank fusion (k = 60)
+// semantic search the best 6 stretches; reciprocal rank fusion (k = 60)
 // with a slight preference for newer hits ranks them, overlapping hits
-// counting together. In a private chat whose speaker was forgotten, both
+// counting together and stretches only semantic search found at half
+// weight. In a private chat whose speaker was forgotten, both
 // searches start at that time. Candidates are expanded in turn until 6
 // groups can be shown, reading up to 3 more pages of keyword hits when the
 // first leaves fewer: a message hit with 2 messages of context on either
@@ -337,9 +342,10 @@ type recallCandidate struct {
 // fuse ranks keyword and vector hits by reciprocal rank fusion: a hit at
 // rank i of its list scores 1/(recallRRFK+i+1), the keyword hits' ranks
 // starting at keywordRank (for later pages), and hits whose seq ranges
-// overlap become one candidate with their scores added. Each candidate's
-// score is then raised by up to recallRecencyWeight for being newer than the
-// others. Candidates come best first, newer first among equals.
+// overlap become one candidate with their scores added. A candidate only
+// semantic search found counts recallVectorOnlyWeight of its score. Each
+// candidate's score is then raised by up to recallRecencyWeight for being
+// newer than the others. Candidates come best first, newer first among equals.
 func fuse(keyword []store.MessageHit, keywordRank int, vector []search.Hit) []recallCandidate {
 	rrf := func(rank int) float64 { return 1 / float64(recallRRFK+rank+1) }
 	var cands []recallCandidate
@@ -365,6 +371,11 @@ func fuse(keyword []store.MessageHit, keywordRank int, vector []search.Hit) []re
 	}
 	if len(merged) == 0 {
 		return nil
+	}
+	for i := range merged {
+		if merged[i].vector && len(merged[i].anchors) == 0 {
+			merged[i].score *= recallVectorOnlyWeight
+		}
 	}
 	lo := slices.MinFunc(merged, func(a, b recallCandidate) int { return cmp.Compare(a.to, b.to) }).to
 	hi := slices.MaxFunc(merged, func(a, b recallCandidate) int { return cmp.Compare(a.to, b.to) }).to
