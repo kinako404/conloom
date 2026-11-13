@@ -61,17 +61,19 @@ type SkillsConfig struct {
 
 // EmbeddingConfig locates an OpenAI-compatible embeddings endpoint: requests go
 // to Endpoint + "/embeddings". Timeout bounds each request and BatchSize the
-// texts sent in one request.
+// texts sent in one request. MinScore is the cosine similarity below which a
+// chunk is not a semantic hit; it depends on the model.
 type EmbeddingConfig struct {
 	Endpoint  string              `yaml:"endpoint"`
 	Model     string              `yaml:"model"`
 	APIKey    string              `yaml:"api_key"`
 	Timeout   conloomapi.Duration `yaml:"timeout"`
 	BatchSize int                 `yaml:"batch_size"`
+	MinScore  float64             `yaml:"min_score"`
 }
 
 func defaultEmbedding() EmbeddingConfig {
-	return EmbeddingConfig{Model: "bge-m3", Timeout: dur(10 * time.Second), BatchSize: 16}
+	return EmbeddingConfig{Model: "bge-m3", Timeout: dur(10 * time.Second), BatchSize: 16, MinScore: 0.48}
 }
 
 type APIToken struct {

@@ -239,6 +239,9 @@ func (c *Config) ValidateServe() error {
 		if d := e.Timeout.Duration; d <= 0 || d > maxEmbeddingTimeout {
 			p.addf("embedding.timeout", "must be > 0 and <= %s, got %s", maxEmbeddingTimeout, d)
 		}
+		if !(e.MinScore >= 0 && e.MinScore <= 1) {
+			p.addf("embedding.min_score", "must be in [0, 1], got %v", e.MinScore)
+		}
 		if e.BatchSize < 1 || e.BatchSize > maxEmbeddingBatch {
 			p.addf("embedding.batch_size", "must be between 1 and %d, got %d", maxEmbeddingBatch, e.BatchSize)
 		}

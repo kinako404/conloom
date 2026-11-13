@@ -26,10 +26,11 @@ const (
 	// skip the service for breakerCooldown; then one query tries it again.
 	breakerFailures = 3
 	breakerCooldown = 60 * time.Second
-	// DefaultMinScore is the cosine similarity below which the app drops a
-	// chunk as unrelated. It suits bge-m3, where a paraphrase scores about
-	// 0.8; another model may need another value.
-	DefaultMinScore = 0.5
+	// DefaultMinScore is the cosine similarity below which a chunk counts as
+	// unrelated, the default of embedding.min_score. Calibrated on bge-m3:
+	// related chunks scored about 0.50–0.63, most unrelated pairs below 0.46.
+	// Another model needs calibrating again.
+	DefaultMinScore = 0.48
 )
 
 // ChunkReader is what the Searcher reads; *sqlite.DB is one.

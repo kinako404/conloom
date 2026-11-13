@@ -58,8 +58,9 @@ func recallModel(t *testing.T) *fakeopenai.Server {
 }
 
 // fakeEmbeddings is an embedding service giving texts about going out one
-// direction, texts about 团子 another and everything else a third, so only
-// the matching stretches are similar. With fail set it answers 500.
+// direction, texts about 团子 another and everything else a third; the query
+// 出去玩 is 0.6 similar to the going-out direction and unlike the others. With
+// fail set it answers 500.
 type fakeEmbeddings struct {
 	srv      *httptest.Server
 	fail     atomic.Bool
@@ -85,12 +86,14 @@ func newFakeEmbeddings(t *testing.T) *fakeEmbeddings {
 		f.mu.Unlock()
 		data := make([]map[string]any, len(req.Input))
 		for i, text := range req.Input {
-			v := []float64{0, 0, 1}
+			v := []float64{0, 0, 1, 0}
 			switch {
-			case strings.Contains(text, "出门逛逛") || strings.Contains(text, "出去玩"):
-				v = []float64{1, 0, 0}
+			case text == "出去玩":
+				v = []float64{0.6, 0, 0, 0.8}
+			case strings.Contains(text, "出门逛逛"):
+				v = []float64{1, 0, 0, 0}
 			case strings.Contains(text, "团子"):
-				v = []float64{0, 1, 0}
+				v = []float64{0, 1, 0, 0}
 			}
 			data[i] = map[string]any{"index": i, "embedding": v}
 		}
@@ -208,7 +211,7 @@ func queryUntil(t *testing.T, cfg *config.Config, what, query string, args ...an
 // searchEnv starts an app on a seeded private chat with the admin, with
 // memory on and the memory skill, and semantic search when embed is set. It
 // waits for the keyword index and, with embed, for the weekend plan's chunk.
-func searchEnv(t *testing.T, embed *fakeEmbeddings) (*env, *fakeopenai.Server, *config.Config, int64) {
+func searchEnv(t *testing.T, embed *fakeEmbeddings, configure ...func(*config.Config)) (*env, *fakeopenai.Server, *config.Config, int64) {
 	t.Helper()
 	fake := recallModel(t)
 	cfg := memoryTestConfig(t, fake.URL)
@@ -219,7 +222,10 @@ func searchEnv(t *testing.T, embed *fakeEmbeddings) (*env, *fakeopenai.Server, *
 	cfg.Bots[0].Skills = []string{"memory"}
 	if embed != nil {
 		cfg.Embedding = &config.EmbeddingConfig{Endpoint: embed.srv.URL + "/v1", Model: "bge-m3",
-			Timeout: conloomapi.Duration{Duration: 5 * time.Second}, BatchSize: 16}
+			Timeout: conloomapi.Duration{Duration: 5 * time.Second}, BatchSize: 16, MinScore: 0.48}
+		for _, fn := range configure {
+			fn(cfg)
+		}
 		if err := cfg.ValidateServe(); err != nil {
 			t.Fatal(err)
 		}
@@ -314,5 +320,15 @@ func TestE2E_RecallWithoutEmbeddingUsesKeywords(t *testing.T) {
 	}
 	if _, got := e.ask(fake, "我说过周末去哪玩吗"); len(got) != 1 || got[0] != notFoundResult {
 		t.Fatalf("a reworded question without semantic search = %q", got)
+	}
+}
+
+func TestE2E_RecallSemanticFloorFromConfig(t *testing.T) {
+	e, fake, _, _ := searchEnv(t, newFakeEmbeddings(t), func(cfg *config.Config) { cfg.Embedding.MinScore = 0.7 })
+	if _, got := e.ask(fake, "我说过周末去哪玩吗"); len(got) != 1 || got[0] != notFoundResult {
+		t.Fatalf("a 0.6 similar stretch under min_score 0.7 = %q", got)
+	}
+	if _, got := e.ask(fake, "团子是谁来着"); len(got) != 1 || !strings.Contains(got[0], "叫团子的猫") {
+		t.Fatalf("keyword recall under min_score 0.7 = %q", got)
 	}
 }

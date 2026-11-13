@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"os"
 	"slices"
 	"strings"
@@ -34,7 +35,7 @@ func TestLoad_EmbeddingDefaults(t *testing.T) {
 		t.Fatal("Embedding = nil, want the section")
 	}
 	if e.Endpoint != "http://127.0.0.1:11434/v1" || e.Model != "bge-m3" || e.APIKey != "" ||
-		e.Timeout.Duration != 10*time.Second || e.BatchSize != 16 {
+		e.Timeout.Duration != 10*time.Second || e.BatchSize != 16 || e.MinScore != 0.48 {
 		t.Errorf("Embedding = %+v", *e)
 	}
 	if err := cfg.ValidateServe(); err != nil {
@@ -49,10 +50,11 @@ func TestLoad_EmbeddingExplicit(t *testing.T) {
   api_key: fake-embed-key
   timeout: 3s
   batch_size: 4
+  min_score: 0.6
 `)
 	e := cfg.Embedding
 	if e.Endpoint != "https://embed.example.invalid/v1" || e.Model != "other-embed" || e.APIKey != "fake-embed-key" ||
-		e.Timeout.Duration != 3*time.Second || e.BatchSize != 4 {
+		e.Timeout.Duration != 3*time.Second || e.BatchSize != 4 || e.MinScore != 0.6 {
 		t.Errorf("Embedding = %+v", *e)
 	}
 	if !slices.Contains(cfg.Secrets(), "fake-embed-key") {
@@ -84,6 +86,9 @@ func TestValidateServe_Embedding(t *testing.T) {
 		{"long timeout", func(e *EmbeddingConfig) { e.Timeout.Duration = 6 * time.Minute }, []string{"embedding.timeout"}},
 		{"zero batch", func(e *EmbeddingConfig) { e.BatchSize = 0 }, []string{"embedding.batch_size"}},
 		{"huge batch", func(e *EmbeddingConfig) { e.BatchSize = 257 }, []string{"embedding.batch_size"}},
+		{"negative min_score", func(e *EmbeddingConfig) { e.MinScore = -0.1 }, []string{"embedding.min_score"}},
+		{"min_score above 1", func(e *EmbeddingConfig) { e.MinScore = 1.01 }, []string{"embedding.min_score"}},
+		{"NaN min_score", func(e *EmbeddingConfig) { e.MinScore = math.NaN() }, []string{"embedding.min_score"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -111,6 +116,12 @@ func TestValidateServe_Embedding(t *testing.T) {
 	cfg = loadWith(t, "embedding:\n  endpoint: http://127.0.0.1:11434/v1\n  batch_size: 1\n")
 	if err := cfg.ValidateServe(); err != nil {
 		t.Errorf("batch_size 1: %v", err)
+	}
+	for _, v := range []string{"0", "1"} {
+		cfg = loadWith(t, "embedding:\n  endpoint: http://127.0.0.1:11434/v1\n  min_score: "+v+"\n")
+		if err := cfg.ValidateServe(); err != nil {
+			t.Errorf("min_score %s: %v", v, err)
+		}
 	}
 }
 
@@ -141,7 +152,7 @@ func TestLoad_ExampleEmbedding(t *testing.T) {
 	t.Setenv("CONLOOM_EMBEDDING_KEY", "fake-embed-key")
 	cfg := mustLoad(t, writeConfig(t, strings.Join(out, "\n")))
 	want := EmbeddingConfig{Endpoint: "http://127.0.0.1:11434/v1", Model: "bge-m3", APIKey: "fake-embed-key",
-		Timeout: dur(10 * time.Second), BatchSize: 16}
+		Timeout: dur(10 * time.Second), BatchSize: 16, MinScore: 0.48}
 	if cfg.Embedding == nil || *cfg.Embedding != want {
 		t.Fatalf("uncommented example Embedding = %+v, want %+v", cfg.Embedding, want)
 	}

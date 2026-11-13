@@ -146,7 +146,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		emb := embedding.New(*e, nil)
 		indexer = vector.NewIndexer(vector.IndexerDeps{Interval: opts.EmbeddingInterval, Store: st, Embedder: emb, Policies: policies, Reviewer: reviewer,
 			IsCommand: isCommand, Location: loc, Config: cfg, Metrics: metrics, Logger: logger})
-		vectors = vector.NewSearcher(vector.SearcherDeps{Store: st, Embedder: emb, MinScore: vector.DefaultMinScore,
+		vectors = vector.NewSearcher(vector.SearcherDeps{Store: st, Embedder: emb, MinScore: e.MinScore,
 			Metrics: metrics, Logger: logger})
 		logger.Info("semantic search enabled", "embedding_model", e.Model, "batch_size", e.BatchSize)
 	}
