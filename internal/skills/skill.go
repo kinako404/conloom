@@ -26,9 +26,11 @@ type Invocation struct {
 	ConversationType string // conloomapi.ConvGroup or conloomapi.ConvPrivate
 	PlatformUserID   string
 	DisplayName      string
-	IsAdmin          bool
-	Now              time.Time
-	Location         *time.Location
+	// TriggerMessageIDs 是本次回复所回应的消息（任务的触发消息），按时间顺序。
+	TriggerMessageIDs []string
+	IsAdmin           bool
+	Now               time.Time
+	Location          *time.Location
 }
 
 // Tool is a built-in function that skills expose to the model.
