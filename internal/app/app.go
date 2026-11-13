@@ -67,11 +67,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	if now == nil {
 		now = time.Now
 	}
-	tools := opts.Tools
-	if tools == nil {
-		tools = builtinTools()
-	}
-	skillReg, err := loadSkills(cfg, tools)
+	loadedSkills, err := skills.Load(cfg.Skills.Dir)
 	if err != nil {
 		return nil, fmt.Errorf("app: %w", err)
 	}
@@ -133,13 +129,23 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Now:      now,
 	})
 	policies.OnChange(sched.PolicyChanged)
+	reviewer := review.New(cfg.Secrets(), review.Options{})
+	tools := opts.Tools
+	if tools == nil {
+		tools = builtinTools(toolDeps{Store: st, Policies: policies, Reviewer: reviewer, Metrics: metrics})
+	}
+	skillReg, err := registerSkills(cfg, loadedSkills, tools)
+	if err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("app: %w", err)
+	}
 	orch, err := core.New(core.Deps{
 		Store:         st,
 		Router:        rt,
 		Admission:     adm,
 		Personas:      personas,
 		Policies:      policies,
-		Reviewer:      review.New(cfg.Secrets(), review.Options{}),
+		Reviewer:      reviewer,
 		Notifier:      ob,
 		Metrics:       metrics,
 		Logger:        logger,

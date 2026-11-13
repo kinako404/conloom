@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -45,22 +46,56 @@ func skillsConfig(t *testing.T, botSkills, dir string) *config.Config {
 	return cfg
 }
 
-func TestNew_ChecksEnabledSkills(t *testing.T) {
-	if got := builtinTools(); len(got) != 0 {
-		t.Fatalf("builtinTools = %d tools, want none until the tools are wired", len(got))
+func TestBuiltinTools(t *testing.T) {
+	var names []string
+	for _, tool := range builtinTools(toolDeps{}) {
+		names = append(names, tool.Spec().Name)
 	}
+	if !slices.Equal(names, []string{"remember", "recall", "get_affinity", "now"}) {
+		t.Fatalf("builtinTools = %v", names)
+	}
+	for _, c := range []struct {
+		text, prefix string
+		want         bool
+	}{
+		{"/记住 我喜欢草莓", "/", true},
+		{" /help", "/", true},
+		{"/草莓派真好吃", "/", false},
+		{"记住我喜欢草莓", "/", false},
+		{"!help", "!", true},
+	} {
+		if got := isCommand(c.text, c.prefix); got != c.want {
+			t.Errorf("isCommand(%q, %q) = %v, want %v", c.text, c.prefix, got, c.want)
+		}
+	}
+}
 
+func TestNew_ChecksEnabledSkills(t *testing.T) {
 	a, err := New(skillsConfig(t, "[]", ""), nil, Options{})
 	if err != nil {
 		t.Fatalf("New without skills: %v", err)
 	}
 	_ = a.Close()
 
-	_, err = New(skillsConfig(t, "[time, memory]", ""), nil, Options{})
-	if !errors.Is(err, skills.ErrInvalid) {
-		t.Fatalf("New with skills whose tools are missing = %v, want skills.ErrInvalid", err)
+	a, err = New(skillsConfig(t, "[time, memory]", ""), nil, Options{})
+	if err != nil {
+		t.Fatalf("New with the built-in skills and tools: %v", err)
 	}
-	for _, want := range []string{"bots[0].skills", `skill "time" uses unknown tool "now"`, `"remember"`} {
+	_ = a.Close()
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "weather"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skill := "---\nname: weather\ndescription: 天气\ntools: [weather, now]\nconversations: [private]\n---\n- 问天气时调用 weather。\n"
+	if err := os.WriteFile(filepath.Join(dir, "weather", "SKILL.md"), []byte(skill), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = New(skillsConfig(t, "[time, weather]", dir), nil, Options{})
+	if !errors.Is(err, skills.ErrInvalid) {
+		t.Fatalf("New with a skill whose tool is missing = %v, want skills.ErrInvalid", err)
+	}
+	for _, want := range []string{"bots[0].skills", `skill "weather" uses unknown tool "weather"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q lacks %q", err, want)
 		}

@@ -232,7 +232,7 @@ bots:
   - id: bot_main
     platform: qq
     platform_self_id: "30001"
-    skills: [time]
+    skills: [time, weather]
 model_profiles:
   short_context:
     endpoint: http://127.0.0.1:9/v1
@@ -240,8 +240,17 @@ model_profiles:
     context: {native_window: 32768, configured_window: 32768, soft_input_budget: 16000}
 storage:
   data_dir: ./data
+skills:
+  dir: ./skills
 `
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "skills", "weather"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skill := "---\nname: weather\ndescription: 天气\ntools: [weather]\nconversations: [private]\n---\n- 问天气时调用 weather。\n"
+	if err := os.WriteFile(filepath.Join(dir, "skills", "weather", "SKILL.md"), []byte(skill), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -250,7 +259,7 @@ storage:
 	if code != exitConfig || ctx.Err() != nil {
 		t.Fatalf("exit %d, want %d before the deadline; stderr %s", code, exitConfig, stderr)
 	}
-	if !strings.Contains(stderr, `skill "time" uses unknown tool "now"`) {
+	if !strings.Contains(stderr, `skill "weather" uses unknown tool "weather"`) || strings.Contains(stderr, `"now"`) {
 		t.Errorf("stderr = %q, want the missing tool named", stderr)
 	}
 }
