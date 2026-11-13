@@ -25,6 +25,16 @@ func TestLooksLikeContactOrID(t *testing.T) {
 		"vx：xm2026",
 		"WeChat id: xiao_ming",
 		"我的号码是 2000123456",
+		"138 0000 1111",
+		"138-0000-1111",
+		"打 138.0000.1111 找我",
+		"13800001111",
+		"QQ 2000 1234",
+		"我的 QQ 是 20001234",
+		"座机 010-12345678",
+		"+86 138 0000 1111",
+		"身份证 110101 19900101 123X",
+		"2000123456",
 	} {
 		if !LooksLikeContactOrID(s) {
 			t.Errorf("LooksLikeContactOrID(%q) = false, want true", s)
@@ -38,6 +48,14 @@ func TestLooksLikeContactOrID(t *testing.T) {
 		"我的微信头像是猫",
 		"比分是 3:2",
 		"我在学 Go 1.26",
+		"2026-11-20 10点考试",
+		"2026 11 13 10 30 开会",
+		"11:30 吃饭",
+		"2026-11-13 11:30 开会",
+		"2026.11.20 出发",
+		"下午 3:30 到 5:00",
+		"11 月 20 号 10 点",
+		"2026/11/20 10:00",
 	} {
 		if LooksLikeContactOrID(s) {
 			t.Errorf("LooksLikeContactOrID(%q) = true, want false", s)
@@ -55,6 +73,8 @@ func TestRedactContactOrID(t *testing.T) {
 		{"电话 +86 138 0000 1111", "［联系方式］"},
 		{"号码 1234567 和 QQ 20001", "［联系方式］ 和 ［联系方式］"},
 		{"我 2026 年毕业，猫 3 岁", "我 2026 年毕业，猫 3 岁"},
+		{"2026-11-20 10点考试，电话 138 0000 1111", "2026-11-20 10点考试，［联系方式］"},
+		{"11:30 打 13800001111", "11:30 打 ［联系方式］"},
 		{"", ""},
 	} {
 		got := RedactContactOrID(c.in)
@@ -63,6 +83,24 @@ func TestRedactContactOrID(t *testing.T) {
 		}
 		if LooksLikeContactOrID(c.in) != (got != c.in) || LooksLikeContactOrID(got) {
 			t.Errorf("RedactContactOrID(%q) = %q disagrees with LooksLikeContactOrID", c.in, got)
+		}
+	}
+}
+
+func TestRemember_DatesAreNotContacts(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	deps := RememberDeps{Store: st, Reviewer: review.New(nil, review.Options{})}
+	for content, want := range map[string]RememberStatus{
+		"2026-11-20 10点考试":    Remembered,
+		"2026 11 13 10 30 开会": Remembered,
+		"每天 11:30 吃午饭":        Remembered,
+		"我的电话 138 0000 1111":  RememberSensitive,
+		"138-0000-1111 是我的新号": RememberSensitive,
+	} {
+		got, err := Remember(ctx, deps, RememberRequest{ConversationKey: testConvKey, UserID: "20001", Content: content})
+		if err != nil || got != want {
+			t.Errorf("Remember(%q) = %v, %v; want %v", content, got, err, want)
 		}
 	}
 }

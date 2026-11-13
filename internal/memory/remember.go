@@ -53,15 +53,28 @@ func AppendRemembered(note, content string, maxRunes int) string {
 }
 
 var (
-	// contactPatterns are matched after compactDigits, so "138 0000 1111" and
-	// "138-0000-1111" read as one number.
+	// contactPatterns find contact details and identity numbers. Digits
+	// separated by spaces, hyphens or dots only count in the groupings of
+	// phone and identity numbers (or after a label), so dates and times such
+	// as "2026-11-20 10点" or "2026 11 13 10 30" are not taken for numbers.
+	// Matches next to further digits are dropped (see digitBounded).
 	contactPatterns = []*regexp.Regexp{
+		// Email.
 		regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+`),
+		// An unbroken run of digits: phone, QQ or identity numbers.
 		regexp.MustCompile(`\d{9,}`),
-		regexp.MustCompile(`\d{17}[Xx]`),
-		regexp.MustCompile(`\+\d{7,}`),
+		// Identity card numbers, also grouped 6-8-4.
+		regexp.MustCompile(`\d{17}[Xx]|\d{6}[ .-]\d{8}[ .-]\d{3}[\dXx]`),
+		// Mobile numbers grouped 3-4-4.
+		regexp.MustCompile(`1[3-9]\d[ .-]\d{4}[ .-]\d{4}`),
+		// Landlines with an area code.
+		regexp.MustCompile(`0\d{2,3}-\d{7,8}`),
+		// International numbers.
+		regexp.MustCompile(`\+\d{1,3}(?:[ .-]?\d{2,4}){2,}`),
+		// A label followed by an identifier, which may be digit groups.
 		regexp.MustCompile(`(?i)(qq|扣扣|企鹅号|微信|v信|vx|wx|wechat|weixin|电话|手机|座机|号码|tel|phone|身份证|证件|护照)` +
-			`[^\p{Han}A-Za-z0-9]{0,3}(id|号码|号)?[^\p{Han}A-Za-z0-9]{0,3}(是|为)?[^\p{Han}A-Za-z0-9]{0,3}[A-Za-z0-9_+-]{5,}`),
+			`[^\p{Han}A-Za-z0-9]{0,3}(id|号码|号)?[^\p{Han}A-Za-z0-9]{0,3}(是|为)?[^\p{Han}A-Za-z0-9]{0,3}` +
+			`(?:[A-Za-z0-9_+-]{5,}|\+?\d{2,}(?:[ .-]\d{2,})+)`),
 	}
 )
 
@@ -96,14 +109,15 @@ func RedactContactOrID(s string) string {
 }
 
 // contactSpans returns the sorted, disjoint byte ranges of s matched by
-// contactPatterns. Patterns are matched on compactDigits(s) and the ranges
-// are mapped back to s.
+// contactPatterns, leaving out matches that are part of a longer digit
+// sequence (such as a date continuing with more numbers).
 func contactSpans(s string) [][2]int {
-	compact, origin := compactDigits(s)
 	var spans [][2]int
 	for _, p := range contactPatterns {
-		for _, m := range p.FindAllStringIndex(compact, -1) {
-			spans = append(spans, [2]int{origin[m[0]], origin[m[1]-1] + 1})
+		for _, m := range p.FindAllStringIndex(s, -1) {
+			if digitBounded(s, m[0], m[1]) {
+				spans = append(spans, [2]int{m[0], m[1]})
+			}
 		}
 	}
 	slices.SortFunc(spans, func(a, b [2]int) int { return cmp.Compare(a[0], b[0]) })
@@ -118,29 +132,26 @@ func contactSpans(s string) [][2]int {
 	return merged
 }
 
-// compactDigits removes every run of spaces, tabs, hyphens and dots lying
-// between two ASCII digits, and maps each byte of the result to its offset
-// in s.
-func compactDigits(s string) (string, []int) {
-	isSep := func(c byte) bool { return c == ' ' || c == '\t' || c == '-' || c == '.' }
+// digitBounded reports whether s[start:end] is not continued by digits on
+// either side, directly or across one separator (space, hyphen, dot, slash or
+// colon): "1380000111122" or "2026-13800001111" hold no phone number of their
+// own.
+func digitBounded(s string, start, end int) bool {
 	isDigit := func(c byte) bool { return c >= '0' && c <= '9' }
-	var b strings.Builder
-	origin := make([]int, 0, len(s))
-	for i := 0; i < len(s); i++ {
-		if isSep(s[i]) && i > 0 && isDigit(s[i-1]) {
-			j := i
-			for j < len(s) && isSep(s[j]) {
-				j++
-			}
-			if j < len(s) && isDigit(s[j]) {
-				i = j - 1
-				continue
-			}
-		}
-		b.WriteByte(s[i])
-		origin = append(origin, i)
+	isSep := func(c byte) bool { return strings.IndexByte(" -./:", c) >= 0 }
+	if start > 0 && isDigit(s[start-1]) && isDigit(s[start]) {
+		return false
 	}
-	return b.String(), origin
+	if start > 1 && isSep(s[start-1]) && isDigit(s[start-2]) && isDigit(s[start]) {
+		return false
+	}
+	if end < len(s) && isDigit(s[end]) && isDigit(s[end-1]) {
+		return false
+	}
+	if end+1 < len(s) && isSep(s[end]) && isDigit(s[end+1]) && isDigit(s[end-1]) {
+		return false
+	}
+	return true
 }
 
 // WithoutRemembered is note without the items its member asked the bot to
