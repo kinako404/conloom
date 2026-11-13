@@ -204,8 +204,20 @@ default_group_policy:
     enabled: false                # 是否开启记忆；开启时要求 concurrency.allow_long_requests: true
     affinity: true                # 开启记忆时是否计算好感度
     consolidate_every: 150        # 新消息达到这么多条就整理一次，30~2000
-    consolidate_interval: 6h      # 新消息不足条数时，距上次整理超过这么久且至少有 20 条新消息也整理一次，30m~48h
+    consolidate_interval: 6h      # 新消息不足条数时，距上次整理超过这么久且至少有 consolidate_min 条新消息也整理一次，30m~48h
+    consolidate_min: 20           # 按时间整理时至少要有的新消息条数，1~2000
     backlog: 1000                 # 第一次开启时往回整理多少条旧消息，0~5000
+
+# 私聊会话的默认策略，结构与 default_group_policy 相同，省略的字段取内置默认值。
+# 整段省略时，私聊沿用 default_group_policy。已有策略版本的会话以库里的版本为准。
+default_private_policy:
+  context:
+    max_recent_messages: 200      # 私聊只有一个人，可以带更长的历史
+  memory:
+    enabled: true                 # 私聊默认开启记忆
+    consolidate_every: 40
+    consolidate_interval: 1h
+    consolidate_min: 6
 
 # 运行时参数。
 runtime:

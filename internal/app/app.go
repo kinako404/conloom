@@ -93,7 +93,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	rt := router.New(profiles, router.BreakerConfig{}, now)
 	adm := admission.New(limits)
 	personas := persona.NewService(st, cfg.PersonaTemplates)
-	policies := policy.NewService(st, cfg.DefaultGroupPolicy)
+	policies := policy.NewService(st, cfg.DefaultGroupPolicy).WithPrivateDefaults(cfg.PrivatePolicy())
 	ob := outbox.New(st, outbox.Config{Lease: cfg.Runtime.OutboxLease.Duration}, metrics, now)
 	cons := memory.NewConsolidator(memory.ConsolidatorDeps{
 		Store:     st,

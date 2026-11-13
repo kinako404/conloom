@@ -25,9 +25,12 @@ type Config struct {
 	ModelProfiles      map[string]ModelProfile          `yaml:"model_profiles"`
 	PersonaTemplates   map[string]conloomapi.PersonaDoc `yaml:"persona_templates"`
 	DefaultGroupPolicy conloomapi.GroupPolicy           `yaml:"default_group_policy"`
-	Runtime            RuntimeConfig                    `yaml:"runtime"`
-	Adapters           AdaptersConfig                   `yaml:"adapters"`
-	Observability      ObservabilityConfig              `yaml:"observability"`
+	// DefaultPrivatePolicy is the default policy of private conversations; nil
+	// when the file has no default_private_policy (see PrivatePolicy).
+	DefaultPrivatePolicy *conloomapi.GroupPolicy `yaml:"default_private_policy"`
+	Runtime              RuntimeConfig           `yaml:"runtime"`
+	Adapters             AdaptersConfig          `yaml:"adapters"`
+	Observability        ObservabilityConfig     `yaml:"observability"`
 
 	// Path is the absolute path of the loaded file.
 	Path string `yaml:"-"`
@@ -204,6 +207,10 @@ func Load(path string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("config %s: %w", abs, err)
 		}
+		if n := mappingValue(&root, "default_private_policy"); n != nil && n.Tag != "!!null" {
+			p := conloomapi.DefaultGroupPolicy()
+			cfg.DefaultPrivatePolicy = &p
+		}
 		dec := yaml.NewDecoder(bytes.NewReader(expanded))
 		dec.KnownFields(true)
 		if err := dec.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
@@ -294,6 +301,15 @@ func resolveDir(base, p string) string {
 		return p
 	}
 	return filepath.Join(base, p)
+}
+
+// PrivatePolicy is the default policy of private conversations:
+// DefaultPrivatePolicy when the file sets one, else DefaultGroupPolicy.
+func (c *Config) PrivatePolicy() conloomapi.GroupPolicy {
+	if c.DefaultPrivatePolicy != nil {
+		return *c.DefaultPrivatePolicy
+	}
+	return c.DefaultGroupPolicy
 }
 
 // Bot returns the bot with the given ID.

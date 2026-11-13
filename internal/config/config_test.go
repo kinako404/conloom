@@ -460,6 +460,76 @@ func TestLoad_MissingEnvRecorded(t *testing.T) {
 	}
 }
 
+func TestLoad_PrivatePolicyFallsBackToGroup(t *testing.T) {
+	cfg := mustLoad(t, writeConfig(t, `default_group_policy:
+  context:
+    max_recent_messages: 80
+`))
+	if cfg.DefaultPrivatePolicy != nil {
+		t.Fatalf("DefaultPrivatePolicy = %+v, want nil without the section", cfg.DefaultPrivatePolicy)
+	}
+	if got := cfg.PrivatePolicy(); !reflect.DeepEqual(got, cfg.DefaultGroupPolicy) || got.Context.MaxRecentMessages != 80 {
+		t.Fatalf("PrivatePolicy() = %+v, want the group defaults", got)
+	}
+}
+
+func TestLoad_PrivatePolicyMissingKeysUseBuiltInDefaults(t *testing.T) {
+	cfg := mustLoad(t, writeConfig(t, `default_group_policy:
+  context:
+    max_recent_messages: 80
+default_private_policy:
+  context:
+    max_recent_messages: 200
+  memory:
+    enabled: true
+    consolidate_every: 40
+    consolidate_interval: 1h
+    consolidate_min: 6
+`))
+	if cfg.DefaultPrivatePolicy == nil {
+		t.Fatal("DefaultPrivatePolicy = nil, want the section")
+	}
+	want := conloomapi.DefaultGroupPolicy()
+	want.Context.MaxRecentMessages = 200
+	want.Memory.Enabled, want.Memory.ConsolidateEvery, want.Memory.ConsolidateMin = true, 40, 6
+	want.Memory.ConsolidateInterval = conloomapi.Duration{Duration: time.Hour}
+	if got := cfg.PrivatePolicy(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("PrivatePolicy() = %+v\nwant %+v", got, want)
+	}
+	if cfg.DefaultGroupPolicy.Context.MaxRecentMessages != 80 || cfg.DefaultGroupPolicy.Memory.Enabled {
+		t.Fatalf("group defaults changed: %+v", cfg.DefaultGroupPolicy)
+	}
+	if err := cfg.DefaultPrivatePolicy.Validate(); err != nil {
+		t.Fatalf("private defaults invalid: %v", err)
+	}
+}
+
+func TestLoad_PrivatePolicyUnknownFieldRejected(t *testing.T) {
+	_, err := Load(writeConfig(t, "default_private_policy:\n  memroy:\n    enabled: true\n"))
+	if err == nil || !strings.Contains(err.Error(), "memroy") {
+		t.Fatalf("Load err = %v, want the unknown field named", err)
+	}
+}
+
+func TestLoad_ExampleConfigPrivatePolicy(t *testing.T) {
+	for k, v := range exampleEnv {
+		t.Setenv(k, v)
+	}
+	cfg := mustLoad(t, "../../conloom.example.yaml")
+	if cfg.DefaultPrivatePolicy == nil {
+		t.Fatal("example has no default_private_policy")
+	}
+	pp := *cfg.DefaultPrivatePolicy
+	m := pp.Memory
+	if !m.Enabled || pp.Context.MaxRecentMessages != 200 || m.ConsolidateEvery != 40 ||
+		m.ConsolidateInterval.Duration != time.Hour || m.ConsolidateMin != 6 {
+		t.Errorf("default_private_policy = %+v", pp)
+	}
+	if cfg.DefaultGroupPolicy.Memory.ConsolidateMin != 20 {
+		t.Errorf("default_group_policy.memory.consolidate_min = %d, want 20", cfg.DefaultGroupPolicy.Memory.ConsolidateMin)
+	}
+}
+
 func TestLoad_UnknownFieldRejected(t *testing.T) {
 	_, err := Load("testdata/unknown_field.yaml")
 	if err == nil {
@@ -535,6 +605,11 @@ func TestValidateServe_Rules(t *testing.T) {
 			c.DefaultGroupPolicy.Concurrency.MaxInteractiveRequests = 3
 			c.DefaultGroupPolicy.Review.Action = "explode"
 		}, []string{"default_group_policy.concurrency.max_interactive_requests", "default_group_policy.review.action"}},
+		{"invalid private policy", func(c *Config) {
+			p := conloomapi.DefaultGroupPolicy()
+			p.Memory.ConsolidateMin = 0
+			c.DefaultPrivatePolicy = &p
+		}, []string{"default_private_policy.memory.consolidate_min"}},
 		{"bad reply quote", func(c *Config) { c.DefaultGroupPolicy.Reply.Quote = "sometimes" },
 			[]string{"default_group_policy.reply.quote", `"sometimes"`}},
 		{"empty platform", func(c *Config) { c.Bots[0].Platform = " " }, []string{"bots[0].platform:"}},

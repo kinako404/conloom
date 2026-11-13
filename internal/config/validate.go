@@ -201,6 +201,9 @@ func (c *Config) ValidateServe() error {
 		p.nested("persona_templates."+name, c.PersonaTemplates[name].Validate())
 	}
 	p.nested("default_group_policy", c.DefaultGroupPolicy.Validate())
+	if c.DefaultPrivatePolicy != nil {
+		p.nested("default_private_policy", c.DefaultPrivatePolicy.Validate())
+	}
 
 	return p.err(c, "serve")
 }
