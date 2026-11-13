@@ -272,36 +272,79 @@ func TestMemoryBlockEchoIsStripped(t *testing.T) {
 	}
 }
 
-func TestE2E_MemoryNeverForPrivateChats(t *testing.T) {
+func TestE2E_PrivateChatMemory(t *testing.T) {
+	awayFromMidnight(t)
 	fake := memoryModel(t)
 	cfg := memoryTestConfig(t, fake.URL)
-	cfg.DefaultGroupPolicy.Memory.Enabled = true
+	private := conloomapi.DefaultGroupPolicy()
+	private.Memory.Enabled = true
+	private.Memory.ConsolidateMin = 6
+	cfg.DefaultPrivatePolicy = &private
 	e := newEnv(t, cfg)
 	ctx := context.Background()
+	adm := client.New(e.srv.URL, memAdminToken, nil)
 	adminChat := mock.Conv{Type: conloomapi.ConvPrivate, PlatformID: admin.PlatformID}
+	say := func(text string) string {
+		t.Helper()
+		resp, _ := e.say(adminChat, admin, text, mock.SayOptions{})
+		if resp.Disposition != conloomapi.DispositionReply {
+			t.Fatalf("private %q: response %+v, want a reply task", text, resp)
+		}
+		return e.drainOne().Content.Text
+	}
+	getMemory := func(convID string) conloomapi.MemoryState {
+		t.Helper()
+		st, err := adm.GetMemory(ctx, convID)
+		if err != nil {
+			t.Fatalf("GetMemory(%s): %v", convID, err)
+		}
+		return st
+	}
 
-	resp, _ := e.say(adminChat, admin, "我叫管理员，喜欢猫", mock.SayOptions{})
-	if resp.Disposition != conloomapi.DispositionReply {
-		t.Fatalf("private message: response %+v, want a reply task", resp)
+	e.observe(alice, "大家好")
+	if got := say("我叫管理员，喜欢猫"); got != fakeReply {
+		t.Fatalf("private reply = %q, want %q", got, fakeReply)
 	}
-	e.drainOne()
-	resp, _ = e.say(adminChat, admin, "/记忆 整理", mock.SayOptions{})
-	if resp.Disposition != conloomapi.DispositionReply {
-		t.Fatalf("/记忆 整理 in a private chat: response %+v, want a command reply", resp)
+	waitUntil(t, "the private chat's first affinity", func() bool {
+		m, ok := memberOf(getMemory("private_29999"), admin.PlatformID)
+		return ok && m.Affinity != nil && *m.Affinity == 20
+	})
+	if got := say("/记住 我下周三考试"); got != core.CopyRemembered {
+		t.Fatalf("/记住 = %q, want %q", got, core.CopyRemembered)
 	}
-	if got := e.drainOne().Content.Text; got != core.CopyMemoryGroupOnly {
-		t.Errorf("/记忆 整理 in a private chat = %q, want %q", got, core.CopyMemoryGroupOnly)
+	if m, _ := memberOf(getMemory("private_29999"), admin.PlatformID); m.Note != memory.RememberMarker+"我下周三考试" {
+		t.Fatalf("note after /记住 = %q", m.Note)
 	}
-	if err := client.New(e.srv.URL, memAdminToken, nil).ConsolidateMemory(ctx, "private_29999"); err == nil {
-		t.Error("ConsolidateMemory of a private chat succeeded")
+
+	if got := say("/记忆 整理"); got != core.CopyMemoryConsolidating {
+		t.Fatalf("/记忆 整理 = %q", got)
 	}
-	time.Sleep(300 * time.Millisecond)
+	waitUntil(t, "the private chat's summary and note", func() bool {
+		st := getMemory("private_29999")
+		m, _ := memberOf(st, admin.PlatformID)
+		return st.Enabled && st.Summary == "大家在聊猫" && m.Note == "喜欢猫"
+	})
+	var consolidations []string
 	for _, req := range fake.Requests() {
 		if text := requestText(req); strings.Contains(text, memory.LabelBatch) {
-			t.Fatalf("a private chat was consolidated:\n%s", text)
+			consolidations = append(consolidations, text)
 		}
-		if last := lastUserMessage(req); strings.HasPrefix(last, memBlockHeader) {
-			t.Errorf("a private chat got a memory block:\n%s", last)
-		}
+	}
+	if len(consolidations) != 1 || !strings.Contains(consolidations[0], "私聊记忆整理员") ||
+		strings.Contains(consolidations[0], admin.PlatformID) || !strings.Contains(consolidations[0], "（他让我记住）我下周三考试") {
+		t.Fatalf("private consolidation requests = %q", consolidations)
+	}
+
+	if got := say("还记得我吗"); got != fakeReply {
+		t.Fatalf("private reply = %q", got)
+	}
+	reqs := replyRequests(fake)
+	last := lastUserMessage(reqs[len(reqs)-1])
+	if !strings.HasPrefix(last, memBlockHeader) || !strings.Contains(last, "\n你们最近聊过：大家在聊猫\n") ||
+		!strings.Contains(last, "：喜欢猫\n") || strings.Contains(last, "群里最近") {
+		t.Errorf("private reply does not start with the private memory block:\n%s", last)
+	}
+	if st := getMemory("group_10001"); st.Enabled {
+		t.Errorf("group memory = %+v, want it still off (only the private defaults turn memory on)", st)
 	}
 }
