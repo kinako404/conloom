@@ -103,8 +103,28 @@ func modelProfilesView(profiles map[string]config.ModelProfile) map[string]any {
 			"privacy": map[string]any{
 				"data_location": p.Privacy.DataLocation, "allow_sensitive_content": p.Privacy.AllowSensitiveContent,
 			},
-			"extra_body":            p.ExtraBody,
+			"extra_body":            extraBodyView(p.ExtraBody),
 			"token_estimate_factor": p.TokenEstimateFactor,
+		}
+	}
+	return out
+}
+
+// extraBodyView shows the keys of a free-form extra_body. Booleans and numbers
+// are shown as they are; strings, lists, objects and nulls only show whether
+// they are set, since any of them may hold a credential.
+func extraBodyView(body map[string]any) map[string]any {
+	out := make(map[string]any, len(body))
+	for k, v := range body {
+		switch v := v.(type) {
+		case bool, int, int64, uint64, float64:
+			out[k] = v
+		case string:
+			out[k] = secret(v)
+		case nil:
+			out[k] = secretUnset
+		default:
+			out[k] = secretSet
 		}
 	}
 	return out

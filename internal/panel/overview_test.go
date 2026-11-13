@@ -163,6 +163,7 @@ func TestOverview_LiveFromRegistry(t *testing.T) {
 	m.QueueDepth.Set(2)
 	m.EmbeddingBacklog.Set(5)
 	m.FTSBackfillRemaining.Set(0)
+	h.cfg.Embedding = &config.EmbeddingConfig{Endpoint: "http://example.invalid:11434/v1", Model: "bge-m3"}
 	h.presence.Seen("qq-main", time.Date(2026, 11, 13, 7, 59, 30, 0, overviewZone))
 
 	// 2026-11-13 in overviewZone runs from 16:00 UTC on the 12th to 16:00 UTC on the 13th.
@@ -202,6 +203,22 @@ func TestOverview_LiveFromRegistry(t *testing.T) {
 		if o.Today[k] != v {
 			t.Errorf("today.%s = %d, want %d", k, o.Today[k], v)
 		}
+	}
+}
+
+func TestOverview_EmbeddingOffIsNull(t *testing.T) {
+	h := newOverviewHarness(t, nil)
+	m := obs.NewMetrics(h.gatherer)
+	m.EmbeddingBacklog.Set(5)
+	m.FTSBackfillRemaining.Set(7)
+
+	var o overviewBody
+	h.getJSON("/panel/api/overview", &o)
+	if o.Live.EmbeddingBacklog != nil {
+		t.Errorf("embedding_backlog without an embedding section = %d, want null", *o.Live.EmbeddingBacklog)
+	}
+	if o.Live.FTSBackfillRemaining == nil || *o.Live.FTSBackfillRemaining != 7 {
+		t.Errorf("fts_backfill_remaining = %v, want 7", o.Live.FTSBackfillRemaining)
 	}
 }
 

@@ -25,7 +25,10 @@ func secretConfig(h *overviewHarness) {
 	c.Bots[0].EnabledConversations = []conloomapi.ConversationRef{{Type: conloomapi.ConvGroup, PlatformID: "10001"}}
 	c.ModelProfiles = map[string]config.ModelProfile{
 		"short_context": {Provider: config.ProviderOpenAICompatible, Endpoint: "http://example.invalid/v1", Model: "qwen3",
-			APIKey: "SECRET-api_key", ExtraBody: map[string]any{"enable_thinking": false},
+			APIKey: "SECRET-api_key", ExtraBody: map[string]any{
+				"enable_thinking": false, "top_k": 20, "temperature": 0.7, "user_token": "SECRET-extra_body", "suffix": "",
+				"chat_template_kwargs": map[string]any{"key": "SECRET-extra_body_nested"}, "stop": []any{"SECRET-extra_body_list"},
+			},
 			Runtime: config.ProfileRuntime{MaxConcurrency: 2, Timeout: dur(time.Minute)}},
 		"long_context": {Provider: config.ProviderOpenAICompatible, Endpoint: "http://example.invalid/v2", Model: "deepseek"},
 	}
@@ -111,7 +114,11 @@ func TestConfigView_NoSecrets(t *testing.T) {
 
 		{[]any{"model_profiles", "short_context", "endpoint"}, "http://example.invalid/v1"},
 		{[]any{"model_profiles", "short_context", "runtime", "timeout"}, "1m0s"},
-		{[]any{"model_profiles", "short_context", "extra_body", "enable_thinking"}, false},
+		{[]any{"model_profiles", "short_context", "extra_body"}, map[string]any{
+			"enable_thinking": false, "top_k": 20.0, "temperature": 0.7, "user_token": "(已设置)", "suffix": "(未设置)",
+			"chat_template_kwargs": "(已设置)", "stop": "(已设置)",
+		}},
+		{[]any{"model_profiles", "long_context", "extra_body"}, map[string]any{}},
 		{[]any{"embedding", "endpoint"}, "http://example.invalid:11434/v1"},
 		{[]any{"adapters", "napcat", "ws_url"}, "ws://example.invalid:3001"},
 		{[]any{"adapters", "telegram", "bot_instance_id"}, "tg-main"},

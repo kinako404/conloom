@@ -16,7 +16,8 @@ type overviewBot struct {
 }
 
 // overviewLive is the process's current state. The gauges are null when the
-// registry does not have them.
+// registry does not have them, and EmbeddingBacklog also when the
+// configuration has no embedding section (semantic search is off).
 type overviewLive struct {
 	QueueDepth           *int64   `json:"queue_depth"`
 	OutboxPending        int      `json:"outbox_pending"`
@@ -64,10 +65,12 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request, _ *Session) {
 		Live: overviewLive{
 			QueueDepth:           gaugeCount(mfs, "conloom_queue_depth"),
 			OutboxPending:        pending,
-			EmbeddingBacklog:     gaugeCount(mfs, "conloom_embedding_backlog"),
 			FTSBackfillRemaining: gaugeCount(mfs, "conloom_fts_backfill_remaining"),
 			BreakersOpen:         openBreakers(mfs),
 		},
+	}
+	if s.d.Config.Embedding != nil {
+		resp.Live.EmbeddingBacklog = gaugeCount(mfs, "conloom_embedding_backlog")
 	}
 	t := &resp.Today
 	for _, b := range buckets {
