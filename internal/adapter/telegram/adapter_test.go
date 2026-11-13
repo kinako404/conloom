@@ -497,6 +497,49 @@ func TestAdapter_LogsNeverContainToken(t *testing.T) {
 	requireNoText(t, r2.logs, "在吗？", replyText)
 }
 
+func TestAdapter_DeletesWebhookAtStart(t *testing.T) {
+	tg, core := newFakeTG(t), newFakeCore(t)
+	tg.SetWebhook()
+	startAdapter(t, tgConfig(tg.URL, core.URL, t.TempDir()), nil)
+	tg.Push(textUpdate(101, 11, "在吗？"))
+	waitFor(t, 5*time.Second, "the update accepted", func() bool { return len(core.Accepted()) == 1 })
+
+	calls := tg.Calls("deleteWebhook")
+	if len(calls) != 1 {
+		t.Fatalf("deleteWebhook calls = %d, want 1", len(calls))
+	}
+	if v, ok := calls[0].Params["drop_pending_updates"]; !ok || v != false {
+		t.Errorf("deleteWebhook params = %v, want drop_pending_updates=false", calls[0].Params)
+	}
+	if first := tg.Calls("getUpdates")[0]; first.At.Before(calls[0].At) {
+		t.Error("getUpdates called before deleteWebhook")
+	}
+}
+
+func TestAdapter_ConflictLogsErrorAndBacksOff(t *testing.T) {
+	tg, core := newFakeTG(t), newFakeCore(t)
+	tg.Conflict(2)
+	r := startAdapter(t, tgConfig(tg.URL, core.URL, t.TempDir()), func(a *Adapter) {
+		a.retryMin, a.retryMax = 100*time.Millisecond, time.Second
+	})
+	tg.Push(textUpdate(101, 11, "在吗？"))
+	waitFor(t, 5*time.Second, "the update accepted after the conflicts", func() bool { return len(core.Accepted()) == 1 })
+
+	calls := tg.Calls("getUpdates")
+	if g1, g2 := calls[1].At.Sub(calls[0].At), calls[2].At.Sub(calls[1].At); g1 < 100*time.Millisecond || g2 < 200*time.Millisecond {
+		t.Errorf("getUpdates gaps after 409 = %v, %v; want a backoff of at least 100ms then 200ms", g1, g2)
+	}
+	var conflictErrors int
+	for _, line := range strings.Split(r.logs.String(), "\n") {
+		if strings.Contains(line, "level=ERROR") && strings.Contains(line, "another process") && strings.Contains(line, "409") {
+			conflictErrors++
+		}
+	}
+	if conflictErrors != 2 {
+		t.Errorf("error lines about another process = %d, want 2; logs:\n%s", conflictErrors, r.logs)
+	}
+}
+
 func TestAdapter_InvalidTokenStops(t *testing.T) {
 	tg, core := newFakeTG(t), newFakeCore(t)
 	cfg := tgConfig(tg.URL, core.URL, t.TempDir())

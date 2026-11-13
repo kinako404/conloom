@@ -74,6 +74,11 @@ type fakeTG struct {
 	send        tgResponder
 	failUpdates int
 	wake        chan struct{}
+	// webhook makes getUpdates answer 409 until deleteWebhook is called;
+	// conflicts answers the next getUpdates calls 409 as if another process
+	// were polling.
+	webhook   bool
+	conflicts int
 }
 
 func newFakeTG(t *testing.T) *fakeTG {
@@ -135,6 +140,11 @@ func (f *fakeTG) serve(w http.ResponseWriter, r *http.Request) {
 		f.sendMessage(w, call)
 	case "sendChatAction":
 		writeTG(w, http.StatusOK, okResult(true))
+	case "deleteWebhook":
+		f.mu.Lock()
+		f.webhook = false
+		f.mu.Unlock()
+		writeTG(w, http.StatusOK, okResult(true))
 	default:
 		writeTG(w, http.StatusNotFound, `{"ok":false,"error_code":404,"description":"Not Found: method not found"}`)
 	}
@@ -151,6 +161,17 @@ func (f *fakeTG) getUpdates(w http.ResponseWriter, r *http.Request, call tgCall)
 		f.failUpdates--
 		f.mu.Unlock()
 		writeTG(w, http.StatusBadGateway, "<html>Bad Gateway</html>")
+		return
+	}
+	if f.webhook {
+		f.mu.Unlock()
+		writeTG(w, http.StatusConflict, tgError(409, "Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first", 0))
+		return
+	}
+	if f.conflicts > 0 {
+		f.conflicts--
+		f.mu.Unlock()
+		writeTG(w, http.StatusConflict, tgError(409, "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running", 0))
 		return
 	}
 	if offset > 0 {
@@ -231,6 +252,21 @@ func (f *fakeTG) Push(updates ...map[string]any) {
 func (f *fakeTG) SetSend(r tgResponder) {
 	f.mu.Lock()
 	f.send = r
+	f.mu.Unlock()
+}
+
+// SetWebhook makes getUpdates fail with 409 until deleteWebhook is called.
+func (f *fakeTG) SetWebhook() {
+	f.mu.Lock()
+	f.webhook = true
+	f.mu.Unlock()
+}
+
+// Conflict makes the next n getUpdates calls answer 409 as if another
+// process were polling the bot.
+func (f *fakeTG) Conflict(n int) {
+	f.mu.Lock()
+	f.conflicts = n
 	f.mu.Unlock()
 }
 

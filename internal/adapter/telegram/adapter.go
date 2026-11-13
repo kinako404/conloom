@@ -121,6 +121,9 @@ func (a *Adapter) Run(ctx context.Context) error {
 		return err
 	}
 	a.self = self
+	if err := a.deleteWebhook(ctx); err != nil || ctx.Err() != nil {
+		return err
+	}
 	if err := a.checkCore(ctx); err != nil || ctx.Err() != nil {
 		return err
 	}
@@ -175,6 +178,16 @@ func (a *Adapter) getMe(ctx context.Context) (botUser, error) {
 	return me, err
 }
 
+// deleteWebhook removes a webhook set for the bot, which would make every
+// getUpdates fail with 409. Pending updates are kept.
+func (a *Adapter) deleteWebhook(ctx context.Context) error {
+	return a.retry(ctx, "telegram deleteWebhook", func() (bool, error) {
+		cctx, cancel := context.WithTimeout(ctx, callTimeout)
+		defer cancel()
+		return false, a.api.call(cctx, "deleteWebhook", deleteWebhookParams{DropPendingUpdates: false}, nil)
+	})
+}
+
 // checkCore reads the core's capabilities for the adapter's token and stops
 // the adapter if the token belongs to another bot instance, since every
 // event it submitted would be refused and its update dropped.
@@ -208,10 +221,17 @@ func (a *Adapter) receive(ctx context.Context) {
 		}
 		if err != nil {
 			wait := backoff
-			if ae := (*apiError)(nil); errors.As(err, &ae) && ae.RetryAfter > 0 {
+			ae := (*apiError)(nil)
+			isAPIError := errors.As(err, &ae)
+			if isAPIError && ae.RetryAfter > 0 {
 				wait = ae.RetryAfter
 			}
-			a.log.Warn("telegram getUpdates failed; retrying", "error", err, "retry_in", wait.String())
+			if isAPIError && ae.Code == http.StatusConflict {
+				a.log.Error("telegram getUpdates conflict: another process may be polling this bot with the same token, or a webhook was set again; retrying",
+					"error", err, "retry_in", wait.String())
+			} else {
+				a.log.Warn("telegram getUpdates failed; retrying", "error", err, "retry_in", wait.String())
+			}
 			if !sleep(ctx, wait) {
 				return
 			}

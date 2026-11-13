@@ -206,6 +206,12 @@ type getUpdatesParams struct {
 	AllowedUpdates []string `json:"allowed_updates"`
 }
 
+// deleteWebhookParams always sends drop_pending_updates, so updates waiting
+// for a webhook are kept for getUpdates.
+type deleteWebhookParams struct {
+	DropPendingUpdates bool `json:"drop_pending_updates"`
+}
+
 type chatActionParams struct {
 	ChatID int64  `json:"chat_id"`
 	Action string `json:"action"`
