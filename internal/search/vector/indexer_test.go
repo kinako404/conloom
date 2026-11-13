@@ -201,6 +201,26 @@ func TestIndexer_BacksOffAfterFailures(t *testing.T) {
 	}
 }
 
+func TestIndexer_InvalidVectorsAreNotStored(t *testing.T) {
+	e := newEnv(t)
+	e.say(groupKey, "20001", "小明", "草莓", at(0))
+	e.emb.set(func(f *fakeEmbedder) { f.invalid = true })
+	if err := e.indexer("m1", 16).RunOnce(context.Background()); err == nil {
+		t.Fatal("RunOnce with an out-of-range vector succeeded, want an error")
+	}
+	if n := len(e.chunks(groupKey, "m1")); n != 0 || e.cursor(groupKey) != 0 {
+		t.Fatalf("chunks = %d, cursor = %d; want nothing written", n, e.cursor(groupKey))
+	}
+	if e.requests("error") != 1 || e.requests("ok") != 0 {
+		t.Errorf("requests error/ok = %v/%v, want 1/0", e.requests("error"), e.requests("ok"))
+	}
+	e.emb.set(func(f *fakeEmbedder) { f.invalid = false })
+	e.run(e.indexer("m1", 16))
+	if n := len(e.chunks(groupKey, "m1")); n != 1 {
+		t.Fatalf("chunks after valid vectors = %d", n)
+	}
+}
+
 func TestIndexer_RoundBudget(t *testing.T) {
 	e := newEnv(t)
 	for i := range roundBudget + 10 {

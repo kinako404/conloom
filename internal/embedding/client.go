@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 
@@ -80,13 +81,14 @@ func Result(err error) string {
 type embeddingsResponse struct {
 	Data []struct {
 		Index     int       `json:"index"`
-		Embedding []float32 `json:"embedding"`
+		Embedding []float64 `json:"embedding"`
 	} `json:"data"`
 }
 
 // Embed sends texts in one request bounded by the configured timeout and
 // returns their vectors in input order. All vectors have the same, non-zero
-// length. It makes no request for no texts.
+// length and only finite float32 values; a response breaking that is an
+// error. It makes no request for no texts.
 func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
@@ -138,7 +140,14 @@ func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error)
 		if len(d.Embedding) == 0 || len(d.Embedding) != len(er.Data[0].Embedding) {
 			return nil, fmt.Errorf("embedding: vector %d has %d dimensions, want %d", d.Index, len(d.Embedding), len(er.Data[0].Embedding))
 		}
-		out[d.Index] = d.Embedding
+		vec := make([]float32, len(d.Embedding))
+		for i, f := range d.Embedding {
+			if math.IsNaN(f) || math.Abs(f) > math.MaxFloat32 {
+				return nil, fmt.Errorf("embedding: vector %d holds an invalid value", d.Index)
+			}
+			vec[i] = float32(f)
+		}
+		out[d.Index] = vec
 	}
 	return out, nil
 }

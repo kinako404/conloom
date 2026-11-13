@@ -58,6 +58,7 @@ type fakeEmbedder struct {
 	mu       sync.Mutex
 	inputs   [][]string
 	fail     bool
+	invalid  bool
 	delay    time.Duration
 	onInput  func()
 	requests int
@@ -77,7 +78,7 @@ func newFakeEmbedder(t *testing.T) *fakeEmbedder {
 		}
 		f.mu.Lock()
 		f.requests++
-		fail, delay, hook := f.fail, f.delay, f.onInput
+		fail, invalid, delay, hook := f.fail, f.invalid, f.delay, f.onInput
 		if !fail {
 			f.inputs = append(f.inputs, req.Input)
 		}
@@ -102,7 +103,11 @@ func newFakeEmbedder(t *testing.T) *fakeEmbedder {
 		}
 		var data []item
 		for i, text := range req.Input {
-			data = append(data, item{Index: i, Embedding: fakeVector(req.Model, text)})
+			v := fakeVector(req.Model, text)
+			if invalid {
+				v[0] = 1e39
+			}
+			data = append(data, item{Index: i, Embedding: v})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 	}))

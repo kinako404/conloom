@@ -112,7 +112,16 @@ func TestSearcher_EmptyWhenTheServiceFails(t *testing.T) {
 		t.Errorf("search_seconds{vector} samples = %v, want 2", n)
 	}
 
-	e.emb.set(func(f *fakeEmbedder) { f.fail = false })
+	e.emb.set(func(f *fakeEmbedder) { f.fail, f.invalid = false, true })
+	hits, err = s.Search(ctx, groupKey, "秘密草莓", search.Range{}, 5)
+	if err != nil || hits != nil {
+		t.Fatalf("Search with an invalid query vector = %v, %v", hits, err)
+	}
+	if e.requests("error") != 2 {
+		t.Errorf("error requests = %v, want 2", e.requests("error"))
+	}
+
+	e.emb.set(func(f *fakeEmbedder) { f.invalid = false })
 	if hits, _ := s.Search(ctx, groupKey, "草莓", search.Range{}, 5); len(hits) != 1 {
 		t.Errorf("hits after the service came back = %v", hits)
 	}

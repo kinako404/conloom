@@ -171,6 +171,10 @@ func TestEmbed_RejectsMalformedResponses(t *testing.T) {
 		"dup index":     `{"data":[{"index":0,"embedding":[1,2]},{"index":0,"embedding":[1,2]}]}`,
 		"empty vector":  `{"data":[{"index":0,"embedding":[]},{"index":1,"embedding":[]}]}`,
 		"mixed lengths": `{"data":[{"index":0,"embedding":[1,2]},{"index":1,"embedding":[1]}]}`,
+		"NaN":           `{"data":[{"index":0,"embedding":[1,2]},{"index":1,"embedding":[NaN,2]}]}`,
+		"Inf":           `{"data":[{"index":0,"embedding":[1,2]},{"index":1,"embedding":[1e400,2]}]}`,
+		"over float32":  `{"data":[{"index":0,"embedding":[1,2]},{"index":1,"embedding":[1e39,2]}]}`,
+		"-over float32": `{"data":[{"index":0,"embedding":[1,-1e39]},{"index":1,"embedding":[1,2]}]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -178,8 +182,12 @@ func TestEmbed_RejectsMalformedResponses(t *testing.T) {
 				_, _ = w.Write([]byte(body))
 				return true
 			})
-			if _, err := newClient(f.URL).Embed(context.Background(), []string{"a", "b"}); err == nil {
-				t.Fatal("Embed succeeded, want error")
+			vecs, err := newClient(f.URL).Embed(context.Background(), []string{"a", "b"})
+			if err == nil || vecs != nil {
+				t.Fatalf("Embed = %v, %v; want an error", vecs, err)
+			}
+			if Result(err) != ResultError {
+				t.Errorf("Result(%v) = %q, want error", err, Result(err))
 			}
 		})
 	}
