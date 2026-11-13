@@ -42,6 +42,9 @@ type Options struct {
 	HTTPClient *http.Client
 	Now        func() time.Time
 	Tools      []skills.Tool
+	// EmbeddingInterval is how often semantic search embeds new chunks,
+	// every minute when 0.
+	EmbeddingInterval time.Duration
 }
 
 // App is the assembled core service.
@@ -141,9 +144,10 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	var vectors search.VectorSearcher
 	if e := cfg.Embedding; e != nil {
 		emb := embedding.New(*e, nil)
-		indexer = vector.NewIndexer(vector.IndexerDeps{Store: st, Embedder: emb, Policies: policies, Reviewer: reviewer,
+		indexer = vector.NewIndexer(vector.IndexerDeps{Interval: opts.EmbeddingInterval, Store: st, Embedder: emb, Policies: policies, Reviewer: reviewer,
 			IsCommand: isCommand, Location: loc, Config: cfg, Metrics: metrics, Logger: logger})
-		vectors = vector.NewSearcher(vector.SearcherDeps{Store: st, Embedder: emb, Metrics: metrics, Logger: logger})
+		vectors = vector.NewSearcher(vector.SearcherDeps{Store: st, Embedder: emb, MinScore: vector.DefaultMinScore,
+			Metrics: metrics, Logger: logger})
 		logger.Info("semantic search enabled", "embedding_model", e.Model, "batch_size", e.BatchSize)
 	}
 	tools := opts.Tools

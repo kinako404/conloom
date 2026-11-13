@@ -20,8 +20,8 @@ type toolDeps struct {
 	Policies *policy.Service
 	Reviewer *review.Reviewer
 	Metrics  *obs.Metrics
-	// Vectors is semantic search, nil without an embedding section in the
-	// config. No tool uses it yet.
+	// Vectors is semantic search for recall, nil without an embedding
+	// section in the config.
 	Vectors search.VectorSearcher
 }
 
@@ -31,7 +31,7 @@ func builtinTools(d toolDeps) []skills.Tool {
 	return []skills.Tool{
 		tools.NewRemember(tools.RememberDeps{Store: d.Store, Policies: d.Policies, Reviewer: d.Reviewer, Metrics: d.Metrics}),
 		tools.NewRecall(tools.RecallDeps{Store: d.Store, Policies: d.Policies, Reviewer: d.Reviewer, IsCommand: isCommand,
-			Metrics: d.Metrics}),
+			Vectors: d.Vectors, Metrics: d.Metrics}),
 		tools.NewGetAffinity(tools.AffinityDeps{Store: d.Store, Policies: d.Policies}),
 		tools.NewNow(),
 	}
