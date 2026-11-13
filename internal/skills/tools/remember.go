@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -12,9 +13,48 @@ import (
 	"github.com/kinako404/conloom/internal/store"
 )
 
-// rememberCues are what the speaker's own trigger message must contain for
-// remember to write: words of asking to be remembered.
-var rememberCues = []string{"记住", "记一下", "记着", "记下", "别忘", "帮我记", "remember"}
+// rememberCues are the imperatives one of the speaker's own trigger messages
+// must use, outside a question, for remember to write.
+var rememberCues = []string{"记住", "帮我记", "记一下", "记下来", "别忘了", "remember"}
+
+// clauseEnds end a clause; questionEnds end a question.
+const (
+	clauseEnds   = "。！!？?；;，,～~…\n"
+	questionEnds = "？?"
+)
+
+// questionParticles end a question asked without a question mark.
+var questionParticles = []string{"吗", "嘛", "么", "呢", "没", "没有"}
+
+// asksToRemember reports whether text has a clause that uses a rememberCue
+// and is not a question, such as "记住我喜欢草莓" but not "记住了吗".
+func asksToRemember(text string) bool {
+	text = strings.ToLower(text)
+	for len(text) > 0 {
+		end := strings.IndexAny(text, clauseEnds)
+		clause, rest := text, ""
+		if end >= 0 {
+			_, size := utf8.DecodeRuneInString(text[end:])
+			clause, rest = text[:end+size], text[end+size:]
+		}
+		text = rest
+		if slices.ContainsFunc(rememberCues, func(cue string) bool { return strings.Contains(clause, cue) }) && !isQuestion(clause) {
+			return true
+		}
+	}
+	return false
+}
+
+// isQuestion reports whether clause, with its ending punctuation, asks
+// something: it ends in a question mark or a question particle.
+func isQuestion(clause string) bool {
+	clause = strings.TrimSpace(clause)
+	if strings.ContainsAny(clause, questionEnds) {
+		return true
+	}
+	clause = strings.TrimRight(strings.TrimRightFunc(clause, func(r rune) bool { return strings.ContainsRune(clauseEnds, r) }), " ")
+	return slices.ContainsFunc(questionParticles, func(p string) bool { return strings.HasSuffix(clause, p) })
+}
 
 // RememberStore is the part of store.Store that remember uses.
 type RememberStore interface {
@@ -93,8 +133,9 @@ func (t *rememberTool) Call(ctx context.Context, inv skills.Invocation, args jso
 }
 
 // askedToRemember reports whether one of the invocation's trigger messages
-// was sent by the speaker in its conversation and contains a rememberCue, so
-// that what others said, or text the model was led by, cannot make it write.
+// was sent by the speaker in its conversation and asks to remember (see
+// asksToRemember), so that what others said, questions, or text the model was
+// led by cannot make it write.
 func (t *rememberTool) askedToRemember(ctx context.Context, inv skills.Invocation) (bool, error) {
 	if len(inv.TriggerMessageIDs) == 0 {
 		return false, nil
@@ -107,11 +148,8 @@ func (t *rememberTool) askedToRemember(ctx context.Context, inv skills.Invocatio
 		if m.FromBot || m.ConversationKey != inv.ConversationKey || m.PlatformUserID != inv.PlatformUserID {
 			continue
 		}
-		text := strings.ToLower(m.Text)
-		for _, cue := range rememberCues {
-			if strings.Contains(text, cue) {
-				return true, nil
-			}
+		if asksToRemember(m.Text) {
+			return true, nil
 		}
 	}
 	return false, nil
