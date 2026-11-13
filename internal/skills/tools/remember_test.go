@@ -134,7 +134,8 @@ func TestRemember_OnlyWhenTheSpeakerAsked(t *testing.T) {
 	}
 
 	for _, text := range []string{"记一下，我下周考试", "别忘了我喜欢猫", "帮我记个事", "Please REMEMBER this", "记住哦",
-		"记住我喜欢草莓", "把这个记下来。", "你记得吗？算了，记住我喜欢猫"} {
+		"记住我喜欢草莓", "把这个记下来。", "你记得吗？算了，记住我喜欢猫",
+		"帮我记一下好吗", "你能记住我生日是5月1日吗", "麻烦记住我叫小明可以吗"} {
 		if got := call(t, tool, asked(t, st, groupKey, "20001", "小明", text), `{"content":"我喜欢猫"}`); got != "已记住。" {
 			t.Errorf("remember after %q = %q", text, got)
 		}
@@ -147,6 +148,7 @@ func TestRemember_QuestionsDoNotAsk(t *testing.T) {
 	for _, text := range []string{
 		"你还记着我说的吗", "记住了吗", "你记得吗", "记住了吗？我喜欢猫", "记住了没", "你记下来了吗？",
 		"别忘了吗", "Do you remember me?", "你记着啊", "我记下了",
+		"记住没有", "你记不记得我喜欢什么", "记没记住我的生日", "记得过吗", "记住过吗？",
 	} {
 		if got := call(t, tool, asked(t, st, groupKey, "20001", "小明", text), `{"content":"我喜欢猫"}`); got != notAsked {
 			t.Errorf("remember after %q = %q, want %q", text, got, notAsked)

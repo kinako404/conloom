@@ -17,17 +17,20 @@ import (
 // must use, outside a question, for remember to write.
 var rememberCues = []string{"记住", "帮我记", "记一下", "记下来", "别忘了", "remember"}
 
-// clauseEnds end a clause; questionEnds end a question.
-const (
-	clauseEnds   = "。！!？?；;，,～~…\n"
-	questionEnds = "？?"
+// clauseEnds end a clause.
+const clauseEnds = "。！!？?；;，,～~…\n"
+
+// Question tones: after a cue (and 了, 过 or 得) they make it a question
+// about remembering, as in "记住了吗" or "记住没有", rather than a request.
+var (
+	cueAspects     = []string{"了", "过", "得"}
+	questionTones  = []string{"吗", "嘛", "么", "呢", "没", "?", "？"}
+	recallingAsked = []string{"记不记", "记没记", "do you remember", "did you remember", "don't you remember"}
 )
 
-// questionParticles end a question asked without a question mark.
-var questionParticles = []string{"吗", "嘛", "么", "呢", "没", "没有"}
-
 // asksToRemember reports whether text has a clause that uses a rememberCue
-// and is not a question, such as "记住我喜欢草莓" but not "记住了吗".
+// as a request: "记住我喜欢草莓" or the polite "帮我记一下好吗" and
+// "你能记住我生日是5月1日吗", but not "记住了吗" or "你记不记得".
 func asksToRemember(text string) bool {
 	text = strings.ToLower(text)
 	for len(text) > 0 {
@@ -38,22 +41,46 @@ func asksToRemember(text string) bool {
 			clause, rest = text[:end+size], text[end+size:]
 		}
 		text = rest
-		if slices.ContainsFunc(rememberCues, func(cue string) bool { return strings.Contains(clause, cue) }) && !isQuestion(clause) {
+		if requestsToRemember(clause) {
 			return true
 		}
 	}
 	return false
 }
 
-// isQuestion reports whether clause, with its ending punctuation, asks
-// something: it ends in a question mark or a question particle.
-func isQuestion(clause string) bool {
-	clause = strings.TrimSpace(clause)
-	if strings.ContainsAny(clause, questionEnds) {
-		return true
+// requestsToRemember reports whether clause uses a rememberCue that is not
+// asking about remembering: the clause does not ask "记不记得" and the cue is
+// not followed, after an optional 了, 过 or 得, by a question tone.
+func requestsToRemember(clause string) bool {
+	if slices.ContainsFunc(recallingAsked, func(q string) bool { return strings.Contains(clause, q) }) {
+		return false
 	}
-	clause = strings.TrimRight(strings.TrimRightFunc(clause, func(r rune) bool { return strings.ContainsRune(clauseEnds, r) }), " ")
-	return slices.ContainsFunc(questionParticles, func(p string) bool { return strings.HasSuffix(clause, p) })
+	for _, cue := range rememberCues {
+		for rest := clause; ; {
+			i := strings.Index(rest, cue)
+			if i < 0 {
+				break
+			}
+			rest = rest[i+len(cue):]
+			if !asksAbout(rest) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// asksAbout reports whether after, the text right after a cue, turns it into a
+// question: an optional aspect particle, then a question tone.
+func asksAbout(after string) bool {
+	after = strings.TrimLeft(after, " ")
+	for _, a := range cueAspects {
+		if rest, ok := strings.CutPrefix(after, a); ok {
+			after = strings.TrimLeft(rest, " ")
+			break
+		}
+	}
+	return slices.ContainsFunc(questionTones, func(t string) bool { return strings.HasPrefix(after, t) })
 }
 
 // RememberStore is the part of store.Store that remember uses.
