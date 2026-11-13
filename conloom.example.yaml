@@ -54,13 +54,18 @@ bots:
     # 私聊策略：admins（仅管理员）| all（所有人）| off（关闭）。
     private_chat: admins
     persona_template: default
-  # Telegram 机器人（只处理私聊）：platform_self_id 是 Bot 的数字 ID（token 冒号前的部分），
-  # admins 填 Telegram 用户 ID；private_chat 为 admins 时只有管理员能私聊，改成 all 对所有人开放。
+  # Telegram 机器人：platform_self_id 是 Bot 的数字 ID（token 冒号前的部分），admins 填 Telegram 用户 ID。
   - id: bot_tg
     platform: telegram
     platform_self_id: ${CONLOOM_TG_BOT_ID}
     admins: ["${CONLOOM_TG_ADMIN_ID}"]
-    private_chat: admins
+    # group 项是开启的群（Telegram 的群 ID 是负数，要加引号）；private 项是允许私聊的人（用户 ID），
+    # 只在 private_chat: allowlist 时生效。
+    enabled_conversations:
+      - {type: group, platform_id: "${CONLOOM_TG_GROUP_ID}"}
+      - {type: private, platform_id: "${CONLOOM_TG_FRIEND_ID}"}
+    # allowlist：管理员和上面列出的人可以私聊；想对所有人开放改成 all。
+    private_chat: allowlist
 
 # 模型 Profile：按角色配置，换模型只需改这里。short_context 为必需项。
 model_profiles:

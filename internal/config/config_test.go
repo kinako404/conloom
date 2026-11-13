@@ -81,6 +81,8 @@ var exampleEnv = map[string]string{
 	"CONLOOM_TG_ADAPTER_TOKEN":     "fake-tg-adapter-token",
 	"CONLOOM_TG_BOT_ID":            "30002",
 	"CONLOOM_TG_ADMIN_ID":          "20001",
+	"CONLOOM_TG_GROUP_ID":          "-1001234567890",
+	"CONLOOM_TG_FRIEND_ID":         "20002",
 }
 
 func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
@@ -108,8 +110,9 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 	if !ok {
 		t.Fatal("bot_tg not found")
 	}
+	wantTGConvs := []conloomapi.ConversationRef{{Type: "group", PlatformID: "-1001234567890"}, {Type: "private", PlatformID: "20002"}}
 	if tgBot.Platform != "telegram" || tgBot.PlatformSelfID != "30002" || !slices.Equal(tgBot.Admins, []string{"20001"}) ||
-		tgBot.PrivateChat != "admins" || len(tgBot.EnabledConversations) != 0 {
+		tgBot.PrivateChat != "allowlist" || !reflect.DeepEqual(tgBot.EnabledConversations, wantTGConvs) {
 		t.Errorf("bot_tg = %+v", tgBot)
 	}
 	tg := cfg.Adapters.Telegram

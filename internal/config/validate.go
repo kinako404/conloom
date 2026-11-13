@@ -122,8 +122,8 @@ func (c *Config) ValidateServe() error {
 			}
 			p.required(cpath+".platform_id", conv.PlatformID)
 		}
-		if !slices.Contains([]string{"admins", "all", "off"}, b.PrivateChat) {
-			p.addf(path+".private_chat", "must be one of admins|all|off, got %q", b.PrivateChat)
+		if !slices.Contains([]string{"admins", "allowlist", "all", "off"}, b.PrivateChat) {
+			p.addf(path+".private_chat", "must be one of admins|allowlist|all|off, got %q", b.PrivateChat)
 		}
 		if _, ok := c.PersonaTemplates[b.PersonaTemplate]; !ok {
 			p.addf(path+".persona_template", "unknown persona template %q", b.PersonaTemplate)
