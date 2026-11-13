@@ -243,7 +243,7 @@ adapters:
     core_token: ${CONLOOM_ADAPTER_TOKEN}
     bot_instance_id: bot_main
     # state_dir 默认与 storage.data_dir 相同。
-  # Telegram（Bot API 长轮询，只处理私聊）。
+  # Telegram（Bot API 长轮询，私聊和群聊；频道跳过）。
   telegram:
     token: ${CONLOOM_TG_BOT_TOKEN}       # BotFather 给的 token，只放在 .env 里
     api_base: https://api.telegram.org   # 可省略

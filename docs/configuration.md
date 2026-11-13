@@ -215,7 +215,7 @@ default_group_policy:
 | `adapters.napcat.state_dir` | 去重记录 `napcat-dedup.log` 所在目录，默认同 `storage.data_dir`，相对路径按配置文件目录解析 |
 | `adapters.mock.core_url` / `core_token` / `bot_instance_id` | Mock 适配器的同名设置，均必填 |
 
-**Telegram 适配器**（`conloom adapter telegram`，只处理私聊，接入步骤见 [接入 Telegram](telegram.md)）：
+**Telegram 适配器**（`conloom adapter telegram`，处理私聊和群聊，接入步骤见 [接入 Telegram](telegram.md)）：
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
@@ -235,6 +235,8 @@ default_group_policy:
 | `CONLOOM_TG_ADAPTER_TOKEN` | Telegram 适配器调用核心 API 的令牌（随机长字符串，与 NapCat 的不同） |
 | `CONLOOM_TG_BOT_ID` | 机器人的数字 ID |
 | `CONLOOM_TG_ADMIN_ID` | 管理员的 Telegram 用户 ID |
+| `CONLOOM_TG_GROUP_ID` | 开启的 Telegram 群 ID（负数），写进 `bot_tg` 的 `enabled_conversations` |
+| `CONLOOM_TG_FRIEND_ID` | `private_chat: allowlist` 下允许私聊的一个用户 ID |
 
 ## observability
 

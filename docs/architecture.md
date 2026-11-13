@@ -1,11 +1,11 @@
 # ConLoom 织语：当前架构
 
-ConLoom 是一个用 Go 编写的群聊对话智能体框架：平台适配器把聊天消息交给核心，核心决定什么时候说话、说什么，再可靠地把回复送回平台。目前接入的真实平台是 QQ（通过 NapCat）和 Telegram（通过 Bot API，只处理私聊）。
+ConLoom 是一个用 Go 编写的群聊对话智能体框架：平台适配器把聊天消息交给核心，核心决定什么时候说话、说什么，再可靠地把回复送回平台。目前接入的真实平台是 QQ（通过 NapCat）和 Telegram（通过 Bot API，私聊和群聊）。
 
 本文描述仓库当前代码的实际行为，以代码为准。使用方法见 [使用指南](usage.md)，配置字段见 [配置参考](configuration.md)，设计过程与分期见 `docs/superpowers/specs/` 下的设计文档。
 
 ```text
-   QQ 群 / 私聊                                  Telegram 私聊
+   QQ 群 / 私聊                                  Telegram 群 / 私聊
         |                                              |
    [NapCat]  外部程序，提供 OneBot 11              [Telegram Bot API]  getUpdates 长轮询、
         |    正向 WebSocket 服务                       |               sendMessage、sendChatAction
@@ -46,7 +46,7 @@ ConLoom 是一个用 Go 编写的群聊对话智能体框架：平台适配器�
 |---|---|---|
 | `conloom serve` | 核心：API、判定、调度、模型调用、Outbox | 唯一监听端口的进程，`server.listen` 默认本机回环地址的 8787 端口 |
 | `conloom adapter napcat` | NapCat 适配器，QQ 群聊和私聊 | 不监听端口，只主动连接 NapCat（WebSocket）和核心（HTTP） |
-| `conloom adapter telegram` | Telegram 适配器，只处理私聊 | 不监听端口，只主动连接 Telegram Bot API（HTTPS 长轮询）和核心（HTTP） |
+| `conloom adapter telegram` | Telegram 适配器，私聊、群和超级群（频道跳过） | 不监听端口，只主动连接 Telegram Bot API（HTTPS 长轮询）和核心（HTTP） |
 
 - 其他子命令：`mock`（终端里的本地调试适配器）、`backup`（在线备份）、`version`。
 - API、`/healthz`、`/metrics` 共用一个端口；后两者不需要鉴权，`/metrics` 只能整体开关（`server.metrics_enabled`）。
@@ -89,16 +89,19 @@ NapCat      Adapter                 Core                          SQLite        
 10. **发送与 ACK**（`adapter.go:424`）：先查去重日志；发送成功后把 `action_id` 和平台消息 ID 写入去重日志并 fsync，再 `POST /outbox/{action_id}/ack`。
 11. **记录机器人自己的消息**：ACK 为 `sent` 时，核心在同一事务里把这条回复作为 `from_bot` 消息写进消息表（`internal/store/sqlite/outbox.go:102`）。之后群友回复这条消息，就会被识别为“回复机器人”；下一次调用模型时，它会作为 assistant 历史出现。
 
-### 2.1 Telegram 私聊的往返
+### 2.1 Telegram 的往返
 
 核心部分（第 3–8、11 步）完全相同，核心不知道消息来自哪个平台。适配器（`internal/adapter/telegram`）的不同之处：
 
-- **收消息**：循环调用 `getUpdates`（`allowed_updates=["message"]`，长轮询 `poll_timeout`，默认 50 秒）。每条更新提交给核心、被接受之后，下一次请求的 `offset` 才移到它之后，Telegram 据此确认并删除它（`adapter.go:198`）。可重试的提交失败按 0.5 秒起、最长 30 秒退避，一直重试同一条，后面的更新留在 Telegram 那边，没有内存缓冲；核心明确拒绝（4xx）的更新跳过。offset 不落盘：重启后 Telegram 重发所有未确认的更新（最多保存 24 小时），核心按幂等键重放。
-- **只处理私聊**：`chat.type` 不是 `private` 的更新、机器人发的、没有可识别内容的消息记一条 debug 日志后跳过（`convert.go:34`）。
-- **ID**：会话 `private_<用户ID>`（`platform_conversation_id` 为 chat_id），发送者 `user_<用户ID>`，幂等键 `telegram:<机器人ID>:<update_id>`。Telegram 的 message_id 只在单个会话内唯一，所以消息 ID 是 `msg_<chat_id>_<message_id>`，引用关系也用这个格式；适配器发送成功后 ACK 的平台消息 ID 是第一条消息的 `<chat_id>_<message_id>`（`convert.go:28`），第 11 步核心生成的 `msg_<平台消息ID>` 正好与用户引用它时的 `reply_to` 对上。
-- **正文**：文字原样提交；媒体写成 `[图片]`、`[表情]`、`[语音]`、`[视频]`、`[文件]` 占位并接上说明文字，不传附件元数据；`/start` 转成“你好”，命令去掉 `@<机器人用户名>` 后缀。
+- **启动**：`getMe` 取机器人 ID 和用户名，`deleteWebhook`（`drop_pending_updates=false`）删掉可能存在的 webhook（否则 `getUpdates` 一直 409），再读核心 capabilities 确认令牌属于本机器人实例（`adapter.go:187`）。
+- **收消息**：循环调用 `getUpdates`（`allowed_updates=["message"]`，长轮询 `poll_timeout`，默认 50 秒）。每条更新提交给核心、被接受之后，下一次请求的 `offset` 才移到它之后，Telegram 据此确认并删除它（`adapter.go:218`）。可重试的提交失败按 0.5 秒起、最长 30 秒退避，一直重试同一条，后面的更新留在 Telegram 那边，没有内存缓冲；核心明确拒绝（4xx）的更新跳过。offset 不落盘：重启后 Telegram 重发所有未确认的更新（最多保存 24 小时），核心按幂等键重放。运行中的 409 记 error 日志（可能有另一个进程在拉取）后退避重试。
+- **会话类型**：处理 `private`、`group`、`supergroup`；频道、机器人发的、没有可识别内容的消息记一条 debug 日志后跳过（`convert.go:40`）。群是否工作由核心按 `enabled_conversations` 判断；核心以 `not_enabled` 忽略某个群时，适配器按群打一次 info 日志，给出要填的 chat_id（`adapter.go:318`）。
+- **ID**：私聊会话 `private_<用户ID>`，群 `group_<chat_id>`，`platform_conversation_id` 都是 chat_id。群的 chat_id 是负数，负号原样保留：核心和网关只要求 ID 非空，会话键用 `:` 分隔，不受影响。发送者 `user_<用户ID>`，幂等键 `telegram:<机器人ID>:<update_id>`。Telegram 的 message_id 只在单个会话内唯一，所以消息 ID 是 `msg_<chat_id>_<message_id>`，引用关系也用这个格式；适配器发送成功后 ACK 的平台消息 ID 是第一条消息的 `<chat_id>_<message_id>`（`convert.go:32`），第 11 步核心生成的 `msg_<平台消息ID>` 正好与用户引用它时的 `reply_to` 对上，群里回复机器人的消息因此被判定为 `reply`。
+- **@**：消息（或图片说明）的 entities 里，`mention` 文本等于 `@<机器人用户名>`（不分大小写）算 @ 机器人，这段文字从正文去掉；其他 `mention` 算 @ 群友，ID 为 `username_<用户名小写>`（entity 只带用户名），`text_mention` 带用户对象，ID 为 `user_<用户ID>`。offset 按 UTF-16 计（`convert.go:180`）。
+- **正文和命令**：文字原样提交；媒体写成 `[图片]`、`[表情]`、`[语音]`、`[视频]`、`[文件]` 占位并接上说明文字，不传附件元数据；`/start` 转成“你好”。命令带 `@<机器人用户名>` 后缀时去掉后缀；后缀是别的机器人时原样上报，核心的 `ParseCommand` 不认这种词，按普通消息处理（`convert.go:232`）。
 - **发消息**：`sendMessage` 纯文本、不设 `parse_mode`。超过 4096 个 UTF-16 单位时按空行、换行或字数拆成多条，只有第一条带 `reply_parameters`（`allow_sending_without_reply: true`）（`send.go:31`、`send.go:99`）。429 按 `retry_after` 等待后重试，最多 5 次（`send.go:184`）。
-- **“正在输入”**：核心对这条消息返回 `disposition=reply` 后，每 4 秒发一次 `sendChatAction(typing)`，直到该会话的回复发出或过了 60 秒（`typing.go:39`）。
+- **“正在输入”**：核心对这条消息返回 `disposition=reply` 后，每 4 秒发一次 `sendChatAction(typing)`。每次发之前用 `GET /api/v1/tasks/{id}` 查回复任务，任务已结束就停止（需要 `tasks:read`，没有时警告一次、退回只按下面两条停止）；该会话的回复发出时停止；最长 60 秒（`typing.go:46`、`adapter.go:369`）。
+- **隐私模式**：Telegram 默认的隐私模式下，机器人在群里只收到发给它的命令和回复它的消息，看不到普通聊天。要让在聊会话、观望加入和上下文正常工作，需要在 BotFather 关闭隐私模式或把机器人设为群管理员，见 [接入 Telegram](telegram.md#4-群里的隐私模式)。
 - **结果不明不重发**：与 NapCat 相同。请求没写出去（连接失败）时不 ACK，等租约过期重新投递；Telegram 明确拒绝（4xx），或请求已写出但没拿到明确结果（超时、5xx、无法解析的响应），记入去重日志并以 `failed` 确认。是否写出由 `httptrace` 判断（`api.go:88`）。
 - **token**：Bot API 的请求地址含 token，`botAPI` 返回的所有错误都把 token（含各种转义形式）替换成 `REDACTED`（`api.go:61`）。
 

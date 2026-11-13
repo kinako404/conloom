@@ -11,7 +11,7 @@ ConLoom 是一个用 Go 编写的群聊对话智能体框架。它让一个由�
 - **像群友一样参与群聊**：不乱插话，不句句都回；正在聊天时按“轮”判断值不值得接话，对方转头和别人聊时识趣退出；没在聊时，只在群里自然停顿、话题相关时才主动加入一两句。
 - **主动搭话由每个人自己决定**：只有 @ 过机器人的群友才可能被主动搭话，每个人用 `/主动 关|低|中|高` 调自己的档位，管理员另有群总开关。
 - **可配置的人设模板**：风格、行为偏好，以及角色名、角色设定、说话方式和示例对话；按群应用，每次修改都有版本，可以回滚。内置的核心规则始终优先，人设改变不了它们。
-- **QQ 和 Telegram**：QQ 群聊和私聊通过 NapCat 接入；Telegram 私聊通过 Bot API 长轮询接入，不需要公网地址，见 [接入 Telegram](docs/telegram.md)。适配器只用公开 API 和核心交互，核心不认识任何平台。
+- **QQ 和 Telegram**：QQ 群聊和私聊通过 NapCat 接入；Telegram 私聊和群聊通过 Bot API 长轮询接入，不需要公网地址，见 [接入 Telegram](docs/telegram.md)。适配器只用公开 API 和核心交互，核心不认识任何平台。
 - **可靠投递**：事件幂等、发件箱持久化、至少一次投递加适配器端去重；重启后恢复未完成的任务，过时的回复不再补发。
 - **OpenAI 兼容的模型路由**：按短上下文、长上下文两个角色选择模型，换模型只改配置；带熔断和失败重试。
 - **单二进制、跨平台**：不需要 cgo、数据库服务或 Docker，Linux、macOS、Windows 的 amd64 和 arm64 开箱即用，数据都在一个 SQLite 文件里。
@@ -21,7 +21,7 @@ ConLoom 是一个用 Go 编写的群聊对话智能体框架。它让一个由�
 
 ```text
 QQ 群 ⇄ NapCat ⇄(OneBot 11 正向 WS)⇄ conloom adapter napcat   ⇄(REST /api/v1)⇄ conloom serve ⇄ 模型（OpenAI 兼容）
-Telegram 私聊 ⇄(Bot API 长轮询)⇄     conloom adapter telegram ⇄(REST /api/v1)⇄       │
+Telegram 私聊/群 ⇄(Bot API 长轮询)⇄  conloom adapter telegram ⇄(REST /api/v1)⇄       │
                                                                                 <data_dir>/conloom.db（SQLite）
 ```
 
