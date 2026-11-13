@@ -234,6 +234,36 @@ func TestAdapter_SkipsChannelUpdatesAndForwardsGroups(t *testing.T) {
 	requireNoText(t, r.logs, "频道公告", "群里的话")
 }
 
+func TestAdapter_LogsGroupsNotEnabledOnce(t *testing.T) {
+	tg, core := newFakeTG(t), newFakeCore(t)
+	core.set(func(c *fakeCore) {
+		c.disposition, c.suppressed = conloomapi.DispositionIgnore, conloomapi.SuppressedNotEnabled
+	})
+	_, logs := testLogger(t, "adapter")
+	a, err := New(tgConfig(tg.URL, core.URL, t.TempDir()), slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	tg.Push(groupUpdate(101, 11, "第一句"), groupUpdate(102, 12, "第二句"))
+	waitFor(t, 5*time.Second, "offset 103", func() bool { return hasOffset(tg, 103) })
+	var lines []string
+	for _, l := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(l, "enabled_conversations") {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=INFO") || !strings.Contains(lines[0], "chat_id=-1001234567890") ||
+		!strings.Contains(lines[0], "conversation_id=group_-1001234567890") {
+		t.Errorf("want one info line naming the group's chat ID, got %q", lines)
+	}
+	requireNoText(t, logs, "第一句", "第二句")
+}
+
 func TestAdapter_SplitsLongReplyAndQuotesOnlyFirst(t *testing.T) {
 	tg, core := newFakeTG(t), newFakeCore(t)
 	long := strings.Repeat("好", 3000) + "\n\n" + strings.Repeat("长", 3000)

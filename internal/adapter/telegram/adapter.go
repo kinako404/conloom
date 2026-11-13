@@ -62,6 +62,9 @@ type Adapter struct {
 	typing *typing
 	// noTaskReads is set once the core refused a task read (no tasks:read).
 	noTaskReads atomic.Bool
+
+	mu             sync.Mutex
+	disabledGroups map[int64]bool
 }
 
 // New validates cfg and returns an adapter. A nil logger discards logs.
@@ -101,6 +104,7 @@ func New(cfg config.TelegramConfig, logger *slog.Logger) (*Adapter, error) {
 		maxRateLimitRetries: 5,
 		typingInterval:      4 * time.Second,
 		typingFor:           60 * time.Second,
+		disabledGroups:      map[int64]bool{},
 	}, nil
 }
 
@@ -277,7 +281,7 @@ func (a *Adapter) handle(ctx context.Context, u update) bool {
 		a.log.Debug("skipping telegram update", "update_id", u.UpdateID, "reason", err.Error())
 		return true
 	}
-	log := a.log.With("update_id", u.UpdateID, "event_id", ev.EventID)
+	log := a.log.With("update_id", u.UpdateID, "event_id", ev.EventID, "conversation_id", ev.Conversation.ID)
 	chatID := u.Message.Chat.ID
 	delay := a.submitMin
 	for {
@@ -285,9 +289,12 @@ func (a *Adapter) handle(ctx context.Context, u update) bool {
 		resp, err := a.core.SubmitEvent(ctx, key, ev)
 		if err == nil {
 			log.Debug("event submitted", "disposition", resp.Disposition, "task_id", resp.TaskID,
-				obs.MessageAttr(a.logCfg, ev.Message.Text))
+				"suppressed_reason", resp.SuppressedReason, obs.MessageAttr(a.logCfg, ev.Message.Text))
 			if resp.Disposition == conloomapi.DispositionReply {
 				a.typing.start(chatID, submitted, resp.TaskID)
+			}
+			if resp.SuppressedReason == conloomapi.SuppressedNotEnabled && ev.Conversation.Type == conloomapi.ConvGroup {
+				a.noteGroupNotEnabled(chatID, ev.Conversation.ID)
 			}
 			return true
 		}
@@ -303,6 +310,19 @@ func (a *Adapter) handle(ctx context.Context, u update) bool {
 			return false
 		}
 		delay = min(delay*2, a.submitMax)
+	}
+}
+
+// noteGroupNotEnabled logs, once per group and process, that the core ignores
+// a group the bot is in, with the chat ID to list in enabled_conversations.
+func (a *Adapter) noteGroupNotEnabled(chatID int64, conversationID string) {
+	a.mu.Lock()
+	seen := a.disabledGroups[chatID]
+	a.disabledGroups[chatID] = true
+	a.mu.Unlock()
+	if !seen {
+		a.log.Info("the bot is in a Telegram group the core does not serve; list it in bots[].enabled_conversations to enable it",
+			"chat_id", chatID, "conversation_id", conversationID)
 	}
 }
 

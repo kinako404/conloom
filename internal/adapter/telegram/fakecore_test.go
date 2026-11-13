@@ -37,6 +37,7 @@ type fakeCore struct {
 	mu          sync.Mutex
 	botID       string
 	disposition string
+	suppressed  string
 	failEvents  int
 	rejectNext  int
 	failAcks    bool
@@ -137,7 +138,8 @@ func (c *fakeCore) postEvent(w http.ResponseWriter, r *http.Request) {
 		status, body = http.StatusBadRequest, apiErr(conloomapi.CodeInvalidEvent, false)
 	default:
 		status = http.StatusAccepted
-		body = conloomapi.EventAccepted{EventID: ev.EventID, Disposition: c.disposition, TaskID: "task_1", Status: conloomapi.TaskQueued}
+		body = conloomapi.EventAccepted{EventID: ev.EventID, Disposition: c.disposition, TaskID: "task_1", Status: conloomapi.TaskQueued,
+			SuppressedReason: c.suppressed}
 	}
 	rec.Code = status
 	c.submits = append(c.submits, rec)
