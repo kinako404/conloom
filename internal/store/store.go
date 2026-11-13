@@ -82,13 +82,17 @@ type Store interface {
 	// twice, fail the whole write.
 	ApplyMemoryWrite(ctx context.Context, w MemoryWrite) (conflicts []string, err error)
 	// ForgetPrivate forgets the user of a private conversation in one
-	// transaction: what ForgetMember does, plus emptying the conversation's
-	// summary, deleting its summary revisions and moving its cursor up to the
-	// newest message, so nothing said before (by either side) is consolidated
-	// again. A conversation without a memory row gets one.
+	// transaction: what ForgetMember does to the member, plus emptying the
+	// conversation's summary, deleting its summary revisions and moving its
+	// cursor up to the newest message, so nothing said before (by either side)
+	// is consolidated again. A conversation without a memory row gets one. Its
+	// semantic search chunks that start before at are deleted, and those
+	// running past at queued to be rebuilt.
 	ForgetPrivate(ctx context.Context, convKey, userID string, at time.Time) error
 	// ForgetMember clears the user's memory, marks it forgotten at at (creating
 	// the row if needed) and deletes the user's revisions in the conversation.
+	// The conversation's semantic search chunks holding a message the user sent
+	// before at are deleted and queued to be rebuilt without it.
 	ForgetMember(ctx context.Context, convKey, userID string, at time.Time) error
 	// ListMemoryRevisions returns the user's revisions oldest first; an empty
 	// userID lists summary revisions.
