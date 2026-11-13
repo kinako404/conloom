@@ -6,8 +6,16 @@ import (
 	"errors"
 	"time"
 
+	"github.com/kinako404/conloom/internal/search"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
+
+// MessageHit is a message found by SearchMessages. A higher Score is more
+// relevant; scores are only comparable within one search.
+type MessageHit struct {
+	Seq   int64
+	Score float64
+}
 
 var (
 	ErrNotFound         = errors.New("store: not found")
@@ -108,6 +116,21 @@ type Store interface {
 	UserIDsForActors(ctx context.Context, convKey string, actorIDs []string) (map[string]string, error)
 	// ListConversations returns all conversations of convType ordered by key.
 	ListConversations(ctx context.Context, convType string) ([]ConversationRecord, error)
+	// SearchMessages finds up to limit of the conversation's messages, bot
+	// messages included, whose text or sender name holds any of terms
+	// (search.Terms) and that occurred within r (After inclusive, Before
+	// exclusive), best first by bm25 and newest first among equals.
+	SearchMessages(ctx context.Context, convKey string, terms []string, r search.Range, limit int) ([]MessageHit, error)
+	// MessagesAround returns the conversation's messages with fromSeq <= Seq <=
+	// toSeq, plus up to before messages preceding them and up to after
+	// following them, ordered by Seq ascending.
+	MessagesAround(ctx context.Context, convKey string, fromSeq, toSeq int64, before, after int) ([]MessageRecord, error)
+	// BackfillMessageIndex adds up to batch messages missing from the keyword
+	// index, oldest first, and reports how many it added and how many
+	// messages remain after its progress mark. It can be stopped and resumed
+	// at any time, and also picks up messages written by binaries without the
+	// index.
+	BackfillMessageIndex(ctx context.Context, batch int) (indexed, remaining int, err error)
 	Backup(ctx context.Context, path string) error
 	Close() error
 }

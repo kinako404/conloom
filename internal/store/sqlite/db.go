@@ -36,6 +36,12 @@ type DB struct {
 }
 
 func Open(ctx context.Context, path string) (*DB, error) {
+	return open(ctx, path, migrations)
+}
+
+// open opens path and applies the migrations in fsys's migrations
+// directory that are not applied yet.
+func open(ctx context.Context, path string, fsys fs.FS) (*DB, error) {
 	w, err := sql.Open("sqlite", path+"?_txlock=immediate&"+pragmas)
 	if err != nil {
 		return nil, err
@@ -48,7 +54,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	}
 	r.SetMaxOpenConns(runtime.NumCPU())
 	db := &DB{w: w, r: r}
-	if err := db.migrate(ctx); err != nil {
+	if err := db.migrate(ctx, fsys); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -59,12 +65,12 @@ func (db *DB) Close() error {
 	return errors.Join(db.r.Close(), db.w.Close())
 }
 
-func (db *DB) migrate(ctx context.Context) error {
+func (db *DB) migrate(ctx context.Context, fsys fs.FS) error {
 	if _, err := db.w.ExecContext(ctx,
 		`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
-	entries, err := fs.ReadDir(migrations, "migrations")
+	entries, err := fs.ReadDir(fsys, "migrations")
 	if err != nil {
 		return err
 	}
@@ -75,7 +81,7 @@ func (db *DB) migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("migration %s: bad version prefix", name)
 		}
-		body, err := migrations.ReadFile("migrations/" + name)
+		body, err := fs.ReadFile(fsys, "migrations/"+name)
 		if err != nil {
 			return err
 		}
