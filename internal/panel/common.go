@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 // Store is what the panel API reads and writes besides sessions; *sqlite.DB
@@ -55,6 +56,20 @@ func (s *Server) conversation(w http.ResponseWriter, r *http.Request) (store.Con
 	if err != nil {
 		s.fail(w, r, err)
 		return store.ConversationRecord{}, false
+	}
+	return conv, true
+}
+
+// memoryConversation is conversation for the memory API, which only group
+// and private conversations have: others get 400 as in the Bot Interaction API.
+func (s *Server) memoryConversation(w http.ResponseWriter, r *http.Request) (store.ConversationRecord, bool) {
+	conv, ok := s.conversation(w, r)
+	if !ok {
+		return conv, false
+	}
+	if conv.Type != conloomapi.ConvGroup && conv.Type != conloomapi.ConvPrivate {
+		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "memory is only kept for group and private conversations")
+		return conv, false
 	}
 	return conv, true
 }
