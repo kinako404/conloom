@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,12 @@ const (
 	// related chunks scored about 0.50–0.63, most unrelated pairs below 0.46.
 	// Another model needs calibrating again.
 	DefaultMinScore = 0.48
+	// DefaultMargin is how far below the best chunk of a search others may
+	// score and still be hits.
+	DefaultMargin = 0.05
+	// loggedScores is how many of the best scores a search logs at debug
+	// level.
+	loggedScores = 5
 )
 
 // ChunkReader is what the Searcher reads; *sqlite.DB is one.
@@ -40,14 +47,16 @@ type ChunkReader interface {
 }
 
 // SearcherDeps are what the Searcher needs. QueryTimeout defaults to
-// DefaultQueryTimeout; chunks less similar to the query than MinScore are
-// never returned (0 returns the closest ones however distant); Metrics and
+// DefaultQueryTimeout. Chunks less similar to the query than MinScore, or
+// than the best chunk's score minus Margin (when Margin > 0), are never
+// returned; with both 0 the closest ones are, however distant. Metrics and
 // Logger may be nil.
 type SearcherDeps struct {
 	Store        ChunkReader
 	Embedder     Embedder
 	QueryTimeout time.Duration
 	MinScore     float64
+	Margin       float64
 	Metrics      *obs.Metrics
 	Logger       *slog.Logger
 }
@@ -102,9 +111,11 @@ type entry struct {
 
 // Search returns the up to limit chunks of convKey that overlap r (a chunk
 // ending at After counts, one starting at Before does not) and are
-// closest to query by cosine similarity, at least MinScore, best first. When the query cannot be
-// embedded in time it logs why and returns no hits, without an error; so it
-// does while the breaker is open.
+// closest to query by cosine similarity, at least MinScore and within Margin
+// of the best, best first. It logs the best scores at debug level, never the
+// query or any text. When the query cannot be embedded in time it logs why
+// and returns no hits, without an error; so it does while the breaker is
+// open.
 func (s *Searcher) Search(ctx context.Context, convKey, query string, r search.Range, limit int) ([]search.Hit, error) {
 	if s.d.Metrics != nil {
 		defer func(start time.Time) {
@@ -145,16 +156,24 @@ func (s *Searcher) Search(ctx context.Context, convKey, query string, r search.R
 			!r.After.IsZero() && c.endAt.Before(r.After) || !r.Before.IsZero() && !c.startAt.Before(r.Before) {
 			continue
 		}
-		if score := dot(q, c.vec) / (qnorm * c.norm); score >= s.d.MinScore {
-			hits = append(hits, search.Hit{FromSeq: c.from, ToSeq: c.to, Score: score})
-		}
+		hits = append(hits, search.Hit{FromSeq: c.from, ToSeq: c.to, Score: dot(q, c.vec) / (qnorm * c.norm)})
 	}
 	slices.SortFunc(hits, func(a, b search.Hit) int {
 		return cmp.Or(cmp.Compare(b.Score, a.Score), cmp.Compare(b.ToSeq, a.ToSeq))
 	})
+	top := make([]string, 0, loggedScores)
+	for _, h := range hits[:min(len(hits), loggedScores)] {
+		top = append(top, strconv.FormatFloat(h.Score, 'f', 3, 64))
+	}
+	floor := s.d.MinScore
+	if len(hits) > 0 && s.d.Margin > 0 {
+		floor = max(floor, hits[0].Score-s.d.Margin)
+	}
+	hits = slices.DeleteFunc(hits, func(h search.Hit) bool { return h.Score < floor })
 	if len(hits) > limit {
 		hits = hits[:limit]
 	}
+	s.d.Logger.Debug("semantic search scores", "top_scores", "["+strings.Join(top, " ")+"]", "hits", len(hits))
 	return hits, nil
 }
 

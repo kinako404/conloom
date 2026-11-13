@@ -92,6 +92,43 @@ func TestSearcher_MinScore(t *testing.T) {
 	}
 }
 
+func TestSearcher_KeepsOnlyScoresNearTheBest(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	best := e.say(groupKey, "20001", "小明", "草莓", at(0))
+	near := e.say(groupKey, "20001", "小明", strings.Repeat("草莓", 10)+"猫", at(60))
+	far := e.say(groupKey, "20001", "小明", "草莓，猫", at(120))
+	e.run(e.indexer("m1", 16))
+
+	var logs bytes.Buffer
+	s := NewSearcher(SearcherDeps{Store: e.st, Embedder: e.emb.client("m1", 16), MinScore: 0.48, Margin: 0.05,
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))})
+	hits, err := s.Search(ctx, groupKey, "草莓", search.Range{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []int64
+	for _, h := range hits {
+		got = append(got, h.FromSeq)
+	}
+	if !slices.Equal(got, []int64{best, near}) {
+		t.Fatalf("hits = %+v, want the best (1.0) and the near one (0.99) but not the one at 0.71", hits)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "level=DEBUG") || !strings.Contains(out, "top_scores=\"[1.000 0.991 0.709]\"") || !strings.Contains(out, "hits=2") {
+		t.Fatalf("debug log = %q, want the top scores and the number of hits", out)
+	}
+	if strings.Contains(out, "草莓") || strings.Contains(out, "猫") || strings.Contains(out, groupKey) {
+		t.Fatalf("debug log = %q shows the query, a text or the conversation", out)
+	}
+
+	all, err := NewSearcher(SearcherDeps{Store: e.st, Embedder: e.emb.client("m1", 16), MinScore: 0.48}).
+		Search(ctx, groupKey, "草莓", search.Range{}, 10)
+	if err != nil || len(all) != 3 || all[2].FromSeq != far {
+		t.Fatalf("hits without a margin = %+v, %v", all, err)
+	}
+}
+
 func TestDefaultMinScore(t *testing.T) {
 	if DefaultMinScore != 0.48 {
 		t.Fatalf("DefaultMinScore = %v, want 0.48 (calibrated on bge-m3)", DefaultMinScore)

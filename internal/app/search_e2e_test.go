@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -59,8 +60,8 @@ func recallModel(t *testing.T) *fakeopenai.Server {
 
 // fakeEmbeddings is an embedding service giving texts about going out one
 // direction, texts about 团子 another and everything else a third; the query
-// 出去玩 is 0.6 similar to the going-out direction and unlike the others. With
-// fail set it answers 500.
+// 出去玩 is 0.6 similar to the going-out direction, 0.52 to texts about 爬山
+// and unlike the others. With fail set it answers 500.
 type fakeEmbeddings struct {
 	srv      *httptest.Server
 	fail     atomic.Bool
@@ -86,14 +87,16 @@ func newFakeEmbeddings(t *testing.T) *fakeEmbeddings {
 		f.mu.Unlock()
 		data := make([]map[string]any, len(req.Input))
 		for i, text := range req.Input {
-			v := []float64{0, 0, 1, 0}
+			v := []float64{0, 0, 1, 0, 0}
 			switch {
 			case text == "出去玩":
-				v = []float64{0.6, 0, 0, 0.8}
+				v = []float64{0.6, 0, 0, 0.8, 0}
 			case strings.Contains(text, "出门逛逛"):
-				v = []float64{1, 0, 0, 0}
+				v = []float64{1, 0, 0, 0, 0}
+			case strings.Contains(text, "爬山"):
+				v = []float64{0.52 / 0.6, 0, 0, 0, math.Sqrt(1 - (0.52/0.6)*(0.52/0.6))}
 			case strings.Contains(text, "团子"):
-				v = []float64{0, 1, 0, 0}
+				v = []float64{0, 1, 0, 0, 0}
 			}
 			data[i] = map[string]any{"index": i, "embedding": v}
 		}
@@ -117,8 +120,8 @@ func (f *fakeEmbeddings) embedded(text string) bool {
 var adminPrivateKey = store.ConversationKey(botID, "qq", conloomapi.ConvPrivate, "private_29999")
 
 // seedHistory writes, before the app starts, a private chat with the admin
-// that began long ago: a message about 团子, a weekend plan, then 6000 more
-// messages. It returns the seq of the last one.
+// that began long ago: a message about 团子, a weekend plan, a hike, then
+// 6000 more messages. It returns the seq of the last one.
 func seedHistory(t *testing.T, cfg *config.Config) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -165,9 +168,10 @@ func seedHistory(t *testing.T, cfg *config.Config) int64 {
 	insert(2, false, "周末打算出门逛逛", trip)
 	insert(3, true, "去哪里呀", trip.Add(time.Minute))
 	insert(4, false, "公园吧", trip.Add(2*time.Minute))
+	insert(5, false, "下周去爬山", time.Date(2025, 3, 15, 10, 0, 0, 0, shanghaiLoc(t)))
 	later := time.Date(2025, 4, 1, 0, 0, 0, 0, shanghaiLoc(t))
 	for i := range 6000 {
-		insert(5+i, i%2 == 1, fmt.Sprintf("闲聊第%d句", i), later.Add(time.Duration(i)*time.Minute))
+		insert(6+i, i%2 == 1, fmt.Sprintf("闲聊第%d句", i), later.Add(time.Duration(i)*time.Minute))
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
@@ -235,7 +239,7 @@ func searchEnv(t *testing.T, embed *fakeEmbeddings, configure ...func(*config.Co
 	queryUntil(t, cfg, "the keyword index backfill", `SELECT backfilled_seq >= ? FROM message_fts_progress`, last)
 	if embed != nil {
 		queryUntil(t, cfg, "the weekend plan's chunk", `SELECT COUNT(*) > 0 FROM memory_chunks m JOIN messages s ON s.seq BETWEEN m.start_seq AND m.end_seq
-			WHERE m.conversation_key = ? AND s.text = '周末打算出门逛逛'`, adminPrivateKey)
+			WHERE m.conversation_key = ? AND s.text IN ('周末打算出门逛逛', '下周去爬山') HAVING COUNT(DISTINCT s.text) = 2`, adminPrivateKey)
 	}
 	return e, fake, cfg, last
 }
@@ -267,7 +271,7 @@ func TestE2E_RecallSearchesTheWholeHistoryWithVectors(t *testing.T) {
 		t.Errorf("keyword recall of a message 6000 messages back =\n%s", got)
 	}
 	if got := one("我说过周末去哪玩吗"); !strings.Contains(got, "—— 2025-03-01 ——\n[03-01 10:00] 管理员：周末打算出门逛逛") ||
-		strings.Contains(got, "闲聊") || strings.Contains(got, "团子") {
+		strings.Contains(got, "闲聊") || strings.Contains(got, "团子") || strings.Contains(got, "爬山") {
 		t.Errorf("semantic recall =\n%s", got)
 	}
 	if !embed.embedded("出去玩") {
