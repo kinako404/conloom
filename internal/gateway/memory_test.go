@@ -474,7 +474,11 @@ func TestMemoryAPI_PrivateConversation(t *testing.T) {
 	}))
 	privKey := store.ConversationKey("bot_main", "qq", conloomapi.ConvPrivate, "private_29999")
 	ctx := context.Background()
-	if err := s.st.PutGroupMemory(ctx, store.GroupMemory{ConversationKey: privKey, Summary: "最近在聊钢琴。", CursorSeq: 5}); err != nil {
+	if _, err := s.st.ApplyMemoryWrite(ctx, store.MemoryWrite{ConversationKey: privKey,
+		Group: &store.GroupMemory{ConversationKey: privKey, Summary: "最近在聊钢琴。", CursorSeq: 5},
+		Revisions: []store.MemoryRevision{{ConversationKey: privKey, Field: store.FieldSummary, NewValue: "最近在聊钢琴。",
+			Source: store.RevisionConsolidate}},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	const base = "/api/v1/conversations/private_29999/memory"
@@ -514,6 +518,9 @@ func TestMemoryAPI_PrivateConversation(t *testing.T) {
 	}
 	if g, err := s.st.GetGroupMemory(ctx, privKey); err != nil || g.Summary != "" || g.CursorSeq != 5 {
 		t.Fatalf("private summary after DELETE = %+v, %v; want cleared with the cursor kept", g, err)
+	}
+	if revs, err := s.st.ListMemoryRevisions(ctx, privKey, ""); err != nil || len(revs) != 0 {
+		t.Fatalf("private summary revisions after DELETE = %+v, %v; want none", revs, err)
 	}
 }
 

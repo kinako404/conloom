@@ -805,7 +805,7 @@ func consDuringModelCall(t *testing.T, e *consEnv, reply string, during func()) 
 	})
 	done := make(chan Result, 1)
 	go func() {
-		res, err := e.c.Run(context.Background(), testConvKey, false)
+		res, err := e.c.Run(context.Background(), e.convKey, false)
 		if err != nil {
 			t.Errorf("Run: %v", err)
 		}

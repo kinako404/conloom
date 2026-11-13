@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kinako404/conloom/internal/provider/openai"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -223,5 +224,132 @@ func TestScheduler_DailyDecayCoversPrivateConversations(t *testing.T) {
 	e.sched.daily(ctx)
 	if m := getMember(t, e.st, testPrivateKey, "20001"); m.Affinity == nil || *m.Affinity >= 40 {
 		t.Fatalf("private member after daily = %+v, want decayed", m)
+	}
+}
+
+func TestConsolidate_PrivateForgetDuringRunKeepsSummaryEmpty(t *testing.T) {
+	e := newConsEnv(t, consOpts{private: true})
+	ctx := context.Background()
+	if _, err := e.st.ApplyMemoryWrite(ctx, store.MemoryWrite{ConversationKey: testPrivateKey,
+		Group:   &store.GroupMemory{ConversationKey: testPrivateKey, Summary: "旧摘要"},
+		Members: []store.MemberMemory{{ConversationKey: testPrivateKey, PlatformUserID: "20001", Note: "旧笔记"}},
+		Revisions: []store.MemoryRevision{{ConversationKey: testPrivateKey, Field: store.FieldSummary, NewValue: "旧摘要",
+			Source: store.RevisionConsolidate}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	msgs := e.add(t, e.msg("20001", "小明", "我最近在学钢琴", consAt(0)), e.botMsg("加油", consAt(1)))
+	consDuringModelCall(t, e, `{"group_summary":"小明在学钢琴。","members":[{"ref":"P1","note":"在学钢琴。"}]}`, func() {
+		if err := Forget(ctx, e.st, testPrivateKey, "20001", consNow); err != nil {
+			t.Errorf("Forget: %v", err)
+		}
+	})
+	g := e.group(t)
+	if g.Summary != "" || g.CursorSeq != msgs[1].Seq {
+		t.Fatalf("group = %+v, want an empty summary with the cursor at %d", g, msgs[1].Seq)
+	}
+	if revs := revisionsOf(t, e.st, testPrivateKey, ""); len(revs) != 0 {
+		t.Fatalf("summary revisions = %+v, want none", revs)
+	}
+	if m := getMember(t, e.st, testPrivateKey, "20001"); m.Note != "" || m.ForgottenAt.IsZero() {
+		t.Fatalf("member = %+v, want forgotten", m)
+	}
+}
+
+func TestConsolidate_PrivateForgottenSinceRunStartWritesNoSummary(t *testing.T) {
+	e := newConsEnv(t, consOpts{private: true})
+	ctx := context.Background()
+	if err := e.st.PutGroupMemory(ctx, store.GroupMemory{ConversationKey: testPrivateKey}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.st.ForgetMember(ctx, testPrivateKey, "20001", consNow.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	msgs := e.add(t, e.msg("20001", "小明", "我最近在学钢琴", consNow.Add(2*time.Minute)))
+	e.long.answer(`{"group_summary":"小明在学钢琴。","members":[{"ref":"P1","note":"在学钢琴。"}]}`)
+	e.run(t, false)
+	if g := e.group(t); g.Summary != "" || g.CursorSeq != msgs[0].Seq {
+		t.Fatalf("group = %+v, want no summary written and the cursor moved", g)
+	}
+	if revs := revisionsOf(t, e.st, testPrivateKey, ""); len(revs) != 0 {
+		t.Fatalf("summary revisions = %+v, want none", revs)
+	}
+	if m := getMember(t, e.st, testPrivateKey, "20001"); m.Note != "在学钢琴。" {
+		t.Fatalf("note = %q, want the note from messages after forgetting", m.Note)
+	}
+}
+
+func TestConsolidate_PrivateSummaryWrittenNormally(t *testing.T) {
+	e := newConsEnv(t, consOpts{private: true})
+	e.add(t, e.msg("20001", "小明", "我最近在学钢琴", consAt(0)))
+	e.long.answer(`{"group_summary":"小明在学钢琴。","members":[]}`)
+	e.run(t, false)
+	if g := e.group(t); g.Summary != "小明在学钢琴。" || len(revisionsOf(t, e.st, testPrivateKey, "")) != 1 {
+		t.Fatalf("group = %+v, want the summary and its revision", g)
+	}
+}
+
+func TestForget_PrivateClearsSummaryAndItsRevisions(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	for _, key := range []string{testPrivateKey, testConvKey} {
+		if _, err := st.ApplyMemoryWrite(ctx, store.MemoryWrite{ConversationKey: key,
+			Group:   &store.GroupMemory{ConversationKey: key, Summary: "旧摘要", CursorSeq: 4},
+			Members: []store.MemberMemory{{ConversationKey: key, PlatformUserID: "20001", Note: "旧笔记"}},
+			Revisions: []store.MemoryRevision{{ConversationKey: key, Field: store.FieldSummary, NewValue: "旧摘要",
+				Source: store.RevisionConsolidate}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := Forget(ctx, st, key, "20001", consNow); err != nil {
+			t.Fatalf("Forget(%s): %v", key, err)
+		}
+	}
+	if g, err := st.GetGroupMemory(ctx, testPrivateKey); err != nil || g.Summary != "" || g.CursorSeq != 4 ||
+		len(revisionsOf(t, st, testPrivateKey, "")) != 0 {
+		t.Fatalf("private after Forget = %+v, %v; want the summary and its revisions gone, the cursor kept", g, err)
+	}
+	if g, err := st.GetGroupMemory(ctx, testConvKey); err != nil || g.Summary != "旧摘要" || len(revisionsOf(t, st, testConvKey, "")) != 1 {
+		t.Fatalf("group after Forget = %+v, %v; want the public summary and its revision kept", g, err)
+	}
+}
+
+func revisionsOf(t *testing.T, st store.Store, convKey, userID string) []store.MemoryRevision {
+	t.Helper()
+	revs, err := st.ListMemoryRevisions(context.Background(), convKey, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return revs
+}
+
+func TestConsolidate_PrivateFailureAfterForgetKeepsSummaryEmpty(t *testing.T) {
+	e := newConsEnv(t, consOpts{private: true})
+	ctx := context.Background()
+	if err := e.st.PutGroupMemory(ctx, store.GroupMemory{ConversationKey: testPrivateKey, Summary: "旧摘要"}); err != nil {
+		t.Fatal(err)
+	}
+	e.add(t, e.msg("20001", "小明", "我最近在学钢琴", consAt(0)))
+	entered, release := make(chan struct{}), make(chan struct{})
+	e.long.setReply(func(int, openai.ChatRequest) (openai.ChatResponse, error) {
+		close(entered)
+		<-release
+		return openai.ChatResponse{}, &openai.StatusError{Code: 500, Body: "boom"}
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.c.Run(ctx, testPrivateKey, false)
+		done <- err
+	}()
+	<-entered
+	if err := Forget(ctx, e.st, testPrivateKey, "20001", consNow); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-done; err == nil {
+		t.Fatal("Run: want the model error")
+	}
+	if g := e.group(t); g.Summary != "" || g.LastError != consErrModel {
+		t.Fatalf("group = %+v, want the summary still empty with the error recorded", g)
 	}
 }

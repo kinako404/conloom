@@ -122,8 +122,19 @@ func (db *DB) ApplyMemoryWrite(ctx context.Context, w store.MemoryWrite) ([]stri
 	var conflicts []string
 	err := db.inTx(ctx, func(tx *sql.Tx) error {
 		conflicts = nil
+		keepSummary, err := summaryGuardBroken(ctx, tx, w)
+		if err != nil {
+			return err
+		}
+		keepSummary = keepSummary || w.KeepSummary
 		if w.Group != nil {
-			if err := putGroupMemory(ctx, tx, *w.Group); err != nil {
+			g := *w.Group
+			if keepSummary {
+				if g.Summary, err = storedSummary(ctx, tx, w.ConversationKey); err != nil {
+					return err
+				}
+			}
+			if err := putGroupMemory(ctx, tx, g); err != nil {
 				return err
 			}
 		}
@@ -138,7 +149,8 @@ func (db *DB) ApplyMemoryWrite(ctx context.Context, w store.MemoryWrite) ([]stri
 			}
 		}
 		for _, r := range w.Revisions {
-			if r.PlatformUserID != "" && slices.Contains(conflicts, r.PlatformUserID) {
+			if r.PlatformUserID != "" && slices.Contains(conflicts, r.PlatformUserID) ||
+				keepSummary && r.PlatformUserID == "" && r.Field == store.FieldSummary {
 				continue
 			}
 			if err := insertMemoryRevision(ctx, tx, r); err != nil {
@@ -151,6 +163,44 @@ func (db *DB) ApplyMemoryWrite(ctx context.Context, w store.MemoryWrite) ([]stri
 		return nil, err
 	}
 	return conflicts, nil
+}
+
+// summaryGuardBroken reports whether a member of w.SummaryGuards no longer
+// has the version given.
+func summaryGuardBroken(ctx context.Context, tx *sql.Tx, w store.MemoryWrite) (bool, error) {
+	for _, gd := range w.SummaryGuards {
+		var v int64
+		err := tx.QueryRowContext(ctx, `SELECT version FROM member_memory WHERE conversation_key = ? AND platform_user_id = ?`,
+			w.ConversationKey, gd.PlatformUserID).Scan(&v)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+		if v != gd.Version {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func storedSummary(ctx context.Context, tx *sql.Tx, convKey string) (string, error) {
+	var summary string
+	err := tx.QueryRowContext(ctx, `SELECT summary FROM group_memory WHERE conversation_key = ?`, convKey).Scan(&summary)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return summary, err
+}
+
+func (db *DB) ClearSummary(ctx context.Context, convKey string) error {
+	return db.inTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE group_memory SET summary = '', updated_at = ? WHERE conversation_key = ?`,
+			fmtTime(time.Now()), convKey); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `DELETE FROM memory_revisions WHERE conversation_key = ? AND platform_user_id = '' AND field = ?`,
+			convKey, store.FieldSummary)
+		return err
+	})
 }
 
 func checkMemoryWrite(w store.MemoryWrite) error {

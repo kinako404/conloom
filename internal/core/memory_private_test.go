@@ -111,7 +111,11 @@ func TestMemoryCommand_PrivateChat(t *testing.T) {
 			t.Errorf("private %s = %q, want %q", c.text, got, c.want)
 		}
 	}
-	if err := env.st.PutGroupMemory(context.Background(), store.GroupMemory{ConversationKey: key, Summary: "最近在聊钢琴。", CursorSeq: 7}); err != nil {
+	if _, err := env.st.ApplyMemoryWrite(context.Background(), store.MemoryWrite{ConversationKey: key,
+		Group: &store.GroupMemory{ConversationKey: key, Summary: "最近在聊钢琴。", CursorSeq: 7},
+		Revisions: []store.MemoryRevision{{ConversationKey: key, Field: store.FieldSummary, NewValue: "最近在聊钢琴。",
+			Source: store.RevisionConsolidate}},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := env.privateCommand(t, "20001", "/记忆 摘要"), "我们的对话摘要：最近在聊钢琴。"; got != want {
@@ -136,6 +140,28 @@ func TestMemoryCommand_PrivateChat(t *testing.T) {
 	g, err := env.st.GetGroupMemory(context.Background(), key)
 	if err != nil || g.Summary != "" || g.CursorSeq != 7 {
 		t.Errorf("private summary after /忘记我 = %+v, %v; want cleared with the cursor kept", g, err)
+	}
+	if revs, err := env.st.ListMemoryRevisions(context.Background(), key, ""); err != nil || len(revs) != 0 {
+		t.Errorf("private summary revisions after /忘记我 = %+v, %v; want none", revs, err)
+	}
+}
+
+func TestMemoryCommand_GroupForgetKeepsSummary(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: memCmdConfig(true, true)})
+	if _, err := env.st.ApplyMemoryWrite(context.Background(), store.MemoryWrite{ConversationKey: testConvKey,
+		Group: &store.GroupMemory{ConversationKey: testConvKey, Summary: "大家在聊咖啡。"},
+		Revisions: []store.MemoryRevision{{ConversationKey: testConvKey, Field: store.FieldSummary, NewValue: "大家在聊咖啡。",
+			Source: store.RevisionConsolidate}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.command(t, "20001", "/忘记我"); got != CopyMemoryForgotten {
+		t.Fatalf("/忘记我 = %q", got)
+	}
+	g, err := env.st.GetGroupMemory(context.Background(), testConvKey)
+	revs, rerr := env.st.ListMemoryRevisions(context.Background(), testConvKey, "")
+	if err != nil || rerr != nil || g.Summary != "大家在聊咖啡。" || len(revs) != 1 {
+		t.Fatalf("group summary %+v and revisions %+v after /忘记我 (%v, %v); want both kept", g, revs, err, rerr)
 	}
 }
 
