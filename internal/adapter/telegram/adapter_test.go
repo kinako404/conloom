@@ -406,6 +406,59 @@ func TestAdapter_TypingStopsAfterLimit(t *testing.T) {
 	}
 }
 
+func TestAdapter_TypingStopsWhenTaskFinishes(t *testing.T) {
+	for _, status := range []string{conloomapi.TaskSucceeded, conloomapi.TaskFailed, conloomapi.TaskCancelled} {
+		t.Run(status, func(t *testing.T) {
+			tg, core := newFakeTG(t), newFakeCore(t)
+			startAdapter(t, tgConfig(tg.URL, core.URL, t.TempDir()), func(a *Adapter) {
+				a.typingInterval, a.typingFor = 50*time.Millisecond, 10*time.Second
+			})
+			tg.Push(textUpdate(101, 11, "在吗？"))
+			waitFor(t, 5*time.Second, "repeated typing", func() bool { return len(typingCalls(tg)) >= 3 })
+
+			core.set(func(c *fakeCore) { c.taskStatus["task_1"] = status })
+			time.Sleep(200 * time.Millisecond)
+			n := len(typingCalls(tg))
+			time.Sleep(300 * time.Millisecond)
+			if after := len(typingCalls(tg)); after != n {
+				t.Errorf("typing calls went from %d to %d after the task %s without a reply, want it stopped", n, after, status)
+			}
+		})
+	}
+}
+
+func TestAdapter_TypingWithoutTasksReadFallsBackToLimit(t *testing.T) {
+	tg, core := newFakeTG(t), newFakeCore(t)
+	core.set(func(c *fakeCore) {
+		c.denyTasks = true
+		c.taskStatus["task_1"] = conloomapi.TaskSucceeded
+	})
+	r := startAdapter(t, tgConfig(tg.URL, core.URL, t.TempDir()), func(a *Adapter) {
+		a.typingInterval, a.typingFor = 50*time.Millisecond, 600*time.Millisecond
+	})
+	tg.Push(textUpdate(101, 11, "在吗？"))
+	waitFor(t, 5*time.Second, "typing", func() bool { return len(typingCalls(tg)) >= 1 })
+	time.Sleep(300 * time.Millisecond)
+	if n := len(typingCalls(tg)); n < 4 {
+		t.Errorf("typing calls = %d after 300ms, want typing to go on without task reads", n)
+	}
+	time.Sleep(600 * time.Millisecond)
+	n := len(typingCalls(tg))
+	time.Sleep(300 * time.Millisecond)
+	if after := len(typingCalls(tg)); after != n {
+		t.Errorf("typing calls went from %d to %d, want it stopped by the time limit", n, after)
+	}
+	core.mu.Lock()
+	reads := core.taskReads
+	core.mu.Unlock()
+	if reads != 1 {
+		t.Errorf("task reads = %d, want 1 (no more reads once the scope is missing)", reads)
+	}
+	if logs := r.logs.String(); strings.Count(logs, "tasks:read") != 1 || !strings.Contains(logs, "level=WARN") {
+		t.Errorf("want one warning about the missing tasks:read scope, logs:\n%s", logs)
+	}
+}
+
 func TestAdapter_NoTypingWithoutReply(t *testing.T) {
 	tg, core := newFakeTG(t), newFakeCore(t)
 	core.set(func(c *fakeCore) { c.disposition = conloomapi.DispositionIgnore })

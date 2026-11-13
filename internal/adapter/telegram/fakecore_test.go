@@ -46,6 +46,11 @@ type fakeCore struct {
 	actions     []*leasedAction
 	acks        []ackRecord
 	wake        chan struct{}
+	// taskStatus is the status GET /tasks/{id} reports, "running" if unset;
+	// denyTasks answers it 403 as for a token without tasks:read.
+	taskStatus map[string]string
+	denyTasks  bool
+	taskReads  int
 }
 
 type leasedAction struct {
@@ -56,7 +61,10 @@ type leasedAction struct {
 
 func newFakeCore(t *testing.T) *fakeCore {
 	t.Helper()
-	c := &fakeCore{t: t, botID: testBotID, disposition: conloomapi.DispositionReply, lease: 300 * time.Millisecond, wake: make(chan struct{})}
+	c := &fakeCore{
+		t: t, botID: testBotID, disposition: conloomapi.DispositionReply, lease: 300 * time.Millisecond,
+		wake: make(chan struct{}), taskStatus: map[string]string{},
+	}
 	c.srv = httptest.NewServer(http.HandlerFunc(c.serve))
 	c.URL = c.srv.URL
 	t.Cleanup(c.srv.Close)
@@ -86,6 +94,20 @@ func (c *fakeCore) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, conloomapi.Capabilities{
 			SchemaVersion: conloomapi.SchemaVersion, BotInstanceID: botID, PlatformSelfID: "30001", PrivateChat: "admins",
 		})
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/tasks/"):
+		id := strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/")
+		c.mu.Lock()
+		c.taskReads++
+		deny, status := c.denyTasks, c.taskStatus[id]
+		c.mu.Unlock()
+		if deny {
+			writeJSON(w, http.StatusForbidden, apiErr(conloomapi.CodeForbidden, false))
+			return
+		}
+		if status == "" {
+			status = conloomapi.TaskRunning
+		}
+		writeJSON(w, http.StatusOK, conloomapi.Task{TaskID: id, Status: status, Actions: []conloomapi.Action{}})
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/events":
 		c.postEvent(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/outbox":

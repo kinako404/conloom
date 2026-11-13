@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kinako404/conloom/internal/adapter/dedup"
@@ -59,6 +60,8 @@ type Adapter struct {
 	self   botUser
 	dedup  *dedup.Log
 	typing *typing
+	// noTaskReads is set once the core refused a task read (no tasks:read).
+	noTaskReads atomic.Bool
 }
 
 // New validates cfg and returns an adapter. A nil logger discards logs.
@@ -124,7 +127,7 @@ func (a *Adapter) Run(ctx context.Context) error {
 	a.log.Info("telegram adapter started", "bot_id", self.ID, "bot_username", self.Username,
 		"api_base", a.api.redact(a.cfg.APIBase))
 
-	a.typing = newTyping(ctx, a.typingInterval, a.typingFor, a.sendTyping)
+	a.typing = newTyping(ctx, a.typingInterval, a.typingFor, a.sendTyping, a.taskFinished)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -264,7 +267,7 @@ func (a *Adapter) handle(ctx context.Context, u update) bool {
 			log.Debug("event submitted", "disposition", resp.Disposition, "task_id", resp.TaskID,
 				obs.MessageAttr(a.logCfg, ev.Message.Text))
 			if resp.Disposition == conloomapi.DispositionReply {
-				a.typing.start(chatID, submitted)
+				a.typing.start(chatID, submitted, resp.TaskID)
 			}
 			return true
 		}
@@ -317,6 +320,37 @@ func (a *Adapter) sendTyping(ctx context.Context, chatID int64) {
 	if err := a.api.call(cctx, "sendChatAction", chatActionParams{ChatID: chatID, Action: "typing"}, nil); err != nil && ctx.Err() == nil {
 		a.log.Debug("sending the typing action failed", "error", err)
 	}
+}
+
+// taskFinished reports whether the core has finished task taskID. When the
+// core token lacks tasks:read it warns once and stops asking, so typing lasts
+// until the reply is sent or the time limit; other failures count as not
+// finished.
+func (a *Adapter) taskFinished(ctx context.Context, taskID string) bool {
+	if taskID == "" || a.noTaskReads.Load() {
+		return false
+	}
+	cctx, cancel := context.WithTimeout(ctx, actionTimeout)
+	defer cancel()
+	task, err := a.core.GetTask(cctx, taskID)
+	if apiErr := (*client.APIError)(nil); errors.As(err, &apiErr) && apiErr.Status == http.StatusForbidden {
+		if !a.noTaskReads.Swap(true) {
+			a.log.Warn("the core token lacks the tasks:read scope; typing is shown until the reply is sent or the time limit passes",
+				"limit", a.typingFor.String())
+		}
+		return false
+	}
+	if err != nil {
+		if ctx.Err() == nil {
+			a.log.Debug("reading the task failed", "task_id", taskID, "error", err)
+		}
+		return false
+	}
+	switch task.Status {
+	case conloomapi.TaskSucceeded, conloomapi.TaskFailed, conloomapi.TaskCancelled:
+		return true
+	}
+	return false
 }
 
 // ack reports an action result. A failure is only logged: the action is
