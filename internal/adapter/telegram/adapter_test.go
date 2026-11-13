@@ -216,19 +216,22 @@ func TestAdapter_RejectedUpdateIsSkipped(t *testing.T) {
 	}
 }
 
-func TestAdapter_SkipsNonPrivateUpdates(t *testing.T) {
+func TestAdapter_SkipsChannelUpdatesAndForwardsGroups(t *testing.T) {
 	tg, core := newFakeTG(t), newFakeCore(t)
 	r := startAdapter(t, tgConfig(tg.URL, core.URL, t.TempDir()), nil)
 
-	tg.Push(groupUpdate(101, 11, "群里的话"), textUpdate(102, 12, "私聊"))
-	waitFor(t, 5*time.Second, "offset 103", func() bool { return hasOffset(tg, 103) })
-	if keys := core.Accepted(); len(keys) != 1 || keys[0] != "telegram:30001:102" {
-		t.Errorf("accepted = %v, want only the private update", keys)
+	tg.Push(channelUpdate(101, 11, "频道公告"), groupUpdate(102, 12, "群里的话"), textUpdate(103, 13, "私聊"))
+	waitFor(t, 5*time.Second, "offset 104", func() bool { return hasOffset(tg, 104) })
+	if keys := core.Accepted(); len(keys) != 2 || keys[0] != "telegram:30001:102" || keys[1] != "telegram:30001:103" {
+		t.Errorf("accepted = %v, want the group and the private update", keys)
 	}
-	if !strings.Contains(r.logs.String(), "update_id=101") {
-		t.Errorf("skipped group update not logged")
+	if conv := core.Submits()[0].Event.Conversation; conv.ID != "group_-1001234567890" || conv.PlatformConversationID != "-1001234567890" {
+		t.Errorf("group conversation = %+v", conv)
 	}
-	requireNoText(t, r.logs, "群里的话")
+	if logs := r.logs.String(); !strings.Contains(logs, "update_id=101") || !strings.Contains(logs, "level=DEBUG") {
+		t.Errorf("skipped channel update not logged at debug level")
+	}
+	requireNoText(t, r.logs, "频道公告", "群里的话")
 }
 
 func TestAdapter_SplitsLongReplyAndQuotesOnlyFirst(t *testing.T) {

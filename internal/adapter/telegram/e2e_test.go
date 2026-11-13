@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/store/sqlite"
 	"github.com/kinako404/conloom/internal/testutil/fakeopenai"
+	"github.com/kinako404/conloom/pkg/client"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -41,6 +43,8 @@ bots:
     name: 织语
     platform_self_id: "30001"
     admins: ["20001"]
+    enabled_conversations:
+      - {type: group, platform_id: "-1001234567890"}
     private_chat: admins
 model_profiles:
   short_context:
@@ -268,5 +272,100 @@ func TestE2E_PrivateChatWithRealCore(t *testing.T) {
 	quote, err := db.GetMessage(context.Background(), testBotID, "msg_20001_12")
 	if err != nil || quote.ReplyTo != "msg_20001_501" || quote.FromBot {
 		t.Errorf("user message = %+v (err %v), want msg_20001_12 replying to msg_20001_501", quote, err)
+	}
+}
+
+func TestE2E_GroupChatWithRealCore(t *testing.T) {
+	tg, core := newFakeTG(t), newRealCore(t)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("telegram calls:\n%s", tg)
+		}
+	})
+	r := startAdapter(t, tgConfig(tg.URL, core.URL, t.TempDir()), nil)
+	now := func() int64 { return time.Now().Unix() }
+	xiaohong := tgUser(20002, "小红", "", "xiaohong")
+	sends := func() int { return len(tg.Calls("sendMessage")) }
+
+	// 1. 小明 mentions the bot in the group; the reply goes back to the
+	// negative chat ID and is ACKed with the chat-scoped ID.
+	tg.Push(tgUpdate(201, groupMessage(11, map[string]any{
+		"text": "@zhiyu_test_bot 在吗？", "entities": []any{tgEntity("mention", 0, 15)}, "date": now(),
+	})))
+	waitFor(t, 10*time.Second, "the first reply", func() bool { return sends() == 1 })
+	if call := tg.Calls("sendMessage")[0]; call.num("chat_id") != testGroupID || call.text() != replyText {
+		t.Errorf("sendMessage = %v, want the reply in chat %d", call.Params, int64(testGroupID))
+	}
+	waitFor(t, 5*time.Second, "the first ACK", func() bool { return len(core.Acks()) == 1 })
+	if ack := core.Acks()[0]; ack.Req.Status != conloomapi.AckSent || ack.Req.PlatformMessageID != "-1001234567890_501" {
+		t.Fatalf("ack = %+v, want sent with -1001234567890_501", ack)
+	}
+
+	// 2. He replies to the bot's message without mentioning it: the core
+	// must see a reply to the bot and answer.
+	botMsg := map[string]any{
+		"message_id": 501, "date": now(), "text": replyText,
+		"from": map[string]any{"id": fakeBotID, "is_bot": true, "first_name": "织语", "username": fakeBotUsername},
+		"chat": map[string]any{"id": testGroupID, "type": "supergroup"},
+	}
+	tg.Push(tgUpdate(202, groupMessage(12, map[string]any{"text": "真的吗？", "reply_to_message": botMsg, "date": now()})))
+	waitFor(t, 10*time.Second, "the reply to a reply", func() bool { return sends() == 2 })
+	reqs := core.model.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("model requests = %d, want 2", len(reqs))
+	}
+	if prompt := lastUserContent(reqs[1]); !strings.Contains(prompt, "（回复 你（织语）") || strings.Contains(prompt, "回复了一条更早的消息") {
+		t.Errorf("second prompt does not show a reply to the bot's message:\n%s", prompt)
+	}
+	waitFor(t, 5*time.Second, "the second ACK", func() bool { return len(core.Acks()) == 2 })
+
+	// 3. 小红 mentions 小明, and the admin 小明 sends a command addressed to
+	// another bot: both are only observed, so nothing is sent and the group
+	// is not paused.
+	msg := groupMessage(13, map[string]any{"text": "@xiaoming 你看", "entities": []any{tgEntity("mention", 0, 9)}, "date": now()})
+	msg["from"] = xiaohong
+	tg.Push(tgUpdate(203, msg), tgUpdate(204, groupMessage(14, map[string]any{"text": "/pause@other_bot", "date": now()})))
+	waitFor(t, 5*time.Second, "updates 203 and 204 handled", func() bool { return hasOffset(tg, 205) })
+	time.Sleep(300 * time.Millisecond)
+	if n := sends(); n != 2 {
+		t.Fatalf("sendMessage calls = %d after observed messages, want 2", n)
+	}
+	tg.Push(tgUpdate(205, groupMessage(15, map[string]any{
+		"text": "@zhiyu_test_bot 还在吗", "entities": []any{tgEntity("mention", 0, 15)}, "date": now(),
+	})))
+	waitFor(t, 10*time.Second, "a reply after /pause@other_bot", func() bool { return sends() == 3 })
+
+	// 4. The negative ID works through the API path and the store.
+	ps, err := client.New(core.URL, testCoreToken, nil).GetPersona(context.Background(), "group_-1001234567890")
+	if err != nil || ps.ConversationID != "group_-1001234567890" {
+		t.Errorf("GetPersona(group_-1001234567890) = %+v, %v", ps, err)
+	}
+	waitFor(t, 5*time.Second, "the third ACK", func() bool { return len(core.Acks()) == 3 })
+	if err := r.stop(t); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	requireNoText(t, r.logs, "在吗？", "真的吗？", "你看", replyText)
+
+	core.close()
+	db, err := sqlite.Open(context.Background(), filepath.Join(core.dataDir, "conloom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	conv, err := db.GetConversation(ctx, testBotID, "group_-1001234567890")
+	if err != nil || conv.PlatformConversationID != "-1001234567890" || conv.Type != conloomapi.ConvGroup {
+		t.Errorf("conversation = %+v (err %v)", conv, err)
+	}
+	if bot, err := db.GetMessage(ctx, testBotID, "msg_-1001234567890_501"); err != nil || !bot.FromBot {
+		t.Errorf("bot message = %+v (err %v), want msg_-1001234567890_501 from the bot", bot, err)
+	}
+	if m, err := db.GetMessage(ctx, testBotID, "msg_-1001234567890_12"); err != nil || m.ReplyTo != "msg_-1001234567890_501" {
+		t.Errorf("reply = %+v (err %v), want reply_to msg_-1001234567890_501", m, err)
+	}
+	m, err := db.GetMessage(ctx, testBotID, "msg_-1001234567890_13")
+	want := []conloomapi.Mention{{Type: "user", ID: "username_xiaoming", Name: "xiaoming"}}
+	if err != nil || m.DisplayName != "小红" || !reflect.DeepEqual(m.Mentions, want) {
+		t.Errorf("mention message = %+v (err %v), want 小红 mentioning xiaoming", m, err)
 	}
 }

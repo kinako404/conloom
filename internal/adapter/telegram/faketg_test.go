@@ -295,10 +295,29 @@ func textUpdate(updateID, messageID int64, text string) map[string]any {
 	return tgUpdate(updateID, privateMessage(messageID, map[string]any{"text": text}))
 }
 
+// testGroupID is a supergroup chat ID: negative, and beyond 32 bits.
+const testGroupID = -1001234567890
+
+// groupMessage is a message from 小明 in the test supergroup.
+func groupMessage(messageID int64, fields map[string]any) map[string]any {
+	msg := privateMessage(messageID, fields)
+	msg["chat"] = map[string]any{"id": testGroupID, "type": "supergroup", "title": "测试群"}
+	return msg
+}
+
 func groupUpdate(updateID, messageID int64, text string) map[string]any {
+	return tgUpdate(updateID, groupMessage(messageID, map[string]any{"text": text}))
+}
+
+func channelUpdate(updateID, messageID int64, text string) map[string]any {
 	msg := privateMessage(messageID, map[string]any{"text": text})
-	msg["chat"] = map[string]any{"id": -1001234, "type": "supergroup", "title": "测试群"}
+	msg["chat"] = map[string]any{"id": -1009876543210, "type": "channel", "title": "频道"}
 	return tgUpdate(updateID, msg)
+}
+
+// tgEntity is a message entity at a UTF-16 offset and length.
+func tgEntity(typ string, offset, length int) map[string]any {
+	return map[string]any{"type": typ, "offset": offset, "length": length}
 }
 
 func tgError(code int, description string, retryAfter int) string {

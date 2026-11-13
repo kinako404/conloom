@@ -153,22 +153,33 @@ type chat struct {
 	Type string `json:"type"`
 }
 
+// entity marks a part of a message's text; Offset and Length count UTF-16
+// code units. User is set for text_mention.
+type entity struct {
+	Type   string   `json:"type"`
+	Offset int      `json:"offset"`
+	Length int      `json:"length"`
+	User   *botUser `json:"user"`
+}
+
 type message struct {
-	MessageID      int64           `json:"message_id"`
-	From           *botUser        `json:"from"`
-	Chat           chat            `json:"chat"`
-	Date           int64           `json:"date"`
-	Text           string          `json:"text"`
-	Caption        string          `json:"caption"`
-	Photo          json.RawMessage `json:"photo"`
-	Sticker        json.RawMessage `json:"sticker"`
-	Voice          json.RawMessage `json:"voice"`
-	Audio          json.RawMessage `json:"audio"`
-	Video          json.RawMessage `json:"video"`
-	VideoNote      json.RawMessage `json:"video_note"`
-	Animation      json.RawMessage `json:"animation"`
-	Document       json.RawMessage `json:"document"`
-	ReplyToMessage *message        `json:"reply_to_message"`
+	MessageID       int64           `json:"message_id"`
+	From            *botUser        `json:"from"`
+	Chat            chat            `json:"chat"`
+	Date            int64           `json:"date"`
+	Text            string          `json:"text"`
+	Entities        []entity        `json:"entities"`
+	Caption         string          `json:"caption"`
+	CaptionEntities []entity        `json:"caption_entities"`
+	Photo           json.RawMessage `json:"photo"`
+	Sticker         json.RawMessage `json:"sticker"`
+	Voice           json.RawMessage `json:"voice"`
+	Audio           json.RawMessage `json:"audio"`
+	Video           json.RawMessage `json:"video"`
+	VideoNote       json.RawMessage `json:"video_note"`
+	Animation       json.RawMessage `json:"animation"`
+	Document        json.RawMessage `json:"document"`
+	ReplyToMessage  *message        `json:"reply_to_message"`
 }
 
 type update struct {

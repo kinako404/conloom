@@ -162,7 +162,7 @@ func TestToStandard_Skips(t *testing.T) {
 	noFrom := privateMessage(11, map[string]any{"text": "hi"})
 	delete(noFrom, "from")
 	cases := map[string]map[string]any{
-		"group":         groupUpdate(9006, 11, "大家好"),
+		"channel":       channelUpdate(9006, 11, "频道公告"),
 		"no message":    {"update_id": 9007, "edited_message": privateMessage(11, map[string]any{"text": "改了"})},
 		"from a bot":    tgUpdate(9008, fromBot),
 		"no sender":     tgUpdate(9009, noFrom),
