@@ -18,6 +18,16 @@ const (
 	defaultIdempotencyRetention = 168 * time.Hour
 	expireOutboxEvery           = 30 * time.Second
 	purgeEventsEvery            = time.Hour
+
+	// The keyword index is backfilled in batches of ftsBackfillBatch messages
+	// with ftsBackfillPause between them, checked again every ftsBackfillEvery
+	// once caught up, and retried after ftsBackfillRetry, doubling up to
+	// ftsBackfillMaxRetry, when a batch fails.
+	ftsBackfillBatch    = 500
+	ftsBackfillPause    = 200 * time.Millisecond
+	ftsBackfillEvery    = time.Hour
+	ftsBackfillRetry    = 5 * time.Second
+	ftsBackfillMaxRetry = 10 * time.Minute
 )
 
 // ErrAlreadyRecovered is returned by every Recover call after the first.
@@ -37,7 +47,8 @@ const (
 // replies through the scheduler); older ones fail with STALE and no action.
 // It then starts background maintenance, which expires undelivered outbox
 // actions every 30s and, every hour until Close, purges old idempotency
-// records and proactive log entries older than 7 days.
+// records and proactive log entries older than 7 days, and the keyword index
+// backfill (backfillMessageIndex).
 //
 // Recover runs once per Orchestrator and should be called before the first
 // Submit; later calls return ErrAlreadyRecovered. Tasks this process already
@@ -70,9 +81,50 @@ func (o *Orchestrator) Recover(ctx context.Context) error {
 	if o.closing.Load() {
 		return ErrSchedulerClosed
 	}
-	o.bgWG.Add(1)
+	o.bgWG.Add(2)
 	go o.maintain()
+	go o.backfillMessageIndex()
 	return nil
+}
+
+// backfillMessageIndex adds messages missing from the keyword index, oldest
+// first, until Close: batch after batch with a pause between them while
+// behind, then once an hour, which also picks up messages written by an
+// older binary. Failed batches are retried with a doubling wait. The
+// remaining count is exported as conloom_fts_backfill_remaining.
+func (o *Orchestrator) backfillMessageIndex() {
+	defer o.bgWG.Done()
+	retry, total := time.Duration(0), 0
+	for {
+		wait := ftsBackfillEvery
+		n, remaining, err := o.st.BackfillMessageIndex(o.bgCtx, ftsBackfillBatch)
+		switch {
+		case err != nil:
+			if o.bgCtx.Err() != nil {
+				return
+			}
+			retry = min(max(2*retry, o.ftsRetry), ftsBackfillMaxRetry)
+			wait = retry
+			o.log.Error("keyword index backfill failed", "error", err, "retry_in", retry)
+		default:
+			retry = 0
+			total += n
+			o.metrics.FTSBackfillRemaining.Set(float64(remaining))
+			if remaining > 0 {
+				wait = ftsBackfillPause
+			} else if total > 0 {
+				o.log.Info("keyword index backfilled", "messages", total)
+				total = 0
+			}
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-o.bgCtx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
 }
 
 // recoverTask resumes or fails one unfinished task unless this process

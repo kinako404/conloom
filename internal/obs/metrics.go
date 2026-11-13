@@ -24,6 +24,9 @@ type Metrics struct {
 	MemoryAffinityChanges      *prometheus.CounterVec // source
 
 	SkillCalls *prometheus.CounterVec // tool, result: ok|error|unknown|invalid
+
+	SearchSeconds        *prometheus.HistogramVec // path: keyword|vector
+	FTSBackfillRemaining prometheus.Gauge
 }
 
 // NewMetrics creates all ConLoom metrics and registers them on reg; it panics
@@ -91,6 +94,13 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		SkillCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "conloom_skill_calls_total", Help: "Tool calls made by the model, by tool and result (ok|error|unknown|invalid).",
 		}, []string{"tool", "result"}),
+		SearchSeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "conloom_search_seconds", Help: "Recall search duration by path (keyword|vector).",
+			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.5, 1, 2, 5},
+		}, []string{"path"}),
+		FTSBackfillRemaining: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "conloom_fts_backfill_remaining", Help: "Messages after the keyword index backfill mark.",
+		}),
 	}
 	reg.MustRegister(
 		m.Events, m.Tasks, m.ModelLatency, m.ModelTokens, m.EstimateRatio,
@@ -99,6 +109,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.Review, m.BreakerOpen, m.ContinuationExits, m.Proactive,
 		m.MemoryConsolidations, m.MemoryConsolidationSeconds, m.MemoryAffinityChanges,
 		m.SkillCalls,
+		m.SearchSeconds, m.FTSBackfillRemaining,
 	)
 	return m
 }

@@ -93,6 +93,8 @@ type Orchestrator struct {
 	tokenFactor float64
 	actionTTL   time.Duration
 	staleAfter  time.Duration
+	// ftsRetry is the first wait after a failed keyword index backfill.
+	ftsRetry time.Duration
 
 	closing   atomic.Bool
 	closeOnce sync.Once
@@ -148,8 +150,9 @@ func New(d Deps) (*Orchestrator, error) {
 		st: d.Store, router: d.Router, adm: d.Admission, personas: d.Personas, policies: d.Policies,
 		reviewer: d.Reviewer, notifier: d.Notifier, metrics: d.Metrics, log: d.Logger, cfg: d.Config,
 		loc: d.Location, now: d.Now, memTrigger: d.MemoryTrigger, skills: d.Skills,
-		limiter: NewRateLimiter(),
-		owners:  map[string]*taskOwner{},
+		limiter:  NewRateLimiter(),
+		owners:   map[string]*taskOwner{},
+		ftsRetry: ftsBackfillRetry,
 	}
 	if o.notifier == nil {
 		o.notifier = nopNotifier{}
