@@ -52,31 +52,39 @@ func AppendRemembered(note, content string, maxRunes int) string {
 	return string(old[cut:]) + entry
 }
 
-var (
-	// contactPatterns find contact details and identity numbers. Digits
-	// separated by spaces, hyphens or dots only count in the groupings of
-	// phone and identity numbers (or after a label), so dates and times such
-	// as "2026-11-20 10点" or "2026 11 13 10 30" are not taken for numbers.
-	// Matches next to further digits are dropped (see digitBounded).
-	contactPatterns = []*regexp.Regexp{
-		// Email.
-		regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+`),
-		// An unbroken run of digits: phone, QQ or identity numbers.
-		regexp.MustCompile(`\d{9,}`),
-		// Identity card numbers, also grouped 6-8-4.
-		regexp.MustCompile(`\d{17}[Xx]|\d{6}[ .-]\d{8}[ .-]\d{3}[\dXx]`),
-		// Mobile numbers grouped 3-4-4.
-		regexp.MustCompile(`1[3-9]\d[ .-]\d{4}[ .-]\d{4}`),
-		// Landlines with an area code.
-		regexp.MustCompile(`0\d{2,3}-\d{7,8}`),
-		// International numbers.
-		regexp.MustCompile(`\+\d{1,3}(?:[ .-]?\d{2,4}){2,}`),
-		// A label followed by an identifier, which may be digit groups.
-		regexp.MustCompile(`(?i)(qq|扣扣|企鹅号|微信|v信|vx|wx|wechat|weixin|电话|手机|座机|号码|tel|phone|身份证|证件|护照)` +
-			`[^\p{Han}A-Za-z0-9]{0,3}(id|号码|号)?[^\p{Han}A-Za-z0-9]{0,3}(是|为)?[^\p{Han}A-Za-z0-9]{0,3}` +
-			`(?:[A-Za-z0-9_+-]{5,}|\+?\d{2,}(?:[ .-]\d{2,})+)`),
-	}
-)
+// contactPattern finds one kind of contact detail. A pattern that reads
+// digits separated by spaces, hyphens or dots as one number (grouped) only
+// counts when the match is not continued by further digits (digitBounded), so
+// dates and times such as "2026-11-20 10点" or "2026 11 13 10 30" are not
+// taken for numbers; for the label pattern this applies only when its
+// identifier is such groups (submatch groupedSub).
+type contactPattern struct {
+	re         *regexp.Regexp
+	grouped    bool
+	groupedSub int
+}
+
+var contactPatterns = []contactPattern{
+	// Email.
+	{re: regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+`)},
+	// An unbroken run of digits: phone, QQ or identity numbers.
+	{re: regexp.MustCompile(`\d{9,}`)},
+	{re: regexp.MustCompile(`\d{17}[Xx]`)},
+	// Identity card numbers in groups: six digits, then eleven more and the
+	// check character.
+	{re: regexp.MustCompile(`\d{6}(?:[ .-]?\d){11}[\dXx]`), grouped: true},
+	// Mobile numbers in any grouping, such as 3-4-4, 4-4-4 or 3-8, with an
+	// optional extension after a hyphen.
+	{re: regexp.MustCompile(`(?:1[3-9]\d{2}[ .-]\d{4}[ .-]\d{4}|1[3-9]\d(?:[ .-]?\d){8})(?:-\d{1,4})?`), grouped: true},
+	// Landlines with an area code: 010 12345678, 021-1234-5678.
+	{re: regexp.MustCompile(`0\d{2,3}[ -](?:\d{7,8}|\d{3,4}[ -]\d{4})`), grouped: true},
+	// International numbers.
+	{re: regexp.MustCompile(`\+\d{1,3}(?:[ .-]?\d{2,4}){2,}`), grouped: true},
+	// A label followed by an identifier, which may be digit groups.
+	{re: regexp.MustCompile(`(?i)(qq|扣扣|企鹅号|微信|v信|vx|wx|wechat|weixin|电话|手机|座机|号码|tel|phone|身份证|证件|护照)` +
+		`[^\p{Han}A-Za-z0-9]{0,3}(id|号码|号)?[^\p{Han}A-Za-z0-9]{0,3}(是|为)?[^\p{Han}A-Za-z0-9]{0,3}` +
+		`(?:[A-Za-z0-9_+-]{5,}|(\+?\d{2,}(?:[ .-]\d{2,})+))`), groupedSub: 4},
+}
 
 // ContactPlaceholder replaces contact details and identity numbers in
 // RedactContactOrID.
@@ -109,13 +117,14 @@ func RedactContactOrID(s string) string {
 }
 
 // contactSpans returns the sorted, disjoint byte ranges of s matched by
-// contactPatterns, leaving out matches that are part of a longer digit
-// sequence (such as a date continuing with more numbers).
+// contactPatterns, leaving out grouped matches that are part of a longer
+// digit sequence (such as a date continuing with more numbers).
 func contactSpans(s string) [][2]int {
 	var spans [][2]int
 	for _, p := range contactPatterns {
-		for _, m := range p.FindAllStringIndex(s, -1) {
-			if digitBounded(s, m[0], m[1]) {
+		for _, m := range p.re.FindAllStringSubmatchIndex(s, -1) {
+			grouped := p.grouped || (p.groupedSub > 0 && m[2*p.groupedSub] >= 0)
+			if !grouped || digitBounded(s, m[0], m[1]) {
 				spans = append(spans, [2]int{m[0], m[1]})
 			}
 		}
