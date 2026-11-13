@@ -49,6 +49,16 @@ type Store interface {
 	GetOutbox(ctx context.Context, botID, actionID string) (OutboxRecord, error)
 	AckOutbox(ctx context.Context, botID, actionID string, ack conloomapi.AckRequest, botMsg *MessageRecord, now time.Time) (alreadyAcked bool, err error)
 	ExpireOutbox(ctx context.Context, now time.Time) (int, error)
+	// PurgeFinishedTasks deletes, in one transaction, up to limit tasks that
+	// are succeeded, failed or cancelled and were last updated before before,
+	// together with all their outbox actions. A task with a pending or leased
+	// action is kept. It returns the numbers of deleted tasks and actions.
+	PurgeFinishedTasks(ctx context.Context, before time.Time, limit int) (tasks, actions int, err error)
+	// PurgeOutbox deletes up to limit acked or expired actions created before
+	// before whose task no longer exists.
+	PurgeOutbox(ctx context.Context, before time.Time, limit int) (int, error)
+	// PurgeAudit deletes up to limit audit events created before before.
+	PurgeAudit(ctx context.Context, before time.Time, limit int) (int, error)
 	LatestPersona(ctx context.Context, convKey string) (PersonaVersion, error)
 	GetPersonaVersion(ctx context.Context, convKey string, version int) (PersonaVersion, error)
 	// AppendPersonaVersion assigns the next version number.
