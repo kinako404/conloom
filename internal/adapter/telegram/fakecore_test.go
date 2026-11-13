@@ -43,6 +43,7 @@ type fakeCore struct {
 	disposition string
 	suppressed  string
 	failEvents  int
+	failStatus  int // status of failed submissions; 503 if 0
 	rejectNext  int
 	failAcks    bool
 	lease       time.Duration
@@ -136,7 +137,14 @@ func (c *fakeCore) postEvent(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case c.failEvents > 0:
 		c.failEvents--
-		status, body = http.StatusServiceUnavailable, apiErr(conloomapi.CodeInternal, true)
+		switch c.failStatus {
+		case http.StatusUnauthorized:
+			status, body = c.failStatus, apiErr(conloomapi.CodeUnauthorized, false)
+		case http.StatusForbidden:
+			status, body = c.failStatus, apiErr(conloomapi.CodeForbidden, false)
+		default:
+			status, body = http.StatusServiceUnavailable, apiErr(conloomapi.CodeInternal, true)
+		}
 	case c.rejectNext > 0:
 		c.rejectNext--
 		status, body = http.StatusBadRequest, apiErr(conloomapi.CodeInvalidEvent, false)

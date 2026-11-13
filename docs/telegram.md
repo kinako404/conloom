@@ -188,6 +188,8 @@ token 泄露了，或者只是想定期更换：
 | 私聊没反应，核心日志 `suppressed_reason=private_not_allowed` | 发送者不在名单里：`allowlist` 下把他加进 `enabled_conversations` 的 `private` 项，或加进 `admins` |
 | 群里没反应，日志提示群没开启（`not_enabled`） | 按第 3 节把群 ID 加进 `enabled_conversations` 并重启核心 |
 | 群里只有 @ 它的时候有时没反应、也不接话 | 隐私模式还开着，机器人看不到这些消息。按第 4 节关闭隐私模式并重新拉它进群，或设为群管理员 |
+| 日志 error `the core refused the adapter's token`，消息没有回复 | 核心对提交返回 401 或 403：`core_token` 不在 `api_tokens` 里（401），或者令牌缺少 `events:write`、绑定的不是 `bot_instance_id`（403）。适配器不会跳过这条消息，一直退避重试，Telegram 那边也不确认它；改好配置、重启核心后会自动接上 |
+| 日志 error `telegram update stuck`，带 `update_id`，之后的消息都没被处理 | 同一条更新已经连续失败超过 10 次或 5 分钟（核心 5xx、超时、连不上）。适配器不会跳过它：Telegram 最多保存 24 小时，后面的更新都排在它后面，宁可卡住也不丢消息。先按 `/healthz` 和核心日志修好核心，恢复后会自动继续。如果确认是这一条更新本身让核心一直出错、必须跳过：停止适配器，用 Bot API 调一次 `getUpdates`，参数 `offset=<update_id+1>`，把它确认掉（这条消息就丢了；请求地址含 token，注意别留在 shell 历史里），再启动适配器 |
 | 日志警告 `lacks the tasks:read scope` | 适配器令牌缺少 `tasks:read`，“正在输入”会持续到回复发出或 60 秒。给令牌加上这个 scope |
 | 启动即退出，`core_token belongs to bot instance …` | `adapters.telegram.core_token` 用了别的机器人实例的令牌，换成绑定 `bot_tg` 的那个 |
 | 回复里出现 `[图片]` 之类的字样 | 这是用户发了图片等媒体，适配器只告诉模型“这里有一张图片”，不会下载内容 |

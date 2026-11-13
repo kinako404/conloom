@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -198,6 +199,87 @@ func TestAdapter_OffsetAdvancesOnlyAfterCoreAccepts(t *testing.T) {
 		if c.num("offset") > 101 && c.At.Before(accepted) {
 			t.Errorf("getUpdates confirmed update 101 (offset %d) before the core accepted it", c.num("offset"))
 		}
+	}
+}
+
+// logLines returns the log lines containing every one of parts.
+func logLines(logs *syncBuffer, parts ...string) []string {
+	var out []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		match := line != ""
+		for _, p := range parts {
+			match = match && strings.Contains(line, p)
+		}
+		if match {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// requireNoOffsetPast fails if any getUpdates before until confirmed updateID.
+func requireNoOffsetPast(t *testing.T, tg *fakeTG, updateID int64, until time.Time) {
+	t.Helper()
+	for _, c := range tg.Calls("getUpdates") {
+		if c.num("offset") > updateID && c.At.Before(until) {
+			t.Errorf("getUpdates confirmed update %d (offset %d) before the core accepted it", updateID, c.num("offset"))
+		}
+	}
+}
+
+func TestAdapter_CoreAuthErrorsKeepTheUpdate(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			tg, core := newFakeTG(t), newFakeCore(t)
+			core.set(func(c *fakeCore) { c.failEvents, c.failStatus = 2, status })
+			r := startAdapter(t, tgConfig(tg.URL, core.URL, t.TempDir()), nil)
+
+			tg.Push(textUpdate(101, 11, "在吗？"))
+			waitFor(t, 5*time.Second, "the core to accept the update", func() bool { return len(core.Accepted()) == 1 })
+			waitFor(t, 5*time.Second, "offset 102", func() bool { return hasOffset(tg, 102) })
+			subs := core.Submits()
+			if len(subs) != 3 || subs[0].Key != subs[2].Key {
+				t.Fatalf("submissions = %d, want 2 refused and 1 accepted with the same key", len(subs))
+			}
+			requireNoOffsetPast(t, tg, 101, subs[2].At)
+			if lines := logLines(r.logs, "level=ERROR", "core_token", "update_id=101"); len(lines) != 2 {
+				t.Errorf("error lines about the adapter token = %d, want 2; logs:\n%s", len(lines), r.logs)
+			}
+		})
+	}
+}
+
+func TestAdapter_StuckUpdateIsReportedButKept(t *testing.T) {
+	cases := []struct {
+		name     string
+		tune     func(a *Adapter)
+		failures int
+		warns    int // failures logged as warnings before the errors start
+	}{
+		{"after 10 attempts", func(a *Adapter) { a.submitMin, a.submitMax = 5*time.Millisecond, 5*time.Millisecond }, 13, 10},
+		{"after the time limit", func(a *Adapter) {
+			a.submitMin, a.submitMax, a.stuckAfter = 100*time.Millisecond, 100*time.Millisecond, 250*time.Millisecond
+		}, 5, 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tg, core := newFakeTG(t), newFakeCore(t)
+			core.set(func(c *fakeCore) { c.failEvents = tc.failures })
+			r := startAdapter(t, tgConfig(tg.URL, core.URL, t.TempDir()), tc.tune)
+
+			tg.Push(textUpdate(101, 11, "在吗？"))
+			waitFor(t, 10*time.Second, "the core to accept the update", func() bool { return len(core.Accepted()) == 1 })
+			subs := core.Submits()
+			if len(subs) != tc.failures+1 {
+				t.Fatalf("submissions = %d, want %d", len(subs), tc.failures+1)
+			}
+			requireNoOffsetPast(t, tg, 101, subs[len(subs)-1].At)
+			warns := logLines(r.logs, "level=WARN", "update_id=101", "retrying the update")
+			errs := logLines(r.logs, "level=ERROR", "update_id=101", "stuck")
+			if len(warns) != tc.warns || len(errs) != tc.failures-tc.warns {
+				t.Errorf("warnings = %d, errors = %d; want %d and %d; logs:\n%s", len(warns), len(errs), tc.warns, tc.failures-tc.warns, r.logs)
+			}
+		})
 	}
 }
 

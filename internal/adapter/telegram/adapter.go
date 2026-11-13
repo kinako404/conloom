@@ -52,6 +52,8 @@ type Adapter struct {
 	retryMin, retryMax  time.Duration
 	submitMin           time.Duration
 	submitMax           time.Duration
+	stuckAttempts       int
+	stuckAfter          time.Duration
 	sendTimeout         time.Duration
 	maxRateLimitRetries int
 	typingInterval      time.Duration
@@ -100,6 +102,8 @@ func New(cfg config.TelegramConfig, logger *slog.Logger) (*Adapter, error) {
 		retryMax:            30 * time.Second,
 		submitMin:           500 * time.Millisecond,
 		submitMax:           30 * time.Second,
+		stuckAttempts:       10,
+		stuckAfter:          5 * time.Minute,
 		sendTimeout:         30 * time.Second,
 		maxRateLimitRetries: 5,
 		typingInterval:      4 * time.Second,
@@ -272,9 +276,15 @@ func (a *Adapter) getUpdates(ctx context.Context, offset int64) ([]json.RawMessa
 	return raws, err
 }
 
-// handle submits u to the core, retrying retryable failures with backoff
-// until the core accepts it. It returns false only if ctx ended first. An
-// update that is not a private message, or that the core rejects, is skipped.
+// handle submits u to the core, retrying with backoff until the core accepts
+// it; the update's offset is not confirmed meanwhile, so Telegram keeps it.
+// Failures that may pass are retried: network errors, 5xx and 429, and also
+// 401 and 403, which mean the adapter's token or scopes are wrong and are
+// logged as errors. An update failing for more than stuckAttempts attempts
+// or stuckAfter is still retried, but each failure is then logged as an
+// error. An update that is not a message from a handled chat, or that the
+// core rejects otherwise (400, 409), is skipped. It returns false only if ctx
+// ended first.
 func (a *Adapter) handle(ctx context.Context, u update) bool {
 	ev, key, err := toStandard(u, a.self, a.cfg.BotInstanceID)
 	if err != nil {
@@ -284,7 +294,8 @@ func (a *Adapter) handle(ctx context.Context, u update) bool {
 	log := a.log.With("update_id", u.UpdateID, "event_id", ev.EventID, "conversation_id", ev.Conversation.ID)
 	chatID := u.Message.Chat.ID
 	delay := a.submitMin
-	for {
+	started := time.Now()
+	for failures := 1; ; failures++ {
 		submitted := time.Now()
 		resp, err := a.core.SubmitEvent(ctx, key, ev)
 		if err == nil {
@@ -301,11 +312,23 @@ func (a *Adapter) handle(ctx context.Context, u update) bool {
 		if ctx.Err() != nil {
 			return false
 		}
-		if !client.IsRetryable(err) {
+		apiErr := (*client.APIError)(nil)
+		refused := errors.As(err, &apiErr) && (apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden)
+		if !refused && !client.IsRetryable(err) {
 			log.Error("core rejected the update; skipping it", "error", err)
 			return true
 		}
-		log.Warn("core unavailable; retrying the update", "error", err, "retry_in", delay.String())
+		stuckFor := time.Since(started)
+		switch {
+		case refused:
+			log.Error("the core refused the adapter's token; check adapters.telegram.core_token, its bot_instance_id and its events:write scope; retrying the update",
+				"error", err, "attempts", failures, "retry_in", delay.String())
+		case failures > a.stuckAttempts || stuckFor > a.stuckAfter:
+			log.Error("telegram update stuck: the core keeps failing it; it stays unconfirmed at Telegram for up to 24h and later updates wait behind it; retrying the update",
+				"error", err, "attempts", failures, "failing_for", stuckFor.Round(time.Second).String(), "retry_in", delay.String())
+		default:
+			log.Warn("core unavailable; retrying the update", "error", err, "attempts", failures, "retry_in", delay.String())
+		}
 		if !sleep(ctx, delay) {
 			return false
 		}
