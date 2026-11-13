@@ -139,6 +139,16 @@ model_profiles:
 #   batch_size: 16
 #   min_score: 0.48             # 语义命中的最低余弦相似度，0~1。按 bge-m3 实测校准：相关的约 0.50–0.63，不相关的大多低于 0.46；换模型后要重新校准
 
+# Web 管理面板（可选）：开启后在核心服务的 /panel/ 提供，整段省略时不开放。
+# 密码只存哈希：用 `conloom panel hash-password < password.txt` 生成，写进 .env 的 CONLOOM_PANEL_ADMIN_HASH。
+# panel:
+#   users:
+#     - name: admin
+#       password_hash: ${CONLOOM_PANEL_ADMIN_HASH}
+#   session_ttl: 168h           # 登录后最长有效期
+#   idle_timeout: 12h           # 多久没有操作就需要重新登录
+#   cookie_secure: false        # 通过 HTTPS 访问时设为 true
+
 # 人格模板：Bot 通过 persona_template 引用；省略 default 时使用内置默认人格。
 persona_templates:
   default:
@@ -270,6 +280,7 @@ runtime:
   # 流水表清理（每小时一次，分批删除）。聊天消息、记忆、群策略和人格版本永不清理。
   ops_retention: 720h           # 已结束的任务及其已确认/已过期的发件箱动作保留时长，24h~8760h；至少保留到 idempotency_retention
   audit_retention: 2160h        # 审计记录保留时长，24h~87600h
+  usage_retention: 9600h        # 模型调用用量记录保留时长（400 天），面板的用量统计最多查 400 天
 
 # Adapter：独立进程，通过公开 REST API 与核心交互。
 adapters:

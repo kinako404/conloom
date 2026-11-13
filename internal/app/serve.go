@@ -23,11 +23,11 @@ const (
 // shuts the HTTP server down gracefully: in-flight requests are cancelled
 // (long polls answer with no actions) and given up to 10s to finish.
 // Unfinished tasks are recovered before any request is accepted.
-func Serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) (err error) {
+func Serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts Options) (err error) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	a, err := New(cfg, logger, Options{})
+	a, err := New(cfg, logger, opts)
 	if err != nil {
 		return err
 	}

@@ -181,6 +181,109 @@ func TestCleanup_KeepsTasksOfReplayableEvents(t *testing.T) {
 	}
 }
 
+func (e *testEnv) insertModelCall(t *testing.T, at time.Time) {
+	t.Helper()
+	err := e.st.InsertModelCalls(context.Background(), []store.ModelCall{{
+		At: at, BotInstanceID: testBot, ConversationKey: testConvKey, Purpose: store.PurposeChat, Role: "short_context",
+		Model: "short-model", PromptTokens: 10, CompletionTokens: 5, Outcome: store.OutcomeOK,
+	}})
+	if err != nil {
+		t.Fatalf("InsertModelCalls: %v", err)
+	}
+}
+
+func (e *testEnv) modelCallTimes(t *testing.T) []time.Time {
+	t.Helper()
+	calls, err := e.st.ListModelCalls(context.Background(), store.ModelCallFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("ListModelCalls: %v", err)
+	}
+	var out []time.Time
+	for _, c := range calls {
+		out = append(out, c.At)
+	}
+	return out
+}
+
+func (e *testEnv) createPanelSession(t *testing.T, token string, lastSeen, expires time.Time) {
+	t.Helper()
+	err := e.st.CreatePanelSession(context.Background(), store.PanelSession{
+		TokenHash: token, User: "admin", CSRFToken: "csrf-" + token, CredFingerprint: "fp",
+		CreatedAt: lastSeen, LastSeenAt: lastSeen, ExpiresAt: expires,
+	})
+	if err != nil {
+		t.Fatalf("CreatePanelSession: %v", err)
+	}
+}
+
+func (e *testEnv) panelSessionKept(t *testing.T, token string) bool {
+	t.Helper()
+	_, err := e.st.GetPanelSession(context.Background(), token)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetPanelSession %s: %v", token, err)
+	}
+	return err == nil
+}
+
+func TestCleanup_PurgesModelCallsAndPanelSessions(t *testing.T) {
+	clock := &offsetClock{}
+	env := newTestOrchestrator(t, testOpts{now: clock.now, configure: func(c *config.Config) {
+		c.Runtime.UsageRetention = conloomapi.Duration{Duration: 30 * cleanupDay}
+		c.Panel = &config.PanelConfig{
+			SessionTTL:  conloomapi.Duration{Duration: 7 * cleanupDay},
+			IdleTimeout: conloomapi.Duration{Duration: time.Hour},
+		}
+	}})
+	now := clock.now().UTC()
+	recent := now.Add(-29 * cleanupDay)
+	env.insertModelCall(t, now.Add(-31*cleanupDay))
+	env.insertModelCall(t, recent)
+	env.createPanelSession(t, "expired", now.Add(-time.Minute), now.Add(-time.Second))
+	env.createPanelSession(t, "idle", now.Add(-2*time.Hour), now.Add(cleanupDay))
+	env.createPanelSession(t, "live", now.Add(-time.Minute), now.Add(cleanupDay))
+
+	env.o.cleanup()
+
+	if got := env.modelCallTimes(t); len(got) != 1 || !got[0].Equal(recent) {
+		t.Errorf("model calls left = %v, want only the one at %v", got, recent)
+	}
+	for token, want := range map[string]bool{"expired": false, "idle": false, "live": true} {
+		if got := env.panelSessionKept(t, token); got != want {
+			t.Errorf("panel session %s kept = %v, want %v", token, got, want)
+		}
+	}
+	for table, want := range map[string]float64{"model_calls": 1, "panel_sessions": 2} {
+		if got := env.counter(t, "conloom_cleanup_deleted_total", "table", table); got != want {
+			t.Errorf("cleanup_deleted_total{%s} = %v, want %v", table, got, want)
+		}
+	}
+	logs := env.logs.String()
+	for _, want := range []string{"model_calls=1", "panel_sessions=2"} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("logs lack %q:\n%s", want, logs)
+		}
+	}
+}
+
+func TestCleanup_DefaultUsageRetentionAndNoPanel(t *testing.T) {
+	clock := &offsetClock{}
+	env := newTestOrchestrator(t, testOpts{now: clock.now})
+	now := clock.now().UTC()
+	kept := now.Add(-399 * cleanupDay)
+	env.insertModelCall(t, now.Add(-401*cleanupDay))
+	env.insertModelCall(t, kept)
+	env.createPanelSession(t, "leftover", now.Add(-time.Minute), now.Add(cleanupDay))
+
+	env.o.cleanup()
+
+	if got := env.modelCallTimes(t); len(got) != 1 || !got[0].Equal(kept) {
+		t.Errorf("model calls left = %v, want only the one at %v (default usage_retention 400 days)", got, kept)
+	}
+	if env.panelSessionKept(t, "leftover") {
+		t.Error("panel session kept without a panel section, want deleted")
+	}
+}
+
 func TestCleanup_ZeroRetentionsFallBackToDefaults(t *testing.T) {
 	clock := &offsetClock{}
 	env := newTestOrchestrator(t, testOpts{now: clock.now, configure: func(c *config.Config) {

@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 	_ "time/tzdata"
 
 	"github.com/kinako404/conloom/internal/adapter/mock"
@@ -32,6 +33,9 @@ var (
 	version = "dev"
 	commit  = "unknown"
 )
+
+// startedAt is when the process started.
+var startedAt = time.Now()
 
 const (
 	exitRuntime = 1
@@ -183,7 +187,7 @@ func runServe(ctx context.Context, args []string, sio stdio) error {
 	}
 	logger := obs.NewLogger(cfg.Observability, sio.err)
 	logger.Info("starting conloom", "version", version, "commit", commit, "config", cfg.Path)
-	err = app.Serve(ctx, cfg, logger)
+	err = app.Serve(ctx, cfg, logger, app.Options{Version: version, Commit: commit, StartedAt: startedAt})
 	if errors.Is(err, skills.ErrInvalid) {
 		return configErr(err)
 	}

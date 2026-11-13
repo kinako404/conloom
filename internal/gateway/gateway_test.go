@@ -754,6 +754,43 @@ func TestCapabilities(t *testing.T) {
 	}
 }
 
+func TestGateway_PresenceRecorded(t *testing.T) {
+	presence := obs.NewPresence()
+	s := newTestServerWith(t, serverOpts{deps: func(d *gateway.Deps) { d.Presence = presence }})
+
+	s.do(t, http.MethodGet, "/api/v1/capabilities", "wrong-token", nil, nil)
+	if got := presence.Snapshot(); len(got) != 0 {
+		t.Fatalf("presence after a rejected token = %v, want empty", got)
+	}
+	before := time.Now()
+	if r := s.do(t, http.MethodGet, "/api/v1/capabilities", adapterToken, nil, nil); r.status != http.StatusOK {
+		t.Fatalf("capabilities: status %d, body %s", r.status, r.body)
+	}
+	got := presence.Snapshot()
+	if seen, ok := got["bot_main"]; !ok || seen.Before(before) || len(got) != 1 {
+		t.Fatalf("presence = %v, want bot_main seen after %v", got, before)
+	}
+}
+
+func TestGateway_PanelMountedOnlyWhenGiven(t *testing.T) {
+	panelHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "panel "+r.URL.Path)
+	})
+	s := newTestServerWith(t, serverOpts{deps: func(d *gateway.Deps) { d.Panel = panelHandler }})
+	for _, path := range []string{"/panel", "/panel/", "/panel/api/session"} {
+		if r := s.do(t, http.MethodGet, path, "", nil, nil); r.status != http.StatusOK || string(r.body) != "panel "+path {
+			t.Errorf("GET %s: status %d, body %q; want it served by the panel", path, r.status, r.body)
+		}
+	}
+
+	s = newTestServer(t)
+	for _, path := range []string{"/panel", "/panel/"} {
+		if r := s.do(t, http.MethodGet, path, "", nil, nil); r.status != http.StatusNotFound {
+			t.Errorf("GET %s without a panel: status %d, want 404", path, r.status)
+		}
+	}
+}
+
 func TestHealthzAndMetrics(t *testing.T) {
 	s := newTestServer(t)
 	r := s.do(t, http.MethodGet, "/healthz", "", nil, nil)
