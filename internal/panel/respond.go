@@ -7,8 +7,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/kinako404/conloom/internal/ids"
+	"github.com/kinako404/conloom/internal/memory"
+	"github.com/kinako404/conloom/internal/persona"
+	"github.com/kinako404/conloom/internal/policy"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -45,19 +49,34 @@ func (s *Server) respondError(w http.ResponseWriter, r *http.Request, status int
 	}})
 }
 
-// fail maps err from a collaborator to an error response: store.ErrNotFound
-// is 404, a cancelled request a retryable 503, anything else a 500 whose
-// details are only logged.
+// fail maps err from a collaborator to an error response as the Bot
+// Interaction API does: store.ErrNotFound is 404; a rejected policy, persona
+// or member memory edit is 400 with the error text; a refused consolidation
+// is 409 MEMORY_DISABLED or PAUSED; a cancelled request or a member memory
+// that kept changing is a retryable 503; anything else is a 500 whose details
+// are only logged.
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if ctxErr := r.Context().Err(); ctxErr != nil && errors.Is(err, ctxErr) {
 		s.respondError(w, r, http.StatusServiceUnavailable, conloomapi.CodeInternal, "request cancelled; server may be shutting down", err)
 		return
 	}
-	if errors.Is(err, store.ErrNotFound) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
 		s.respondError(w, r, http.StatusNotFound, conloomapi.CodeNotFound, "not found", err)
-		return
+	case errors.Is(err, policy.ErrInvalid), errors.Is(err, persona.ErrInvalid):
+		s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, err.Error(), err)
+	case errors.Is(err, memory.ErrInvalid):
+		s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
+			strings.TrimPrefix(err.Error(), memory.ErrInvalid.Error()+": "), err)
+	case errors.Is(err, memory.ErrUpdateConflict):
+		s.respondError(w, r, http.StatusServiceUnavailable, conloomapi.CodeInternal, "member memory kept changing; try again", err)
+	case errors.Is(err, memory.ErrMemoryDisabled):
+		s.respondError(w, r, http.StatusConflict, conloomapi.CodeMemoryDisabled, memory.ErrMemoryDisabled.Error(), err)
+	case errors.Is(err, memory.ErrPaused):
+		s.respondError(w, r, http.StatusConflict, conloomapi.CodePaused, memory.ErrPaused.Error(), err)
+	default:
+		s.respondError(w, r, http.StatusInternalServerError, conloomapi.CodeInternal, "internal error", err)
 	}
-	s.respondError(w, r, http.StatusInternalServerError, conloomapi.CodeInternal, "internal error", err)
 }
 
 // decode decodes the JSON request body into v, writing a 400 response itself
