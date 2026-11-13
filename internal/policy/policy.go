@@ -1,4 +1,4 @@
-// Package policy manages versioned per-conversation group policies.
+// Package policy manages versioned per-conversation policies.
 package policy
 
 import (
@@ -29,6 +29,7 @@ func Validate(p conloomapi.GroupPolicy) error {
 type Service struct {
 	st       store.Store
 	defaults conloomapi.GroupPolicy
+	private  *conloomapi.GroupPolicy
 
 	// mu guards cache and serialises version creation, so a cache fill never stores a stale version.
 	mu       sync.Mutex
@@ -36,8 +37,24 @@ type Service struct {
 	onChange []func(convKey string)
 }
 
+// NewService returns a service whose conversations default to defaults.
 func NewService(st store.Store, defaults conloomapi.GroupPolicy) *Service {
 	return &Service{st: st, defaults: defaults, cache: map[string]store.PolicyVersion{}}
+}
+
+// WithPrivateDefaults makes private conversations default to p instead of the
+// group defaults, and returns s. Call it before the service is used.
+func (s *Service) WithPrivateDefaults(p conloomapi.GroupPolicy) *Service {
+	s.private = &p
+	return s
+}
+
+// defaultsFor is the default policy of convKey's conversation type.
+func (s *Service) defaultsFor(convKey string) conloomapi.GroupPolicy {
+	if parts := strings.SplitN(convKey, ":", 4); s.private != nil && len(parts) == 4 && parts[2] == conloomapi.ConvPrivate {
+		return *s.private
+	}
+	return s.defaults
 }
 
 // OnChange registers fn to be called after every new policy version.
@@ -47,7 +64,8 @@ func (s *Service) OnChange(fn func(convKey string)) {
 	s.onChange = append(s.onChange, fn)
 }
 
-// Current returns the latest stored policy, or the defaults as version 0 without writing anything.
+// Current returns the latest stored policy, or the defaults of the conversation's type (see
+// WithPrivateDefaults) as version 0 without writing anything.
 // A section or setting missing from a stored version (such as proactive or memory, or the turn-taking,
 // quote and join settings, in versions written before they existed) is filled from the defaults.
 func (s *Service) Current(ctx context.Context, convKey string) (store.PolicyVersion, error) {
@@ -60,14 +78,15 @@ func (s *Service) current(ctx context.Context, convKey string) (store.PolicyVers
 	if pv, ok := s.cache[convKey]; ok {
 		return pv, nil
 	}
+	defaults := s.defaultsFor(convKey)
 	pv, err := s.st.LatestPolicy(ctx, convKey)
 	if errors.Is(err, store.ErrNotFound) {
-		pv, err = store.PolicyVersion{ConversationKey: convKey, Policy: s.defaults}, nil
+		pv, err = store.PolicyVersion{ConversationKey: convKey, Policy: defaults}, nil
 	}
 	if err != nil {
 		return store.PolicyVersion{}, err
 	}
-	pv.Policy = pv.Policy.WithDefaults(s.defaults)
+	pv.Policy = pv.Policy.WithDefaults(defaults)
 	s.cache[convKey] = pv
 	return pv, nil
 }
@@ -88,7 +107,7 @@ func (s *Service) Update(ctx context.Context, convKey string, put conloomapi.Pol
 		}
 		zeroProactive := p.Proactive == (conloomapi.ProactivePolicy{})
 		zeroMemory := p.Memory == (conloomapi.MemoryPolicy{})
-		p = p.WithDefaults(s.defaults)
+		p = p.WithDefaults(s.defaultsFor(convKey))
 		if zeroProactive {
 			p.Proactive = conloomapi.ProactivePolicy{}
 		}
@@ -125,7 +144,7 @@ func (s *Service) Resume(ctx context.Context, convKey, by string) (store.PolicyV
 		if err != nil {
 			return conloomapi.GroupPolicy{}, "", false, err
 		}
-		n := s.defaults.Concurrency.MaxInteractiveRequests
+		n := s.defaultsFor(convKey).Concurrency.MaxInteractiveRequests
 		for _, pv := range history {
 			if c := pv.Policy.Concurrency.MaxInteractiveRequests; c != 0 {
 				n = c

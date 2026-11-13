@@ -21,6 +21,8 @@ func TestStripTranscriptPrefix_EchoedMemoryBlock(t *testing.T) {
 		{header + "\n小明（认识）：喜欢猫\n小红（熟悉）：养了一只橘猫\n好的呀", "好的呀"},
 		{header + "\n小明（认识）：喜欢猫\n好感度只表示熟悉程度\n[18:37] 织语：嗯嗯", "嗯嗯"},
 		{header + "\n小明：喜欢猫\n\n好的，我记住了。", "好的，我记住了。"},
+		{header + "\n你们最近聊过：在聊钢琴\n小明（熟悉）：喜欢猫\n" + footer + "\n好的呀", "好的呀"},
+		{header + "\n你们最近聊过：在聊钢琴\n好的呀", "好的呀"},
 		{"好的呀\n" + block, "好的呀\n" + block},
 	}
 	for _, c := range cases {

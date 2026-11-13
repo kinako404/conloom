@@ -36,10 +36,10 @@ var (
 
 	memoryBlockHeader = regexp.MustCompile(`^【你记得的事[^\n]*(?:\n|$)`)
 	// memoryBlockLine matches a line of the memory block: the summary
-	// "群里最近：…", a note "名字（档位）：…" or "名字：…" (a name without sentence
+	// "群里最近：…" or "你们最近聊过：…", a note "名字（档位）：…" or "名字：…" (a name without sentence
 	// punctuation, not starting with "[" or "【"), or the closing reminder
 	// starting "好感度只表示".
-	memoryBlockLine = regexp.MustCompile(`^[ \t]*(?:群里最近[：:]|好感度只表示|[^\s\[【:：，。！？、；,.!?;]` +
+	memoryBlockLine = regexp.MustCompile(`^[ \t]*(?:群里最近[：:]|你们最近聊过[：:]|好感度只表示|[^\s\[【:：，。！？、；,.!?;]` +
 		transcriptName + `{0,39}[：:])[^\n]*(?:\n|$)`)
 )
 

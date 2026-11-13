@@ -74,6 +74,10 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		return nil, fmt.Errorf("app: open database %s: %w", cfg.DBPath(), err)
 	}
 	for _, b := range cfg.Bots {
+		if ids := b.UnusedPrivateConversations(); len(ids) > 0 {
+			logger.Warn("private enabled_conversations take effect only when private_chat is allowlist; ignoring them",
+				"bot", b.ID, "private_chat", b.PrivateChat, "platform_ids", ids)
+		}
 		if err := st.UpsertBotInstance(ctx, b.ID, b.Platform, b.Name); err != nil {
 			_ = st.Close()
 			return nil, fmt.Errorf("app: register bot %s: %w", b.ID, err)
@@ -93,7 +97,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	rt := router.New(profiles, router.BreakerConfig{}, now)
 	adm := admission.New(limits)
 	personas := persona.NewService(st, cfg.PersonaTemplates)
-	policies := policy.NewService(st, cfg.DefaultGroupPolicy)
+	policies := policy.NewService(st, cfg.DefaultGroupPolicy).WithPrivateDefaults(cfg.PrivatePolicy())
 	ob := outbox.New(st, outbox.Config{Lease: cfg.Runtime.OutboxLease.Duration}, metrics, now)
 	cons := memory.NewConsolidator(memory.ConsolidatorDeps{
 		Store:     st,
@@ -111,6 +115,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Store:    st,
 		Policies: policies,
 		Runner:   cons,
+		Config:   cfg,
 		Metrics:  metrics,
 		Logger:   logger,
 		Location: loc,

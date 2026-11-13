@@ -47,7 +47,7 @@ func TestParseOutput_ClampsAndTruncates(t *testing.T) {
 		t.Errorf("P1 = note %d runes, reason %d runes, delta %d; want 250, 250 (not cut yet), 3 (first P1 wins)",
 			utf8.RuneCountInString(first.Note), utf8.RuneCountInString(first.Reason), first.Delta)
 	}
-	stored := consResolveRefs(out, nil, nil)
+	stored := consResolveRefs(out, nil, nil, SummaryMaxRunes, NoteMaxRunes)
 	if s, n, r := utf8.RuneCountInString(stored.Summary), utf8.RuneCountInString(stored.Members[0].Note),
 		utf8.RuneCountInString(stored.Members[0].Reason); s != SummaryMaxRunes || n != NoteMaxRunes || r != consReasonMaxRunes {
 		t.Errorf("resolved = summary %d, note %d, reason %d runes; want %d, %d, %d", s, n, r, SummaryMaxRunes, NoteMaxRunes, consReasonMaxRunes)
@@ -155,7 +155,7 @@ func TestConsResolveRefs_TruncatesAfterReplacing(t *testing.T) {
 	out := consResolveRefs(modelOutput{Summary: summary, Members: []modelMember{
 		{Ref: "P1", Note: note, Reason: "P1 很友善"},
 		{Ref: "P9", Note: "P1 和 P9"},
-	}}, names, nil)
+	}}, names, nil, SummaryMaxRunes, NoteMaxRunes)
 	if want := strings.Repeat("猫", 180) + "。"; out.Members[0].Note != want {
 		t.Errorf("note = %q (%d runes), want cut at the sentence end", out.Members[0].Note, utf8.RuneCountInString(out.Members[0].Note))
 	}

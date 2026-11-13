@@ -23,6 +23,7 @@ type consBatchInput struct {
 	MentionNames    map[string]string
 	BotName         string
 	Location        *time.Location
+	Unnamed         string
 	BaseTokens      int
 	Budget          int
 	MaxMembers      int
@@ -136,6 +137,7 @@ func consPlanBatch(in consBatchInput) consBatch {
 		Refs:         refs,
 		BotName:      in.BotName,
 		Location:     in.Location,
+		Unnamed:      in.Unnamed,
 	})
 
 	b := consBatch{Tokens: in.BaseTokens}
@@ -145,7 +147,7 @@ func consPlanBatch(in consBatchInput) consBatch {
 		if k := keptAt[i]; k >= 0 {
 			cost := contextbuilder.Estimate(lines[k]+"\n", in.TokenFactor)
 			for _, userID := range introduced[i] {
-				m := consPromptMember(in.member(userID), userRefs[userID], consFirstName(seen[i], userID))
+				m := consPromptMember(in.member(userID), userRefs[userID], consFirstName(seen[i], userID), in.Unnamed)
 				cost += contextbuilder.Estimate(consMemberLine(m)+"\n", in.TokenFactor)
 			}
 			overMembers := in.MaxMembers > 0 && len(introduced[i]) > 0 && len(inBatch)+len(introduced[i]) > in.MaxMembers
@@ -192,10 +194,14 @@ func consFirstName(seen []consAppearance, userID string) string {
 	return ""
 }
 
-// consPromptMember shows m as ref under name, else its stored name, else a
-// generic name; a name that is only m's user ID does not count.
-func consPromptMember(m store.MemberMemory, ref, name string) promptMember {
-	shown := "一位群友"
+// consPromptMember shows m as ref under name, else its stored name, else
+// unnamed (consUnnamedGroup when empty); a name that is only m's user ID does
+// not count.
+func consPromptMember(m store.MemberMemory, ref, name, unnamed string) promptMember {
+	shown := unnamed
+	if shown == "" {
+		shown = consUnnamedGroup
+	}
 	for _, n := range []string{name, m.DisplayName} {
 		if n = consOneLine(n); n != "" && n != m.PlatformUserID {
 			shown = n

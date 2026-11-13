@@ -542,6 +542,7 @@ func TestDefaultGroupPolicyMemory(t *testing.T) {
 		Affinity:            true,
 		ConsolidateEvery:    150,
 		ConsolidateInterval: Duration{6 * time.Hour},
+		ConsolidateMin:      20,
 		Backlog:             1000,
 	}
 	if got := DefaultMemoryPolicy(); got != want {
@@ -554,7 +555,7 @@ func TestDefaultGroupPolicyMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `"memory":{"enabled":false,"affinity":true,"consolidate_every":150,"consolidate_interval":"6h0m0s","backlog":1000}`; !strings.Contains(string(b), want) {
+	if want := `"memory":{"enabled":false,"affinity":true,"consolidate_every":150,"consolidate_interval":"6h0m0s","consolidate_min":20,"backlog":1000}`; !strings.Contains(string(b), want) {
 		t.Fatalf("json %s missing %s", b, want)
 	}
 	var y GroupPolicy
@@ -586,6 +587,10 @@ func TestValidateMemory_Bounds(t *testing.T) {
 		{"backlog 0 ok", func(m *MemoryPolicy) { m.Backlog = 0 }, ""},
 		{"backlog 5000 ok", func(m *MemoryPolicy) { m.Backlog = 5000 }, ""},
 		{"backlog 5001", func(m *MemoryPolicy) { m.Backlog = 5001 }, "memory.backlog must be in [0, 5000]"},
+		{"min 0", func(m *MemoryPolicy) { m.ConsolidateMin = 0 }, "memory.consolidate_min must be in [1, 2000]"},
+		{"min 1 ok", func(m *MemoryPolicy) { m.ConsolidateMin = 1 }, ""},
+		{"min 2000 ok", func(m *MemoryPolicy) { m.ConsolidateMin = 2000 }, ""},
+		{"min 2001", func(m *MemoryPolicy) { m.ConsolidateMin = 2001 }, "memory.consolidate_min must be in [1, 2000]"},
 		{"zero section", func(m *MemoryPolicy) { *m = MemoryPolicy{} }, "memory.consolidate_every"},
 	}
 	for _, tt := range tests {
@@ -631,7 +636,7 @@ func TestMemoryPolicy_MissingKeysUseDefaults(t *testing.T) {
 	}
 	want := DefaultMemoryPolicy()
 	want.Enabled = true
-	if m != want || !m.Affinity || m.Backlog != 1000 || m.ConsolidateEvery != 150 {
+	if m != want || !m.Affinity || m.Backlog != 1000 || m.ConsolidateEvery != 150 || m.ConsolidateMin != 20 {
 		t.Fatalf("partial section = %+v, want %+v", m, want)
 	}
 
@@ -663,6 +668,13 @@ func TestMemoryPolicy_MissingKeysUseDefaults(t *testing.T) {
 	want.Backlog = 5
 	if p.Memory != want {
 		t.Fatalf("group policy memory = %+v, want %+v", p.Memory, want)
+	}
+	var legacy GroupPolicy
+	if err := json.Unmarshal([]byte(`{"memory":{"enabled":true,"affinity":true,"consolidate_every":150,"consolidate_interval":"6h0m0s","backlog":1000}}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Memory.ConsolidateMin != 20 {
+		t.Fatalf("version stored before consolidate_min: consolidate_min = %d, want 20", legacy.Memory.ConsolidateMin)
 	}
 	p = GroupPolicy{}
 	if err := json.Unmarshal([]byte(`{"memory":null}`), &p); err != nil || p.Memory != (MemoryPolicy{}) {

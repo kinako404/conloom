@@ -146,7 +146,7 @@ nssm start ConLoomNapCat
 
 **回退到没有记忆层的旧版本**：记忆层的迁移（`0005_memory.sql`）只新增三张表，旧二进制可以直接在升级后的库上运行，会忽略这些表；要完全回到升级前的状态，仍然用升级前的备份。回退时注意：
 
-- 不要在 `conloom.yaml` 里写 `memory` 段（包括 `default_group_policy.memory`），否则旧二进制会因为未知字段启动失败。
+- 不要在 `conloom.yaml` 里写 `memory` 段（包括 `default_group_policy.memory`），否则旧二进制会因为未知字段启动失败。回退到没有私聊记忆的版本时同理，要去掉 `default_private_policy` 段和 `memory.consolidate_min`。
 - 旧二进制运行期间写入的新策略版本（群策略 API、`/pause`、`/resume`、`/主动 全群` 等）会丢掉 `memory` 段。再升级回来以后，这些群的记忆会变成关闭，需要重新开启；已有的摘要、笔记和好感度不会丢失，重新开启后按“关闭与重新开启”的规则继续整理（积压超过 `memory.backlog` 条时只整理最近的这么多条）。
 
 ## 监控

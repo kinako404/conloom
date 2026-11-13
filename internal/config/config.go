@@ -25,9 +25,12 @@ type Config struct {
 	ModelProfiles      map[string]ModelProfile          `yaml:"model_profiles"`
 	PersonaTemplates   map[string]conloomapi.PersonaDoc `yaml:"persona_templates"`
 	DefaultGroupPolicy conloomapi.GroupPolicy           `yaml:"default_group_policy"`
-	Runtime            RuntimeConfig                    `yaml:"runtime"`
-	Adapters           AdaptersConfig                   `yaml:"adapters"`
-	Observability      ObservabilityConfig              `yaml:"observability"`
+	// DefaultPrivatePolicy is the default policy of private conversations; nil
+	// when the file has no default_private_policy (see PrivatePolicy).
+	DefaultPrivatePolicy *conloomapi.GroupPolicy `yaml:"default_private_policy"`
+	Runtime              RuntimeConfig           `yaml:"runtime"`
+	Adapters             AdaptersConfig          `yaml:"adapters"`
+	Observability        ObservabilityConfig     `yaml:"observability"`
 
 	// Path is the absolute path of the loaded file.
 	Path string `yaml:"-"`
@@ -61,6 +64,39 @@ type BotConfig struct {
 	EnabledConversations []conloomapi.ConversationRef `yaml:"enabled_conversations"`
 	PrivateChat          string                       `yaml:"private_chat"`
 	PersonaTemplate      string                       `yaml:"persona_template"`
+}
+
+// UnusedPrivateConversations returns the platform IDs of the private entries in
+// EnabledConversations, which only take effect when PrivateChat is "allowlist".
+func (b BotConfig) UnusedPrivateConversations() []string {
+	if b.PrivateChat == "allowlist" {
+		return nil
+	}
+	var ids []string
+	for _, c := range b.EnabledConversations {
+		if c.Type == conloomapi.ConvPrivate {
+			ids = append(ids, c.PlatformID)
+		}
+	}
+	return ids
+}
+
+// PrivateAllowed reports whether the user may chat with the bot privately
+// under PrivateChat: never for "off", only admins for "admins", admins and the
+// private entries of EnabledConversations for "allowlist", anyone for "all".
+func (b BotConfig) PrivateAllowed(platformUserID string) bool {
+	admin := slices.Contains(b.Admins, platformUserID)
+	switch b.PrivateChat {
+	case "off":
+		return false
+	case "admins":
+		return admin
+	case "allowlist":
+		return admin || slices.ContainsFunc(b.EnabledConversations, func(c conloomapi.ConversationRef) bool {
+			return c.Type == conloomapi.ConvPrivate && c.PlatformID == platformUserID
+		})
+	}
+	return true
 }
 
 // ProviderOpenAICompatible is the only supported ModelProfile.Provider and the default.
@@ -220,6 +256,10 @@ func Load(path string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("config %s: %w", abs, err)
 		}
+		if n := mappingValue(&root, "default_private_policy"); n != nil && n.Tag != "!!null" {
+			p := conloomapi.DefaultGroupPolicy()
+			cfg.DefaultPrivatePolicy = &p
+		}
 		dec := yaml.NewDecoder(bytes.NewReader(expanded))
 		dec.KnownFields(true)
 		if err := dec.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
@@ -312,6 +352,15 @@ func resolveDir(base, p string) string {
 		return p
 	}
 	return filepath.Join(base, p)
+}
+
+// PrivatePolicy is the default policy of private conversations:
+// DefaultPrivatePolicy when the file sets one, else DefaultGroupPolicy.
+func (c *Config) PrivatePolicy() conloomapi.GroupPolicy {
+	if c.DefaultPrivatePolicy != nil {
+		return *c.DefaultPrivatePolicy
+	}
+	return c.DefaultGroupPolicy
 }
 
 // Bot returns the bot with the given ID.

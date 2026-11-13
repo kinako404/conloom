@@ -611,6 +611,33 @@ func TestE2E_PrivateChatAdminOnly(t *testing.T) {
 	}
 }
 
+func TestNew_WarnsUnusedPrivateConversations(t *testing.T) {
+	for _, tt := range []struct {
+		mode string
+		warn bool
+	}{{"admins", true}, {"all", true}, {"off", true}, {"allowlist", false}} {
+		t.Run(tt.mode, func(t *testing.T) {
+			cfg := testConfig(t, configParams{modelURL: "http://127.0.0.1:1"})
+			cfg.Bots[0].PrivateChat = tt.mode
+			cfg.Bots[0].EnabledConversations = append(cfg.Bots[0].EnabledConversations,
+				conloomapi.ConversationRef{Type: conloomapi.ConvPrivate, PlatformID: "20001"})
+			logs := &syncBuffer{}
+			a, err := app.New(cfg, slog.New(slog.NewTextHandler(logs, nil)), app.Options{})
+			if err != nil {
+				t.Fatalf("app.New: %v", err)
+			}
+			if err := a.Close(); err != nil {
+				t.Errorf("Close: %v", err)
+			}
+			out := logs.String()
+			got := strings.Contains(out, "level=WARN") && strings.Contains(out, "20001") && strings.Contains(out, "private_chat="+tt.mode)
+			if got != tt.warn {
+				t.Errorf("warned = %v, want %v; logs:\n%s", got, tt.warn, out)
+			}
+		})
+	}
+}
+
 // joinDirective is part of the hint appended to join requests at every level.
 const joinDirective = "（见上面的近期消息），没有人 @ 你。"
 
