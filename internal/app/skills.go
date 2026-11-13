@@ -8,6 +8,7 @@ import (
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/policy"
 	"github.com/kinako404/conloom/internal/review"
+	"github.com/kinako404/conloom/internal/search"
 	"github.com/kinako404/conloom/internal/skills"
 	"github.com/kinako404/conloom/internal/skills/tools"
 	"github.com/kinako404/conloom/internal/store"
@@ -19,6 +20,9 @@ type toolDeps struct {
 	Policies *policy.Service
 	Reviewer *review.Reviewer
 	Metrics  *obs.Metrics
+	// Vectors is semantic search, nil without an embedding section in the
+	// config. No tool uses it yet.
+	Vectors search.VectorSearcher
 }
 
 // builtinTools returns the built-in tools that skills may use. Every

@@ -18,6 +18,7 @@ import (
 	"github.com/kinako404/conloom/internal/admission"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/core"
+	"github.com/kinako404/conloom/internal/embedding"
 	"github.com/kinako404/conloom/internal/gateway"
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/obs"
@@ -27,6 +28,8 @@ import (
 	"github.com/kinako404/conloom/internal/provider/openai"
 	"github.com/kinako404/conloom/internal/review"
 	"github.com/kinako404/conloom/internal/router"
+	"github.com/kinako404/conloom/internal/search"
+	"github.com/kinako404/conloom/internal/search/vector"
 	"github.com/kinako404/conloom/internal/skills"
 	"github.com/kinako404/conloom/internal/store/sqlite"
 )
@@ -47,6 +50,10 @@ type App struct {
 	orch    *core.Orchestrator
 	sched   *memory.Scheduler
 	handler http.Handler
+	// indexer and vectors are semantic search, both nil without an
+	// embedding section in the config.
+	indexer *vector.Indexer
+	vectors search.VectorSearcher
 
 	closeOnce sync.Once
 	closeErr  error
@@ -130,9 +137,18 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	})
 	policies.OnChange(sched.PolicyChanged)
 	reviewer := review.New(cfg.Secrets(), review.Options{})
+	var indexer *vector.Indexer
+	var vectors search.VectorSearcher
+	if e := cfg.Embedding; e != nil {
+		emb := embedding.New(*e, nil)
+		indexer = vector.NewIndexer(vector.IndexerDeps{Store: st, Embedder: emb, Policies: policies, Reviewer: reviewer,
+			IsCommand: isCommand, Location: loc, Metrics: metrics, Logger: logger})
+		vectors = vector.NewSearcher(vector.SearcherDeps{Store: st, Embedder: emb, Metrics: metrics, Logger: logger})
+		logger.Info("semantic search enabled", "embedding_model", e.Model, "batch_size", e.BatchSize)
+	}
 	tools := opts.Tools
 	if tools == nil {
-		tools = builtinTools(toolDeps{Store: st, Policies: policies, Reviewer: reviewer, Metrics: metrics})
+		tools = builtinTools(toolDeps{Store: st, Policies: policies, Reviewer: reviewer, Metrics: metrics, Vectors: vectors})
 	}
 	skillReg, err := registerSkills(cfg, loadedSkills, tools)
 	if err != nil {
@@ -171,7 +187,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Memory:       sched,
 		Counters:     metrics,
 	})
-	return &App{st: st, orch: orch, sched: sched, handler: gw.Handler()}, nil
+	return &App{st: st, orch: orch, sched: sched, handler: gw.Handler(), indexer: indexer, vectors: vectors}, nil
 }
 
 // location is the time zone tz, falling back to Asia/Shanghai, then UTC.
@@ -190,8 +206,13 @@ func location(tz string) *time.Location {
 // Handler serves the Bot Interaction API, /healthz and (if enabled) /metrics.
 func (a *App) Handler() http.Handler { return a.handler }
 
+// VectorSearcher is the semantic search over the conversations' chunks, or
+// nil when the config has no embedding section.
+func (a *App) VectorSearcher() search.VectorSearcher { return a.vectors }
+
 // Start recovers tasks left unfinished by a previous process and starts
-// background maintenance, including memory consolidation. It must be called
+// background maintenance, including memory consolidation and, with an
+// embedding section in the config, embedding new chunks. It must be called
 // once, before the API serves traffic; later calls return
 // core.ErrAlreadyRecovered.
 func (a *App) Start(ctx context.Context) error {
@@ -199,14 +220,20 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 	a.sched.Start()
+	if a.indexer != nil {
+		a.indexer.Start()
+	}
 	return nil
 }
 
-// Close stops memory consolidation and the orchestrator, then closes the
-// database. Further calls return the first result.
+// Close stops memory consolidation, embedding and the orchestrator, then
+// closes the database. Further calls return the first result.
 func (a *App) Close() error {
 	a.closeOnce.Do(func() {
 		a.sched.Close()
+		if a.indexer != nil {
+			a.indexer.Close()
+		}
 		a.orch.Close()
 		a.closeErr = a.st.Close()
 	})
