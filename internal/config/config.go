@@ -30,8 +30,11 @@ type Config struct {
 	DefaultPrivatePolicy *conloomapi.GroupPolicy `yaml:"default_private_policy"`
 	Runtime              RuntimeConfig           `yaml:"runtime"`
 	Skills               SkillsConfig            `yaml:"skills"`
-	Adapters             AdaptersConfig          `yaml:"adapters"`
-	Observability        ObservabilityConfig     `yaml:"observability"`
+	// Embedding configures the text embedding service of semantic search; nil
+	// when the file has no embedding section, which turns semantic search off.
+	Embedding     *EmbeddingConfig    `yaml:"embedding"`
+	Adapters      AdaptersConfig      `yaml:"adapters"`
+	Observability ObservabilityConfig `yaml:"observability"`
 
 	// Path is the absolute path of the loaded file.
 	Path string `yaml:"-"`
@@ -54,6 +57,21 @@ type StorageConfig struct {
 // resolved against the configuration file's directory.
 type SkillsConfig struct {
 	Dir string `yaml:"dir"`
+}
+
+// EmbeddingConfig locates an OpenAI-compatible embeddings endpoint: requests go
+// to Endpoint + "/embeddings". Timeout bounds each request and BatchSize the
+// texts sent in one request.
+type EmbeddingConfig struct {
+	Endpoint  string              `yaml:"endpoint"`
+	Model     string              `yaml:"model"`
+	APIKey    string              `yaml:"api_key"`
+	Timeout   conloomapi.Duration `yaml:"timeout"`
+	BatchSize int                 `yaml:"batch_size"`
+}
+
+func defaultEmbedding() EmbeddingConfig {
+	return EmbeddingConfig{Model: "bge-m3", Timeout: dur(10 * time.Second), BatchSize: 16}
 }
 
 type APIToken struct {
@@ -270,6 +288,10 @@ func Load(path string) (*Config, error) {
 			p := conloomapi.DefaultGroupPolicy()
 			cfg.DefaultPrivatePolicy = &p
 		}
+		if n := mappingValue(&root, "embedding"); n != nil && n.Tag != "!!null" {
+			e := defaultEmbedding()
+			cfg.Embedding = &e
+		}
 		dec := yaml.NewDecoder(bytes.NewReader(expanded))
 		dec.KnownFields(true)
 		if err := dec.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
@@ -391,8 +413,8 @@ func (c *Config) DBPath() string {
 	return filepath.Join(c.Storage.DataDir, "conloom.db")
 }
 
-// Secrets returns every non-empty credential in the config (model API keys, API
-// tokens, adapter access, bot and core tokens), without duplicates.
+// Secrets returns every non-empty credential in the config (model and embedding
+// API keys, API tokens, adapter access, bot and core tokens), without duplicates.
 func (c *Config) Secrets() []string {
 	var out []string
 	seen := map[string]bool{}
@@ -413,5 +435,8 @@ func (c *Config) Secrets() []string {
 	add(c.Adapters.Telegram.Token)
 	add(c.Adapters.Telegram.CoreToken)
 	add(c.Adapters.Mock.CoreToken)
+	if c.Embedding != nil {
+		add(c.Embedding.APIKey)
+	}
 	return out
 }

@@ -16,6 +16,12 @@ import (
 // backoff doubles per attempt, so larger values stall a conversation.
 const maxModelRetries = 5
 
+// maxEmbeddingTimeout and maxEmbeddingBatch bound the embedding section.
+const (
+	maxEmbeddingTimeout = 5 * time.Minute
+	maxEmbeddingBatch   = 256
+)
+
 var allScopes = []string{
 	conloomapi.ScopeEventsWrite,
 	conloomapi.ScopeTasksRead,
@@ -211,6 +217,17 @@ func (c *Config) ValidateServe() error {
 	p.nested("default_group_policy", c.DefaultGroupPolicy.Validate())
 	if c.DefaultPrivatePolicy != nil {
 		p.nested("default_private_policy", c.DefaultPrivatePolicy.Validate())
+	}
+	if e := c.Embedding; e != nil {
+		p.required("embedding.endpoint", e.Endpoint)
+		p.absURL("embedding.endpoint", e.Endpoint, "http", "https")
+		p.required("embedding.model", e.Model)
+		if d := e.Timeout.Duration; d <= 0 || d > maxEmbeddingTimeout {
+			p.addf("embedding.timeout", "must be > 0 and <= %s, got %s", maxEmbeddingTimeout, d)
+		}
+		if e.BatchSize < 1 || e.BatchSize > maxEmbeddingBatch {
+			p.addf("embedding.batch_size", "must be between 1 and %d, got %d", maxEmbeddingBatch, e.BatchSize)
+		}
 	}
 
 	return p.err(c, "serve")
