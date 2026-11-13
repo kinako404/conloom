@@ -268,26 +268,6 @@ func TestMemoryCommand_NilTriggerStillReplies(t *testing.T) {
 	}
 }
 
-func TestMemoryCommand_PrivateChat(t *testing.T) {
-	env := newTestOrchestrator(t, testOpts{configure: memCmdConfig(true, true)})
-	trig := &memCmdTrigger{}
-	env.o.memTrigger = trig
-	privKey := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "private_29999")
-	for _, text := range []string{"/好感度", "/affinity", "/记忆", "/memory", "/记忆 整理", "/记忆 群", "/忘记我", "/forgetme"} {
-		resp := env.submit(t, env.event(conloomapi.ConvPrivate, "29999", "29999", text))
-		task := env.getTask(t, resp.TaskID)
-		if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 || task.Actions[0].Content.Text != CopyMemoryGroupOnly {
-			t.Errorf("private %s = %+v, want %q", text, task, CopyMemoryGroupOnly)
-		}
-	}
-	if calls := trig.calls(); len(calls) != 0 {
-		t.Errorf("private consolidation triggered %v", calls)
-	}
-	if got, err := env.st.GetMemberMemories(context.Background(), privKey, []string{"29999"}); err != nil || len(got) != 0 {
-		t.Errorf("private /忘记我 wrote memory: %+v, %v", got, err)
-	}
-}
-
 func TestDecide_MemoryCommandsKnown(t *testing.T) {
 	for _, word := range []string{"好感度", "affinity", "记忆", "memory", "忘记我", "forgetme"} {
 		in := DecideInput{
@@ -307,7 +287,7 @@ func TestDecide_MemoryCommandsKnown(t *testing.T) {
 func TestCopyHelp_ListsMemoryCommands(t *testing.T) {
 	help := CopyHelp("织语")
 	for _, want := range []string{
-		"，/好感度 查看好感度，/记忆 查看我记得的你，/忘记我 清空你的记忆；管理员：",
+		"，/好感度 查看好感度，/记忆 查看我记得的你，/记住 <内容> 让我记住一件事，/忘记我 清空你的记忆；管理员：",
 		"，/记忆 整理 立即整理记忆，/记忆 群 查看群聊摘要。",
 	} {
 		if !strings.Contains(help, want) {
@@ -315,9 +295,10 @@ func TestCopyHelp_ListsMemoryCommands(t *testing.T) {
 		}
 	}
 	for got, want := range map[string]string{
-		CopyMemoryDisabled:  "这个群没有开启记忆。",
-		CopyMemoryGroupOnly: "记忆只在群聊里使用。",
-		CopyAffinityOff:     "这个群没有开启好感度。",
+		CopyMemoryDisabled:        "这个群没有开启记忆。",
+		CopyAffinityOff:           "这个群没有开启好感度。",
+		CopyMemoryDisabledPrivate: "我们的私聊没有开启记忆。",
+		CopyRemembered:            "记住了。",
 	} {
 		if got != want {
 			t.Errorf("copy = %q, want %q", got, want)
@@ -326,7 +307,7 @@ func TestCopyHelp_ListsMemoryCommands(t *testing.T) {
 	if got, want := CopyAffinity("织语", "认识", 21), "织语对你的好感：认识（21/100）"; got != want {
 		t.Errorf("CopyAffinity = %q, want %q", got, want)
 	}
-	if CopyMemoryUsage != "用法：/记忆 查看我记得的关于你的事；/好感度 查看好感度；/忘记我 清空你的记忆；管理员：/记忆 整理，/记忆 群。" {
+	if CopyMemoryUsage != "用法：/记忆 查看我记得的关于你的事；/记住 <内容> 让我记住一件事；/好感度 查看好感度；/忘记我 清空你的记忆；管理员：/记忆 整理，/记忆 群（或 /记忆 摘要）。" {
 		t.Errorf("CopyMemoryUsage = %q", CopyMemoryUsage)
 	}
 }

@@ -8,7 +8,7 @@ import (
 )
 
 func CopyHelp(botName string) string {
-	return "我是" + botName + "。在群里 @我 或回复我的消息就能和我聊天。\n命令：/help 帮助，/stop 停止当前回复，/persona 查看人格，/主动 查看或设置主动搭话，/好感度 查看好感度，/记忆 查看我记得的你，/忘记我 清空你的记忆；管理员：/pause 暂停，/resume 恢复，/persona list 列出人格模板，/persona use <模板名> 切换人格模板，/记忆 整理 立即整理记忆，/记忆 群 查看群聊摘要。"
+	return "我是" + botName + "。在群里 @我 或回复我的消息就能和我聊天。\n命令：/help 帮助，/stop 停止当前回复，/persona 查看人格，/主动 查看或设置主动搭话，/好感度 查看好感度，/记忆 查看我记得的你，/记住 <内容> 让我记住一件事，/忘记我 清空你的记忆；管理员：/pause 暂停，/resume 恢复，/persona list 列出人格模板，/persona use <模板名> 切换人格模板，/记忆 整理 立即整理记忆，/记忆 群 查看群聊摘要。"
 }
 
 // CopyPersonaInfo describes the current persona: its name and version, and
@@ -56,14 +56,24 @@ const (
 	CopyProactiveUsage       = "用法：/主动 查看档位；/主动 关|低|中|高 设置档位；管理员：/主动 全群 开|关。"
 
 	CopyMemoryDisabled      = "这个群没有开启记忆。"
-	CopyMemoryGroupOnly     = "记忆只在群聊里使用。"
 	CopyAffinityOff         = "这个群没有开启好感度。"
 	CopyMemoryNoNote        = "我还没有记下关于你的事。"
 	CopyMemoryForgotten     = "好的，已清空关于你的笔记和好感度。群聊摘要是大家共同的记录，不会逐人删除，会在之后的整理中慢慢被覆盖。"
 	CopyMemoryConsolidating = "已开始整理记忆，完成后不另外通知。"
 	CopyMemoryPaused        = "群里暂停中，现在不会整理记忆。管理员发送 /resume 恢复后再整理。"
 	CopyMemoryNoSummary     = "还没有群聊摘要。"
-	CopyMemoryUsage         = "用法：/记忆 查看我记得的关于你的事；/好感度 查看好感度；/忘记我 清空你的记忆；管理员：/记忆 整理，/记忆 群。"
+	CopyMemoryUsage         = "用法：/记忆 查看我记得的关于你的事；/记住 <内容> 让我记住一件事；/好感度 查看好感度；/忘记我 清空你的记忆；管理员：/记忆 整理，/记忆 群（或 /记忆 摘要）。"
+
+	CopyMemoryDisabledPrivate  = "我们的私聊没有开启记忆。"
+	CopyAffinityOffPrivate     = "我们的私聊没有开启好感度。"
+	CopyMemoryForgottenPrivate = "好的，已清空关于你的笔记、好感度和我们的对话摘要。"
+	CopyMemoryPausedPrivate    = "我们的私聊暂停中，现在不会整理记忆。管理员发送 /resume 恢复后再整理。"
+	CopyMemoryNoPrivateSummary = "还没有我们的对话摘要。"
+	CopyMemoryUsagePrivate     = "用法：/记忆 查看我记得的关于你的事；/记忆 摘要 查看我们的对话摘要；/记住 <内容> 让我记住一件事；/好感度 查看好感度；/忘记我 清空你的记忆；管理员：/记忆 整理。"
+
+	CopyRemembered      = "记住了。"
+	CopyRememberUsage   = "用法：/记住 <想让我记住的事>，例如 /记住 我下周三考试。一次最多 100 字。"
+	CopyRememberTooLong = "太长了，/记住 一次最多 100 字，可以分几次告诉我。"
 )
 
 // CopyAffinity tells a member how name, the bot, feels about them: the tier
@@ -86,6 +96,11 @@ func CopyMemoryNote(note string) string {
 // CopyMemoryGroupSummary shows the group's summary.
 func CopyMemoryGroupSummary(s string) string {
 	return "群聊摘要：" + s
+}
+
+// CopyMemoryPrivateSummary shows a private conversation's summary.
+func CopyMemoryPrivateSummary(s string) string {
+	return "我们的对话摘要：" + s
 }
 
 // CopyDirectiveContinuation is appended to the current message of a turn in

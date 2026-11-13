@@ -221,24 +221,6 @@ func TestMemoryInject_NothingRememberedNoBlock(t *testing.T) {
 	}
 }
 
-func TestMemoryInject_PrivateChatNoBlock(t *testing.T) {
-	env := newTestOrchestrator(t, testOpts{configure: injectConfig(true)})
-	privKey := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "private_29999")
-	env.injectSeed(t, privKey, "私聊里聊过猫", store.MemberMemory{PlatformUserID: "29999", Note: "喜欢猫"})
-	resp := env.submit(t, env.event(conloomapi.ConvPrivate, "29999", "29999", "在吗"))
-	task := env.injectDone(t, resp.TaskID)
-	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 {
-		t.Fatalf("task = %+v", task)
-	}
-	if all := requestText(t, env.short.Requests()[0]); strings.Contains(all, injectBlockHeader) || strings.Contains(all, "喜欢猫") {
-		t.Fatalf("private request carries memory:\n%s", all)
-	}
-	got, err := env.st.GetMemberMemories(context.Background(), privKey, []string{"29999"})
-	if err != nil || got["29999"].Affinity != nil {
-		t.Fatalf("private chat member = %+v, %v; want no affinity", got["29999"], err)
-	}
-}
-
 func TestMemoryInject_ReadErrorStillReplies(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{configure: injectConfig(true)})
 	env.injectSeed(t, testConvKey, "最近在聊猫",

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"slices"
-	"strings"
 
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/store"
@@ -18,27 +17,38 @@ const injectMaxOthers = 2
 // injectPerson is a member whose memory may be shown, with the name to show.
 type injectPerson struct{ userID, name string }
 
-// injectMemory renders the memory block (see memory.RenderBlock) for a group
-// task whose policy has memory on: the group summary and the notes of the
-// speaker, then of the member the current message replies to and the members
-// it mentions, at most injectMaxOthers of them. Tiers are shown when the
-// policy's affinity is on. targets and names are the task's reply targets and
-// mention names. A read error is logged and leaves the block out.
+// injectMemory renders the memory block for a task whose policy has memory
+// on. In a group (memory.RenderBlock) it holds the group summary and the notes
+// of the speaker, then of the member the current message replies to and the
+// members it mentions, at most injectMaxOthers of them; in a private chat
+// (memory.RenderPrivateBlock) the conversation summary and only the speaker's
+// note. Tiers are shown when the policy's affinity is on. targets and names
+// are the task's reply targets and mention names. A read error is logged and
+// leaves the block out.
 func (o *Orchestrator) injectMemory(ctx context.Context, task store.TaskRecord, pol conloomapi.GroupPolicy,
 	triggers []store.MessageRecord, targets map[string]store.MessageRecord, names map[string]string) string {
 	if !pol.Memory.Enabled || !pol.Concurrency.AllowLongRequests || len(triggers) == 0 {
 		return ""
 	}
-	if parts := strings.SplitN(task.ConversationKey, ":", 4); len(parts) != 4 || parts[2] != conloomapi.ConvGroup {
+	private := false
+	switch convType(task.ConversationKey) {
+	case conloomapi.ConvGroup:
+	case conloomapi.ConvPrivate:
+		private = true
+	default:
 		return ""
 	}
 	warn := func(what string, err error) string {
 		o.log.Warn("memory not injected: "+what+" failed", "task_id", task.ID, "conversation", task.ConversationKey, "error", err)
 		return ""
 	}
-	people, err := o.injectPeople(ctx, task, triggers, targets, names)
-	if err != nil {
-		return warn("resolve mentioned members", err)
+	speaker := task.ActorPlatformUserID
+	people := []injectPerson{{speaker, injectName(triggers[len(triggers)-1].DisplayName, speaker)}}
+	if !private {
+		var err error
+		if people, err = o.injectPeople(ctx, task, triggers, targets, names); err != nil {
+			return warn("resolve mentioned members", err)
+		}
 	}
 	summary := ""
 	switch g, err := o.st.GetGroupMemory(ctx, task.ConversationKey); {
@@ -63,6 +73,9 @@ func (o *Orchestrator) injectMemory(ctx context.Context, task store.TaskRecord, 
 			e.Tier = memory.TierName(*m.Affinity)
 		}
 		entries = append(entries, e)
+	}
+	if private {
+		return memory.RenderPrivateBlock(summary, entries[0])
 	}
 	return memory.RenderBlock(summary, entries)
 }
@@ -123,12 +136,13 @@ func injectName(name, userID string) string {
 }
 
 // noteInteraction applies the affinity rules (memory.ApplyInteraction) to the
-// sender of a group task addressed to the bot whose reply was sent, when the
-// policy has memory and affinity on. The day is the local date in o.loc; the
+// sender of a group task addressed to the bot, or of a private chat task,
+// whose reply was sent, when the policy has memory and affinity on. The day is the local date in o.loc; the
 // sender's display name is refreshed from the newest trigger. Errors are only
 // logged.
 func (o *Orchestrator) noteInteraction(ctx context.Context, task store.TaskRecord, out outcome, sent bool) {
-	if out.conv.Type != conloomapi.ConvGroup || !out.addressed || !sent || out.status != conloomapi.TaskSucceeded || len(out.triggers) == 0 {
+	direct := out.conv.Type == conloomapi.ConvPrivate || out.conv.Type == conloomapi.ConvGroup && out.addressed
+	if !direct || !sent || out.status != conloomapi.TaskSucceeded || len(out.triggers) == 0 {
 		return
 	}
 	pv, err := o.policies.Current(ctx, task.ConversationKey)
