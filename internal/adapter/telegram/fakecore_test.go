@@ -14,11 +14,15 @@ import (
 
 const testCoreToken = "fake-tg-adapter-token"
 
+// submitRecord is one event submission. Resp and Replayed (the
+// Idempotent-Replayed header) are only recorded in front of the real core.
 type submitRecord struct {
-	Key   string
-	Event conloomapi.Event
-	Code  int
-	At    time.Time
+	Key      string
+	Event    conloomapi.Event
+	Code     int
+	At       time.Time
+	Resp     conloomapi.EventAccepted
+	Replayed bool
 }
 
 type ackRecord struct {

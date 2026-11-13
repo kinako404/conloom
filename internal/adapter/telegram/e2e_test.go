@@ -44,8 +44,8 @@ bots:
     platform_self_id: "30001"
     admins: ["20001"]
     enabled_conversations:
-      - {type: group, platform_id: "-1001234567890"}
-    private_chat: admins
+      - {type: group, platform_id: "-1001234567890"}EXTRA_CONVERSATIONS
+    private_chat: PRIVATE_CHAT
 model_profiles:
   short_context:
     endpoint: MODEL_URL
@@ -79,12 +79,26 @@ type realCore struct {
 	once    sync.Once
 }
 
+// newRealCore starts a core whose bot_tg lets only its admin 小明 chat
+// privately.
 func newRealCore(t *testing.T) *realCore {
+	t.Helper()
+	return newRealCoreWith(t, "admins")
+}
+
+// newRealCoreWith starts a core with private_chat set to privateChat and the
+// given users listed as private conversations.
+func newRealCoreWith(t *testing.T, privateChat string, privateUsers ...string) *realCore {
 	t.Helper()
 	c := &realCore{t: t, dataDir: filepath.Join(t.TempDir(), "data")}
 	c.model = fakeopenai.New(t, func(map[string]any) (int, string) { return 200, replyText })
 	dir := t.TempDir()
-	yml := strings.NewReplacer("DATA_DIR", strconv.Quote(c.dataDir), "MODEL_URL", c.model.URL).Replace(realCoreConfig)
+	var extra strings.Builder
+	for _, id := range privateUsers {
+		extra.WriteString("\n      - {type: private, platform_id: " + strconv.Quote(id) + "}")
+	}
+	yml := strings.NewReplacer("DATA_DIR", strconv.Quote(c.dataDir), "MODEL_URL", c.model.URL,
+		"EXTRA_CONVERSATIONS", extra.String(), "PRIVATE_CHAT", privateChat).Replace(realCoreConfig)
 	path := filepath.Join(dir, "conloom.yaml")
 	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
 		t.Fatal(err)
@@ -119,7 +133,12 @@ func newRealCore(t *testing.T) *realCore {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/events":
 			var ev conloomapi.Event
 			_ = json.Unmarshal(body, &ev)
-			c.submits = append(c.submits, submitRecord{Key: r.Header.Get("Idempotency-Key"), Event: ev, Code: rec.code, At: time.Now()})
+			var resp conloomapi.EventAccepted
+			_ = json.Unmarshal(rec.body.Bytes(), &resp)
+			c.submits = append(c.submits, submitRecord{
+				Key: r.Header.Get("Idempotency-Key"), Event: ev, Code: rec.code, At: time.Now(),
+				Resp: resp, Replayed: rec.Header().Get("Idempotent-Replayed") == "true",
+			})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/ack"):
 			var req conloomapi.AckRequest
 			_ = json.Unmarshal(body, &req)
@@ -132,14 +151,21 @@ func newRealCore(t *testing.T) *realCore {
 	return c
 }
 
+// statusRecorder passes a response through and keeps its status and body.
 type statusRecorder struct {
 	http.ResponseWriter
 	code int
+	body bytes.Buffer
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
 	r.code = code
 	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(p []byte) (int, error) {
+	r.body.Write(p)
+	return r.ResponseWriter.Write(p)
 }
 
 func (r *statusRecorder) Flush() {
@@ -212,7 +238,8 @@ func TestE2E_PrivateChatWithRealCore(t *testing.T) {
 		"from": map[string]any{"id": fakeBotID, "is_bot": true, "first_name": "织语", "username": fakeBotUsername},
 		"chat": map[string]any{"id": userXM, "type": "private"},
 	}
-	tg.Push(tgUpdate(102, privateMessage(12, map[string]any{"text": "真的吗？", "reply_to_message": botMsg, "date": time.Now().Unix()})))
+	quoteUpdate := tgUpdate(102, privateMessage(12, map[string]any{"text": "真的吗？", "reply_to_message": botMsg, "date": time.Now().Unix()}))
+	tg.Push(quoteUpdate)
 	waitFor(t, 10*time.Second, "the second reply", func() bool { return len(tg.Calls("sendMessage")) == 2 })
 	reqs := core.model.Requests()
 	if len(reqs) != 2 {
@@ -232,9 +259,9 @@ func TestE2E_PrivateChatWithRealCore(t *testing.T) {
 	}
 
 	// 3. Telegram hands update 102 to a restarted adapter again (as it does
-	// for an update that was never confirmed): the core replays it and no
-	// second reply is sent.
-	tg.Push(tgUpdate(102, privateMessage(12, map[string]any{"text": "真的吗？", "reply_to_message": botMsg, "date": time.Now().Unix()})))
+	// for an update that was never confirmed): the same update, byte for byte.
+	// The core replays its first response and no second reply is sent.
+	tg.Push(quoteUpdate)
 	r2 := startAdapter(t, tgConfig(tg.URL, core.URL, stateDir), nil)
 	waitFor(t, 10*time.Second, "the redelivered update handled", func() bool {
 		n := 0
@@ -245,6 +272,16 @@ func TestE2E_PrivateChatWithRealCore(t *testing.T) {
 		}
 		return n == 2
 	})
+	var replays []submitRecord
+	for _, s := range core.Submits() {
+		if s.Key == "telegram:30001:102" {
+			replays = append(replays, s)
+		}
+	}
+	if again := replays[1]; again.Code != http.StatusAccepted || !again.Replayed || again.Resp != replays[0].Resp {
+		t.Errorf("second submission of update 102: HTTP %d, replayed %v, response %+v; want 202, Idempotent-Replayed and the first response %+v",
+			again.Code, again.Replayed, again.Resp, replays[0].Resp)
+	}
 	time.Sleep(500 * time.Millisecond)
 	if n := len(tg.Calls("sendMessage")); n != 2 {
 		t.Errorf("sendMessage calls = %d after the replayed update, want 2", n)
@@ -367,5 +404,54 @@ func TestE2E_GroupChatWithRealCore(t *testing.T) {
 	want := []conloomapi.Mention{{Type: "user", ID: "username_xiaoming", Name: "xiaoming"}}
 	if err != nil || m.DisplayName != "小红" || !reflect.DeepEqual(m.Mentions, want) {
 		t.Errorf("mention message = %+v (err %v), want 小红 mentioning xiaoming", m, err)
+	}
+}
+
+// privateFrom is a current text message from user in their private chat.
+func privateFrom(messageID int64, user map[string]any, text string) map[string]any {
+	msg := privateMessage(messageID, map[string]any{"text": text, "date": time.Now().Unix()})
+	msg["from"] = user
+	msg["chat"] = map[string]any{"id": user["id"], "type": "private", "first_name": user["first_name"]}
+	return msg
+}
+
+func TestE2E_PrivateAllowlistWithRealCore(t *testing.T) {
+	tg, core := newFakeTG(t), newRealCoreWith(t, "allowlist", "20002")
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("telegram calls:\n%s", tg)
+		}
+	})
+	startAdapter(t, tgConfig(tg.URL, core.URL, t.TempDir()), func(a *Adapter) { a.typingInterval = 50 * time.Millisecond })
+	xiaoming := tgUser(userXM, "小明", "", "xiaoming") // admin
+	xiaohong := tgUser(20002, "小红", "", "xiaohong")  // listed
+	xiaogang := tgUser(20003, "小刚", "", "xiaogang")  // neither
+
+	tg.Push(tgUpdate(301, privateFrom(31, xiaogang, "喂")))
+	waitFor(t, 5*time.Second, "update 301 handled", func() bool { return hasOffset(tg, 302) })
+	stranger := core.Submits()[0]
+	if stranger.Code != http.StatusAccepted || stranger.Resp.Disposition != conloomapi.DispositionIgnore ||
+		stranger.Resp.SuppressedReason != conloomapi.SuppressedPrivateNotAllowed {
+		t.Errorf("unlisted user: HTTP %d, response %+v; want 202 ignore with private_not_allowed", stranger.Code, stranger.Resp)
+	}
+
+	tg.Push(tgUpdate(302, privateFrom(32, xiaohong, "你好")), tgUpdate(303, privateFrom(33, xiaoming, "在吗？")))
+	waitFor(t, 10*time.Second, "replies to the listed user and the admin", func() bool { return len(tg.Calls("sendMessage")) == 2 })
+	time.Sleep(300 * time.Millisecond)
+	chats := map[int64]int{}
+	for _, c := range tg.Calls("sendMessage") {
+		chats[c.num("chat_id")]++
+	}
+	if len(tg.Calls("sendMessage")) != 2 || chats[20002] != 1 || chats[userXM] != 1 {
+		t.Errorf("replies per chat = %v, want one each to 20002 and 20001", chats)
+	}
+	for _, c := range tg.Calls("sendChatAction") {
+		if c.num("chat_id") == 20003 {
+			t.Error("typing shown to the unlisted user")
+			break
+		}
+	}
+	if n := len(core.model.Requests()); n != 2 {
+		t.Errorf("model requests = %d, want 2 (none for the unlisted user)", n)
 	}
 }
