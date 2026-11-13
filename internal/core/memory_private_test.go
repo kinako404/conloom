@@ -138,8 +138,9 @@ func TestMemoryCommand_PrivateChat(t *testing.T) {
 		t.Errorf("forgotten private member = %+v", m)
 	}
 	g, err := env.st.GetGroupMemory(context.Background(), key)
-	if err != nil || g.Summary != "" || g.CursorSeq != 7 {
-		t.Errorf("private summary after /忘记我 = %+v, %v; want cleared with the cursor kept", g, err)
+	newest, rerr := env.st.RecentMessages(context.Background(), key, 1)
+	if err != nil || rerr != nil || len(newest) != 1 || g.Summary != "" || g.CursorSeq != newest[0].Seq {
+		t.Errorf("private summary after /忘记我 = %+v, %v; want cleared with the cursor at the newest message", g, err)
 	}
 	if revs, err := env.st.ListMemoryRevisions(context.Background(), key, ""); err != nil || len(revs) != 0 {
 		t.Errorf("private summary revisions after /忘记我 = %+v, %v; want none", revs, err)

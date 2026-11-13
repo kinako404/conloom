@@ -10,19 +10,17 @@ import (
 // ForgetStore is the part of store.Store that Forget uses.
 type ForgetStore interface {
 	ForgetMember(ctx context.Context, convKey, userID string, at time.Time) error
-	ClearSummary(ctx context.Context, convKey string) error
+	ForgetPrivate(ctx context.Context, convKey, userID string, at time.Time) error
 }
 
 // Forget clears userID's note and affinity in convKey and marks them
-// forgotten at at (store.ForgetMember). In a private conversation the summary
-// is about that one person, so it is cleared too, with all of its revisions;
-// the cursor is kept. A group's summary is a shared record and is kept.
+// forgotten at at (store.ForgetMember). A private conversation is about that
+// one person, so it is forgotten whole (store.ForgetPrivate): its summary and
+// summary revisions go too, and its cursor moves past everything said so far
+// by either side. A group's summary is a shared record and is kept.
 func Forget(ctx context.Context, st ForgetStore, convKey, userID string, at time.Time) error {
-	if err := st.ForgetMember(ctx, convKey, userID, at); err != nil {
-		return err
-	}
 	if convTypeOf(convKey) != conloomapi.ConvPrivate {
-		return nil
+		return st.ForgetMember(ctx, convKey, userID, at)
 	}
-	return st.ClearSummary(ctx, convKey)
+	return st.ForgetPrivate(ctx, convKey, userID, at)
 }

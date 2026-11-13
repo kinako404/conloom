@@ -271,26 +271,50 @@ func TestConsolidate_PrivateForgetDuringRunKeepsSummaryEmpty(t *testing.T) {
 	}
 }
 
-func TestConsolidate_PrivateForgottenSinceRunStartWritesNoSummary(t *testing.T) {
+func TestConsolidate_PrivateForgottenSinceRunStartAbandonsTheBatch(t *testing.T) {
 	e := newConsEnv(t, consOpts{private: true})
 	ctx := context.Background()
-	if err := e.st.PutGroupMemory(ctx, store.GroupMemory{ConversationKey: testPrivateKey}); err != nil {
-		t.Fatal(err)
-	}
+	putMember(t, e.st, store.MemberMemory{ConversationKey: testPrivateKey, PlatformUserID: "20001", Note: "旧笔记"})
 	if err := e.st.ForgetMember(ctx, testPrivateKey, "20001", consNow.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	msgs := e.add(t, e.msg("20001", "小明", "我最近在学钢琴", consNow.Add(2*time.Minute)))
+	if err := e.st.PutGroupMemory(ctx, store.GroupMemory{ConversationKey: testPrivateKey, CursorSeq: 0}); err != nil {
+		t.Fatal(err)
+	}
+	e.add(t, e.msg("20001", "小明", "我最近在学钢琴", consNow.Add(2*time.Minute)), e.botMsg("加油", consNow.Add(3*time.Minute)))
 	e.long.answer(`{"group_summary":"小明在学钢琴。","members":[{"ref":"P1","note":"在学钢琴。"}]}`)
+	res := e.run(t, false)
+	if res.Skipped != "forgotten" || e.long.calls() != 0 {
+		t.Fatalf("Result = %+v with %d model calls, want the batch abandoned before the call", res, e.long.calls())
+	}
+	if g := e.group(t); g.Summary != "" || g.CursorSeq != 0 || len(revisionsOf(t, e.st, testPrivateKey, "")) != 0 {
+		t.Fatalf("group = %+v, want nothing written and the cursor kept", g)
+	}
+	if m := getMember(t, e.st, testPrivateKey, "20001"); m.Note != "" {
+		t.Fatalf("note = %q, want none written", m.Note)
+	}
+}
+
+func TestConsolidate_PrivateForgetSkipsEarlierBotReplies(t *testing.T) {
+	e := newConsEnv(t, consOpts{private: true})
+	ctx := context.Background()
+	e.add(t, e.msg("20001", "小明", "我偷偷喜欢甜食", consAt(0)), e.botMsg("原来你喜欢甜食呀", consAt(1)))
+	if err := Forget(ctx, e.st, testPrivateKey, "20001", consAt(5)); err != nil {
+		t.Fatal(err)
+	}
+	newer := e.add(t, e.msg("20001", "小明", "今天下雨了", consAt(10)), e.botMsg("记得带伞", consAt(11)))
+	e.long.answer(`{"group_summary":"小明说今天下雨。","members":[{"ref":"P1","note":"住的地方今天下雨。"}]}`)
 	e.run(t, false)
-	if g := e.group(t); g.Summary != "" || g.CursorSeq != msgs[0].Seq {
-		t.Fatalf("group = %+v, want no summary written and the cursor moved", g)
+	text := consText(e.long.request(t, 0))
+	if strings.Contains(text, "甜食") || !strings.Contains(text, "今天下雨了") || !strings.Contains(text, "记得带伞") {
+		t.Fatalf("request after forgetting:\n%s\nwant only the messages after it", text)
 	}
-	if revs := revisionsOf(t, e.st, testPrivateKey, ""); len(revs) != 0 {
-		t.Fatalf("summary revisions = %+v, want none", revs)
+	g := e.group(t)
+	if g.CursorSeq != newer[1].Seq || strings.Contains(g.Summary, "甜食") {
+		t.Fatalf("group = %+v", g)
 	}
-	if m := getMember(t, e.st, testPrivateKey, "20001"); m.Note != "在学钢琴。" {
-		t.Fatalf("note = %q, want the note from messages after forgetting", m.Note)
+	if m := getMember(t, e.st, testPrivateKey, "20001"); strings.Contains(m.Note, "甜食") || m.ForgottenAt.IsZero() {
+		t.Fatalf("member = %+v", m)
 	}
 }
 

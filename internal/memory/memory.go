@@ -12,7 +12,8 @@ import (
 
 // Result describes one consolidation run. Skipped is empty when the run did
 // its work, otherwise one of "disabled", "backoff", "no_messages",
-// "long_unavailable" or "busy".
+// "long_unavailable", "busy" or "forgotten" (a private conversation's member
+// was forgotten during the run).
 type Result struct {
 	Batches, Messages, MembersUpdated int
 	Skipped                           string

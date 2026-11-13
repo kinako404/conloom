@@ -35,18 +35,22 @@ func (db *DB) GetGroupMemory(ctx context.Context, convKey string) (store.GroupMe
 // stored as now.
 func (db *DB) PutGroupMemory(ctx context.Context, g store.GroupMemory) error {
 	return db.inTx(ctx, func(tx *sql.Tx) error {
-		return putGroupMemory(ctx, tx, g)
+		return putGroupMemory(ctx, tx, g, "excluded.cursor_seq")
 	})
 }
 
-func putGroupMemory(ctx context.Context, tx *sql.Tx, g store.GroupMemory) error {
+// putGroupMemory upserts g, setting the cursor of an existing row to cursorExpr.
+func putGroupMemory(ctx context.Context, tx *sql.Tx, g store.GroupMemory, cursorExpr string) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO group_memory (`+groupMemoryCols+`) VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT (conversation_key) DO UPDATE SET
-			summary = excluded.summary, cursor_seq = excluded.cursor_seq, last_run_at = excluded.last_run_at,
+			summary = excluded.summary, cursor_seq = `+cursorExpr+`, last_run_at = excluded.last_run_at,
 			last_error = excluded.last_error, updated_at = excluded.updated_at`,
 		g.ConversationKey, g.Summary, g.CursorSeq, fmtTime(g.LastRunAt), g.LastError, fmtTime(time.Now()))
 	return err
 }
+
+// cursorForward keeps the larger of the stored and the written cursor.
+const cursorForward = "MAX(group_memory.cursor_seq, excluded.cursor_seq)"
 
 const memberMemoryCols = `conversation_key, platform_user_id, display_name, note, affinity, last_interaction_day,
 	model_delta_day, model_delta_sum, decay_steps, forgotten_at, version, updated_at`
@@ -134,7 +138,7 @@ func (db *DB) ApplyMemoryWrite(ctx context.Context, w store.MemoryWrite) ([]stri
 					return err
 				}
 			}
-			if err := putGroupMemory(ctx, tx, g); err != nil {
+			if err := putGroupMemory(ctx, tx, g, cursorForward); err != nil {
 				return err
 			}
 		}
@@ -191,14 +195,27 @@ func storedSummary(ctx context.Context, tx *sql.Tx, convKey string) (string, err
 	return summary, err
 }
 
-func (db *DB) ClearSummary(ctx context.Context, convKey string) error {
+func (db *DB) ForgetPrivate(ctx context.Context, convKey, userID string, at time.Time) error {
+	if userID == "" {
+		return errors.New("forget private member: empty user ID")
+	}
 	return db.inTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE group_memory SET summary = '', updated_at = ? WHERE conversation_key = ?`,
-			fmtTime(time.Now()), convKey); err != nil {
+		if err := forgetMember(ctx, tx, convKey, userID, at); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM memory_revisions WHERE conversation_key = ? AND platform_user_id = '' AND field = ?`,
-			convKey, store.FieldSummary)
+		if _, err := tx.ExecContext(ctx, `DELETE FROM memory_revisions WHERE conversation_key = ? AND platform_user_id = '' AND field = ?`,
+			convKey, store.FieldSummary); err != nil {
+			return err
+		}
+		var newest int64
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM messages WHERE conversation_key = ?`,
+			convKey).Scan(&newest); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO group_memory (`+groupMemoryCols+`) VALUES (?, '', ?, ?, '', ?)
+			ON CONFLICT (conversation_key) DO UPDATE SET summary = '', cursor_seq = `+cursorForward+`,
+				updated_at = excluded.updated_at`,
+			convKey, newest, fmtTime(time.Time{}), fmtTime(time.Now()))
 		return err
 	})
 }
@@ -261,19 +278,25 @@ func (db *DB) ForgetMember(ctx context.Context, convKey, userID string, at time.
 		return errors.New("forget member: empty user ID")
 	}
 	return db.inTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO member_memory (`+memberMemoryCols+`)
-			VALUES (?, ?, '', '', NULL, '', '', 0, 0, ?, 1, ?)
-			ON CONFLICT (conversation_key, platform_user_id) DO UPDATE SET
-				display_name = '', note = '', affinity = NULL, last_interaction_day = '', model_delta_day = '',
-				model_delta_sum = 0, decay_steps = 0, forgotten_at = excluded.forgotten_at,
-				version = member_memory.version + 1, updated_at = excluded.updated_at`,
-			convKey, userID, fmtTime(at), fmtTime(time.Now())); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM memory_revisions WHERE conversation_key = ? AND platform_user_id = ?`,
-			convKey, userID)
-		return err
+		return forgetMember(ctx, tx, convKey, userID, at)
 	})
+}
+
+// forgetMember clears the user's memory, marks it forgotten at at and deletes
+// the user's revisions in the conversation.
+func forgetMember(ctx context.Context, tx *sql.Tx, convKey, userID string, at time.Time) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO member_memory (`+memberMemoryCols+`)
+		VALUES (?, ?, '', '', NULL, '', '', 0, 0, ?, 1, ?)
+		ON CONFLICT (conversation_key, platform_user_id) DO UPDATE SET
+			display_name = '', note = '', affinity = NULL, last_interaction_day = '', model_delta_day = '',
+			model_delta_sum = 0, decay_steps = 0, forgotten_at = excluded.forgotten_at,
+			version = member_memory.version + 1, updated_at = excluded.updated_at`,
+		convKey, userID, fmtTime(at), fmtTime(time.Now())); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM memory_revisions WHERE conversation_key = ? AND platform_user_id = ?`,
+		convKey, userID)
+	return err
 }
 
 const memoryRevisionCols = `id, conversation_key, platform_user_id, field, old_value, new_value, source, reason, created_at`

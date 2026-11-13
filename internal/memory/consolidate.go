@@ -172,7 +172,13 @@ func (c *Consolidator) run(ctx context.Context, convKey string, manual bool) (Re
 
 	var res Result
 	promptTokens := 0
+	private := convTypeOf(convKey) == conloomapi.ConvPrivate
 	for res.Batches < maxBatchesPerRun {
+		if private {
+			if err := c.refreshGroup(ctx, &g); err != nil {
+				return res, promptTokens, err
+			}
+		}
 		msgs, err := c.d.Store.MessagesAfter(ctx, convKey, g.CursorSeq, c.messageLimit(convKey))
 		if err != nil {
 			return res, promptTokens, err
@@ -209,19 +215,18 @@ type consOutcome struct {
 
 // batch consolidates the batch planned from msgs and, once it is written,
 // moves *g to the written state. Writes that are not meant to change the
-// summary keep the stored one. In a private conversation, whose summary is
-// about its one member, the summary is read afresh for every batch and is not
-// written when that member was forgotten since runStart or while the model
-// was called (see store.MemoryWrite's SummaryGuards).
+// summary keep the stored one. A private conversation is about its one
+// member, and forgetting them (memory.Forget) moves its cursor past
+// everything said before: run reads its memory row afresh before every
+// batch, a batch whose member was forgotten since runStart is abandoned
+// before the model call ("forgotten": nothing written, the cursor left
+// where it is), and one whose member is forgotten during the call writes no
+// summary (store.MemoryWrite's SummaryGuards) and never moves the cursor
+// back.
 func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conloomapi.MemoryPolicy, botName string,
 	msgs []store.MessageRecord, runStart time.Time) (consOutcome, error) {
 	convKey := g.ConversationKey
 	private := convTypeOf(convKey) == conloomapi.ConvPrivate
-	if private {
-		if err := c.refreshSummary(ctx, g); err != nil {
-			return consOutcome{}, err
-		}
-	}
 	in, err := c.gather(ctx, convKey, msgs)
 	if err != nil {
 		return consOutcome{}, err
@@ -249,6 +254,13 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 		}
 		*g = next
 		return consOutcome{messages: b.Messages}, nil
+	}
+
+	if private && slices.ContainsFunc(b.Members, func(m consBatchMember) bool {
+		return !m.Memory.ForgottenAt.IsZero() && !m.Memory.ForgottenAt.Before(runStart)
+	}) {
+		c.d.Logger.Info("memory consolidation stopped: the member was forgotten during the run", "conversation", convKey)
+		return consOutcome{skipped: "forgotten"}, nil
 	}
 
 	members := make([]promptMember, len(b.Members))
@@ -301,14 +313,8 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 	}
 	out = consResolveRefs(out, names, consLiteralCodes(written...), style.summaryMax, style.noteMax)
 
-	keepSummary := false
-	if private {
-		for _, m := range b.Members {
-			keepSummary = keepSummary || !m.Memory.ForgottenAt.IsZero() && !m.Memory.ForgottenAt.Before(runStart)
-		}
-	}
 	day := LocalDay(now, c.d.Location)
-	w, entries := c.compose(*g, b, out, mp.Affinity, day, now, keepSummary)
+	w, entries := c.compose(*g, b, out, mp.Affinity, day, now)
 	if private {
 		for _, m := range b.Members {
 			w.SummaryGuards = append(w.SummaryGuards, store.MemberVersion{PlatformUserID: m.UserID, Version: m.Memory.Version})
@@ -320,7 +326,7 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 	}
 	*g = *w.Group
 	if private {
-		if err := c.refreshSummary(ctx, g); err != nil {
+		if err := c.refreshGroup(ctx, g); err != nil {
 			return consOutcome{}, err
 		}
 	}
@@ -419,8 +425,7 @@ func consApplyEntry(m *store.MemberMemory, name string, om modelMember, affinity
 // model gave one, each member's entry applied to the row the batch read (see
 // consApplyEntry), a revision per change, and the cursor moved past the
 // batch. It also returns the entries of the members it writes.
-func (c *Consolidator) compose(g store.GroupMemory, b consBatch, out modelOutput, affinityOn bool, day string, now time.Time,
-	keepSummary bool) (store.MemoryWrite, []consEntry) {
+func (c *Consolidator) compose(g store.GroupMemory, b consBatch, out modelOutput, affinityOn bool, day string, now time.Time) (store.MemoryWrite, []consEntry) {
 	convKey := g.ConversationKey
 	w := store.MemoryWrite{ConversationKey: convKey}
 	revise := func(userID, field, old, next, reason string) {
@@ -429,7 +434,7 @@ func (c *Consolidator) compose(g store.GroupMemory, b consBatch, out modelOutput
 	}
 	next := g
 	next.CursorSeq, next.LastRunAt, next.LastError = b.LastSeq, now, ""
-	if !keepSummary && out.Summary != "" && out.Summary != g.Summary {
+	if out.Summary != "" && out.Summary != g.Summary {
 		revise("", store.FieldSummary, g.Summary, out.Summary, "")
 		next.Summary = out.Summary
 	}
@@ -524,8 +529,9 @@ func (c *Consolidator) putGroupState(ctx context.Context, g store.GroupMemory) e
 	return err
 }
 
-// refreshSummary sets g's summary to the stored one (empty without a row).
-func (c *Consolidator) refreshSummary(ctx context.Context, g *store.GroupMemory) error {
+// refreshGroup replaces g with the stored row; without one, g's summary is
+// emptied and the rest kept.
+func (c *Consolidator) refreshGroup(ctx context.Context, g *store.GroupMemory) error {
 	stored, err := c.d.Store.GetGroupMemory(ctx, g.ConversationKey)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -533,7 +539,7 @@ func (c *Consolidator) refreshSummary(ctx context.Context, g *store.GroupMemory)
 	case err != nil:
 		return err
 	default:
-		g.Summary = stored.Summary
+		*g = stored
 	}
 	return nil
 }
