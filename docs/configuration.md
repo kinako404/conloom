@@ -215,6 +215,27 @@ default_group_policy:
 | `adapters.napcat.state_dir` | 去重记录 `napcat-dedup.log` 所在目录，默认同 `storage.data_dir`，相对路径按配置文件目录解析 |
 | `adapters.mock.core_url` / `core_token` / `bot_instance_id` | Mock 适配器的同名设置，均必填 |
 
+**Telegram 适配器**（`conloom adapter telegram`，只处理私聊，接入步骤见 [接入 Telegram](telegram.md)）：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `adapters.telegram.token` | 必填 | BotFather 给的机器人 token。请求地址里含有它，日志和错误信息里一律显示为 `REDACTED` |
+| `adapters.telegram.api_base` | `https://api.telegram.org` | Bot API 地址，`http://` 或 `https://`；可以指向自建的 Bot API 服务器或反向代理 |
+| `adapters.telegram.poll_timeout` | 50s | `getUpdates` 长轮询时长，1s–60s，按整秒计 |
+| `adapters.telegram.core_url` | 必填 | 核心的地址，`http://` 或 `https://` |
+| `adapters.telegram.core_token` | 必填 | 调用核心 API 的令牌，必须绑定 `bot_instance_id` 指定的机器人实例，否则适配器启动时报错退出 |
+| `adapters.telegram.bot_instance_id` | 必填 | 对应的机器人实例，该实例的 `platform` 为 `telegram`，`platform_self_id` 填机器人的数字 ID（token 冒号前的部分），`admins` 填 Telegram 用户 ID |
+| `adapters.telegram.state_dir` | `storage.data_dir` | 去重记录 `telegram-dedup.log` 所在目录，相对路径按配置文件目录解析 |
+
+`adapter telegram` 只校验上表的字段和 `observability`，出错时退出码为 2。示例配置为它用到这些变量：
+
+| 变量 | 用途 |
+|---|---|
+| `CONLOOM_TG_BOT_TOKEN` | 机器人 token |
+| `CONLOOM_TG_ADAPTER_TOKEN` | Telegram 适配器调用核心 API 的令牌（随机长字符串，与 NapCat 的不同） |
+| `CONLOOM_TG_BOT_ID` | 机器人的数字 ID |
+| `CONLOOM_TG_ADMIN_ID` | 管理员的 Telegram 用户 ID |
+
 ## observability
 
 | 字段 | 默认 | 说明 |

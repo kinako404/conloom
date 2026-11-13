@@ -1,20 +1,24 @@
 # ConLoom 织语：当前架构
 
-ConLoom 是一个用 Go 编写的群聊对话智能体框架：平台适配器把聊天消息交给核心，核心决定什么时候说话、说什么，再可靠地把回复送回平台。目前接入的真实平台是 QQ（通过 NapCat）。
+ConLoom 是一个用 Go 编写的群聊对话智能体框架：平台适配器把聊天消息交给核心，核心决定什么时候说话、说什么，再可靠地把回复送回平台。目前接入的真实平台是 QQ（通过 NapCat）和 Telegram（通过 Bot API，只处理私聊）。
 
 本文描述仓库当前代码的实际行为，以代码为准。使用方法见 [使用指南](usage.md)，配置字段见 [配置参考](configuration.md)，设计过程与分期见 `docs/superpowers/specs/` 下的设计文档。
 
 ```text
-   QQ 群 / 私聊
-        |
-   [NapCat]  外部程序，提供 OneBot 11 正向 WebSocket 服务
-        |  ws(s)://  + access_token（由适配器主动连接）
-        v
-   [conloom adapter napcat]  适配器进程：格式转换、提交事件、拉取并发送回复、ACK
-        |   本地去重日志 <state_dir>/napcat-dedup.log
-        |  HTTP REST /api/v1（Bearer token）
-        |    POST /events      GET /outbox（长轮询）      POST /outbox/{id}/ack
-        v
+   QQ 群 / 私聊                                  Telegram 私聊
+        |                                              |
+   [NapCat]  外部程序，提供 OneBot 11              [Telegram Bot API]  getUpdates 长轮询、
+        |    正向 WebSocket 服务                       |               sendMessage、sendChatAction
+        |  ws(s)://  + access_token                    |  https://  地址里带 bot token
+        |  （由适配器主动连接）                        |  （由适配器主动连接）
+        v                                              v
+   [conloom adapter napcat]                      [conloom adapter telegram]
+        |  本地去重日志 napcat-dedup.log               |  本地去重日志 telegram-dedup.log
+        |  格式转换、提交事件、拉取并发送回复、ACK     |
+        +----------------------+-----------------------+
+                               |  HTTP REST /api/v1（Bearer token，每个适配器一个令牌）
+                               |    POST /events      GET /outbox（长轮询）      POST /outbox/{id}/ack
+                               v
    [conloom serve]  核心进程
         Gateway -> Orchestrator -> Scheduler -> Runner -> Outbox
                       |  在聊会话 / 观望加入        |
@@ -36,19 +40,21 @@ ConLoom 是一个用 Go 编写的群聊对话智能体框架：平台适配器�
 
 ## 1. 部署拓扑
 
-同一个二进制 `conloom` 提供全部子命令（`cmd/conloom/main.go`），生产环境运行两个长期进程：
+同一个二进制 `conloom` 提供全部子命令（`cmd/conloom/main.go`），生产环境运行核心和按需接入的适配器，都是长期进程：
 
 | 进程 | 作用 | 网络 |
 |---|---|---|
 | `conloom serve` | 核心：API、判定、调度、模型调用、Outbox | 唯一监听端口的进程，`server.listen` 默认本机回环地址的 8787 端口 |
-| `conloom adapter napcat` | NapCat 适配器 | 不监听端口，只主动连接 NapCat（WebSocket）和核心（HTTP） |
+| `conloom adapter napcat` | NapCat 适配器，QQ 群聊和私聊 | 不监听端口，只主动连接 NapCat（WebSocket）和核心（HTTP） |
+| `conloom adapter telegram` | Telegram 适配器，只处理私聊 | 不监听端口，只主动连接 Telegram Bot API（HTTPS 长轮询）和核心（HTTP） |
 
 - 其他子命令：`mock`（终端里的本地调试适配器）、`backup`（在线备份）、`version`。
 - API、`/healthz`、`/metrics` 共用一个端口；后两者不需要鉴权，`/metrics` 只能整体开关（`server.metrics_enabled`）。
-- 数据目录 `storage.data_dir`（默认 `./data`，相对路径按配置文件所在目录解析）下只有 `conloom.db` 及其 WAL 文件。适配器的去重日志放在 `adapters.napcat.state_dir`，默认与数据目录相同。
-- 每个机器人实例只能运行**一个**适配器进程，核心也只能运行**一个**进程（原因见第 6 节）。
+- 数据目录 `storage.data_dir`（默认 `./data`，相对路径按配置文件所在目录解析）下只有 `conloom.db` 及其 WAL 文件。适配器的去重日志分别放在 `adapters.napcat.state_dir` 和 `adapters.telegram.state_dir`，默认都与数据目录相同，文件名不同。两个适配器共用同一份去重实现（`internal/adapter/dedup`）。
+- 每个适配器服务一个机器人实例（各自的 `bot_instance_id` 和核心令牌），一个核心可以同时服务 QQ 和 Telegram 两个实例。
+- 每个机器人实例只能运行**一个**适配器进程，核心也只能运行**一个**进程（原因见第 6 节）。Telegram 本身也只允许一个 `getUpdates` 连接。
 - 构建：`CGO_ENABLED=0`，纯 Go 的 SQLite 驱动（`modernc.org/sqlite`），不需要 C 编译器、数据库服务或 Docker。CI 交叉编译 Linux / macOS / Windows × amd64 / arm64 共 6 个目标，打 `v*` tag 时由 GoReleaser 发布（`.goreleaser.yaml`）。
-- 服务化：`deploy/systemd/` 下有核心和适配器两个单元，适配器单元依赖核心单元；macOS（launchd）和 Windows（NSSM）的做法见 [部署与运维](deployment.md)。
+- 服务化：`deploy/systemd/` 下有核心、NapCat 适配器、Telegram 适配器三个单元，适配器单元依赖核心单元；macOS（launchd）和 Windows（NSSM）的做法见 [部署与运维](deployment.md)。
 
 ## 2. 一条群消息的完整往返
 
@@ -82,6 +88,19 @@ NapCat      Adapter                 Core                          SQLite        
 9. **投递**：适配器 `GET /outbox` 长轮询（最长 30 秒）。每个会话每次只发放最老的一条动作，并加 60 秒租约（`internal/store/sqlite/outbox.go:39`）。
 10. **发送与 ACK**（`adapter.go:424`）：先查去重日志；发送成功后把 `action_id` 和平台消息 ID 写入去重日志并 fsync，再 `POST /outbox/{action_id}/ack`。
 11. **记录机器人自己的消息**：ACK 为 `sent` 时，核心在同一事务里把这条回复作为 `from_bot` 消息写进消息表（`internal/store/sqlite/outbox.go:102`）。之后群友回复这条消息，就会被识别为“回复机器人”；下一次调用模型时，它会作为 assistant 历史出现。
+
+### 2.1 Telegram 私聊的往返
+
+核心部分（第 3–8、11 步）完全相同，核心不知道消息来自哪个平台。适配器（`internal/adapter/telegram`）的不同之处：
+
+- **收消息**：循环调用 `getUpdates`（`allowed_updates=["message"]`，长轮询 `poll_timeout`，默认 50 秒）。每条更新提交给核心、被接受之后，下一次请求的 `offset` 才移到它之后，Telegram 据此确认并删除它（`adapter.go:198`）。可重试的提交失败按 0.5 秒起、最长 30 秒退避，一直重试同一条，后面的更新留在 Telegram 那边，没有内存缓冲；核心明确拒绝（4xx）的更新跳过。offset 不落盘：重启后 Telegram 重发所有未确认的更新（最多保存 24 小时），核心按幂等键重放。
+- **只处理私聊**：`chat.type` 不是 `private` 的更新、机器人发的、没有可识别内容的消息记一条 debug 日志后跳过（`convert.go:34`）。
+- **ID**：会话 `private_<用户ID>`（`platform_conversation_id` 为 chat_id），发送者 `user_<用户ID>`，幂等键 `telegram:<机器人ID>:<update_id>`。Telegram 的 message_id 只在单个会话内唯一，所以消息 ID 是 `msg_<chat_id>_<message_id>`，引用关系也用这个格式；适配器发送成功后 ACK 的平台消息 ID 是第一条消息的 `<chat_id>_<message_id>`（`convert.go:28`），第 11 步核心生成的 `msg_<平台消息ID>` 正好与用户引用它时的 `reply_to` 对上。
+- **正文**：文字原样提交；媒体写成 `[图片]`、`[表情]`、`[语音]`、`[视频]`、`[文件]` 占位并接上说明文字，不传附件元数据；`/start` 转成“你好”，命令去掉 `@<机器人用户名>` 后缀。
+- **发消息**：`sendMessage` 纯文本、不设 `parse_mode`。超过 4096 个 UTF-16 单位时按空行、换行或字数拆成多条，只有第一条带 `reply_parameters`（`allow_sending_without_reply: true`）（`send.go:31`、`send.go:99`）。429 按 `retry_after` 等待后重试，最多 5 次（`send.go:184`）。
+- **“正在输入”**：核心对这条消息返回 `disposition=reply` 后，每 4 秒发一次 `sendChatAction(typing)`，直到该会话的回复发出或过了 60 秒（`typing.go:39`）。
+- **结果不明不重发**：与 NapCat 相同。请求没写出去（连接失败）时不 ACK，等租约过期重新投递；Telegram 明确拒绝（4xx），或请求已写出但没拿到明确结果（超时、5xx、无法解析的响应），记入去重日志并以 `failed` 确认。是否写出由 `httptrace` 判断（`api.go:88`）。
+- **token**：Bot API 的请求地址含 token，`botAPI` 返回的所有错误都把 token（含各种转义形式）替换成 `REDACTED`（`api.go:61`）。
 
 ## 3. 任务模型
 
@@ -405,8 +424,9 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | 机器人最后发言时间 | 内存 | 观望加入检查或复核时从库里最近 500 条消息补查 |
 | 停顿计时器、加入计划 | 内存 | 丢失；恢复的会话外提问按普通加入复核 |
 | 每用户限流、准入槽位、熔断状态、策略缓存、指标 | 内存 | 清零 |
-| 去重日志 | 适配器磁盘 `napcat-dedup.log` | 保留 24h |
-| 提交缓冲（最多 256 条） | 适配器内存 | 丢失 |
+| 去重日志 | 适配器磁盘 `napcat-dedup.log`、`telegram-dedup.log` | 保留 24h |
+| 提交缓冲（最多 256 条） | NapCat 适配器内存 | 丢失 |
+| 未确认的 Telegram 更新 | Telegram 服务器 | 保留最多 24 小时，重启后重新拉取；适配器的 offset 和“正在输入”状态只在内存里 |
 
 由此带来的重启行为：
 
@@ -433,6 +453,8 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - **可能丢失一条**：发送结果未知（请求已写出但没等到响应，或 NapCat 报错——它对实际已送达的消息也可能报超时）时，记入去重日志并以 `failed` 确认，以后不再重发。这条回复可能没发出去；即使实际送达，也不会进入机器人的消息历史。
 - NapCat 不补发消息：适配器没连上的那段时间里的 QQ 消息会丢失。核心不可用时适配器也连不上（启动连接时要先拿 capabilities）。
 - 适配器内存缓冲最多 256 条，进程退出就丢；WebSocket 事件通道满（256 条）时直接丢弃。
+- Telegram 没有这两个问题：核心或适配器停机期间的消息留在 Telegram，最多 24 小时；但停机超过 24 小时的更新会被 Telegram 丢弃，超过 `stale_task_after` 的只记录、不回复。
+- Telegram 的长回复拆成多条时，第一条发出后后面某条失败，剩下的部分会被放弃（不重发整条，避免重复）；ACK 仍按 `sent` 记第一条的 ID，核心记录的是完整正文。
 - 去重日志保留 24 小时，写死在代码里。如果把 `action_ttl` 配到 24 小时以上，可能重发，配置校验没有拦截。
 
 ## 8. 可观测性

@@ -27,7 +27,7 @@ go install github.com/kinako404/conloom/cmd/conloom@latest
 
 ## Linux（systemd）
 
-仓库的 [`deploy/systemd/`](../deploy/systemd) 提供两个单元：`conloom.service`（核心）和 `conloom-napcat.service`（适配器，依赖核心）。两者都以 `conloom` 用户运行、崩溃 3 秒后自动重启，停止时最多等待 90 秒（适配器会等正在发送的消息拿到结果再退出）。单元启用了 `ProtectSystem=strict`，只有 `/opt/conloom/data` 可写：该目录必须在启动前存在；如果把 `storage.data_dir` 或 `adapters.napcat.state_dir` 改到别处，要同步修改单元里的 `ReadWritePaths`。
+仓库的 [`deploy/systemd/`](../deploy/systemd) 提供三个单元：`conloom.service`（核心），以及 `conloom-napcat.service` 和 `conloom-telegram.service`（适配器，依赖核心，按需安装）。它们都以 `conloom` 用户运行、崩溃 3 秒后自动重启，停止时最多等待 90 秒（适配器会等正在发送的消息拿到结果再退出）。单元启用了 `ProtectSystem=strict`，只有 `/opt/conloom/data` 可写：该目录必须在启动前存在；如果把 `storage.data_dir` 或适配器的 `state_dir` 改到别处，要同步修改单元里的 `ReadWritePaths`。
 
 ```sh
 sudo useradd --system --home-dir /opt/conloom --shell /usr/sbin/nologin conloom
@@ -43,6 +43,17 @@ journalctl -u conloom -u conloom-napcat -f
 ```
 
 `chmod 700` 那一步让数据目录只有服务用户能访问，原因见 [数据目录与权限](#数据目录与权限)。
+
+**Telegram 适配器**用 `conloom-telegram.service`。它的去重记录 `telegram-dedup.log` 写在 `adapters.telegram.state_dir`（默认同 `storage.data_dir`），改到别处时同样要改 `ReadWritePaths`。只接 Telegram 时可以不装 NapCat 的单元：
+
+```sh
+sudo cp deploy/systemd/conloom-telegram.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now conloom-telegram
+journalctl -u conloom -u conloom-telegram -f
+```
+
+适配器需要能访问 Telegram 的 Bot API。要走代理时，用 `sudo systemctl edit conloom-telegram` 加上 `[Service]` 段的 `Environment=HTTPS_PROXY=http://<代理地址>:<端口>`；`.env` 只用于展开配置变量，不会设置进程的环境变量。更换 token 的步骤见 [接入 Telegram](telegram.md#5-重新生成-token)。
 
 ## macOS（launchd）
 
