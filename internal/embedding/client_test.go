@@ -228,3 +228,36 @@ func TestEmbed_TimeoutIsDistinguished(t *testing.T) {
 		t.Errorf("Result(nil) = %q", Result(nil))
 	}
 }
+
+func TestClient_EmbedUsageParsesPromptTokens(t *testing.T) {
+	withUsage := newFakeServer(t, func(w http.ResponseWriter, req request) bool {
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"index":1,"embedding":[1,0]},{"index":0,"embedding":[0,1]}],` +
+			`"usage":{"prompt_tokens":7,"total_tokens":7}}`))
+		return true
+	})
+	c := newClient(withUsage.URL)
+	vecs, tokens, err := c.EmbedUsage(context.Background(), []string{"小明", "猫"})
+	if err != nil || tokens != 7 || len(vecs) != 2 || vecs[0][1] != 1 || vecs[1][0] != 1 {
+		t.Fatalf("EmbedUsage = %v, %d, %v; want two ordered vectors and 7 tokens", vecs, tokens, err)
+	}
+	if vecs, err := c.Embed(context.Background(), []string{"小明", "猫"}); err != nil || len(vecs) != 2 || vecs[0][1] != 1 {
+		t.Fatalf("Embed = %v, %v", vecs, err)
+	}
+
+	without := newFakeServer(t, nil)
+	vecs, tokens, err = newClient(without.URL).EmbedUsage(context.Background(), []string{"小明"})
+	if err != nil || tokens != 0 || len(vecs) != 1 || vecs[0][0] != 2 {
+		t.Fatalf("EmbedUsage without usage = %v, %d, %v; want one vector and 0 tokens", vecs, tokens, err)
+	}
+
+	failing := newFakeServer(t, func(w http.ResponseWriter, _ request) bool {
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+		return true
+	})
+	if _, tokens, err := newClient(failing.URL).EmbedUsage(context.Background(), []string{"小明"}); err == nil || tokens != 0 {
+		t.Fatalf("EmbedUsage on 503 = %d, %v; want an error and 0 tokens", tokens, err)
+	}
+	if vecs, tokens, err := newClient(without.URL).EmbedUsage(context.Background(), nil); vecs != nil || tokens != 0 || err != nil {
+		t.Fatalf("EmbedUsage(nil) = %v, %d, %v", vecs, tokens, err)
+	}
+}
