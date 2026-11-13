@@ -20,14 +20,14 @@ go install github.com/kinako404/conloom/cmd/conloom@latest
 
 ## 进程与网络
 
-- 生产环境运行两个长期进程：核心 `conloom serve` 和适配器 `conloom adapter napcat`。适配器不监听端口，只主动连接 NapCat 和核心，可以部署在另一台机器上。
-- 核心和适配器都只能各运行一个：核心的调度、限流等状态在进程内存里，适配器的去重记录是进程本地的。
+- 生产环境运行核心 `conloom serve`，以及按需接入的适配器：`conloom adapter napcat`（QQ）、`conloom adapter telegram`（Telegram），都是长期进程。适配器不监听端口，只主动连接平台（NapCat 或 Telegram Bot API）和核心，可以部署在另一台机器上。
+- 核心只能运行一个，每个机器人实例的适配器也只能运行一个：核心的调度、限流等状态在进程内存里，适配器的去重记录是进程本地的。
 - API、`/healthz` 和 `/metrics` 共用 `server.listen` 一个端口，默认只监听本机。`/healthz` 与 `/metrics` 不需要鉴权；如果要让别的机器上的适配器访问核心而把 `server.listen` 改为非本地地址，请用防火墙限制来源，或关闭 `metrics_enabled`。适配器和核心之间是普通 HTTP，跨机器时建议走内网或加一层 TLS 代理。
 - 仓库不负责部署 NapCat，只要求 NapCat 开启 OneBot 11 正向 WebSocket 服务并设置 access token。适配器断线后自动重连（退避从 1 秒起，最长 30 秒）。
 
 ## Linux（systemd）
 
-仓库的 [`deploy/systemd/`](../deploy/systemd) 提供三个单元：`conloom.service`（核心），以及 `conloom-napcat.service` 和 `conloom-telegram.service`（适配器，依赖核心，按需安装）。它们都以 `conloom` 用户运行、崩溃 3 秒后自动重启，停止时最多等待 90 秒（适配器会等正在发送的消息拿到结果再退出）。单元启用了 `ProtectSystem=strict`，只有 `/opt/conloom/data` 可写：该目录必须在启动前存在；如果把 `storage.data_dir` 或适配器的 `state_dir` 改到别处，要同步修改单元里的 `ReadWritePaths`。
+仓库的 [`deploy/systemd/`](../deploy/systemd) 提供三个单元：`conloom.service`（核心），以及 `conloom-napcat.service` 和 `conloom-telegram.service`（适配器，依赖核心，按需安装）。它们都以 `conloom` 用户运行、异常退出 3 秒后自动重启，停止时最多等待 90 秒（适配器会等正在发送的消息拿到结果再退出）。退出码为 2 时不重启（`RestartPreventExitStatus=2`）：这是配置错误，比如配置校验失败、Telegram 的 token 或核心令牌被拒绝，重启也没用，改好配置后手动 `systemctl restart`。注意 Go 程序 panic 时同样以 2 退出，这种情况也不会自动重启，`systemctl status` 会显示退出码，日志里有 panic 的堆栈。单元启用了 `ProtectSystem=strict`，只有 `/opt/conloom/data` 可写：该目录必须在启动前存在；如果把 `storage.data_dir` 或适配器的 `state_dir` 改到别处，要同步修改单元里的 `ReadWritePaths`。
 
 ```sh
 sudo useradd --system --home-dir /opt/conloom --shell /usr/sbin/nologin conloom
