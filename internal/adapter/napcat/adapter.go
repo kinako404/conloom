@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kinako404/conloom/internal/adapter/dedup"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/pkg/client"
@@ -52,7 +53,7 @@ type Adapter struct {
 	reconnectMax  time.Duration
 	stableSession time.Duration
 
-	dedup *Dedup
+	dedup *dedup.Log
 
 	mu          sync.Mutex
 	enabled     map[string]bool
@@ -106,12 +107,12 @@ func New(cfg config.NapCatConfig, logger *slog.Logger) (*Adapter, error) {
 // least 30s. It returns nil when ctx is done and an error only if the local
 // dedup log cannot be opened.
 func (a *Adapter) Run(ctx context.Context) error {
-	dedup, err := OpenDedup(filepath.Join(a.cfg.StateDir, dedupFileName), dedupRetention, time.Now)
+	sent, err := dedup.Open(filepath.Join(a.cfg.StateDir, dedupFileName), dedupRetention, time.Now)
 	if err != nil {
 		return err
 	}
-	defer dedup.Close()
-	a.dedup = dedup
+	defer sent.Close()
+	a.dedup = sent
 
 	var wg sync.WaitGroup
 	wg.Add(1)

@@ -1,4 +1,4 @@
-package napcat
+package dedup
 
 import (
 	"errors"
@@ -18,7 +18,7 @@ func TestDedup_PersistsAcrossReopenAndExpires(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, 11, 12, 8, 0, 0, 0, time.UTC)}
 	retention := 24 * time.Hour
 
-	d, err := OpenDedup(path, retention, clock.now)
+	d, err := Open(path, retention, clock.now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestDedup_PersistsAcrossReopenAndExpires(t *testing.T) {
 	}
 
 	clock.t = clock.t.Add(2 * time.Hour)
-	d, err = OpenDedup(path, retention, clock.now)
+	d, err = Open(path, retention, clock.now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestDedup_PersistsAcrossReopenAndExpires(t *testing.T) {
 	}
 
 	clock.t = clock.t.Add(23 * time.Hour)
-	d, err = OpenDedup(path, retention, clock.now)
+	d, err = Open(path, retention, clock.now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestDedup_SkipsMalformedLines(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d, err := OpenDedup(path, time.Hour, func() time.Time { return now })
+	d, err := Open(path, time.Hour, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,9 +110,9 @@ func TestDedup_SkipsOverlongLines(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d, err := OpenDedup(path, time.Hour, func() time.Time { return now })
+	d, err := Open(path, time.Hour, func() time.Time { return now })
 	if err != nil {
-		t.Fatalf("OpenDedup: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	defer d.Close()
 	if id, ok := d.Seen("act_ok"); !ok || id != "7001" {
@@ -130,30 +130,30 @@ func TestDedup_SkipsOverlongLines(t *testing.T) {
 
 // failingFile writes half of the next failWrites writes and then fails.
 type failingFile struct {
-	dedupFile
+	logFile
 	failWrites int
 }
 
 func (f *failingFile) Write(p []byte) (int, error) {
 	if f.failWrites > 0 {
 		f.failWrites--
-		n, _ := f.dedupFile.Write(p[:len(p)/2])
+		n, _ := f.logFile.Write(p[:len(p)/2])
 		return n, errors.New("no space left on device")
 	}
-	return f.dedupFile.Write(p)
+	return f.logFile.Write(p)
 }
 
 func TestDedup_FailedAppendLeavesNoPartialLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sent.log")
 	now := time.Date(2026, 11, 12, 8, 0, 0, 0, time.UTC)
-	d, err := OpenDedup(path, time.Hour, func() time.Time { return now })
+	d, err := Open(path, time.Hour, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := d.Mark("act_1", "7001"); err != nil {
 		t.Fatal(err)
 	}
-	d.f = &failingFile{dedupFile: d.f, failWrites: 1}
+	d.f = &failingFile{logFile: d.f, failWrites: 1}
 	if err := d.Mark("act_2", "7002"); err == nil {
 		t.Fatal("Mark with a failing write succeeded")
 	}
@@ -174,7 +174,7 @@ func TestDedup_FailedAppendLeavesNoPartialLine(t *testing.T) {
 	if want := "act_1\t1794470400\t7001\nact_3\t1794470400\t7003\n"; string(data) != want {
 		t.Errorf("file = %q, want %q", data, want)
 	}
-	d, err = OpenDedup(path, time.Hour, func() time.Time { return now })
+	d, err = Open(path, time.Hour, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestDedup_CompactionSyncsDirectory(t *testing.T) {
 	t.Cleanup(func() { syncDir = orig })
 
 	dir := t.TempDir()
-	d, err := OpenDedup(filepath.Join(dir, "sent.log"), time.Hour, time.Now)
+	d, err := Open(filepath.Join(dir, "sent.log"), time.Hour, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestDedup_CompactionSyncsDirectory(t *testing.T) {
 }
 
 func TestDedup_RejectsInvalidActionID(t *testing.T) {
-	d, err := OpenDedup(filepath.Join(t.TempDir(), "sent.log"), time.Hour, time.Now)
+	d, err := Open(filepath.Join(t.TempDir(), "sent.log"), time.Hour, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
