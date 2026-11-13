@@ -156,6 +156,7 @@ func (f *fakeEmbedder) requestCount() int {
 type env struct {
 	t        *testing.T
 	st       *sqlite.DB
+	dbPath   string
 	policies *policy.Service
 	emb      *fakeEmbedder
 	// override changes the stored policies as the indexer sees them, for
@@ -170,7 +171,8 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	st, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "conloom.db"))
+	dbPath := filepath.Join(t.TempDir(), "conloom.db")
+	st, err := sqlite.Open(context.Background(), dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +180,7 @@ func newEnv(t *testing.T) *env {
 	p := conloomapi.DefaultGroupPolicy()
 	p.Memory.Enabled, p.Concurrency.AllowLongRequests = true, true
 	reg := prometheus.NewRegistry()
-	return &env{t: t, st: st, policies: policy.NewService(st, p), emb: newFakeEmbedder(t),
+	return &env{t: t, st: st, dbPath: dbPath, policies: policy.NewService(st, p), emb: newFakeEmbedder(t),
 		override: map[string]func(p *conloomapi.GroupPolicy){}, reg: reg, metrics: obs.NewMetrics(reg), now: at(24 * 60)}
 }
 

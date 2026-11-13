@@ -436,13 +436,14 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 
 ### 5.7 长期检索
 
-`recall` 之外，配置了 `embedding` 段（[配置参考](configuration.md#embedding)）时，核心还维护一份语义检索：把会话切成段，为每段生成向量，按语义找出和查询最接近的几段。没配置时不生成向量，也不请求任何服务（下面三张表照常由迁移建好，保持为空）。代码在 `internal/search/vector`（切段、后台生成、检索）、`internal/embedding`（向量服务客户端）和 `internal/store/sqlite/chunks.go`；对外的接口是 `internal/search` 的 `VectorSearcher`，由 `app.App.VectorSearcher()` 提供，没配置时为 nil。`recall` 目前还没有接入它。
+`recall` 之外，配置了 `embedding` 段（[配置参考](configuration.md#embedding)）时，核心还维护一份语义检索：把会话切成段，为每段生成向量，按语义找出和查询最接近的几段。没配置时不生成向量，也不请求任何服务（下面四张表照常由迁移建好，保持为空）。代码在 `internal/search/vector`（切段、后台生成、检索）、`internal/embedding`（向量服务客户端）和 `internal/store/sqlite/chunks.go`；对外的接口是 `internal/search` 的 `VectorSearcher`，由 `app.App.VectorSearcher()` 提供，没配置时为 nil。`recall` 目前还没有接入它。
 
 **存储**（迁移 `0007_memory_chunks.sql`，全部按 `conversation_key` 隔离）：
 
 - `memory_chunks`：每段一行，段内首末消息的 `seq` 和时间、段落文本的 SHA-256、模型名、维数和向量（float32 小端）。段落文本本身不存，需要时从 `messages` 重新生成；
 - `memory_chunk_state`：每个会话一行，切段游标 `cursor_seq`（之前的消息都已切段）和当前模型；
 - `memory_chunk_rebuild`：待重建的段落范围（首末 `seq`），由忘记和换模型产生。
+- `memory_chunk_forgets`：每个被忘记的成员一行，记下段落已经按哪一次忘记（忘记时间）处理过，用于启动时的对账。
 
 **切段**（`chunk.go`）：段落文本和 `recall` 用同一套规则生成（`tools.Transcript`，复用 `recall` 的过滤函数）：命令和机器人对命令的回复不收；被忘记的人在忘记时间之前的消息不收（私聊里是忘记之前的全部消息）；联系方式打码、过一遍会话的输出审查，被拦截的消息不收；每行是 `[MM-DD HH:MM] 名字：正文`（`server.timezone`），正文最长 200 字，不带任何 ID。为了让命令和它的回复正确配对，每次切段都多读游标之前的 20 条消息，过滤后再丢掉。相邻两行间隔超过 30 分钟、已有 8 行、或再加一行会超过 400 字时另起一段。
 
@@ -454,6 +455,8 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 4. 每批最多 `batch_size` 段请求一次向量服务。任何一步出错都结束本轮，下一轮从头再来；连续失败时暂停 1、2、4、8、10、10… 分钟（最长 10 分钟），成功一轮后恢复每分钟一轮。
 
 **忘记**：`Store.ForgetMember`（群聊）在同一个事务里删除包含这个人在忘记时间之前所发消息的段（按段的 `seq` 范围查 `messages`），并把这些段加入重建队列，重建时他的那些消息不再收进段落；`Store.ForgetPrivate`（私聊）删除开始时间早于忘记时间的全部段，其中跨过忘记时间的段加入重建队列，用剩下的消息重建。后台切段读消息之前先记下这个会话的“忘记戳”（所有被忘记成员及其忘记时间），写入的事务里再核对一次；期间有人被忘记就整批不写、不推进游标，下一轮按新的忘记状态重来。所以被忘记的内容不会留在向量里，也不会被写回去。
+
+**启动时对账**：`Indexer` 每次启动后的第一轮，先调用 `ReconcileForgottenChunks`：找出 `member_memory` 里已被忘记（`forgotten_at` 非零）、但 `memory_chunk_forgets` 里没有同一忘记时间记录的成员，按他的忘记时间重新执行上面的删段和排队重建，再记下这条记录。新版本的 `ForgetMember`、`ForgetPrivate` 在原事务里就写这条记录，所以只有旧版本二进制（回滚期间）做过的忘记会被补上；重复执行不会再动已经处理过的成员。之所以不对所有被忘记的成员每次都重做：群聊里重建后的段的 `seq` 范围仍可能夹着被隐去的那条消息，每次重做都会把它删掉再重建一遍。
 
 **检索**（`Searcher`）：
 

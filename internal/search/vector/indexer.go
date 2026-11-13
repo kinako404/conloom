@@ -53,6 +53,7 @@ type Store interface {
 	ChunkRebuilds(ctx context.Context, convKey string, limit int) ([]store.ChunkRebuild, error)
 	CountChunkRebuilds(ctx context.Context) (int, error)
 	DeleteStaleChunks(ctx context.Context, convKey, model string) (int, error)
+	ReconcileForgottenChunks(ctx context.Context) (int, error)
 }
 
 // IndexerDeps are what the Indexer needs. Reviewer and IsCommand are those of
@@ -88,6 +89,9 @@ type Indexer struct {
 	next    time.Time
 	cancel  context.CancelFunc
 	done    chan struct{}
+	// reconciled is set once the first round has applied forgetting that
+	// the chunks missed; only rounds touch it.
+	reconciled bool
 }
 
 func NewIndexer(d IndexerDeps) *Indexer {
@@ -157,8 +161,20 @@ func (ix *Indexer) tick(ctx context.Context) {
 }
 
 // RunOnce runs one round. It stops at the first error, leaving what is left
-// for the next round.
+// for the next round. The indexer's first round starts by applying to the
+// chunks any forgetting they missed (store ReconcileForgottenChunks), e.g.
+// done by an older binary.
 func (ix *Indexer) RunOnce(ctx context.Context) error {
+	if !ix.reconciled {
+		n, err := ix.d.Store.ReconcileForgottenChunks(ctx)
+		if err != nil {
+			return err
+		}
+		ix.reconciled = true
+		if n > 0 {
+			ix.d.Logger.Info("semantic search caught up with forgetting", "members", n)
+		}
+	}
 	model := ix.d.Embedder.Model()
 	budget := roundBudget
 	pending := 0

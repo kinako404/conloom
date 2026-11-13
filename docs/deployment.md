@@ -248,10 +248,10 @@ embedding:
 
 **升级**：先备份，再替换二进制并重启（先核心后适配器）。核心启动时自动按顺序应用新的表结构迁移，迁移只能前进、没有回滚脚本，所以回退到旧版本时要用升级前的备份。升级前请对照 [配置参考](configuration.md#群策略) 检查已移除的配置字段（例如 `proactive.contact_cooldown`），配置文件里残留未知字段会导致启动失败。
 
-**回退到没有语义检索的旧版本**：迁移 `0007_memory_chunks.sql` 只新增三张表，旧二进制会忽略它们，配置里要先删掉 `embedding` 段。但旧二进制处理 `/忘记我` 时不会删除这些表里的段，所以如果在旧版本运行期间有人用过 `/忘记我`（或通过 API 删除了群友记忆），再升级回来之前，用 `sqlite3` 清空这三张表，让后台从头重新生成：
+**回退到没有语义检索的旧版本**：迁移 `0007_memory_chunks.sql` 只新增四张表，旧二进制会忽略它们，配置里要先删掉 `embedding` 段。旧二进制处理 `/忘记我`（或通过 API 删除群友记忆）时不会删除这些表里的段；再升级回来后，核心启动时会自动对账：按每个被忘记成员的忘记时间补删对应的段并排队重建（见 [架构 5.7 节](architecture.md#57-长期检索)），不需要手动处理。想彻底从头重新生成的话，也可以在升级回来之前（核心停止时）用 `sqlite3` 清空这些表，这一步可选：
 
 ```sh
-sqlite3 <data_dir>/conloom.db 'DELETE FROM memory_chunks; DELETE FROM memory_chunk_state; DELETE FROM memory_chunk_rebuild;'
+sqlite3 <data_dir>/conloom.db 'DELETE FROM memory_chunks; DELETE FROM memory_chunk_state; DELETE FROM memory_chunk_rebuild; DELETE FROM memory_chunk_forgets;'
 ```
 
 **回退到没有记忆层的旧版本**：记忆层的迁移（`0005_memory.sql`）只新增三张表，旧二进制可以直接在升级后的库上运行，会忽略这些表；要完全回到升级前的状态，仍然用升级前的备份。回退时注意：

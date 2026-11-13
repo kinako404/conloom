@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"slices"
 	"testing"
 	"time"
@@ -320,5 +321,87 @@ func TestMessagesUpTo(t *testing.T) {
 	}
 	if got, _ := db.MessagesUpTo(ctx, testConvKey, seqs[2], 0); got != nil {
 		t.Errorf("limit 0 = %v", got)
+	}
+}
+
+// oldForget forgets the user as a binary without semantic search would:
+// member memory only, no chunks touched.
+func oldForget(t *testing.T, db *DB, convKey, userID string, at time.Time) {
+	t.Helper()
+	if err := db.inTx(context.Background(), func(tx *sql.Tx) error {
+		return forgetMember(context.Background(), tx, convKey, userID, at)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func reconcile(t *testing.T, db *DB) int {
+	t.Helper()
+	n, err := db.ReconcileForgottenChunks(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileForgottenChunks: %v", err)
+	}
+	return n
+}
+
+func TestChunks_ReconcileForgetting(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	seqs := chunkMessages(t, db, testConvKey, "20001", "20002", "20001", "20001")
+	writeChunks(t, db, store.ChunkWrite{ConversationKey: testConvKey, Model: "m1", Chunks: []store.MemoryChunk{
+		testChunk(testConvKey, seqs[0], seqs[2], chunkAt(0), chunkAt(2), "m1"),
+		testChunk(testConvKey, seqs[3], seqs[3], chunkAt(3), chunkAt(3), "m1"),
+	}})
+	writeChunks(t, db, store.ChunkWrite{ConversationKey: testPrivateKey, Model: "m1", Chunks: []store.MemoryChunk{
+		testChunk(testPrivateKey, 100, 101, chunkAt(0), chunkAt(1), "m1"),
+		testChunk(testPrivateKey, 102, 103, chunkAt(2), chunkAt(6), "m1"),
+		testChunk(testPrivateKey, 104, 105, chunkAt(10), chunkAt(11), "m1"),
+	}})
+	if n := reconcile(t, db); n != 0 {
+		t.Fatalf("reconciled %d members with nobody forgotten", n)
+	}
+
+	oldForget(t, db, testConvKey, "20002", chunkAt(30))
+	oldForget(t, db, testPrivateKey, "20001", chunkAt(4))
+	if n := reconcile(t, db); n != 2 {
+		t.Fatalf("reconciled %d members, want 2", n)
+	}
+	if got, want := chunkRanges(t, db, testConvKey, "m1"), [][2]int64{{seqs[3], seqs[3]}}; !slices.Equal(got, want) {
+		t.Errorf("group chunks = %v, want %v", got, want)
+	}
+	if got, want := rebuildRanges(t, db, testConvKey), [][2]int64{{seqs[0], seqs[2]}}; !slices.Equal(got, want) {
+		t.Errorf("group rebuilds = %v, want %v", got, want)
+	}
+	if got, want := chunkRanges(t, db, testPrivateKey, "m1"), [][2]int64{{104, 105}}; !slices.Equal(got, want) {
+		t.Errorf("private chunks = %v, want %v", got, want)
+	}
+	if got, want := rebuildRanges(t, db, testPrivateKey), [][2]int64{{102, 103}}; !slices.Equal(got, want) {
+		t.Errorf("private rebuilds = %v, want %v", got, want)
+	}
+
+	rs, _ := db.ChunkRebuilds(ctx, testConvKey, 10)
+	writeChunks(t, db, store.ChunkWrite{ConversationKey: testConvKey, Model: "m1", Rebuilt: rs,
+		Chunks: []store.MemoryChunk{testChunk(testConvKey, seqs[0], seqs[2], chunkAt(0), chunkAt(2), "m1")}})
+	for range 2 {
+		if n := reconcile(t, db); n != 0 {
+			t.Fatalf("reconciling again handled %d members, want none", n)
+		}
+	}
+	if got := chunkRanges(t, db, testConvKey, "m1"); len(got) != 2 {
+		t.Errorf("rebuilt group chunks after reconciling again = %v, want both kept", got)
+	}
+	if got := rebuildRanges(t, db, testConvKey); len(got) != 0 {
+		t.Errorf("group rebuilds after reconciling again = %v", got)
+	}
+
+	if err := db.ForgetMember(ctx, testConvKey, "20001", chunkAt(40)); err != nil {
+		t.Fatal(err)
+	}
+	if n := reconcile(t, db); n != 0 {
+		t.Errorf("reconciled %d members forgotten by this binary, want none", n)
+	}
+	oldForget(t, db, testConvKey, "20001", chunkAt(50))
+	if n := reconcile(t, db); n != 1 {
+		t.Errorf("reconciled %d members after forgetting again the old way, want 1", n)
 	}
 }

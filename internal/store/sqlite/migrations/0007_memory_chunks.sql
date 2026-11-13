@@ -27,3 +27,10 @@ CREATE TABLE memory_chunk_rebuild (
     end_seq          INTEGER NOT NULL,
     UNIQUE (conversation_key, start_seq, end_seq)
 );
+
+CREATE TABLE memory_chunk_forgets (
+    conversation_key TEXT NOT NULL,
+    platform_user_id TEXT NOT NULL,
+    forgotten_at     TEXT NOT NULL,
+    PRIMARY KEY (conversation_key, platform_user_id)
+);

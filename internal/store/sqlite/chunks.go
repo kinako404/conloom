@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 // zeroTime is how a zero time.Time is stored; member_memory.forgotten_at holds
@@ -202,6 +204,54 @@ func (db *DB) LoadChunks(ctx context.Context, convKey, model string, afterID int
 	return out, rows.Err()
 }
 
+// ReconcileForgottenChunks applies forgetting to the chunks for every
+// forgotten member whose forgetting they have not seen yet (a binary without
+// semantic search forgot them), as ForgetMember or ForgetPrivate would have,
+// and returns how many members it handled. Running it again changes nothing.
+func (db *DB) ReconcileForgottenChunks(ctx context.Context) (int, error) {
+	n := 0
+	err := db.inTx(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT m.conversation_key, m.platform_user_id, m.forgotten_at FROM member_memory m
+			LEFT JOIN memory_chunk_forgets f ON f.conversation_key = m.conversation_key AND f.platform_user_id = m.platform_user_id
+			WHERE m.forgotten_at > ? AND (f.forgotten_at IS NULL OR f.forgotten_at <> m.forgotten_at)
+			ORDER BY m.conversation_key, m.platform_user_id`, zeroTime)
+		if err != nil {
+			return err
+		}
+		type forgotten struct{ convKey, userID, at string }
+		var todo []forgotten
+		for rows.Next() {
+			var f forgotten
+			if err := rows.Scan(&f.convKey, &f.userID, &f.at); err != nil {
+				rows.Close()
+				return err
+			}
+			todo = append(todo, f)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, f := range todo {
+			at, err := parseTime(f.at)
+			if err != nil {
+				return err
+			}
+			if parts := strings.SplitN(f.convKey, ":", 4); len(parts) == 4 && parts[2] == conloomapi.ConvPrivate {
+				err = forgetPrivateChunks(ctx, tx, f.convKey, f.userID, at)
+			} else {
+				err = forgetMemberChunks(ctx, tx, f.convKey, f.userID, at)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		n = len(todo)
+		return nil
+	})
+	return n, err
+}
+
 // forgetMemberChunks deletes the conversation's chunks holding a message the
 // user sent before at and queues their stretches to be rebuilt without it.
 func forgetMemberChunks(ctx context.Context, tx *sql.Tx, convKey, userID string, at time.Time) error {
@@ -209,15 +259,29 @@ func forgetMemberChunks(ctx context.Context, tx *sql.Tx, convKey, userID string,
 		WHERE m.conversation_key = c.conversation_key AND m.seq BETWEEN c.start_seq AND c.end_seq
 		AND m.platform_user_id = ? AND m.from_bot = 0 AND m.occurred_at < ?)`
 	args := []any{convKey, userID, fmtTime(at)}
-	return dropChunks(ctx, tx, match, args, match, args)
+	if err := dropChunks(ctx, tx, match, args, match, args); err != nil {
+		return err
+	}
+	return chunksForgot(ctx, tx, convKey, userID, at)
 }
 
 // forgetPrivateChunks deletes the conversation's chunks that start before at
 // and queues those running past it to be rebuilt from what is left.
-func forgetPrivateChunks(ctx context.Context, tx *sql.Tx, convKey string, at time.Time) error {
+func forgetPrivateChunks(ctx context.Context, tx *sql.Tx, convKey, userID string, at time.Time) error {
 	t := fmtTime(at)
-	return dropChunks(ctx, tx, `c.conversation_key = ? AND c.start_at < ?`, []any{convKey, t},
-		`c.conversation_key = ? AND c.start_at < ? AND c.end_at >= ?`, []any{convKey, t, t})
+	if err := dropChunks(ctx, tx, `c.conversation_key = ? AND c.start_at < ?`, []any{convKey, t},
+		`c.conversation_key = ? AND c.start_at < ? AND c.end_at >= ?`, []any{convKey, t, t}); err != nil {
+		return err
+	}
+	return chunksForgot(ctx, tx, convKey, userID, at)
+}
+
+// chunksForgot records that the chunks have seen the user forgotten at at.
+func chunksForgot(ctx context.Context, tx *sql.Tx, convKey, userID string, at time.Time) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO memory_chunk_forgets (conversation_key, platform_user_id, forgotten_at)
+		VALUES (?, ?, ?) ON CONFLICT (conversation_key, platform_user_id) DO UPDATE SET forgotten_at = excluded.forgotten_at`,
+		convKey, userID, fmtTime(at))
+	return err
 }
 
 // dropChunks queues the stretches of the chunks c matching rebuild, then

@@ -2,6 +2,7 @@ package vector
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"slices"
 	"strings"
@@ -420,6 +421,59 @@ func TestIndexer_ForgettingDuringARoundDiscardsIt(t *testing.T) {
 	e.run(e.indexer("m1", 16))
 	if got := flat(e.emb.take()); !slices.Equal(got, []string{"[11-13 09:01] 小明：草莓"}) {
 		t.Fatalf("next round embedded %q", got)
+	}
+}
+
+// oldForget forgets the user as a binary without semantic search would:
+// member memory only, written straight to the database.
+func (e *env) oldForget(convKey, userID string, at time.Time) {
+	e.t.Helper()
+	db, err := sql.Open("sqlite", e.dbPath+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO member_memory (conversation_key, platform_user_id, display_name, note, affinity,
+		last_interaction_day, model_delta_day, model_delta_sum, decay_steps, forgotten_at, version, updated_at)
+		VALUES (?, ?, '', '', NULL, '', '', 0, 0, ?, 1, ?)`,
+		convKey, userID, at.UTC().Format("2006-01-02T15:04:05.000000000Z07:00"), "2026-11-13T00:00:00.000000000Z"); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+func TestIndexer_ReconcilesForgettingOnStart(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.say(groupKey, "20001", "小明", "我喜欢草莓", at(0))
+	e.say(groupKey, "20002", "小红", "我养了一只猫", at(1))
+	e.say(groupKey, "20001", "小明", "火锅", at(2))
+	e.run(e.indexer("m1", 16))
+	e.emb.take()
+
+	e.oldForget(groupKey, "20002", at(30))
+	ix := e.indexer("m1", 16)
+	e.run(ix)
+	if got := flat(e.emb.take()); !slices.Equal(got, []string{"[11-13 09:00] 小明：我喜欢草莓\n[11-13 09:02] 小明：火锅"}) {
+		t.Fatalf("after starting embedded %q, want the chunk rebuilt without 小红", got)
+	}
+	if hits, _ := e.searcher("m1").Search(ctx, groupKey, "猫", search.Range{}, 5); len(hits) != 1 {
+		t.Fatalf("hits = %v", hits)
+	}
+	e.emb.take()
+
+	e.oldForget(privateKey, "20001", at(0))
+	e.run(ix)
+	if n := len(e.emb.take()); n != 0 {
+		t.Fatalf("a running indexer reconciled again: %d requests", n)
+	}
+	for range 2 {
+		e.run(e.indexer("m1", 16))
+		if got := flat(e.emb.take()); len(got) != 0 {
+			t.Fatalf("restarting again embedded %q, want nothing", got)
+		}
+	}
+	if n := len(e.chunks(groupKey, "m1")); n != 1 {
+		t.Errorf("chunks = %d, want 1", n)
 	}
 }
 
