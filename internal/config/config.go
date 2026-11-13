@@ -32,7 +32,10 @@ type Config struct {
 	Skills               SkillsConfig            `yaml:"skills"`
 	// Embedding configures the text embedding service of semantic search; nil
 	// when the file has no embedding section, which turns semantic search off.
-	Embedding     *EmbeddingConfig    `yaml:"embedding"`
+	Embedding *EmbeddingConfig `yaml:"embedding"`
+	// Panel configures the web admin panel; nil when the file has no panel
+	// section, which turns the panel off.
+	Panel         *PanelConfig        `yaml:"panel"`
 	Adapters      AdaptersConfig      `yaml:"adapters"`
 	Observability ObservabilityConfig `yaml:"observability"`
 
@@ -79,6 +82,32 @@ const DefaultEmbeddingMinScore = 0.48
 
 func defaultEmbedding() EmbeddingConfig {
 	return EmbeddingConfig{Model: "bge-m3", Timeout: dur(10 * time.Second), BatchSize: 16, MinScore: DefaultEmbeddingMinScore}
+}
+
+// PanelUser is a web panel login; PasswordHash is a pbkdf2-sha256 hash string.
+type PanelUser struct {
+	Name         string `yaml:"name"`
+	PasswordHash string `yaml:"password_hash"`
+}
+
+// PanelConfig configures the web admin panel. A session ends SessionTTL after
+// login or IdleTimeout after its last request, whichever comes first.
+// CookieSecure sets the Secure flag on the session cookie.
+type PanelConfig struct {
+	Users        []PanelUser         `yaml:"users"`
+	SessionTTL   conloomapi.Duration `yaml:"session_ttl"`
+	IdleTimeout  conloomapi.Duration `yaml:"idle_timeout"`
+	CookieSecure bool                `yaml:"cookie_secure"`
+}
+
+// Defaults of panel.session_ttl and panel.idle_timeout.
+const (
+	DefaultPanelSessionTTL  = 168 * time.Hour
+	DefaultPanelIdleTimeout = 12 * time.Hour
+)
+
+func defaultPanel() PanelConfig {
+	return PanelConfig{SessionTTL: dur(DefaultPanelSessionTTL), IdleTimeout: dur(DefaultPanelIdleTimeout)}
 }
 
 type APIToken struct {
@@ -185,6 +214,9 @@ type RuntimeConfig struct {
 	OpsRetention conloomapi.Duration `yaml:"ops_retention"`
 	// AuditRetention is how long audit events are kept.
 	AuditRetention conloomapi.Duration `yaml:"audit_retention"`
+	// UsageRetention is how long model call records are kept; 0 when omitted,
+	// which means DefaultUsageRetention.
+	UsageRetention conloomapi.Duration `yaml:"usage_retention"`
 }
 
 type AdaptersConfig struct {
@@ -235,6 +267,9 @@ const (
 	MinAuditRetention     = 24 * time.Hour
 	MaxAuditRetention     = 87600 * time.Hour
 )
+
+// DefaultUsageRetention is the default of runtime.usage_retention.
+const DefaultUsageRetention = 400 * 24 * time.Hour
 
 func dur(d time.Duration) conloomapi.Duration { return conloomapi.Duration{Duration: d} }
 
@@ -316,6 +351,10 @@ func Load(path string) (*Config, error) {
 		if n := mappingValue(&root, "embedding"); n != nil && n.Tag != "!!null" {
 			e := defaultEmbedding()
 			cfg.Embedding = &e
+		}
+		if n := mappingValue(&root, "panel"); n != nil && n.Tag != "!!null" {
+			p := defaultPanel()
+			cfg.Panel = &p
 		}
 		dec := yaml.NewDecoder(bytes.NewReader(expanded))
 		dec.KnownFields(true)

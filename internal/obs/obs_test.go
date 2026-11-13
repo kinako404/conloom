@@ -67,8 +67,8 @@ func TestNewMetrics_RegistersOnFreshRegistry(t *testing.T) {
 			t.Fatalf("%s missing; got %v", name, names)
 		}
 	}
-	if len(mfs) != 20 {
-		t.Errorf("gathered %d metric families, want 20: %v", len(mfs), names)
+	if len(mfs) != 23 {
+		t.Errorf("gathered %d metric families, want 23: %v", len(mfs), names)
 	}
 }
 
@@ -149,6 +149,40 @@ func TestMetrics_SearchRegistered(t *testing.T) {
 	if got["conloom_search_seconds"] != 2 || !paths["keyword"] || !paths["vector"] || got["conloom_fts_backfill_remaining"] != 1200 ||
 		got["conloom_embedding_requests_total"] != 1 || got["conloom_embedding_backlog"] != 12 {
 		t.Fatalf("search metrics = %v, paths %v", got, paths)
+	}
+}
+
+func TestMetrics_UsageAndPanelRegistered(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+	m.UsageDropped.Add(3)
+	m.UsageWriteErrors.Inc()
+	m.PanelLoginFailures.Add(2)
+	m.PanelRequests.WithLabelValues("GET /panel/api/overview", "200").Inc()
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	got := map[string]float64{}
+	for _, mf := range mfs {
+		for _, mt := range mf.GetMetric() {
+			if mt.GetCounter() == nil {
+				continue
+			}
+			got[mf.GetName()] += mt.GetCounter().GetValue()
+			if mf.GetName() == "conloom_panel_requests_total" {
+				l := mt.GetLabel()
+				if len(l) != 2 || l[0].GetName() != "code" || l[0].GetValue() != "200" ||
+					l[1].GetName() != "route" || l[1].GetValue() != "GET /panel/api/overview" {
+					t.Errorf("panel request labels = %v, want code and route", l)
+				}
+			}
+		}
+	}
+	if got["conloom_usage_dropped_total"] != 3 || got["conloom_usage_write_errors_total"] != 1 ||
+		got["conloom_panel_login_failures_total"] != 2 || got["conloom_panel_requests_total"] != 1 {
+		t.Fatalf("usage and panel metrics = %v", got)
 	}
 }
 

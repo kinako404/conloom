@@ -405,6 +405,31 @@ func TestLoad_DefaultsApplied(t *testing.T) {
 	}
 }
 
+func TestLoad_PanelSectionDefaults(t *testing.T) {
+	cfg := mustLoad(t, "testdata/minimal.yaml")
+	if cfg.Panel != nil {
+		t.Errorf("Panel = %+v, want nil without the section", cfg.Panel)
+	}
+	if cfg.Runtime.UsageRetention.Duration != 0 {
+		t.Errorf("runtime.usage_retention = %v, want 0 when omitted", cfg.Runtime.UsageRetention)
+	}
+
+	cfg = loadWith(t, "panel: {users: [{name: admin, password_hash: x}]}\n")
+	want := PanelConfig{
+		Users:       []PanelUser{{Name: "admin", PasswordHash: "x"}},
+		SessionTTL:  conloomapi.Duration{Duration: 168 * time.Hour},
+		IdleTimeout: conloomapi.Duration{Duration: 12 * time.Hour},
+	}
+	if cfg.Panel == nil || !reflect.DeepEqual(*cfg.Panel, want) {
+		t.Fatalf("Panel = %+v, want %+v", cfg.Panel, want)
+	}
+
+	cfg = loadWith(t, "panel:\n  users: [{name: admin, password_hash: x}]\n  session_ttl: 24h\n  idle_timeout: 1h\n  cookie_secure: true\n")
+	if p := cfg.Panel; p.SessionTTL.Duration != 24*time.Hour || p.IdleTimeout.Duration != time.Hour || !p.CookieSecure {
+		t.Errorf("Panel = %+v, want explicit values kept", *p)
+	}
+}
+
 func TestLoad_Skills(t *testing.T) {
 	base, err := os.ReadFile("testdata/valid.yaml")
 	if err != nil {

@@ -30,6 +30,11 @@ type Metrics struct {
 	FTSBackfillRemaining prometheus.Gauge
 	EmbeddingRequests    *prometheus.CounterVec // result: ok|error|timeout
 	EmbeddingBacklog     prometheus.Gauge
+
+	UsageDropped       prometheus.Counter
+	UsageWriteErrors   prometheus.Counter
+	PanelLoginFailures prometheus.Counter
+	PanelRequests      *prometheus.CounterVec // route, code
 }
 
 // NewMetrics creates all ConLoom metrics and registers them on reg; it panics
@@ -114,6 +119,18 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		EmbeddingBacklog: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "conloom_embedding_backlog", Help: "Estimated chunks waiting to be embedded.",
 		}),
+		UsageDropped: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "conloom_usage_dropped_total", Help: "Model call records dropped because the usage queue was full.",
+		}),
+		UsageWriteErrors: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "conloom_usage_write_errors_total", Help: "Failed batch writes of model call records.",
+		}),
+		PanelLoginFailures: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "conloom_panel_login_failures_total", Help: "Failed web panel logins.",
+		}),
+		PanelRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "conloom_panel_requests_total", Help: "Web panel requests by route and status code.",
+		}, []string{"route", "code"}),
 	}
 	reg.MustRegister(
 		m.Events, m.Tasks, m.ModelLatency, m.ModelTokens, m.EstimateRatio,
@@ -123,6 +140,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.MemoryConsolidations, m.MemoryConsolidationSeconds, m.MemoryAffinityChanges,
 		m.SkillCalls,
 		m.SearchSeconds, m.FTSBackfillRemaining, m.EmbeddingRequests, m.EmbeddingBacklog,
+		m.UsageDropped, m.UsageWriteErrors, m.PanelLoginFailures, m.PanelRequests,
 	)
 	reg.MustRegister(m.CleanupDeleted)
 	return m

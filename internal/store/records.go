@@ -196,6 +196,7 @@ const (
 	RevisionRule        = "rule"
 	RevisionCommand     = "command"
 	RevisionAPI         = "api"
+	RevisionPanel       = "panel"
 )
 
 // MemoryRevision records one change to a memory field. Field is one of the
