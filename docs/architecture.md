@@ -81,13 +81,13 @@ NapCat      Adapter                 Core                          SQLite        
 2. **提交**：`POST /api/v1/events` 必须带 `Idempotency-Key`。可重试的错误按 0.5s/1s/2s 重试 3 次，仍失败就放进内存缓冲（最多 256 条），每 5 秒重提交一次。
 3. **幂等**（`internal/core/orchestrator.go:307`）：核心对原始请求体算 SHA-256。同一个键、同样的请求体，原样返回当时的 202 响应；请求体不同返回 409。同一条平台消息换个键再交，会被消息表的唯一索引拒绝。
 4. **判定**（`Decide`，`internal/core/decide.go:75`，纯函数）：按顺序命中即停——自己的消息或未启用的群 → `ignore`；命令 → `reply/command`；私聊 → `private`；@ 机器人 → `mention`；回复机器人的消息 → `reply`；在聊会话的参与者 → 一轮或规则退出（第 4 节）；其他 → `observe`（只记录，会进入以后的上下文）。核心不读适配器预填的 `trigger`，一律自己重新判定。
-5. **落库**：判定结果连同事件、消息、新任务在**一个事务**里写入（`internal/store/sqlite/ingest.go:15`）。`ignore` 的消息正文不落库，只留幂等记录。事件发生时间已超过 `runtime.stale_task_after`（默认 2 分钟）的消息只记录、不回复。
+5. **落库**：判定结果连同事件、消息、新任务在**一个事务**里写入（`internal/store/sqlite/ingest.go:15`），消息同时写进关键词索引 `message_fts`（5.7）。`ignore` 的消息正文不落库，只留幂等记录。事件发生时间已超过 `runtime.stale_task_after`（默认 2 分钟）的消息只记录、不回复。
 6. **调度**：任务进入该群的调度会话，等合并窗口关闭、并发和最短间隔满足后开始执行（第 3 节）。
 7. **执行**（`internal/core/runner.go:160`）：取历史、审查输入、拼 prompt、路由选模型、申请准入、调用模型，再处理 `[[SKIP]]`、清洗、审查输出（第 5 节）。
 8. **写 Outbox**：`complete` 在一个事务里写任务终态和 `outbox_actions` 行（`orchestrator.go:801`），然后唤醒正在长轮询的适配器。是否引用触发消息由 `reply.quote` 决定（`orchestrator.go:858`）。
 9. **投递**：适配器 `GET /outbox` 长轮询（最长 30 秒）。每个会话每次只发放最老的一条动作，并加 60 秒租约（`internal/store/sqlite/outbox.go:39`）。
 10. **发送与 ACK**（`adapter.go:424`）：先查去重日志；发送成功后把 `action_id` 和平台消息 ID 写入去重日志并 fsync，再 `POST /outbox/{action_id}/ack`。
-11. **记录机器人自己的消息**：ACK 为 `sent` 时，核心在同一事务里把这条回复作为 `from_bot` 消息写进消息表（`internal/store/sqlite/outbox.go:102`）。之后群友回复这条消息，就会被识别为“回复机器人”；下一次调用模型时，它会作为 assistant 历史出现。
+11. **记录机器人自己的消息**：ACK 为 `sent` 时，核心在同一事务里把这条回复作为 `from_bot` 消息写进消息表和关键词索引（`internal/store/sqlite/outbox.go:102`）。之后群友回复这条消息，就会被识别为“回复机器人”；下一次调用模型时，它会作为 assistant 历史出现。
 
 ### 2.1 Telegram 的往返
 
@@ -159,7 +159,7 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 
 ### 3.6 重启恢复
 
-`Recover`（`internal/core/recover.go:46`）在开始对外服务前运行一次：列出 `queued` / `running` 任务，事件距今已超过 `stale_task_after` 的记为 `failed/STALE`、不发任何东西；命令立即重跑；其余重新入队，立刻可执行。合并窗口、接话冷却、在聊会话等内存状态不会恢复（第 6 节）。之后维护协程每 30 秒让过期的 Outbox 动作失效，每小时清理过期的幂等记录和 7 天前的主动搭话日志。
+`Recover`（`internal/core/recover.go:46`）在开始对外服务前运行一次：列出 `queued` / `running` 任务，事件距今已超过 `stale_task_after` 的记为 `failed/STALE`、不发任何东西；命令立即重跑；其余重新入队，立刻可执行。合并窗口、接话冷却、在聊会话等内存状态不会恢复（第 6 节）。之后维护协程每 30 秒让过期的 Outbox 动作失效，每小时清理过期的幂等记录和 7 天前的主动搭话日志；另一个协程在后台补建关键词索引（5.7）。
 
 ## 4. 群聊参与
 
@@ -434,6 +434,23 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - **身份**：工具通过 `skills.Invocation` 得知调用者，永远是当前任务的说话人和会话，以及本次回复所回应的触发消息 ID（按时间顺序，remember 据此确认是本人要求记住、recall 据此排除当前这一轮；时区为 `server.timezone`）；参数里不带任何身份信息。
 - **输出**：只有最终回复走 5.4 的输出处理链并发送；中间轮次模型写的文字只回传给模型。
 
+### 5.7 长期回忆的检索
+
+`recall` 查的是会话的全部历史，不再只看最近的消息。设计见 `docs/superpowers/specs/2026-11-14-search-engine-design.md`。
+
+- **关键词索引**（迁移 `0006_message_fts.sql`）：FTS5 虚拟表 `message_fts(seg)`，rowid 等于 `messages.seq`，分词器 unicode61，contentless（`content=''`、`contentless_delete=1`，不重复存正文）。`seg` 由 `search.IndexText` 生成：会话标记 `c<hex>`（会话键 SHA-256 的前 16 位十六进制）、正文切出的词、发言人显示名切出的词，用空格连接。切词（`internal/search/terms.go`）：每段连续汉字切成相邻两字，再加上这一段的最后一个字；英文和数字按词切开并转成小写。入库和查询用同一套。机器人的消息也进索引。
+- **写入**：消息写进 `messages` 的同一个事务里写索引（`internal/store/sqlite/ingest.go` 的 `execInsertMessage`，入站消息和 ACK 时记录的机器人消息都走这里）。
+- **补建**（`BackfillMessageIndex`，`internal/store/sqlite/fts.go`；后台循环是 `internal/core/recover.go` 的 `backfillMessageIndex`，在 `Recover` 时启动）：从旧到新，每批 500 条，批与批之间停 200ms；补完后每小时再查一次。进度记在 `message_fts_progress.backfilled_seq`，表示这个 seq 及以前的消息都已经进了索引，所以中途停下、重启后能接着做。每批找的是进度之后、还不在索引里的消息，所以回滚到旧版本二进制期间写入、没进索引的消息，换回新版本后也会补上。失败时退避，从 5 秒开始翻倍，最长 10 分钟。剩余条数（进度之后的消息数）记在 `conloom_fts_backfill_remaining`。
+- **查询**（`SearchMessages`）：每个查询词（`search.Terms`，见 [技能](skills.md#recall)）按 `search.TermPhrase` 转成 FTS5 短语，词与词之间用 OR 连接，再和会话标记做 AND，按 bm25 排序，同分时新的在前。汉字整词（keywords）查相邻的两字词短语；以单个汉字或 3 个字母以上的英文词结尾的词做前缀匹配。没有时间范围时只在索引里排序，取前 2×limit 条，再到 `messages` 核对会话；有时间范围时联表按 `occurred_at` 过滤。会话标记只用来缩小范围，会话隔离靠核对 `conversation_key`，所以正文里伪造的别的会话标记不起作用。
+- **recall 融合**（`internal/skills/tools/recall.go`）：
+  - 两路检索：关键词取前 50 条消息；配置了 `search.VectorSearcher` 时，语义检索取前 20 段，限时 3 秒，出错或超时就只用关键词结果。
+  - 融合用 RRF（k=60）：命中范围重叠的消息和段合并成一个候选，分数相加；再按新旧略加分，最多加 2%。
+  - 取前 6 个候选展开：消息命中带上前后各 2 条，段命中整段显示，相接或重叠的组合并。
+  - 过滤：每个候选按 seq 读出周围的消息，再执行原有的全部过滤。为了准确认出机器人对命令的回复，会往前多读，直到找到一个前 2 分钟内没有命令的位置，最多多读 500 条；找不到时，命令之后 2 分钟内的机器人消息一律丢掉。消息命中经过打码和审查后，正文或显示名里仍然要含有查询词，才算命中。
+  - 输出：每组前面加 `—— YYYY-MM-DD ——`。
+  - 指标：关键词检索的耗时记在 `conloom_search_seconds{path="keyword"}`。
+- **性能**（基准测试，E5-2680 v4）：一个会话 10 万条消息、库里另有 2 万条时，`SearchMessages` 约 57ms，加时间范围约 70ms；在 10 万条的会话里调用一次 recall 约 140ms。
+
 ## 6. 状态边界
 
 | 状态 | 位置 | 重启后 |
@@ -444,6 +461,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | 成员资格、档位、兴趣画像 | SQLite `conversation_members` | 保留 |
 | 主动搭话的评估 / 发出记录 | SQLite `proactive_log` | 保留 7 天，预算照常生效 |
 | 群聊和私聊的摘要与整理游标、笔记和好感度、记忆修改记录 | SQLite `group_memory`、`member_memory`、`memory_revisions` | 保留；修改记录保留 30 天 |
+| 消息的关键词索引和补建进度 | SQLite `message_fts`、`message_fts_progress` | 保留；没进索引的消息由后台补建补上 |
 | 记忆整理的排队请求、积压跳转标记、失败计数和退避、缩小后的批次上限 | 内存 | 丢失；手动整理要重新触发。重新开启记忆后、下一次整理前重启的群，跳转标记丢失，按原游标整理完整积压（每轮最多 10 批） |
 | 调度队列、合并窗口、挂起标记、`lastFinish` | 内存 | 丢失；任务按库里记录重新入队 |
 | 在聊会话 | 内存 | 清空，需要重新 @ 机器人 |
@@ -505,6 +523,8 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | `memory_consolidation_seconds` | —（只记成功的整理） |
 | `memory_affinity_changes_total` | source：consolidate / rule / command / api |
 | `skill_calls_total` | tool（模型编造的工具名记为 unknown）、result：ok / error / unknown / invalid |
+| `search_seconds` | path：keyword / vector（recall 的两路检索耗时） |
+| `fts_backfill_remaining` | —（关键词索引补建进度之后的消息数） |
 
 关键原因代码：
 
@@ -512,6 +532,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - **`join skipped` 日志的 `reason`**：`disabled`、`paused`、`session`、`busy`、`cooldown`、`budget`、`few_messages`、`stale`、`no_eligible`、`irrelevant`、`no_target`、`closed`、`error`，附窗口消息数和目标资格人数。
 - **其他日志**：`join evaluation`（建了加入任务，会话外提问带 `guest=true`）、`turn deferred`（接话冷却挂起）、`turn dropped`（一轮在调用模型前被丢弃；挂起超过上限时带 `reason=held_too_long`）、`model call failed; re-routing`。
 - **记忆日志**：每次成功整理一行 `memory consolidated`（会话、批数、消息条数、prompt token 数、更新了几位成员、用时），失败时 `memory consolidation failed` 带类别和连续失败次数；注入失败记 `memory not injected: …`。记忆相关日志不写笔记和摘要正文。
+- **检索日志**：关键词索引补建完成时记一行 `keyword index backfilled`（补了多少条），失败时记 `keyword index backfill failed`（带下次重试的间隔）；不写正文。
 - **技能日志**：每次执行工具一行 `skill call`（`task_id`、`tool`、`duration_ms`、`ok`、`result`），不记参数和结果；带工具的 `model call` 多出 `round`、`final` 和 `tool_calls`，`task finished` 带 `skill_calls`（如 `now:1`）。
 - **任务 meta**：`selected_model_role`、`route_reason`（`fits_short_context` 等）、`review_result`（skipped / blocked / 审查结论）、错误码。
 
