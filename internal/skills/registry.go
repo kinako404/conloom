@@ -66,6 +66,37 @@ type Toolset struct {
 // Empty reports whether the toolset offers no tools.
 func (t Toolset) Empty() bool { return len(t.Tools) == 0 }
 
+// DefaultMaxResultRunes bounds the result of a tool that does not declare
+// its own limit.
+const DefaultMaxResultRunes = 2000
+
+// ResultLimiter is implemented by a tool that declares the longest result
+// it returns, in runes.
+type ResultLimiter interface {
+	MaxResultRunes() int
+}
+
+// MaxResultRunes is the longest result tool may return: its declared limit
+// (see ResultLimiter), at most DefaultMaxResultRunes, which also applies when
+// it declares none.
+func MaxResultRunes(tool Tool) int {
+	if l, ok := tool.(ResultLimiter); ok {
+		if n := l.MaxResultRunes(); n > 0 && n < DefaultMaxResultRunes {
+			return n
+		}
+	}
+	return DefaultMaxResultRunes
+}
+
+// MaxResultRunes is the longest result any tool of the toolset may return.
+func (t Toolset) MaxResultRunes() int {
+	n := 0
+	for _, tool := range t.Tools {
+		n = max(n, MaxResultRunes(tool))
+	}
+	return n
+}
+
 // Lookup returns the toolset's tool called name.
 func (t Toolset) Lookup(name string) (Tool, bool) {
 	i := slices.IndexFunc(t.Tools, func(tool Tool) bool { return tool.Spec().Name == name })

@@ -18,6 +18,9 @@ type nowTool struct{}
 // ignores any it is given.
 func NewNow() skills.Tool { return nowTool{} }
 
+// MaxResultRunes declares that now answers with one short line.
+func (nowTool) MaxResultRunes() int { return shortResultRunes }
+
 func (nowTool) Spec() skills.Spec {
 	return skills.Spec{
 		Name:        "now",

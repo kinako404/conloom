@@ -28,6 +28,9 @@ type affinityTool struct{ d AffinityDeps }
 // arguments and ignores any it is given.
 func NewGetAffinity(d AffinityDeps) skills.Tool { return &affinityTool{d: d} }
 
+// MaxResultRunes declares that get_affinity answers with one sentence.
+func (*affinityTool) MaxResultRunes() int { return shortResultRunes }
+
 func (*affinityTool) Spec() skills.Spec {
 	return skills.Spec{
 		Name:        "get_affinity",

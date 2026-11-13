@@ -25,14 +25,17 @@ const (
 	maxToolRounds = 3
 	// maxCallsPerRound tool calls of one response are run; the rest are
 	// answered with copyTooManyCalls.
-	maxCallsPerRound   = 4
-	maxToolResultRunes = 2000
+	maxCallsPerRound = 4
+	// maxToolResultRunes bounds a tool result; a tool may declare a lower
+	// limit (skills.ResultLimiter).
+	maxToolResultRunes = skills.DefaultMaxResultRunes
 	// toolCallTimeout bounds one tool call, for tools that honour their
 	// context.
 	toolCallTimeout = 10 * time.Second
 	// toolLoopTimeout bounds a reply's tool calls: once it has passed no new
-	// call is run and the next request offers no tools.
-	toolLoopTimeout = 45 * time.Second
+	// call is run and the next request offers no tools. It leaves the final
+	// request room within the 60 seconds a platform's typing indicator lasts.
+	toolLoopTimeout = 25 * time.Second
 	// assistantTokensFallback bounds an assistant message when the profile
 	// reserves no output tokens.
 	assistantTokensFallback = 1024
@@ -67,6 +70,9 @@ type skillRun struct {
 	schema string
 	inv    skills.Invocation
 
+	// maxResult is the longest result any of the tools may return.
+	maxResult int
+
 	msgs     []openai.ChatMessage
 	rounds   int
 	deadline time.Time
@@ -91,7 +97,7 @@ func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, 
 	if set.Empty() {
 		return nil
 	}
-	run := &skillRun{set: set, counts: map[string]int{}}
+	run := &skillRun{set: set, maxResult: set.MaxResultRunes(), counts: map[string]int{}}
 	for _, t := range set.Tools {
 		spec := t.Spec()
 		run.tools = append(run.tools, openai.Tool{Name: spec.Name, Description: spec.Description, Parameters: spec.Parameters})
@@ -117,17 +123,35 @@ func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, 
 	return run
 }
 
-// worstRound bounds the prompt growth of one tool round under decision d:
-// an assistant message no longer than the output limit and
-// maxCallsPerRound full-length results.
-func worstRound(d router.Decision, factor float64) int {
-	result := contextbuilder.Estimate(toolResultPreface+"\n"+strings.Repeat("字", maxToolResultRunes), factor) +
+// worstRound bounds the prompt growth of one tool round: an assistant
+// message no longer than outputTokens (assistantTokensFallback when there is
+// no output limit) and maxCallsPerRound results of maxResultRunes.
+func worstRound(outputTokens int, factor float64, maxResultRunes int) int {
+	result := contextbuilder.Estimate(toolResultPreface+"\n"+strings.Repeat("字", maxResultRunes), factor) +
 		contextbuilder.MessageOverhead
-	assistant := d.MaxOutputTokens
+	assistant := outputTokens
 	if assistant <= 0 {
 		assistant = assistantTokensFallback
 	}
 	return maxCallsPerRound*result + assistant + contextbuilder.MessageOverhead
+}
+
+// notAnAnswer returns why resp, to a request offering tools (final false) or
+// to the final request, must not be taken as the reply, or "": a tool call
+// written as text, a tool round cut off by the output limit before any call,
+// or tool calls in the final request, whose text is mostly a filler like
+// "稍等，我查一下".
+func notAnAnswer(resp openai.ChatResponse, final bool) string {
+	content := strings.ToLower(resp.Content)
+	switch {
+	case strings.Contains(content, "<tool_call") || strings.Contains(content, "<function"):
+		return "tool call written as text"
+	case final && len(resp.ToolCalls) > 0:
+		return "tool calls in the final request"
+	case !final && resp.FinishReason == "length" && len(resp.ToolCalls) == 0:
+		return "truncated tool round"
+	}
+	return ""
 }
 
 // lastRequest reports whether the next request must be the final one, without
@@ -196,7 +220,7 @@ func (o *Orchestrator) execTool(ctx context.Context, run *skillRun, c openai.Too
 	if err != nil {
 		return c.Name, skillCallError, copyToolFailed
 	}
-	return c.Name, skillCallOK, toolResultPreface + "\n" + truncateRunes(out, maxToolResultRunes)
+	return c.Name, skillCallOK, toolResultPreface + "\n" + truncateRunes(out, skills.MaxResultRunes(tool))
 }
 
 // safeCall turns a panicking tool into a failed call.

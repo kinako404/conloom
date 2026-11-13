@@ -19,6 +19,10 @@ type PolicySource interface {
 // noArguments is the schema of tools that take no arguments.
 var noArguments = json.RawMessage(`{"type":"object","properties":{}}`)
 
+// shortResultRunes is the result limit (skills.ResultLimiter) of the tools
+// that answer with one sentence: remember, get_affinity and now.
+const shortResultRunes = 100
+
 // memoryOn reports whether memory is in effect for convKey, as for the
 // memory commands: enabled, with long requests allowed.
 func memoryOn(ctx context.Context, policies PolicySource, convKey string) (store.PolicyVersion, bool, error) {

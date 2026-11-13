@@ -292,7 +292,6 @@ func TestSkills_IntermediateContentNotSent(t *testing.T) {
 func TestSkills_RoundLimitForcesText(t *testing.T) {
 	for _, final := range []fakeopenai.Reply{
 		{Content: "说不上来"},
-		{Content: "说不上来", ToolCalls: []fakeopenai.ToolCall{{ID: "x", Name: "now", Arguments: `{"again":true}`}}},
 	} {
 		now := &recTool{name: "now"}
 		round := 0
@@ -327,6 +326,34 @@ func TestSkills_RoundLimitForcesText(t *testing.T) {
 		if calls, _ := msgs[len(msgs)-2]["tool_calls"].([]any); len(calls) != 1 {
 			t.Errorf("last request lost the earlier tool calls: %v", msgs[len(msgs)-2])
 		}
+	}
+}
+
+func TestSkills_CallsInTheFinalRequestAreNotAnAnswer(t *testing.T) {
+	now := &recTool{name: "now"}
+	n := 0
+	var mu sync.Mutex
+	env := skillEnv(t, testOpts{
+		shortTools: func(req map[string]any) fakeopenai.Reply {
+			if len(offeredTools(req)) == 0 {
+				return fakeopenai.Reply{Content: "稍等，我查一下", ToolCalls: []fakeopenai.ToolCall{{ID: "x", Name: "now", Arguments: `{"again":true}`}}}
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			n++
+			return fakeopenai.Reply{ToolCalls: []fakeopenai.ToolCall{{ID: fmt.Sprintf("r%d", n), Name: "now", Arguments: fmt.Sprintf(`{"round":%d}`, n)}}}
+		},
+		longTools: func(req map[string]any) fakeopenai.Reply { return fakeopenai.Reply{Content: "四点半"} },
+	}, []string{"time"}, now)
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "几点了", mentionBot)).TaskID)
+	if len(task.Actions) != 1 || task.Actions[0].Content.Text != "四点半" || task.Meta.SelectedModelRole != "long_context" {
+		t.Fatalf("task = %+v, want the re-routed answer, not the filler", task)
+	}
+	if longReqs := env.long.Requests(); len(longReqs) != 1 || len(offeredTools(longReqs[0])) != 0 || len(toolMessages(longReqs[0])) != 3 {
+		t.Errorf("long model: %d requests, want one final request carrying the three results", len(longReqs))
+	}
+	if !strings.Contains(env.logs.String(), "tool calls in the final request") {
+		t.Errorf("logs lack the reason")
 	}
 }
 

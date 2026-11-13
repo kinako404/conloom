@@ -499,21 +499,23 @@ func speaker(triggers []store.MessageRecord) string {
 }
 
 // call builds the context for the routed profile and calls the model. With
-// skills (run not nil) the history leaves room for one worst-case tool round;
+// skills (run not nil) the prompt keeps its usual budget unless the hard
+// prompt limit leaves no room for one worst-case tool round on top of it;
 // requests offer the tools and the calls the model makes are run, their
 // results fed back, after any progress run made with an earlier model. The
 // final request offers no tools: it comes after maxToolRounds rounds, after
 // toolLoopTimeout, or when another round could overflow the prompt limit.
 // Every request waits for its own admission. The response is the model's final
-// answer.
+// answer; a tool call written as text, a tool round cut off by the output
+// limit and tool calls in the final request are not answers (ErrEmptyOutput).
 func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router.Decision, in contextbuilder.Input, run *skillRun) (openai.ChatResponse, error) {
 	p := d.Profile
 	in.Budget = d.PromptBudget
 	in.TokenFactor = p.Config.TokenEstimateFactor
 	worst := 0
 	if run != nil {
-		worst = worstRound(d, in.TokenFactor)
-		in.Budget -= worst
+		worst = worstRound(d.MaxOutputTokens, in.TokenFactor, run.maxResult)
+		in.Budget = min(d.PromptBudget, d.MaxPromptTokens-worst)
 	}
 	built := contextbuilder.Build(in)
 	req := openai.ChatRequest{Messages: built.Messages, MaxTokens: d.MaxOutputTokens}
@@ -532,15 +534,14 @@ func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router
 			req.Tools = nil
 		}
 		resp, err := o.chat(ctx, task, d, req, built, estimate, []any{"round", run.rounds, "final", final})
-		if err != nil || len(resp.ToolCalls) == 0 {
+		if err != nil {
 			return resp, err
 		}
-		if final {
-			// Calls without tools offered: keep the text.
-			if resp.Content == "" {
-				return openai.ChatResponse{}, fmt.Errorf("model %s: %w: tool calls in the final request", p.Role, openai.ErrEmptyOutput)
-			}
-			resp.ToolCalls = nil
+		if reason := notAnAnswer(resp, final); reason != "" {
+			o.log.Warn("model output rejected", "task_id", task.ID, "role", p.Role, "round", run.rounds, "reason", reason)
+			return openai.ChatResponse{}, fmt.Errorf("model %s: %w: %s", p.Role, openai.ErrEmptyOutput, reason)
+		}
+		if len(resp.ToolCalls) == 0 {
 			return resp, nil
 		}
 		if !o.now().Before(run.deadline) {

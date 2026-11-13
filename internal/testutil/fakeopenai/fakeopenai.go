@@ -41,6 +41,8 @@ type Reply struct {
 	Status    int
 	Content   string
 	ToolCalls []ToolCall
+	// FinishReason, when set, replaces "stop" (or "tool_calls").
+	FinishReason string
 }
 
 // ToolCall is a function call in a fake answer; Arguments is JSON text.
@@ -89,6 +91,9 @@ func NewWithTools(t testing.TB, h func(req map[string]any) Reply) *Server {
 			if content == "" {
 				message["content"] = nil
 			}
+		}
+		if reply.FinishReason != "" {
+			finish = reply.FinishReason
 		}
 		promptTokens := 0
 		if msgs, ok := req["messages"].([]any); ok {

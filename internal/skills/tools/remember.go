@@ -79,6 +79,9 @@ type rememberTool struct{ d RememberDeps }
 // sentence saying whether it did and why not.
 func NewRemember(d RememberDeps) skills.Tool { return &rememberTool{d: d} }
 
+// MaxResultRunes declares that remember answers with one sentence.
+func (*rememberTool) MaxResultRunes() int { return shortResultRunes }
+
 func (*rememberTool) Spec() skills.Spec {
 	return skills.Spec{
 		Name: "remember",

@@ -73,6 +73,9 @@ type recallTool struct{ d RecallDeps }
 // "[MM-DD HH:MM] 名字：正文" lines, at most 1500 runes, without any IDs.
 func NewRecall(d RecallDeps) skills.Tool { return &recallTool{d: d} }
 
+// MaxResultRunes declares recall's limit on what it returns.
+func (*recallTool) MaxResultRunes() int { return recallMaxRunes }
+
 func (*recallTool) Spec() skills.Spec {
 	return skills.Spec{
 		Name: "recall",
