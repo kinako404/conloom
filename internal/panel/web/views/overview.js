@@ -126,16 +126,20 @@ export async function overviewView(ctx) {
     h('section', { class: 'card' }, h('h2', null, '最近 7 天 token 用量（按模型）'), chartBox),
     metrics);
 
-  const timer = setInterval(async () => {
+  // Each poll is scheduled after the previous one ends, so polls never overlap.
+  let timer = 0;
+  async function poll() {
     try {
       await refresh();
       mount(pollError);
-      if (metrics.open) loadMetrics();
+      if (metrics.open) await loadMetrics();
     } catch (err) {
       if (!isAbort(err)) mount(pollError, errorBox(err));
     }
-  }, POLL_MS);
-  signal.addEventListener('abort', () => clearInterval(timer));
+    if (!signal.aborted) timer = setTimeout(poll, POLL_MS);
+  }
+  timer = setTimeout(poll, POLL_MS);
+  signal.addEventListener('abort', () => clearTimeout(timer));
 
   try {
     const to = dayIn(o.timezone);

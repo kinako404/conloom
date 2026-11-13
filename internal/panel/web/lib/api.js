@@ -61,7 +61,24 @@ export function convPath(key, ...rest) {
   return ['conversations', encodeURIComponent(key), ...rest].join('/');
 }
 
-export async function request(method, path, { body, params, signal } = {}) {
+// CSRF_REJECTED is the error code of a 403 for a missing or stale CSRF token.
+const CSRF_REJECTED = 'FORBIDDEN';
+
+// request calls the API. A write rejected with 403 FORBIDDEN, as when the
+// session's CSRF token changed under this page, reloads the session and is
+// retried once; a second rejection is thrown.
+export async function request(method, path, opts = {}) {
+  try {
+    return await send(method, path, opts);
+  } catch (err) {
+    if (!(err instanceof ApiError) || err.status !== 403 || err.code !== CSRF_REJECTED ||
+      method === 'GET' || path === 'login') throw err;
+    await loadSession(opts.signal);
+    return send(method, path, opts);
+  }
+}
+
+async function send(method, path, { body, params, signal } = {}) {
   if (method !== 'GET' && path !== 'login' && !csrfToken) await loadSession(signal);
   const headers = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
