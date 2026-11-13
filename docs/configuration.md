@@ -25,6 +25,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `CONLOOM_LONG_MODEL_ENDPOINT` / `_NAME` / `_KEY` | 长上下文模型的接口地址、模型名、API Key |
 | `CONLOOM_NAPCAT_WS_URL` | NapCat 的 WebSocket 地址，如 `ws://<NapCat 地址>:<端口>` |
 | `CONLOOM_NAPCAT_TOKEN` | NapCat 的 access token |
+| `CONLOOM_PANEL_ADMIN_HASH` | Web 管理面板 `admin` 账号的密码哈希，启用 `panel` 段时才需要，生成方法见 [部署：Web 管理面板](deployment.md#web-管理面板) |
 
 模型请求发往 `<endpoint>/chat/completions`，所以 endpoint 一般写到 `/v1` 为止。
 
@@ -43,6 +44,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `runtime` | 投递、过时判定、合并窗口等运行时参数 |
 | `skills` | 额外技能文件所在的目录 |
 | `embedding` | 语义检索用的向量服务，可选 |
+| `panel` | Web 管理面板的账号和会话，可选 |
 | `adapters` | NapCat、Telegram 和 Mock 适配器 |
 | `observability` | 日志 |
 
@@ -50,8 +52,8 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `server.listen` | `127.0.0.1:8787` | 核心唯一的监听地址，API、`/healthz`、`/metrics` 共用 |
-| `server.timezone` | `Asia/Shanghai` | 上下文里时间的显示时区，也是主动搭话每人每日上限的日界线；时区数据已内嵌在二进制里 |
+| `server.listen` | `127.0.0.1:8787` | 核心唯一的监听地址，API、`/healthz`、`/metrics` 和 Web 管理面板共用 |
+| `server.timezone` | `Asia/Shanghai` | 上下文里时间的显示时区，也是主动搭话每人每日上限和面板用量统计的日界线；时区数据已内嵌在二进制里 |
 | `server.metrics_enabled` | `true` | 是否开放 `/metrics` |
 | `storage.data_dir` | `./data` | 数据目录，相对路径按配置文件所在目录解析；数据库固定为其中的 `conloom.db` |
 
@@ -222,7 +224,8 @@ default_private_policy:
 | `max_merge_window` | 4.5s | 直接对话合并连续消息的最长窗口 |
 | `session_idle` | 5m | 调度会话（每个会话的任务队列）空闲多久后回收，最小 1m |
 | `ops_retention` | 720h | 已结束（成功、失败、取消）的任务和它们已确认或已过期的发件箱动作的保留时长，24h~8760h。实际保留时长取它和 `idempotency_retention` 中较长的一个，保证重放的事件响应里的 `task_id` 仍能查到 |
-| `audit_retention` | 2160h | 审计记录（策略和人格修改、审查拦截）的保留时长，24h~87600h |
+| `audit_retention` | 2160h | 审计记录（策略和人格修改、审查拦截、面板登录和修改）的保留时长，24h~87600h |
+| `usage_retention` | 9600h | 模型用量明细（`model_calls` 表，每次模型调用一行）的保留时长，默认 400 天；面板的用量统计最长也是 400 天，调短后更早的日子显示为 0。体积见 [Web 管理面板：模型用量](panel.md#模型用量) |
 
 `ops_retention` 和 `audit_retention` 会在启动时校验范围，超出范围（包括显式写 0）时启动失败，退出码 78；省略时取默认值。其余字段不做范围校验，≤ 0 时回落到默认值。不要把 `action_ttl` 配到 24 小时以上：适配器的去重记录只保留 24 小时，超过后可能重发。
 
@@ -254,6 +257,28 @@ embedding:
   endpoint: http://127.0.0.1:11434/v1
   model: bge-m3
 ```
+
+## panel
+
+可选。配置后，核心在 `server.listen` 的同一端口上提供 Web 管理面板 `/panel/`；整段省略（或写成空的 `panel:`）时不启用。面板的功能和安全机制见 [Web 管理面板](panel.md)，生成密码哈希和远程访问见 [部署：Web 管理面板](deployment.md#web-管理面板)。
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `users` | 必填，至少一项 | 登录账号，每项 `{name, password_hash}`；都是管理员，权限相同 |
+| `users[].name` | 必填 | 用户名，不能重复 |
+| `users[].password_hash` | 必填 | `conloom panel hash-password` 输出的哈希，形如 `pbkdf2-sha256:<迭代次数>:<盐>:<哈希>`，迭代次数不低于 100000。建议写成 `${CONLOOM_PANEL_ADMIN_HASH}` 放进 `.env`。换成新哈希并重启后，这个用户已有的登录会话全部失效 |
+| `session_ttl` | 168h | 登录后最长有效期，> 0 |
+| `idle_timeout` | 12h | 多久没有操作就要重新登录，> 0 |
+| `cookie_secure` | false | 会话 cookie 是否带 `Secure`（只经 HTTPS 发送）。经 HTTPS 反向代理访问时设为 `true`；只经 SSH 隧道用 `http://127.0.0.1` 访问时保持 `false` |
+
+```yaml
+panel:
+  users:
+    - name: admin
+      password_hash: ${CONLOOM_PANEL_ADMIN_HASH}
+```
+
+`panel` 段只由 `serve` 校验：没有用户、用户名重复、哈希格式不对或迭代次数太低时启动失败，退出码 78，错误信息只指出字段，不包含哈希本身。
 
 ## adapters
 

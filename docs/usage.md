@@ -12,6 +12,7 @@ conloom adapter napcat -c conloom.yaml                          NapCat 适配器
 conloom adapter telegram -c conloom.yaml                        Telegram 适配器（独立进程，见 telegram.md）
 conloom mock -c conloom.yaml [-conv <类型>:<ID>] [-user <ID>:<昵称>]   终端里的 Mock 适配器
 conloom backup -c conloom.yaml -o <文件>                         在线备份数据库（目标文件必须不存在）
+conloom panel hash-password < <密码文件>                         从标准输入读一行密码，输出 Web 管理面板用的密码哈希
 conloom version                                                 显示版本与提交
 ```
 
@@ -26,6 +27,17 @@ conloom version                                                 显示版本与�
 - `-user 20001:小明` 指定发送者，省略昵称时用 ID 代替。
 - 每行输入一条消息；在群聊里以 `@` 开头表示 @ 机器人。读到输入结束（Ctrl+D，Windows 为 Ctrl+Z 回车）时退出。
 - Mock 和 NapCat 适配器默认使用同一个机器人实例，会争抢同一个发件箱。每个机器人实例只能运行一个适配器进程，不要同时运行两者。
+
+## Web 管理面板
+
+在配置里加上 `panel` 段后，核心在同一端口上提供一个网页管理界面 `/panel/`：本机直接打开 `http://127.0.0.1:8787/panel/`，服务器上的核心经 SSH 隧道（`ssh -L 8787:127.0.0.1:8787 <用户>@<服务器>`）访问。登录后可以：
+
+- 看今天和每天的模型调用次数、失败数、token 用量和延迟，按模型、角色、用途或 bot 分组；
+- 看实时状态：队列、发件箱、向量积压、熔断，以及各 bot 的适配器最近一次调用核心的时间；
+- 浏览和检索每个群聊、私聊的消息；查看、修改、回滚策略和人设；查看记忆，修改备注和好感度，忘记成员，立即整理一次；
+- 查看任务、审计记录和当前配置（密钥打码）。
+
+面板上的修改和聊天命令、API 用同一套规则，都会写审计记录。启用方法、密码哈希的生成和 HTTPS 反向代理见 [Web 管理面板](panel.md) 和 [部署：Web 管理面板](deployment.md#web-管理面板)。
 
 ## 聊天命令
 

@@ -44,12 +44,12 @@ ConLoom 是一个用 Go 编写的群聊对话智能体框架：平台适配器�
 
 | 进程 | 作用 | 网络 |
 |---|---|---|
-| `conloom serve` | 核心：API、判定、调度、模型调用、Outbox | 唯一监听端口的进程，`server.listen` 默认本机回环地址的 8787 端口 |
+| `conloom serve` | 核心：API、判定、调度、模型调用、Outbox、Web 管理面板 | 唯一监听端口的进程，`server.listen` 默认本机回环地址的 8787 端口 |
 | `conloom adapter napcat` | NapCat 适配器，QQ 群聊和私聊 | 不监听端口，只主动连接 NapCat（WebSocket）和核心（HTTP） |
 | `conloom adapter telegram` | Telegram 适配器，私聊、群和超级群（频道跳过） | 不监听端口，只主动连接 Telegram Bot API（HTTPS 长轮询）和核心（HTTP） |
 
-- 其他子命令：`mock`（终端里的本地调试适配器）、`backup`（在线备份）、`version`。
-- API、`/healthz`、`/metrics` 共用一个端口；后两者不需要鉴权，`/metrics` 只能整体开关（`server.metrics_enabled`）。
+- 其他子命令：`mock`（终端里的本地调试适配器）、`backup`（在线备份）、`panel hash-password`（生成面板密码哈希）、`version`。
+- API、`/healthz`、`/metrics` 和 Web 管理面板（`/panel/`，配置了 `panel` 段时才有，见 8.2）共用一个端口；`/healthz`、`/metrics` 不需要鉴权，`/metrics` 只能整体开关（`server.metrics_enabled`）。
 - 数据目录 `storage.data_dir`（默认 `./data`，相对路径按配置文件所在目录解析）下只有 `conloom.db` 及其 WAL 文件。适配器的去重日志分别放在 `adapters.napcat.state_dir` 和 `adapters.telegram.state_dir`，默认都与数据目录相同，文件名不同。两个适配器共用同一份去重实现（`internal/adapter/dedup`）。
 - 每个适配器服务一个机器人实例（各自的 `bot_instance_id` 和核心令牌），一个核心可以同时服务 QQ 和 Telegram 两个实例。
 - 每个机器人实例只能运行**一个**适配器进程，核心也只能运行**一个**进程（原因见第 6 节）。Telegram 本身也只允许一个 `getUpdates` 连接。
@@ -159,7 +159,7 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 
 ### 3.6 重启恢复
 
-`Recover`（`internal/core/recover.go:46`）在开始对外服务前运行一次：列出 `queued` / `running` 任务，事件距今已超过 `stale_task_after` 的记为 `failed/STALE`、不发任何东西；命令立即重跑；其余重新入队，立刻可执行。合并窗口、接话冷却、在聊会话等内存状态不会恢复（第 6 节）。之后维护协程每 30 秒让过期的 Outbox 动作失效，每小时清理过期的幂等记录和 7 天前的主动搭话日志，并分批清理过期的流水数据（`internal/core/cleanup.go`）：结束超过 `ops_retention`（且超过 `idempotency_retention`）的任务连同它们的 Outbox 动作、已确认或已过期且任务已不存在的动作、超过 `audit_retention` 的审计记录。每张表每个事务最多 1000 行、每轮最多 10 个事务；还有待投递或已租出动作的任务不删；排队中和运行中的任务不删，所以 `Recover` 不受影响。这些清理在维护开始时也各执行一次。另一个协程在后台补建关键词索引（5.7）。
+`Recover`（`internal/core/recover.go:46`）在开始对外服务前运行一次：列出 `queued` / `running` 任务，事件距今已超过 `stale_task_after` 的记为 `failed/STALE`、不发任何东西；命令立即重跑；其余重新入队，立刻可执行。合并窗口、接话冷却、在聊会话等内存状态不会恢复（第 6 节）。之后维护协程每 30 秒让过期的 Outbox 动作失效，每小时清理过期的幂等记录和 7 天前的主动搭话日志，并分批清理过期的流水数据（`internal/core/cleanup.go`）：结束超过 `ops_retention`（且超过 `idempotency_retention`）的任务连同它们的 Outbox 动作、已确认或已过期且任务已不存在的动作、超过 `audit_retention` 的审计记录、超过 `usage_retention` 的模型用量明细（8.1），以及过期的面板登录会话（8.2）。每张表每个事务最多 1000 行、每轮最多 10 个事务；还有待投递或已租出动作的任务不删；排队中和运行中的任务不删，所以 `Recover` 不受影响。这些清理在维护开始时也各执行一次。另一个协程在后台补建关键词索引（5.7）。
 
 ## 4. 群聊参与
 
@@ -508,6 +508,10 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | 消息的关键词索引和补建进度 | SQLite `message_fts`、`message_fts_progress` | 保留；没进索引的消息由后台补建补上 |
 | 语义检索的段和向量、切段游标、重建队列 | SQLite `memory_chunks`、`memory_chunk_state`、`memory_chunk_rebuild`、`memory_chunk_forgets` | 保留 |
 | 语义检索的向量缓存、生成向量的失败退避 | 内存 | 丢失；缓存在下次检索时重读 |
+| 模型用量明细 | SQLite `model_calls` | 保留 `usage_retention`（9600h） |
+| 还没写库的用量记录 | `usage.Recorder` 的内存队列 | 正常退出时限时写完；崩溃时丢失还在队列里的记录（通常是最近 2 秒以内的） |
+| 面板登录会话 | SQLite `panel_sessions` | 保留，到期或超过空闲时限后失效并被清理 |
+| 各 bot 最近一次通过 API 鉴权的时间、面板登录失败计数 | 内存 | 清空 |
 | 记忆整理的排队请求、积压跳转标记、失败计数和退避、缩小后的批次上限 | 内存 | 丢失；手动整理要重新触发。重新开启记忆后、下一次整理前重启的群，跳转标记丢失，按原游标整理完整积压（每轮最多 10 批） |
 | 调度队列、合并窗口、挂起标记、`lastFinish` | 内存 | 丢失；任务按库里记录重新入队 |
 | 在聊会话 | 内存 | 清空，需要重新 @ 机器人 |
@@ -569,11 +573,14 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | `memory_consolidation_seconds` | —（只记成功的整理） |
 | `memory_affinity_changes_total` | source：consolidate / rule / command / api |
 | `skill_calls_total` | tool（模型编造的工具名记为 unknown）、result：ok / error / unknown / invalid |
-| `cleanup_deleted_total` | table：tasks / outbox_actions / audit_events / events / proactive_log |
+| `cleanup_deleted_total` | table：tasks / outbox_actions / audit_events / events / proactive_log / model_calls / panel_sessions |
 | `search_seconds` | path：keyword（recall 的每页关键词检索）/ vector（每次语义检索，包括失败的） |
 | `fts_backfill_remaining` | —（关键词索引补建进度之后的消息数） |
 | `embedding_requests_total` | result：ok / error / timeout（每次请求向量服务，后台生成和查询都算） |
 | `embedding_backlog` | —（估计值：待重建的段数，加上各会话游标之后的消息数按 8 条一段折算；每轮结束时更新） |
+| `usage_dropped_total`、`usage_write_errors_total` | —（用量记录因队列满或退出中被丢弃的条数、批量写库失败的次数，8.1） |
+| `panel_login_failures_total` | —（面板登录失败次数，8.2） |
+| `panel_requests_total` | route（路由模板，不含会话键）、code |
 
 关键原因代码：
 
@@ -586,6 +593,35 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - **技能日志**：每次执行工具一行 `skill call`（`task_id`、`tool`、`duration_ms`、`ok`、`result`），不记参数和结果；带工具的 `model call` 多出 `round`、`final` 和 `tool_calls`，`task finished` 带 `skill_calls`（如 `now:1`）。
 - **语义检索日志**：后台一轮失败记 `embedding round failed`（带下次重试的等待时间），查询转向量失败记 `embedding the query failed; no semantic hits`（带会话和结果类别）；每次检索在 Debug 级记 `semantic search scores`（`top_scores` 最多 5 个分数、`hits` 保留的段数）。都不写段落和查询的正文。
 - **任务 meta**：`selected_model_role`、`route_reason`（`fits_short_context` 等）、`review_result`（skipped / blocked / 审查结论）、错误码。
+- **面板日志**：登录失败记 warn `panel login failed`（带来源 IP，用户名只在存在时记，不记密码）；面板接口不记请求体和消息内容。
+
+### 8.1 模型用量记录
+
+指标在进程重启后归零，`model call` 日志也不便统计，所以每次模型调用另在库里记一行明细，供面板的用量页使用。代码在 `internal/usage`，表由迁移 `0008_model_calls.sql` 创建。
+
+- **表 `model_calls`**：每次调用一行，列为 `at`（调用开始时间）、`bot_instance_id`、`conversation_key`、`task_id`（记忆整理和后台生成向量没有任务时为空）、`purpose`、`role`、`model`、`prompt_tokens`、`completion_tokens`、`reasoning_tokens`、`estimated_tokens`（发请求前的估算，只有 `chat` 有）、`latency_ms`、`outcome`（`ok` / `error` / `timeout` / `canceled`）、`finish_reason`。索引有 `at`、`task_id`（只含非空的），以及一个按 UTC 15 分钟时间槽和各维度排列、包含全部统计列的覆盖索引，统计时不用排序也不用回表。
+- **记录点**（4 处）：
+  - `internal/core/runner.go` 的模型调用记 `chat`，成功和失败都记，带工具的回复每轮请求一行；
+  - `internal/memory/consolidate.go` 的整理调用记 `memory`；
+  - 向量调用经 `internal/usage` 的向量装饰器记录：`internal/search/vector` 的后台生成（`indexer.go`）记 `embed_index`，检索时把查询句转成向量（`searcher.go`）记 `embed_query`，`role` 为 `embedding`，token 取向量服务响应里的 `usage.prompt_tokens`（没有就记 0）。没配置 `embedding` 时不创建装饰器。
+- **归属**：`usage.WithAttribution(ctx, bot, convKey, taskID)` 把来源放进 ctx。Runner 执行任务时放入，所以工具调用里的查询向量化（如 recall）自动带上任务；Indexer 处理每个会话时放入会话。`vector.Embedder` 接口不变，装饰器从 ctx 里取归属。
+- **写入**（`usage.Recorder`）：`Record` 不阻塞，把记录放进容量 4096 的通道；后台协程攒够 200 条或每 2 秒，在一个事务里批量插入。通道满或已开始关闭时丢弃并计入 `usage_dropped_total`；写库失败记 warn 日志、计入 `usage_write_errors_total`，这一批丢弃。`App.Close` 在调度、编排和向量后台都停下以后、关库之前调用 `Recorder.Close`，最多等 5 秒写完剩下的。现有的 `model call` 日志和 `model_*` 指标不变。
+- **清理**：超过 `runtime.usage_retention`（默认 9600h，即 400 天）的行由每小时的清理任务分批删除，计入 `cleanup_deleted_total{table="model_calls"}`。
+- **统计**（`usage.Summarize`）：SQL 按 UTC 15 分钟时间槽和 bot、用途、角色、模型聚合次数、失败数（`outcome` 不为 `ok`）和三类 token，Go 再把时间槽归并到 `server.timezone` 的自然日，所以半点、45 分的时区也分得对。延迟 p50 / p95 只取成功调用的原始耗时在 Go 里计算（最近秩法），只在范围不超过 90 天时计算；范围最长 400 天。
+- **体积**：连同索引每行几百字节，覆盖索引每 100 万行约 97MB。
+
+### 8.2 Web 管理面板
+
+`internal/panel` 提供面板的页面和 `/panel/api/` 下的 JSON 接口；前端是 `internal/panel/web/` 下的静态页面和原生 ES 模块，用 `go:embed` 打包，不引用外部资源，图表是手写的 SVG。配置了 `panel` 段时，gateway 把 `/panel` 和 `/panel/` 交给它，否则这些路径不存在。用法见 [Web 管理面板](panel.md)。
+
+- **鉴权**：账号在配置的 `panel.users` 里，密码哈希为 PBKDF2-SHA256（Go 标准库 `crypto/pbkdf2`，16 字节随机盐，默认 600000 次迭代，最少 100000 次），格式 `pbkdf2-sha256:<迭代次数>:<盐>:<哈希>`，由 `conloom panel hash-password` 生成。用户名不存在时校验一个同等迭代次数的假哈希，密码用常量时间比较。
+- **会话**（迁移 `0009_panel_sessions.sql`，表 `panel_sessions`）：会话令牌是 32 字节随机数，只放在 cookie `conloom_panel` 里（`HttpOnly`、`SameSite=Strict`、`Path=/panel/`，`Secure` 由 `panel.cookie_secure` 决定），库里存它的 SHA-256，另存 CSRF 令牌、`cred_fingerprint`（登录时该用户密码哈希的 SHA-256 前 16 位十六进制）和创建、最近使用、过期时间。每个请求都检查：没过 `session_ttl`、没超过 `idle_timeout`、用户还在配置里且指纹和当前哈希一致，所以改密码后旧会话立即失效。`last_seen_at` 最多每分钟更新一次。
+- **限流**（`limiter.go`）：15 分钟滑动窗口内，同一来源 IP 失败 5 次或全局失败 30 次后返回 429 和 `Retry-After`；尝试在校验密码之前就占一个名额，所以并发的尝试也计入。来源 IP 只取 `RemoteAddr`。计数只在内存里，重启清零。
+- **CSRF**：`GET`、`HEAD` 以外的接口要求 `X-CSRF-Token` 等于会话的 CSRF 令牌；请求带 `Origin` 时其主机必须等于 `Host`（登录也检查）。
+- **响应头**：所有 `/panel/` 响应带 CSP（`default-src 'self'`、`frame-ancestors 'none'` 等）、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`；接口另加 `Cache-Control: no-store`，静态资源为 `no-cache`。每个请求有 trace ID，按路由模板和状态码计入 `panel_requests_total`，panic 转成 500。
+- **读**：会话列表的消息数和最后时间用一条 GROUP BY 查询得到；消息检索复用 `SearchMessages`；读人设走只读路径，会话还没有人设时不触发第 1 版的写入；概览的实时状态来自本进程的 Prometheus registry（队列深度、关键词索引补建剩余、熔断，配置了 `embedding` 时还有向量积压）和发件箱待发数的查库结果；各 bot 的“最近调用”由 gateway 在 Bearer 鉴权通过时记进内存里的 `obs.Presence`。
+- **写**：策略和人设直接调用 `policy.Service`、`persona.Service`，`by` 为 `panel:<用户名>`；成员记忆的修改、忘记和读取走与 Bearer API 共用的 `memory.Admin`，修订记录来源为 `panel`，审计的 `bot_instance_id` 取自会话记录。触发整理写新审计种类 `memory.consolidate`，登录成功写 `panel.login`。
+- **配置页**：按白名单逐字段输出，密钥只显示 `(已设置)` / `(未设置)`，`extra_body` 只显示键和布尔、数字值。
 
 ## 9. 已知限制和后续方向
 
