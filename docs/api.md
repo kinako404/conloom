@@ -140,6 +140,7 @@
 | 409 | `DUPLICATE_EVENT` | 幂等键重复但请求体不同，或平台消息已经提交过 |
 | 409 | `MEMORY_DISABLED` | 请求整理记忆，但本群没有开启记忆 |
 | 409 | `PAUSED` | 请求整理记忆，但本群暂停中 |
+| 409 | `CHAT_BUSY`，`retryable: true` | 只由 Web 管理面板返回，Bot Interaction API 不会返回：删除面板聊天时它的任务还没停下，可以稍后重试（见 [Web 管理面板：接口](panel.md#接口)） |
 | 503 | `INTERNAL_ERROR`，`retryable: true` | 服务正在关闭，或记忆修改反复冲突，可以稍后重试 |
 | 500 | `INTERNAL_ERROR` | 其他内部错误，细节只写日志，可用 `trace_id` 查找 |
 

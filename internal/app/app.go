@@ -50,6 +50,10 @@ type Options struct {
 	// EmbeddingInterval is how often semantic search embeds new chunks,
 	// every minute when 0.
 	EmbeddingInterval time.Duration
+	// PanelDeliveryInterval is how often the panel chat delivery looks for
+	// due replies besides being woken when they become due, every second
+	// when 0.
+	PanelDeliveryInterval time.Duration
 
 	Version, Commit string
 	StartedAt       time.Time
@@ -142,7 +146,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	personas := persona.NewService(st, cfg.PersonaTemplates)
 	policies := policy.NewService(st, cfg.DefaultGroupPolicy).WithPrivateDefaults(cfg.PrivatePolicy())
 	ob := outbox.New(st, outbox.Config{Lease: cfg.Runtime.OutboxLease.Duration}, metrics, now)
-	panelOut := outbox.NewPanelDeliverer(ob, st, 0, now, logger)
+	panelOut := outbox.NewPanelDeliverer(ob, st, opts.PanelDeliveryInterval, now, logger)
 	rec := usage.NewRecorder(st, usage.RecorderOptions{Metrics: metrics, Logger: logger})
 	fail := func(err error) (*App, error) {
 		_ = rec.Close(ctx)

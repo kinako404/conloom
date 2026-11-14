@@ -1,6 +1,7 @@
 package app_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kinako404/conloom/internal/adapter/mock"
+	"github.com/kinako404/conloom/internal/app"
 	"github.com/kinako404/conloom/internal/panel"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/internal/testutil/fakeopenai"
@@ -18,6 +20,7 @@ import (
 
 type chatMessage struct {
 	Seq      int64     `json:"seq"`
+	ID       string    `json:"id"`
 	At       time.Time `json:"at"`
 	SenderID string    `json:"sender_id"`
 	FromBot  bool      `json:"from_bot"`
@@ -88,6 +91,49 @@ func (c *panelClient) botReplies(key string, after int64, n int) []chatMessage {
 	return bot
 }
 
+// watchAdapter long-polls the outbox as the bot's adapter does until the
+// returned stop is called; stop returns the actions leased meanwhile, which
+// are never acknowledged. If the test ends first, the watch is stopped and
+// any action it leased fails the test.
+func (e *env) watchAdapter() (stop func() []conloomapi.Action) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan []conloomapi.Action, 1)
+	go func() {
+		var leased []conloomapi.Action
+		for ctx.Err() == nil {
+			actions, err := e.client.PollOutbox(ctx, 0, time.Second)
+			if err != nil && ctx.Err() == nil {
+				e.t.Errorf("adapter poll: %v", err)
+				break
+			}
+			leased = append(leased, actions...)
+		}
+		done <- leased
+	}()
+	var leased []conloomapi.Action
+	stopped := false
+	stop = func() []conloomapi.Action {
+		if !stopped {
+			stopped = true
+			cancel()
+			leased = <-done
+		}
+		return leased
+	}
+	e.t.Cleanup(func() {
+		if !stopped {
+			if leased := stop(); len(leased) != 0 {
+				e.t.Errorf("the adapter leased %+v", leased)
+			}
+		}
+	})
+	return stop
+}
+
+// panelPartSlack is how late after the part before it plus its typing time a
+// reply part may reach the panel.
+const panelPartSlack = 500 * time.Millisecond
+
 func TestPanelChatE2E(t *testing.T) {
 	const (
 		hotpot   = "今天吃了火锅"
@@ -115,7 +161,9 @@ func TestPanelChatE2E(t *testing.T) {
 	}
 	cfg := panelTestConfig(t, configParams{modelURL: fake.URL}, hash)
 	setPrivateRhythm(t, cfg, 50*time.Millisecond, 2)
-	e := newEnv(t, cfg)
+	// The panel deliverer only delivers when woken, so reply parts reach the
+	// panel only through the core's notifications.
+	e := newEnvWith(t, cfg, app.Options{PanelDeliveryInterval: time.Hour})
 	p := panelLogin(t, e.srv.URL)
 
 	// A new panel chat answers in the panel only, paced like any private chat.
@@ -126,11 +174,15 @@ func TestPanelChatE2E(t *testing.T) {
 	if status != http.StatusCreated || json.Unmarshal(raw, &created) != nil || created.Key == "" {
 		t.Fatalf("create chat: status %d, body %s", status, raw)
 	}
+	stop := e.watchAdapter()
 	p.send(created.Key, hotpot)
 	got := p.botReplies(created.Key, 0, len(parts))
+	if leased := stop(); len(leased) != 0 {
+		t.Fatalf("the adapter leased %+v, want no reply of the panel chat", leased)
+	}
 	for i, m := range got {
-		if m.Text != parts[i] || m.Channel != store.ChannelPanel {
-			t.Errorf("bot message %d = %q on channel %q, want %q on the panel channel", i+1, m.Text, m.Channel, parts[i])
+		if m.Text != parts[i] || m.Channel != store.ChannelPanel || !strings.HasPrefix(m.ID, "msg_panel_") {
+			t.Errorf("bot message %d = %+v, want %q on the panel channel, delivered by the panel", i+1, m, parts[i])
 		}
 	}
 	all := p.chat(created.Key, 0)
@@ -142,10 +194,9 @@ func TestPanelChatE2E(t *testing.T) {
 	if held := got[1].At.Sub(sent); held < typingTime(parts[1]) {
 		t.Errorf("second part delivered %v after the message, want at least its typing time %v", held, typingTime(parts[1]))
 	}
-	if gap, due := got[1].At.Sub(got[0].At), typingTime(parts[1]); gap > due+partSlack {
-		t.Errorf("second part delivered %v after the first, want within %v of its typing time %v", gap, partSlack, due)
+	if gap, due := got[1].At.Sub(got[0].At), typingTime(parts[1]); gap > due+panelPartSlack {
+		t.Errorf("second part delivered %v after the first, want within %v of its typing time %v", gap, panelPartSlack, due)
 	}
-	e.requireNoAction(300 * time.Millisecond)
 
 	// Taking over a platform chat: the reply to the panel message stays in
 	// the panel, the next platform message is answered on the platform with
@@ -156,12 +207,15 @@ func TestPanelChatE2E(t *testing.T) {
 	}
 	takeover := store.ConversationKey(botID, "qq", conloomapi.ConvPrivate, "private_"+admin.PlatformID)
 	cursor := p.chat(takeover, 0).NextAfter
+	stop = e.watchAdapter()
 	p.send(takeover, cat)
 	got = p.botReplies(takeover, cursor, 1)
-	if got[0].Text != catReply || got[0].Channel != store.ChannelPanel {
-		t.Fatalf("reply to the panel message = %+v, want %q on the panel channel", got[0], catReply)
+	if leased := stop(); len(leased) != 0 {
+		t.Fatalf("the adapter leased %+v, want no reply to the panel message", leased)
 	}
-	e.requireNoAction(300 * time.Millisecond)
+	if got[0].Text != catReply || got[0].Channel != store.ChannelPanel || !strings.HasPrefix(got[0].ID, "msg_panel_") {
+		t.Fatalf("reply to the panel message = %+v, want %q on the panel channel, delivered by the panel", got[0], catReply)
+	}
 	tail := p.chat(takeover, cursor).Messages
 	if len(tail) != 2 || tail[0].Text != cat || tail[0].Channel != store.ChannelPanel || tail[0].SenderID != admin.PlatformID {
 		t.Fatalf("chat after the takeover = %+v, want the panel message as %s, then the reply", tail, admin.PlatformID)
@@ -177,7 +231,7 @@ func TestPanelChatE2E(t *testing.T) {
 		t.Errorf("model request for the platform message lacks the panel turn: %q", prompt)
 	}
 	tail = p.chat(takeover, cursor).Messages
-	if len(tail) != 2 || tail[0].Channel != "" || tail[1].Text != answer || tail[1].Channel != "" {
+	if len(tail) != 2 || tail[0].Text != ask || tail[0].Channel != "" || tail[1].Text != answer || tail[1].Channel != "" {
 		t.Fatalf("chat after the platform message = %+v, want it and its reply on the platform channel", tail)
 	}
 
@@ -194,5 +248,7 @@ func TestPanelChatE2E(t *testing.T) {
 	var conv struct {
 		Key string `json:"key"`
 	}
-	p.get(convAPIPath(takeover), &conv)
+	if p.get(convAPIPath(takeover), &conv); conv.Key != takeover {
+		t.Fatalf("platform chat after the delete = %+v, want %s", conv, takeover)
+	}
 }

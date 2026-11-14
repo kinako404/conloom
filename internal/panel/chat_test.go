@@ -399,8 +399,8 @@ func TestChat_DeleteWhileTasksStop(t *testing.T) {
 	}
 	chat.setDeleteErr(fmt.Errorf("delete: %w", core.ErrChatBusy))
 	body := errorBody(t, h.write(http.MethodDelete, convPath(key), nil), http.StatusConflict, conloomapi.CodeChatBusy)
-	if body.Message != "the chat's cancelled tasks are still stopping; try again" {
-		t.Errorf("message = %q", body.Message)
+	if body.Message != "the chat's cancelled tasks are still stopping; try again" || !body.Retryable {
+		t.Errorf("error = %+v, want the reason, retryable", body)
 	}
 	if n := len(h.audits("panel.chat.delete")); n != 0 {
 		t.Fatalf("panel.chat.delete audits = %d after a refused delete, want 0", n)

@@ -602,8 +602,9 @@ func TestDeletePanelChat_DoesNotBlockOtherChats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// other's key shares a mutex with key's in a table of 64 hashed mutexes,
-	// so a lock per hash slot would serialise the two chats.
+	// other's key shares a mutex with key's in a table of 64 hashed mutexes
+	// (FNV-32a mod 64, like keyedLocks), so the test fails should the panel
+	// locks go back to hashed slots.
 	slot := func(k string) uint32 {
 		h := fnv.New32a()
 		_, _ = h.Write([]byte(k))
