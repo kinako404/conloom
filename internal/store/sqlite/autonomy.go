@@ -25,6 +25,10 @@ const buffCols = `conversation_key, name, value, day, day_delta, updated_at`
 
 const buffEventCols = `conversation_key, name, task_id, source, before, after, reason, created_at`
 
+// buffTaskChangesQuery counts the changes a task (a non-empty task_id) made
+// to a bar, through the partial unique index on (task_id, name).
+const buffTaskChangesQuery = `SELECT COUNT(*) FROM conversation_buff_events WHERE task_id = ? AND name = ? AND task_id <> ''`
+
 // SetStatus stores a zero UpdatedAt as now.
 func (db *DB) SetStatus(ctx context.Context, s store.ConversationStatus, ret *store.ConversationTimer) error {
 	if s.ConversationKey == "" {
@@ -241,8 +245,7 @@ func (db *DB) UpdateBuff(ctx context.Context, convKey, name string, ev store.Buf
 	err := db.inTx(ctx, func(tx *sql.Tx) error {
 		if ev.TaskID != "" {
 			var n int
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_buff_events WHERE task_id = ? AND name = ?`,
-				ev.TaskID, name).Scan(&n); err != nil {
+			if err := tx.QueryRowContext(ctx, buffTaskChangesQuery, ev.TaskID, name).Scan(&n); err != nil {
 				return err
 			}
 			if n > 0 {
@@ -389,9 +392,9 @@ func (db *DB) UserMessageTimes(ctx context.Context, convKey string, since time.T
 		return nil, nil
 	}
 	rows, err := db.r.QueryContext(ctx, `SELECT occurred_at FROM (
-			SELECT seq, occurred_at, from_bot FROM messages WHERE conversation_key = ? ORDER BY seq DESC LIMIT ?)
-		WHERE from_bot = 0 AND occurred_at >= ? ORDER BY seq DESC LIMIT ?`,
-		convKey, userMessageScan*limit, fmtTime(since), limit)
+			SELECT seq, occurred_at, from_bot, channel FROM messages WHERE conversation_key = ? ORDER BY seq DESC LIMIT ?)
+		WHERE from_bot = 0 AND channel <> ? AND occurred_at >= ? ORDER BY seq DESC LIMIT ?`,
+		convKey, userMessageScan*limit, store.ChannelPanel, fmtTime(since), limit)
 	if err != nil {
 		return nil, err
 	}

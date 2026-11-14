@@ -495,6 +495,25 @@ func TestUserMessageTimes(t *testing.T) {
 	}
 }
 
+func TestUserMessageTimes_SkipsPanelMessages(t *testing.T) {
+	db := newTestDB(t)
+	key := privKey("20001")
+	base := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
+	user := memMessage(key, "user_20001", "20001", false)
+	user.OccurredAt = base
+	// The panel takes over the chat and writes as its user.
+	panel := memMessage(key, "user_20001", "20001", false)
+	panel.OccurredAt, panel.Channel = base.Add(time.Hour), store.ChannelPanel
+	memInsertMessages(t, db, user, panel)
+	got, err := db.UserMessageTimes(context.Background(), key, time.Time{}, 10)
+	if err != nil {
+		t.Fatalf("UserMessageTimes: %v", err)
+	}
+	if !slices.EqualFunc(got, []time.Time{base}, time.Time.Equal) {
+		t.Fatalf("times = %v, want only the platform message at %v", got, base)
+	}
+}
+
 func TestUserMessageTimes_LooksAtNewestFourTimesLimit(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -750,6 +769,19 @@ func TestBuffs_DuplicateTask(t *testing.T) {
 	}
 	if got := listBuffEvents(t, db, key, 10); len(got) != 4 {
 		t.Fatalf("events = %+v, want 4", got)
+	}
+}
+
+func TestBuffs_DuplicateCheckUsesTaskIndex(t *testing.T) {
+	db := newTestDB(t)
+	var detail string
+	err := db.r.QueryRow(`EXPLAIN QUERY PLAN `+buffTaskChangesQuery, "task_1", "心情").
+		Scan(new(int), new(int), new(int), &detail)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	if want := "SEARCH conversation_buff_events USING COVERING INDEX conversation_buff_events_task (task_id=? AND name=?)"; detail != want {
+		t.Fatalf("query plan = %q, want %q", detail, want)
 	}
 }
 
