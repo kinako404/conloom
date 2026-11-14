@@ -50,7 +50,6 @@ const (
 	CopyUnavailable   = "我这边暂时有点卡住了，稍后再试试吧。"
 
 	CopyProactiveNotEligible = "先 @ 我聊几句，才能开启主动搭话。"
-	CopyProactivePrivateOnly = "主动搭话只在群聊里使用。"
 	CopyProactiveGroupOn     = "已开启本群的主动搭话。"
 	CopyProactiveGroupOff    = "已关闭本群的主动搭话。"
 	CopyProactiveUsage       = "用法：/主动 查看档位；/主动 关|低|中|高 设置档位；管理员：/主动 全群 开|关。"
@@ -206,6 +205,47 @@ func CopyProactiveStatus(level string, eligible bool, sentToday, dailyLimit int,
 // CopyProactiveSet confirms a member's new proactive level.
 func CopyProactiveSet(level string) string {
 	return "好的，你的主动搭话档位已设为：" + levelName(level) + "。"
+}
+
+// Where the quiet hours that CopyPrivateProactiveStatus shows come from:
+// inferred from the user's messages, set in the policy, or the default.
+const (
+	CopyQuietInferred = "按你的作息推算"
+	CopyQuietSet      = "已设定"
+	CopyQuietDefault  = "默认时段"
+)
+
+const (
+	CopyPrivateProactiveUsage = "用法：/主动 查看我主动找你的档位、今天的次数和免打扰时段；/主动 关|低|中|高 设置档位。"
+
+	copyPrivateProactiveAdjust    = "可用 /主动 关|低|中|高 调整。"
+	copyPrivateProactiveSwitchOff = "主动消息的总开关已关闭，现在不会主动找你。"
+)
+
+// CopyPrivateProactiveStatus describes how the bot starts the private chat:
+// level, how many messages it started today out of dailyCap, and the quiet
+// hours ("00:30–08:00") with where they come from (CopyQuiet*); enabled false
+// adds that the switch is off.
+func CopyPrivateProactiveStatus(level string, sentToday, dailyCap int, quiet, quietSource string, enabled bool) string {
+	s := "主动找你：" + levelName(level)
+	if level != conloomapi.PrivateLevelOff {
+		s += "（今天 " + strconv.Itoa(sentToday) + "/" + strconv.Itoa(dailyCap) + " 次；免打扰 " + quiet + "，" + quietSource + "）"
+	}
+	s += "。" + copyPrivateProactiveAdjust
+	if !enabled {
+		s += copyPrivateProactiveSwitchOff
+	}
+	return s
+}
+
+// CopyPrivateProactiveSet confirms the private chat's new level; enabled false
+// adds that the switch is off.
+func CopyPrivateProactiveSet(level string, enabled bool) string {
+	s := "好的，主动找你的档位已设为：" + levelName(level) + "。"
+	if !enabled {
+		s += copyPrivateProactiveSwitchOff
+	}
+	return s
 }
 
 func levelName(level string) string {

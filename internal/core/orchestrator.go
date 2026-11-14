@@ -142,9 +142,10 @@ type Orchestrator struct {
 	partWakes partWakes
 	// speakers marks the private messages being accepted, during which no
 	// wake task starts (see fireTimer); rand, safe for concurrent use, places
-	// wake timers.
-	speakers speakers
-	rand     *rand.Rand
+	// wake timers; wakeEvery is how often wakeLoop polls for due timers.
+	speakers  speakers
+	rand      *rand.Rand
+	wakeEvery time.Duration
 
 	// panelLocks serialise SubmitPanel and DeletePanelChat per conversation;
 	// panelDeleteWait is how long DeletePanelChat waits for the chat's
@@ -192,10 +193,11 @@ func New(d Deps) (*Orchestrator, error) {
 		st: d.Store, router: d.Router, adm: d.Admission, personas: d.Personas, policies: d.Policies,
 		reviewer: d.Reviewer, notifier: d.Notifier, metrics: d.Metrics, log: d.Logger, cfg: d.Config,
 		loc: d.Location, now: d.Now, memTrigger: d.MemoryTrigger, skills: d.Skills, usage: d.Usage,
-		limiter:  NewRateLimiter(),
-		owners:   map[string]*taskOwner{},
-		ftsRetry: ftsBackfillRetry,
-		rand:     newLockedRand(),
+		limiter:   NewRateLimiter(),
+		owners:    map[string]*taskOwner{},
+		ftsRetry:  ftsBackfillRetry,
+		rand:      newLockedRand(),
+		wakeEvery: wakePollInterval,
 
 		panelDeleteWait: cancelWait,
 
@@ -276,7 +278,9 @@ func maxTokenFactor(profiles map[string]config.ModelProfile) float64 {
 // PolicyChanged makes the conversation's scheduler re-read its policy. A
 // policy that pauses the conversation (concurrency 0) also ends its session,
 // stops its lull timer and cancels its active tasks; one that turns proactive
-// replies off stops the lull timer.
+// replies off stops the lull timer. A private chat's next initiate is planned
+// again (replanInitiate), which cancels it when the bot may no longer start
+// the chat.
 func (o *Orchestrator) PolicyChanged(convKey string) {
 	ctx := context.Background()
 	if pv, err := o.policies.Current(ctx, convKey); err != nil {
@@ -289,6 +293,9 @@ func (o *Orchestrator) PolicyChanged(convKey string) {
 		o.stopLull(convKey)
 	}
 	o.sched.Kick(convKey)
+	if convType(convKey) == conloomapi.ConvPrivate {
+		o.replanInitiate(ctx, convKey)
+	}
 }
 
 // cancelActive silently cancels the conversation's queued and running tasks:
@@ -306,10 +313,11 @@ func (o *Orchestrator) cancelActive(ctx context.Context, convKey string) {
 	}
 }
 
-// Close stops the lull timers, background maintenance, the scheduler and the
-// wake-ups of reply parts not due yet, and ends every session. Running tasks are cancelled but keep their stored
-// status, so Recover resumes them after a restart; tasks a user already
-// cancelled are still recorded as cancelled.
+// Close stops the lull timers, background maintenance, the poll of wake
+// timers, the scheduler and the wake-ups of reply parts not due yet, and ends
+// every session. Running tasks are cancelled but keep their stored status, so
+// Recover resumes them after a restart; tasks a user already cancelled are
+// still recorded as cancelled.
 func (o *Orchestrator) Close() {
 	o.closeOnce.Do(func() {
 		o.mu.Lock()
@@ -460,13 +468,15 @@ func replay(rec store.EventRecord, hash string) (conloomapi.EventAccepted, bool,
 // refreshes the sender's member record, and any stored group message restarts
 // the group's lull timer. A private message that is not ignored first cancels
 // the chat's wake tasks (cancelWakes), and no wake task starts until it is
-// stored (see fireTimer).
+// stored (see fireTimer); once stored, the chat's next initiate is planned
+// again (replanInitiate).
 func (o *Orchestrator) submit(ctx context.Context, s *submission) (conloomapi.EventAccepted, error) {
 	d, pol, err := o.decide(ctx, s)
 	if err != nil {
 		return conloomapi.EventAccepted{}, err
 	}
-	if s.ev.Conversation.Type == conloomapi.ConvPrivate && d.Disposition != conloomapi.DispositionIgnore {
+	speaks := s.ev.Conversation.Type == conloomapi.ConvPrivate && d.Disposition != conloomapi.DispositionIgnore
+	if speaks {
 		end := o.speakers.begin(s.convKey)
 		defer end()
 		o.cancelWakes(context.WithoutCancel(ctx), s.convKey, s.ev.Actor.PlatformUserID, wakeCancelUserMessage)
@@ -474,6 +484,9 @@ func (o *Orchestrator) submit(ctx context.Context, s *submission) (conloomapi.Ev
 	resp, err := o.dispatch(ctx, s, d, pol)
 	if err != nil {
 		return resp, err
+	}
+	if speaks {
+		o.replanInitiate(context.WithoutCancel(ctx), s.convKey)
 	}
 	if engages(s, d) {
 		o.recordEngagement(ctx, s, d, pol)

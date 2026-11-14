@@ -380,6 +380,7 @@ sudo journalctl -u conloom | grep 'panel listening'
   | 审计记录 | `audit_events` | `runtime.audit_retention`（默认 90 天） |
   | 事件幂等记录（含被处理事件的原文） | `events` | `runtime.idempotency_retention`（默认 7 天） |
   | 主动搭话记录 | `proactive_log` | 7 天 |
+  | 私聊状态条的变化记录 | `conversation_buff_events` | 30 天 |
   | 记忆修订历史 | `memory_revisions` | 30 天（由记忆层清理，不受 `ops_retention` 影响） |
   | 模型用量明细（每次模型调用一行） | `model_calls` | `runtime.usage_retention`（默认 400 天） |
   | Web 管理面板的登录会话 | `panel_sessions` | 超过 `panel.session_ttl` 或 `panel.idle_timeout` 后删除 |

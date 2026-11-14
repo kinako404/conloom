@@ -9,18 +9,36 @@ import (
 const (
 	defaultCleanupBatch      = 1000
 	defaultCleanupMaxBatches = 10
+	// buffEventRetention is how long bar changes are kept.
+	buffEventRetention = 30 * 24 * time.Hour
 )
 
 // Table labels of conloom_cleanup_deleted_total.
 const (
-	cleanupTasks     = "tasks"
-	cleanupOutbox    = "outbox_actions"
-	cleanupAudit     = "audit_events"
-	cleanupEvents    = "events"
-	cleanupProactive = "proactive_log"
-	cleanupUsage     = "model_calls"
-	cleanupPanel     = "panel_sessions"
+	cleanupTasks      = "tasks"
+	cleanupOutbox     = "outbox_actions"
+	cleanupAudit      = "audit_events"
+	cleanupEvents     = "events"
+	cleanupProactive  = "proactive_log"
+	cleanupUsage      = "model_calls"
+	cleanupPanel      = "panel_sessions"
+	cleanupBuffEvents = "conversation_buff_events"
 )
+
+// purgeBuffEvents deletes bar changes older than buffEventRetention.
+func (o *Orchestrator) purgeBuffEvents() {
+	n, err := o.st.PurgeBuffEvents(o.bgCtx, o.now().Add(-buffEventRetention))
+	if err != nil {
+		if o.bgCtx.Err() == nil {
+			o.log.Error("purge bar changes failed", "error", err)
+		}
+		return
+	}
+	o.countCleanup(cleanupBuffEvents, int(n))
+	if n > 0 {
+		o.log.Info("purged bar changes", "count", n)
+	}
+}
 
 // cleanup deletes finished tasks together with their outbox actions, acked or
 // expired actions left without a task, old audit events, old model calls and

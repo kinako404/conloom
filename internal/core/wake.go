@@ -21,11 +21,15 @@ import (
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
-// Results of conloom_wake_total that wake tasks record.
+// Results of conloom_wake_total: wake tasks record the first three, the poll
+// of due timers (pollWakes) the others.
 const (
 	wakeSent      = "sent"
 	wakeSkipped   = "skipped"
 	wakeCancelled = "cancelled"
+	wakeDropped   = "dropped"
+	wakePostponed = "postponed"
+	wakeMissed    = "missed"
 )
 
 const (
@@ -37,7 +41,7 @@ const (
 	// find their last message.
 	lastUserScan = 8
 	// wakeRecentScan is how many of the chat's newest messages are searched
-	// for one the user sent after a wake task was created.
+	// for one the user sent after a wake task was created or its timer armed.
 	wakeRecentScan = 20
 	// unnamedUser stands, in a directive, for a user without a usable name.
 	unnamedUser = "对方"
@@ -47,8 +51,12 @@ const (
 )
 
 // errUserSpeaking stops fireTimer while a message of the chat's user is being
-// accepted; the timer is left as it is.
-var errUserSpeaking = errors.New("core: a message of the user is being accepted")
+// accepted, errBusy while the chat has queued or running tasks; the timer is
+// left as it is.
+var (
+	errUserSpeaking = errors.New("core: a message of the user is being accepted")
+	errBusy         = errors.New("core: the conversation is busy")
+)
 
 // isWake reports whether trigger is that of a task the bot starts itself in a
 // private chat when a conversation timer fires.
@@ -176,9 +184,9 @@ func newLockedRand() *rand.Rand {
 // already because t fired before (a timer armed again for that time is then
 // deleted, so it is not claimed again and again). While a message of the
 // chat's user is being accepted it stores nothing and returns
-// errUserSpeaking. It holds the conversation's proactive lock, as
-// cancelWakes does, so a wake task it stored is already queued when
-// cancelWakes looks for it.
+// errUserSpeaking, while the chat has queued or running tasks errBusy. It
+// holds the conversation's proactive lock, as cancelWakes does, so a wake
+// task it stored is already queued when cancelWakes looks for it.
 func (o *Orchestrator) fireTimer(ctx context.Context, t store.ConversationTimer) error {
 	trigger, ok := wakeTrigger(t.Kind)
 	if !ok {
@@ -195,6 +203,9 @@ func (o *Orchestrator) fireTimer(ctx context.Context, t store.ConversationTimer)
 	if o.speakers.active(t.ConversationKey) {
 		return errUserSpeaking
 	}
+	if o.sched.Busy(t.ConversationKey) {
+		return errBusy
+	}
 	now := o.now()
 	id := ids.New("task")
 	task := store.TaskRecord{
@@ -207,11 +218,12 @@ func (o *Orchestrator) fireTimer(ctx context.Context, t store.ConversationTimer)
 		return err
 	}
 	attrs := []any{"conversation", t.ConversationKey, "kind", string(t.Kind), "due_at", t.DueAt.UTC()}
+	ref := timerRef(t)
 	existing, err := o.st.Ingest(ctx, store.Ingest{
 		Event: store.EventRecord{BotInstanceID: t.BotInstanceID, IdempotencyKey: timerEventKey(t), EventID: "timer_" + id,
 			Response: resp, CreatedAt: now},
 		NewTask:   &task,
-		FireTimer: &store.TimerRef{ConversationKey: t.ConversationKey, Kind: t.Kind, DueAt: t.DueAt},
+		FireTimer: &ref,
 	})
 	switch {
 	case errors.Is(err, store.ErrTimerGone):
@@ -233,29 +245,31 @@ func (o *Orchestrator) fireTimer(ctx context.Context, t store.ConversationTimer)
 // dropFiredTimer deletes t if it is armed again for the time it already fired
 // at.
 func (o *Orchestrator) dropFiredTimer(ctx context.Context, t store.ConversationTimer) {
-	timers, err := o.st.ListTimers(ctx, t.ConversationKey)
+	deleted, err := o.st.DeleteTimer(ctx, timerRef(t))
 	if err != nil {
-		o.log.Error("load timers of a fired timer failed", "conversation", t.ConversationKey, "error", err)
-		return
-	}
-	if !slices.ContainsFunc(timers, func(cur store.ConversationTimer) bool { return cur.Kind == t.Kind && cur.DueAt.Equal(t.DueAt) }) {
-		return
-	}
-	if _, err := o.st.CancelTimers(ctx, t.ConversationKey, t.Kind); err != nil {
 		o.log.Error("drop a fired timer failed", "conversation", t.ConversationKey, "kind", string(t.Kind), "error", err)
 		return
 	}
-	o.log.Info("wake timer dropped: it already fired", "conversation", t.ConversationKey, "kind", string(t.Kind), "due_at", t.DueAt.UTC())
+	if deleted {
+		o.log.Info("wake timer dropped: it already fired", "conversation", t.ConversationKey, "kind", string(t.Kind), "due_at", t.DueAt.UTC())
+	}
+}
+
+// timerRef names t as armed now.
+func timerRef(t store.ConversationTimer) store.TimerRef {
+	return store.TimerRef{ConversationKey: t.ConversationKey, Kind: t.Kind, DueAt: t.DueAt}
 }
 
 // cancelWakes cancels the queued and running wake tasks of userID's private
 // chat convKey, of every kind, and the actions of their replies not handed out
 // yet; also those of the user's last reply (store.LastReplyTask) when a wake
 // task wrote it, as cancelUnsentParts does for replies to the user. Each task
-// it cancels or cuts short is audited as wake.cancelled with reason. A status
-// return it cancels ends the status too. It holds the conversation's proactive
-// lock, which a wake task's finish holds while it stores its reply, so that
-// reply is either withheld there or cancelled here.
+// it cancels or cuts short is audited as wake.cancelled with reason; an
+// initiate or follow-up whose stored reply it cuts short no longer counts as
+// started (uncountWake). A status return it cancels ends the status too. It
+// holds the conversation's proactive lock, which a wake task's finish holds
+// while it stores its reply, so that reply is either withheld there or
+// cancelled here.
 func (o *Orchestrator) cancelWakes(ctx context.Context, convKey, userID, reason string) {
 	unlock := o.proactiveLocks.lock(convKey)
 	defer unlock()
@@ -309,11 +323,34 @@ func (o *Orchestrator) cancelWakes(ctx context.Context, convKey, userID, reason 
 		o.log.Info("wake task cancelled", "conversation", convKey, "task_id", w.task.ID, "kind", w.task.Meta.Trigger,
 			"reason", reason, "cancelled_parts", n)
 		o.auditWakeCancelled(ctx, botID, convKey, w.task, reason, n)
+		if n > 0 {
+			o.uncountWake(ctx, convKey, w.task)
+		}
 	}
 	if endStatus {
 		if _, err := o.st.ClearStatus(ctx, convKey, time.Time{}); err != nil {
 			o.log.Error("end status of a cancelled status return failed", "conversation", convKey, "error", err)
 		}
+	}
+}
+
+// uncountWake takes back an initiate or follow-up whose stored reply
+// cancelWakes cut short: its proactive log entry is deleted, so it counts
+// neither toward the daily cap nor as unanswered, and so is the follow-up an
+// initiate armed.
+func (o *Orchestrator) uncountWake(ctx context.Context, convKey string, task store.TaskRecord) {
+	kind := wakeKind(task.Meta.Trigger)
+	if kind != store.TimerInitiate && kind != store.TimerFollowUp {
+		return
+	}
+	if _, err := o.st.DeleteProactiveLog(ctx, convKey, task.ID); err != nil {
+		o.log.Error("take back a cancelled started message failed", "task_id", task.ID, "conversation", convKey, "error", err)
+	}
+	if kind != store.TimerInitiate {
+		return
+	}
+	if _, err := o.st.CancelTimers(ctx, convKey, store.TimerFollowUp); err != nil {
+		o.log.Error("cancel the follow-up of a cancelled initiate failed", "task_id", task.ID, "conversation", convKey, "error", err)
 	}
 }
 
@@ -436,12 +473,10 @@ func (o *Orchestrator) wakeAllowed(ctx context.Context, task store.TaskRecord, k
 		return false, err
 	}
 	pol := pv.Policy
-	limit := autonomy.DailyCap(pol.Proactive.Private.EffectiveLevel())
-	bot, ok := o.cfg.Bot(task.BotInstanceID)
-	if !ok || !pol.Proactive.Enabled || limit == 0 || pol.Concurrency.MaxInteractiveRequests == 0 ||
-		!privateAllowed(bot, convPlatform(task.ConversationKey), task.ActorPlatformUserID) {
+	if !o.mayStart(pol, task.BotInstanceID, convPlatform(task.ConversationKey), task.ActorPlatformUserID) {
 		return false, nil
 	}
+	limit := autonomy.DailyCap(pol.Proactive.Private.EffectiveLevel())
 	today, err := o.privateStarted(ctx, task.ConversationKey, o.dayStart(o.now()))
 	if err != nil || today >= limit {
 		return false, err
@@ -455,6 +490,15 @@ func (o *Orchestrator) wakeAllowed(ctx context.Context, task store.TaskRecord, k
 		want = 1
 	}
 	return n == want, nil
+}
+
+// mayStart reports whether pol lets bot start messages in the private chat of
+// userID on platform: proactive replies are on, the private level is not off
+// and the chat is not paused, and the user may still chat privately.
+func (o *Orchestrator) mayStart(pol conloomapi.GroupPolicy, botID, platform, userID string) bool {
+	bot, ok := o.cfg.Bot(botID)
+	return ok && pol.Proactive.Enabled && autonomy.DailyCap(pol.Proactive.Private.EffectiveLevel()) > 0 &&
+		pol.Concurrency.MaxInteractiveRequests != 0 && privateAllowed(bot, platform, userID)
 }
 
 // privateStarted counts the messages the bot started in the private chat
@@ -487,9 +531,8 @@ func (o *Orchestrator) unanswered(ctx context.Context, convKey string) (int, err
 }
 
 // quietFor returns the private chat's quiet hours: its policy's, or else
-// those inferred from the user's newest messages (at most quietMaxMessages)
-// of the last 30 days that came after forgotten (autonomy.ResolveQuiet). A
-// read error is logged and leaves the policy's or the default quiet hours.
+// those inferred from userTimes (autonomy.ResolveQuiet). A read error is
+// logged and leaves the policy's or the default quiet hours.
 func (o *Orchestrator) quietFor(ctx context.Context, convKey string, forgotten time.Time) autonomy.Quiet {
 	var p conloomapi.PrivateProactivePolicy
 	if pv, err := o.policies.Current(ctx, convKey); err != nil {
@@ -497,16 +540,23 @@ func (o *Orchestrator) quietFor(ctx context.Context, convKey string, forgotten t
 	} else {
 		p = pv.Policy.Proactive.Private
 	}
-	since := o.now().Add(-quietLookback)
-	if forgotten.After(since) {
-		since = forgotten
-	}
-	times, err := o.st.UserMessageTimes(ctx, convKey, since, quietMaxMessages)
+	times, err := o.userTimes(ctx, convKey, forgotten)
 	if err != nil {
 		o.log.Warn("quiet hours: load message times failed", "conversation", convKey, "error", err)
 		times = nil
 	}
 	return autonomy.ResolveQuiet(p, times, o.loc)
+}
+
+// userTimes returns when the private chat's user sent their newest messages
+// (at most quietMaxMessages) of the last 30 days that came after forgotten,
+// newest first.
+func (o *Orchestrator) userTimes(ctx context.Context, convKey string, forgotten time.Time) ([]time.Time, error) {
+	since := o.now().Add(-quietLookback)
+	if forgotten.After(since) {
+		since = forgotten
+	}
+	return o.st.UserMessageTimes(ctx, convKey, since, quietMaxMessages)
 }
 
 // newestSeq is the seq of the conversation's newest message, 0 without one.
@@ -695,8 +745,3 @@ func (o *Orchestrator) armFollowUp(ctx context.Context, task store.TaskRecord, w
 	}
 	o.log.Info("wake timer armed", "conversation", task.ConversationKey, "kind", string(store.TimerFollowUp), "due_at", due.UTC())
 }
-
-// replanInitiate plans the private chat's next initiate after one ended
-// without a message. Planning is not wired up yet, so it arms nothing. It
-// takes no lock its callers hold.
-func (o *Orchestrator) replanInitiate(ctx context.Context, convKey string) {}

@@ -305,3 +305,20 @@ func TestCleanup_ZeroRetentionsFallBackToDefaults(t *testing.T) {
 		t.Fatalf("audit event deleted within the default audit_retention")
 	}
 }
+
+func TestMaintenance_PurgesOldBuffEvents(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	now := time.Now()
+	env.seedBar(t, privateConvKey, "心情", 50, now.Add(-31*cleanupDay))
+	env.seedBar(t, privateConvKey, "心情", 60, now.Add(-29*cleanupDay))
+	if err := env.o.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "old bar changes purged", func() bool {
+		return env.counter(t, "conloom_cleanup_deleted_total", "table", "conversation_buff_events") == 1
+	})
+	events, err := env.st.ListBuffEvents(context.Background(), privateConvKey, 10)
+	if err != nil || len(events) != 1 || events[0].After != 60 {
+		t.Fatalf("bar changes left = %+v, %v; want only the recent one", events, err)
+	}
+}

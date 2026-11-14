@@ -47,10 +47,11 @@ const (
 // replies through the scheduler); older ones fail with STALE and no action.
 // It then starts background maintenance, which expires undelivered outbox
 // actions every 30s and, every hour until Close, purges old idempotency
-// records and proactive log entries older than 7 days and cleans up old
-// finished tasks, outbox actions and audit events (see cleanup). Each job also
-// runs once when maintenance starts. A second goroutine runs the keyword index
-// backfill (backfillMessageIndex).
+// records, proactive log entries older than 7 days and bar changes older than
+// 30 days and cleans up old finished tasks, outbox actions and audit events
+// (see cleanup). Each job also runs once when maintenance starts. A second
+// goroutine runs the keyword index backfill (backfillMessageIndex), a third
+// polls for due wake timers (wakeLoop).
 //
 // Recover runs once per Orchestrator and should be called before the first
 // Submit; later calls return ErrAlreadyRecovered. Tasks this process already
@@ -83,9 +84,13 @@ func (o *Orchestrator) Recover(ctx context.Context) error {
 	if o.closing.Load() {
 		return ErrSchedulerClosed
 	}
-	o.bgWG.Add(2)
+	o.bgWG.Add(3)
 	go o.maintain()
 	go o.backfillMessageIndex()
+	go func() {
+		defer o.bgWG.Done()
+		o.wakeLoop(o.bgCtx)
+	}()
 	return nil
 }
 
@@ -180,6 +185,7 @@ func (o *Orchestrator) maintain() {
 	o.expireOutbox()
 	o.purgeEvents()
 	o.purgeProactiveLog()
+	o.purgeBuffEvents()
 	o.cleanup()
 	for {
 		select {
@@ -190,6 +196,7 @@ func (o *Orchestrator) maintain() {
 		case <-purge.C:
 			o.purgeEvents()
 			o.purgeProactiveLog()
+			o.purgeBuffEvents()
 			o.cleanup()
 		}
 	}

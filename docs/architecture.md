@@ -133,6 +133,7 @@ NapCat      Adapter                 Core                          SQLite        
 | `command` | 命令前缀加已知命令词 | 不进调度器，在请求协程里同步执行，不调用模型 |
 | `continuation` | 在聊会话参与者没有 @ 机器人的发言 | 一轮，由模型决定回不回 |
 | `proactive` | 停顿计时器到期后的观望评估 | 加入群聊任务，后台优先级 |
+| `status_return`、`initiate`、`follow_up` | 私聊的定时到点 | 机器人自己发起的一轮（唤醒任务），后台优先级，没有触发消息（3.8） |
 
 API 里还定义了 `observe`、`manual`，核心不使用。
 
@@ -178,7 +179,7 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 
 ### 3.6 重启恢复
 
-`Recover`（`internal/core/recover.go:46`）在开始对外服务前运行一次：列出 `queued` / `running` 任务，事件距今已超过 `stale_task_after` 的记为 `failed/STALE`、不发任何东西；命令立即重跑；其余重新入队，立刻可执行。合并窗口、接话冷却、在聊会话等内存状态不会恢复（第 6 节）。之后维护协程每 30 秒让过期的 Outbox 动作失效，每小时清理过期的幂等记录和 7 天前的主动搭话日志，并分批清理过期的流水数据（`internal/core/cleanup.go`）：结束超过 `ops_retention`（且超过 `idempotency_retention`）的任务连同它们的 Outbox 动作、已确认、已过期或已取消且任务已不存在的动作、超过 `audit_retention` 的审计记录、超过 `usage_retention` 的模型用量明细（8.1），以及过期的面板登录会话（8.2）。每张表每个事务最多 1000 行、每轮最多 10 个事务；还有待投递或已租出动作的任务不删；排队中和运行中的任务不删，所以 `Recover` 不受影响。这些清理在维护开始时也各执行一次。另一个协程在后台补建关键词索引（5.7）。
+`Recover`（`internal/core/recover.go:46`）在开始对外服务前运行一次：列出 `queued` / `running` 任务，事件距今已超过 `stale_task_after` 的记为 `failed/STALE`、不发任何东西；命令立即重跑；其余重新入队，立刻可执行。合并窗口、接话冷却、在聊会话等内存状态不会恢复（第 6 节）。之后维护协程每 30 秒让过期的 Outbox 动作失效，每小时清理过期的幂等记录、7 天前的主动搭话日志和 30 天前的状态条变化记录，并分批清理过期的流水数据（`internal/core/cleanup.go`）：结束超过 `ops_retention`（且超过 `idempotency_retention`）的任务连同它们的 Outbox 动作、已确认、已过期或已取消且任务已不存在的动作、超过 `audit_retention` 的审计记录、超过 `usage_retention` 的模型用量明细（8.1），以及过期的面板登录会话（8.2）。每张表每个事务最多 1000 行、每轮最多 10 个事务；还有待投递或已租出动作的任务不删；排队中和运行中的任务不删，所以 `Recover` 不受影响。这些清理在维护开始时也各执行一次。另一个协程在后台补建关键词索引（5.7），第三个协程轮询到点的私聊定时（3.8）。
 
 ### 3.7 私聊节奏和分条
 
@@ -195,6 +196,26 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 **分条**（`splitParts`，`parts.go:43`；`newActions`，`orchestrator.go:1172`）：`reply.max_parts` 大于 1 时，系统提示词末尾说明最多可以分几条、每条单独占一行（只有 `|||` 的一行也表示分隔）、一条就够时不要分（`partsDirective`，`runner.go:536`；为 1 时说明只发一条）。输出审查对整段做一次，然后切分：回复里有代码块（` ``` `）时只在单独一行的 `|||` 处切；否则在单独一行的 `|||`、每个换行，以及行中间的省略号（`…`、`⋯`，或连续三个以上的 `.`、`。`）之后切。省略号前后在这一行里都要有文字（只有空白或标点不算），所以行首、行尾的省略号不切；在这一行里成对的中文引号或括号（`“”`、`「」`、`『』`、`（）`、`【】`、`《》`）里面的省略号、后面紧跟英文引号（`"`、`'`）的省略号也不切，含反引号（`` ` ``）的行不在省略号处切（换行照常切）；省略号连同紧跟的省略号、右引号、右括号和问号、逗号等标点留在前一段。每段去掉首尾空白、丢弃空段，超过 `max_parts` 的段按原来的分隔并入最后一段（换行处用换行，省略号处保留原有的空格）；被拦截时一条都不写。每段一行动作，带 `part_index` 和 `part_count`；只有第 1 条可能引用（4.8）。
 
 **分条的节奏**：第 1 条立即可发；第 i 条（i ≥ 2）的最早发送时间 `not_before` 是第 i−1 条的加上 `clamp(800ms + 60ms × 第 i 条的字数, 1s, 4s)`（`partDelay`，`parts.go:168`），从写出结果的时刻起累计。所有分条的过期时间都和第 1 条相同（写出时刻加 `action_ttl`），不会出现前面的过期、后面的单独发出。`LeaseOutbox` 和面板投递器（2.2）只发放 `not_before` 已到的动作（迁移 `0010_outbox_not_before.sql`，旧动作为空，表示立即可发）；同一会话的同一通道仍严格按顺序，没到时间的分条挡住这个通道后面的动作，但不挡别的会话，也不挡同一会话的另一个通道。适配器不睡眠等待：写出分条时，核心给每个后面的分条按 `not_before` 定一个唤醒（`partWakes`，`parts.go:176`），到点通知等待中的长轮询，所以实际间隔接近计算值。关闭时这些唤醒一并取消；重启后剩下的分条由长轮询每 2 秒一次的重新检查发出，最多晚约 2 秒。
+
+### 3.8 私聊里机器人自己发起的一轮
+
+私聊里机器人会在三种时候自己开口：状态结束后回来说话（`status_return`）、隔一段时间主动找对方（`initiate`），以及主动消息没人回时再追一句（`follow_up`）。三者都靠库里的定时触发，不用 Outbox 的 `not_before`（会挡住同一会话后面的回复、10 分钟过期）、任务表（会挡住后面的任务、重启后判为过期）或内存计时器（重启就没了）。
+
+**定时表**（`conversation_timers`，迁移 `0012_autonomy.sql`）：一个会话、一种定时只有一行，主键 `(conversation_key, kind)`；列有 bot、对方的用户 ID、`due_at`、`anchor_seq`（设定时会话里最新消息的 seq）、`lease_until` 和 `created_at`，`due_at` 有索引。`set_status` 在写状态的同一个事务里设 `status_return`（到点时间等于状态的 `until_at`）；`initiate` 由排期设（下面），`follow_up` 在主动消息发出后设。同一种定时再设一次就替换旧的那行。`/忘记我`、面板或 API 忘记私聊、删除面板聊天都会连同状态、状态条一起删掉这个会话的定时。
+
+**轮询**（`wakeLoop`、`pollWakes`，`internal/core/wake_loop.go`）：`Recover` 启动一个后台协程，和维护协程一样挂在 `bgWG` 上、在 `Close` 里停止。它立即、之后每 15 秒按核心时钟领取到点的定时（`ClaimDueTimers`，每次最多 100 行），领取时加 2 分钟租约：处理到一半进程停了，租约过期后会被重新领取。正在关闭时不再领取，也不再处理已领取的。检查读库失败时记日志，留给租约过期后的下一次。所有删除、顺延都带着领取时的 `due_at`（`DeleteTimer`、`PostponeTimer`），中途被取消、重设或改期的定时不会被误删或误改。
+
+- **错过**：比到点时间晚了超过 30 分钟（进程停过），`status_return` 清掉状态、不发消息，`initiate` 重新排期，`follow_up` 删除。
+- **`initiate`、`follow_up` 的检查**（`checkStart`，按顺序）：会话还在、是私聊、不是面板新建的聊天，否则删除；总开关开、档位不是关、会话没暂停、对方仍在 `private_chat` 允许范围内（`mayStart`），否则删除；现在不在免打扰时段、今天发起的条数（`private_initiate` 加 `private_followup`）没到档位上限，否则 `initiate` 重新排期，`follow_up` 顺延到免打扰时段结束（到了上限时从第二天零点起算）再加 0–59 分钟；对方最后一条消息之后机器人发起过的条数，`initiate` 要求 0、`follow_up` 要求正好 1，否则删除；最新 20 条消息里有对方在 `anchor_seq` 之后发的，删除（他发消息时已经重新排过）；会话里有排队或执行中的任务，或者对方最新的消息还不到 `reply.private_max_wait`，顺延 2 分钟。
+- **`status_return` 的检查**（`dueStatusReturn`）：不看免打扰时段和上限。没有状态、或者状态已经换成一条还没结束的新状态时删除定时；会话不在了、总开关关了、会话暂停了或对方已不在允许范围内时清掉状态、不发消息；会话忙时顺延 1 分钟，顺延后会超过状态结束时间 30 分钟的，清掉状态、不发消息。
+- **触发**（`fireTimer`，`internal/core/wake.go`）：检查都通过后，在会话锁下建任务。做法参照加入群聊任务：内部事件键 `conloom:timer:<会话>:<种类>:<due_at>`，同一个事务里按会话、种类、`due_at` 删除这条定时，删不到就整个回滚、不建任务（同一个定时触发两次只建一个任务）。任务的 trigger 是定时的种类，没有触发消息，事件时间是触发时刻（重启后不会因为“过时”被丢弃），后台优先级，用 `sched.Restore` 放进调度器，actor 是 `wake:<用户ID>`。对方的消息正在被接收时返回 `errUserSpeaking`，会话里有排队或执行中的任务时返回 `errBusy`，两者都按会话忙顺延。
+- 每个结果计入 `conloom_wake_total{kind,result}`：轮询记 `dropped`（删除或清掉状态）、`postponed`（顺延和重新排期）、`missed`；任务记 `sent`、`skipped`、`cancelled`。日志 `wake timer dropped|postponed|missed` 带原因。
+
+**唤醒任务的一轮**（`execute`、`finishWake`）：跳过读取触发消息和“全部被忘记就丢弃”；说话人取对方在历史里最新的显示名，历史、记忆块和状态块（5.1）和普通私聊回复一样，历史从对方的 `forgotten_at` 起算；`contextbuilder` 不输出【当前消息】，只在末尾加按种类的【提示】（`CopyDirectiveInitiate`、`CopyDirectiveFollowUp`、`CopyDirectiveStatusReturn`；保护模式下主动和追问多一句“不要表现出恋爱或暧昧的想念。”）。主动和追问在调用模型前先复查能不能发（`wakeAllowed`：开关、档位、暂停、允许范围、当天上限和发起条数），不能就记为跳过、不调用模型。工具只给 `adjust_buff`（启用了 `buff` 时）。按非直接对话处理：模型只抄了格式时视为跳过，失败时不发错误提示，不计入好感度的互动。输出照常审查（保护模式用 `OutputProtected`）。写结果时在会话锁下再查一次：任务被取消、对方在任务建好之后发了消息或被忘记，作废不发；主动和追问已不允许时记为跳过。发出后记 `private_initiate` / `private_followup`，主动消息发出后按 `PlanFollowUp` 设 `follow_up`（1.5–4 小时后，落进免打扰时段就顺延到结束后再加 0–59 分钟；已发起 2 条时不设）；被跳过或拦下时记 `private_skip`（不计入上限），主动消息重新排期；`status_return` 结束时（发出或跳过）清掉 `until_at` 和这次一致的状态。
+
+**排期**（`replanInitiate`、`nextInitiate`，`internal/core/wake_plan.go`）：在会话锁下先删掉 `initiate` 和 `follow_up`，再按 `autonomy.PlanInitiate` 设一条新的 `initiate`。什么时候排：私聊里对方每条不被忽略的消息存好之后（`submit`，在 `cancelWakes` 之后）、主动消息被跳过或拦下之后、私聊的策略每次变化之后（`PolicyChanged`），以及轮询里因免打扰时段、上限或错过而重新排期时。启动时不扫描全部会话补排，现有会话在对方下一次发消息时开始排。不排的情况：会话不在或是面板新建的聊天、`mayStart` 不满足、对方最后一条消息之后机器人已发起 2 条；已发起 1 条时保留那条主动消息的 `follow_up`、不排新的 `initiate`（它到点也过不了检查）；对方 7 天内（发起记录在 `proactive_log` 里保留的时长）或被忘记之后没发过消息。算法：读对方最近 30 天、被忘记之后的消息时间（最多最新 1000 条，`UserMessageTimes`），推算免打扰时段（策略设了就用策略的，见 [配置参考](configuration.md#群策略)）和按小时的作息直方图；`earliest = max(现在, 会话最新一条消息的时间 + 档位间隔)`，从 `earliest` 起 24 小时内每 15 分钟一个候选点，去掉免打扰时段里的和当天已到上限的日子里的；数据够（≥40 条、≥5 个自然日）时每个点的权重是 `0.2 + 该小时占比 × 10`，否则相同；按权重随机选一个点，再加 0–14 分钟（加了以后落进免打扰时段或到上限的日子就不加）。没有可选的点就不排。`anchor_seq` 是会话最新一条消息的 seq，随机数源 `o.rand` 并发安全。排期时不看状态条。
+
+**对方先开口**：`submit` 处理这条消息前先取消会话里的唤醒任务和它们还没发放的分条（3.5，`cancelWakes`）。被取消的是一条已经写出、记了 `private_initiate` / `private_followup` 的主动或追问消息时，删掉这条发起记录，主动消息还删掉它设的 `follow_up`，所以作废的消息既不计入当天上限，也不算对方没回的条数。消息存好之后重新排期，旧的 `initiate`、`follow_up` 一并删掉。
 
 ## 4. 群聊参与
 
@@ -547,6 +568,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | 审计 | SQLite `audit_events` | 保留 `audit_retention`（2160h） |
 | 成员资格、档位、兴趣画像 | SQLite `conversation_members` | 保留 |
 | 主动搭话的评估 / 发出记录 | SQLite `proactive_log` | 保留 7 天，预算照常生效 |
+| 私聊的状态、定时、状态条数值和变化记录 | SQLite `conversation_status`、`conversation_timers`、`conversation_buffs`、`conversation_buff_events` | 保留；到点的定时由轮询继续处理，晚了超过 30 分钟的按错过处理（3.8）；变化记录保留 30 天 |
 | 群聊和私聊的摘要与整理游标、笔记和好感度、记忆修改记录 | SQLite `group_memory`、`member_memory`、`memory_revisions` | 保留；修改记录保留 30 天 |
 | 消息的关键词索引和补建进度 | SQLite `message_fts`、`message_fts_progress` | 保留；没进索引的消息由后台补建补上 |
 | 语义检索的段和向量、切段游标、重建队列 | SQLite `memory_chunks`、`memory_chunk_state`、`memory_chunk_rebuild`、`memory_chunk_forgets` | 保留 |
@@ -617,7 +639,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | `memory_consolidation_seconds` | —（只记成功的整理） |
 | `memory_affinity_changes_total` | source：consolidate / rule / command / api |
 | `skill_calls_total` | tool（模型编造的工具名记为 unknown）、result：ok / error / unknown / invalid |
-| `cleanup_deleted_total` | table：tasks / outbox_actions / audit_events / events / proactive_log / model_calls / panel_sessions |
+| `cleanup_deleted_total` | table：tasks / outbox_actions / audit_events / events / proactive_log / model_calls / panel_sessions / conversation_buff_events |
 | `search_seconds` | path：keyword（recall 的每页关键词检索）/ vector（每次语义检索，包括失败的） |
 | `fts_backfill_remaining` | —（关键词索引补建进度之后的消息数） |
 | `embedding_requests_total` | result：ok / error / timeout（每次请求向量服务，后台生成和查询都算） |

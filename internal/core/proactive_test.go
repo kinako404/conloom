@@ -228,18 +228,80 @@ func TestCommand_ProactiveShowSetAndPermissions(t *testing.T) {
 		t.Fatalf("/主动 全群 = %q", got)
 	}
 
-	for _, text := range []string{"/主动", "/主动 高", "/proactive group off"} {
-		resp := env.submit(t, env.event(conloomapi.ConvPrivate, "29999", "29999", text))
-		task := env.getTask(t, resp.TaskID)
-		if len(task.Actions) != 1 || task.Actions[0].Content.Text != CopyProactivePrivateOnly {
-			t.Fatalf("private %s = %+v", text, task)
-		}
-	}
 	if !strings.Contains(CopyHelp("织语"), "/主动") {
 		t.Errorf("help copy does not mention /主动: %q", CopyHelp("织语"))
 	}
-	if CopyProactiveNotEligible != "先 @ 我聊几句，才能开启主动搭话。" || CopyProactivePrivateOnly != "主动搭话只在群聊里使用。" {
+	if CopyProactiveNotEligible != "先 @ 我聊几句，才能开启主动搭话。" {
 		t.Error("fixed copy differs from the design")
+	}
+}
+
+func TestProactiveCommand_Private(t *testing.T) {
+	env, clock := newWakeEnv(t, nil, nil, nil)
+	ctx := context.Background()
+	if got, want := env.privateCommand(t, privateUser, "/主动"),
+		CopyPrivateProactiveStatus(conloomapi.PrivateLevelMid, 0, 2, "00:30–08:00", CopyQuietDefault, true); got != want {
+		t.Fatalf("/主动 = %q, want %q", got, want)
+	}
+	if want := "主动找你：中（今天 0/2 次；免打扰 00:30–08:00，默认时段）"; !strings.HasPrefix(env.privateCommand(t, privateUser, "/主动"), want) {
+		t.Fatalf("/主动 does not start with %q", want)
+	}
+	env.appendPrivateLog(t, store.ProactivePrivateInitiate, clock.now().Add(-time.Hour))
+	if got, want := env.privateCommand(t, privateUser, "/proactive"),
+		CopyPrivateProactiveStatus(conloomapi.PrivateLevelMid, 1, 2, "00:30–08:00", CopyQuietDefault, true); got != want {
+		t.Fatalf("/proactive = %q, want %q", got, want)
+	}
+
+	for _, c := range []struct{ text, level string }{
+		{"/主动 高", conloomapi.PrivateLevelHigh},
+		{"/主动 高", conloomapi.PrivateLevelHigh},
+		{"/proactive low", conloomapi.PrivateLevelLow},
+		{"/主动 关", conloomapi.PrivateLevelOff},
+	} {
+		if got, want := env.privateCommand(t, privateUser, c.text), CopyPrivateProactiveSet(c.level, true); got != want {
+			t.Fatalf("%s = %q, want %q", c.text, got, want)
+		}
+		if pv, err := env.policies.Current(ctx, privateConvKey); err != nil || pv.Policy.Proactive.Private.Level != c.level {
+			t.Fatalf("after %s policy = %+v, %v", c.text, pv.Policy.Proactive, err)
+		}
+	}
+	if pv, _ := env.policies.Current(ctx, privateConvKey); pv.Version != 3 {
+		t.Errorf("policy version = %d, want 3 (setting the same level stores nothing)", pv.Version)
+	}
+	audits, err := env.st.ListAudit(ctx, store.AuditFilter{Kind: "policy.update", BotInstanceID: testBot, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(audits) != 3 || audits[0].Actor != "command:"+privateUser || audits[0].Target != privateConvKey {
+		t.Fatalf("policy.update audits = %+v, want three by command:%s", audits, privateUser)
+	}
+	if got, want := env.privateCommand(t, privateUser, "/主动"), CopyPrivateProactiveStatus(conloomapi.PrivateLevelOff, 1, 0, "00:30–08:00", CopyQuietDefault, true); got != want {
+		t.Fatalf("/主动 at off = %q, want %q", got, want)
+	}
+
+	for _, text := range []string{"/主动 开", "/主动 全群 关", "/主动 高 低", "/proactive group on"} {
+		if got := env.privateCommand(t, privateUser, text); got != CopyPrivateProactiveUsage {
+			t.Fatalf("%s = %q, want the usage", text, got)
+		}
+	}
+
+	if _, err := env.policies.Update(ctx, privateConvKey, conloomapi.PolicyPut{Policy: func() conloomapi.GroupPolicy {
+		p := env.cfg.DefaultGroupPolicy
+		p.Proactive.Enabled = false
+		p.Proactive.Private = conloomapi.PrivateProactivePolicy{Level: conloomapi.PrivateLevelHigh, QuietStart: "23:00", QuietEnd: "07:00"}
+		return p
+	}()}, "29999"); err != nil {
+		t.Fatal(err)
+	}
+	got := env.privateCommand(t, privateUser, "/主动")
+	if want := CopyPrivateProactiveStatus(conloomapi.PrivateLevelHigh, 1, 4, "23:00–07:00", CopyQuietSet, false); got != want {
+		t.Fatalf("/主动 with the switch off = %q, want %q", got, want)
+	}
+	if !strings.Contains(got, "总开关") {
+		t.Errorf("/主动 with the switch off does not say why: %q", got)
+	}
+	if got, want := env.privateCommand(t, privateUser, "/主动 中"), CopyPrivateProactiveSet(conloomapi.PrivateLevelMid, false); got != want || !strings.Contains(got, "总开关") {
+		t.Fatalf("/主动 中 with the switch off = %q, want %q", got, want)
 	}
 }
 

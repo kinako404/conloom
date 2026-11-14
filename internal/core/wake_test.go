@@ -61,11 +61,16 @@ func (e *testEnv) seedPrivateMessage(t *testing.T, clock *injectClock, text stri
 	}
 }
 
-// armWake arms the private chat's timer of kind due at due and returns it.
+// armWake arms the private chat's timer of kind due at due after the chat's
+// newest message and returns it.
 func (e *testEnv) armWake(t *testing.T, kind store.TimerKind, due time.Time) store.ConversationTimer {
 	t.Helper()
+	anchor, err := e.o.newestSeq(context.Background(), privateConvKey)
+	if err != nil {
+		t.Fatal(err)
+	}
 	timer := store.ConversationTimer{ConversationKey: privateConvKey, Kind: kind, BotInstanceID: testBot,
-		PlatformUserID: privateUser, DueAt: due}
+		PlatformUserID: privateUser, DueAt: due, AnchorSeq: anchor}
 	if err := e.st.ArmTimer(context.Background(), timer); err != nil {
 		t.Fatal(err)
 	}
@@ -274,8 +279,8 @@ func TestWake_SkipSendsNothing(t *testing.T) {
 	if got := env.privateLog(t, store.ProactivePrivateInitiate); got != 0 {
 		t.Errorf("private_initiate entries = %d, want 0", got)
 	}
-	if timers := env.privateTimers(t); len(timers) != 0 {
-		t.Errorf("timers = %+v, want no follow-up", timers)
+	if got := wakeKinds(env.privateTimers(t)); !reflect.DeepEqual(got, []store.TimerKind{store.TimerInitiate}) {
+		t.Errorf("timers = %v, want no follow-up, only the initiate planned again", got)
 	}
 	if n := env.wakeCount(t, store.TimerInitiate, "skipped"); n != 1 {
 		t.Errorf("wake skipped metric = %v, want 1", n)
@@ -500,6 +505,7 @@ func TestWake_NoAffinityBump(t *testing.T) {
 		return err == nil && before[privateUser].Affinity != nil
 	})
 
+	waitUntil(t, "the reply's runner", func() bool { return !env.o.sched.Busy(privateConvKey) })
 	clock.set(clock.now().Add(30 * time.Hour))
 	until := clock.now()
 	timer := env.setWakeStatus(t, "午睡", until.Add(-time.Hour), until)
@@ -597,6 +603,49 @@ func TestWake_UserSpeaksAfterWakeStoredCancelsIt(t *testing.T) {
 	audits := wakeAudits(t, env)
 	if len(audits) != 1 || !strings.Contains(audits[0].Detail, wakeID) || !strings.Contains(audits[0].Detail, `"cancelled":1`) {
 		t.Fatalf("wake.cancelled audits = %+v, want one cancelling the reply of %s", audits, wakeID)
+	}
+}
+
+func TestWake_CancelledStoredReplyNotCounted(t *testing.T) {
+	for _, handedOut := range []bool{false, true} {
+		name := "not handed out"
+		if handedOut {
+			name = "handed out"
+		}
+		t.Run(name, func(t *testing.T) {
+			env, clock := newWakeEnv(t, nil, nil, nil)
+			ctx := context.Background()
+			env.seedPrivateMessage(t, clock, "今天下午要考试")
+			clock.set(clock.now().Add(5 * time.Hour))
+			wake := env.fireWake(t, env.armWake(t, store.TimerInitiate, clock.now()))
+			if len(wake.Actions) != 1 || env.privateLog(t, store.ProactivePrivateInitiate) != 1 {
+				t.Fatalf("wake task = %+v, want its reply stored and logged", wake)
+			}
+			if got := wakeKinds(env.privateTimers(t)); !reflect.DeepEqual(got, []store.TimerKind{store.TimerFollowUp}) {
+				t.Fatalf("timers = %v, want the follow-up", got)
+			}
+			if handedOut {
+				if leased, err := env.st.LeaseOutbox(ctx, testBot, 10, clock.now(), time.Minute); err != nil || len(leased) != 1 {
+					t.Fatalf("LeaseOutbox = %+v, %v; want the wake reply", leased, err)
+				}
+			}
+
+			clock.set(clock.now().Add(time.Minute))
+			sent := clock.now()
+			reply := env.submit(t, env.event(conloomapi.ConvPrivate, privateUser, privateUser, "考完了", withName("小明"), clock.stamp))
+			requireOneReply(t, env, reply.TaskID)
+			requireInitiatePlanned(t, env, sent, 4*time.Hour, autonomy.DefaultQuiet)
+			want, status := 0, store.OutboxCancelled
+			if handedOut {
+				want, status = 1, store.OutboxLeased
+			}
+			if got := outboxStatusOf(t, env, wake.Actions[0].ActionID); got != status {
+				t.Errorf("wake reply status = %s, want %s", got, status)
+			}
+			if got := env.privateLog(t, store.ProactivePrivateInitiate); got != want {
+				t.Errorf("private_initiate entries = %d, want %d", got, want)
+			}
+		})
 	}
 }
 
@@ -714,6 +763,26 @@ func TestWake_NotFiredWhileUserMessageAccepted(t *testing.T) {
 	end()
 	if task := env.fireWake(t, timer); len(task.Actions) != 1 {
 		t.Fatalf("task = %+v, want a reply once the message was accepted", task)
+	}
+}
+
+func TestWake_NotFiredWhileBusy(t *testing.T) {
+	env, clock := newWakeEnv(t, nil, nil, nil)
+	env.seedPrivateMessage(t, clock, "晚安")
+	clock.set(clock.now().Add(5 * time.Hour))
+	timer := env.armWake(t, store.TimerInitiate, clock.now())
+
+	env.o.sched.Restore(QueuedTask{TaskID: "task_busy", ConversationKey: privateConvKey, ActorID: privateUser,
+		EnqueuedAt: time.Now(), ReadyAt: time.Now().Add(time.Hour)})
+	if err := env.o.fireTimer(context.Background(), timer); !errors.Is(err, errBusy) {
+		t.Fatalf("fireTimer while the chat is busy = %v, want errBusy", err)
+	}
+	if _, ok := env.wakeTaskID(t, timer); ok || len(env.privateTimers(t)) != 1 {
+		t.Fatal("fireTimer stored a task or dropped the timer while the chat was busy")
+	}
+	env.o.sched.Cancel(privateConvKey, "task_busy")
+	if task := env.fireWake(t, timer); len(task.Actions) != 1 {
+		t.Fatalf("task = %+v, want a reply once the chat is idle", task)
 	}
 }
 

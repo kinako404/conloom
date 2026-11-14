@@ -226,12 +226,13 @@ var proactiveLevelArgs = map[string]string{
 
 var proactiveSwitchArgs = map[string]bool{"开": true, "on": true, "关": false, "off": false}
 
-// proactiveCommand runs /主动 (/proactive): no arguments show the sender's
-// setting, a level sets it, and 全群 (group) 开|关 (on|off) switches the
-// group's proactive replies.
+// proactiveCommand runs /主动 (/proactive): in a group, no arguments show the
+// sender's setting, a level sets it, and 全群 (group) 开|关 (on|off) switches
+// the group's proactive replies; a private chat has its own
+// (privateProactiveCommand).
 func (o *Orchestrator) proactiveCommand(ctx context.Context, task store.TaskRecord, isAdmin bool, args string) (string, error) {
 	if convType(task.ConversationKey) != conloomapi.ConvGroup {
-		return CopyProactivePrivateOnly, nil
+		return o.privateProactiveCommand(ctx, task, args)
 	}
 	pv, err := o.policies.Current(ctx, task.ConversationKey)
 	if err != nil {
@@ -296,6 +297,46 @@ func (o *Orchestrator) setProactiveLevel(ctx context.Context, task store.TaskRec
 		return "", err
 	}
 	return CopyProactiveSet(level), nil
+}
+
+// privateProactiveCommand runs /主动 in a private chat: no arguments describe
+// how the bot starts the chat (privateProactiveStatus) and a level sets the
+// chat's (policy.Service.SetPrivateLevel), which anyone in the chat may do.
+// The switch and the quiet hours are set in the panel or the API only.
+func (o *Orchestrator) privateProactiveCommand(ctx context.Context, task store.TaskRecord, args string) (string, error) {
+	fields := strings.Fields(strings.ToLower(args))
+	switch {
+	case len(fields) == 0:
+		st, err := o.privateProactiveStatus(ctx, task.ConversationKey)
+		if err != nil {
+			return "", err
+		}
+		pv, err := o.policies.Current(ctx, task.ConversationKey)
+		if err != nil {
+			return "", err
+		}
+		source := CopyQuietDefault
+		start, end, set := pv.Policy.Proactive.Private.QuietMinutes()
+		switch {
+		case st.QuietInferred:
+			source = CopyQuietInferred
+		case set && start != end:
+			source = CopyQuietSet
+		}
+		return CopyPrivateProactiveStatus(st.Level, st.SentToday, st.DailyCap, st.QuietStart+"–"+st.QuietEnd, source, st.Enabled), nil
+	case len(fields) == 1:
+		level, ok := proactiveLevelArgs[fields[0]]
+		if !ok {
+			break
+		}
+		pv, changed, err := o.policies.SetPrivateLevel(ctx, task.ConversationKey, level, "command:"+task.ActorPlatformUserID)
+		if err != nil && !changed {
+			return "", err
+		}
+		o.logPolicyAuditError(task, err)
+		return CopyPrivateProactiveSet(level, pv.Policy.Proactive.Enabled), nil
+	}
+	return CopyPrivateProactiveUsage, nil
 }
 
 // switchProactive switches the group's proactive replies; switching to the
