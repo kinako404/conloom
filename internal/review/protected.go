@@ -16,7 +16,7 @@ import (
 const ReasonProtectedContent = "protected_content"
 
 // protectedSeparators are dropped before lexicon matching, besides white
-// space and format characters such as zero-width spaces. They include '|',
+// space, format characters such as zero-width spaces and combining marks. They include '|',
 // which makes up the line that separates reply parts.
 const protectedSeparators = "·・‧•._-*|"
 
@@ -47,16 +47,19 @@ func mustDecodeLexicon(data string) []string {
 	return words
 }
 
-// normalizeProtected applies NFKC, lower-cases, and drops white space, format
-// characters and protectedSeparators, so that spaced, full-width, mixed-case
-// or separator-split spellings match their lexicon entry.
+// normalizeProtected applies NFKD, lower-cases, and drops white space, format
+// characters, combining marks (including variation selectors such as U+FE0F
+// and accents decomposed by NFKD) and protectedSeparators, so that spaced,
+// full-width, mixed-case, accented or separator-split spellings match their
+// lexicon entry. Punctuation that separates words, such as '/', '~' or '、',
+// is kept: dropping it would join words into false matches.
 func normalizeProtected(s string) string {
 	return strings.Map(func(c rune) rune {
-		if unicode.IsSpace(c) || unicode.Is(unicode.Cf, c) || strings.ContainsRune(protectedSeparators, c) {
+		if unicode.IsSpace(c) || unicode.In(c, unicode.Cf, unicode.Mn, unicode.Me) || strings.ContainsRune(protectedSeparators, c) {
 			return -1
 		}
 		return c
-	}, strings.ToLower(norm.NFKC.String(s)))
+	}, strings.ToLower(norm.NFKD.String(s)))
 }
 
 func containsProtected(text string) bool {

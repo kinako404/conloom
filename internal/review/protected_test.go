@@ -73,7 +73,8 @@ func lexiconVariants(w string) []string {
 		"好的，" + w + "。",
 		"ok " + joinRunes(mixedCase(w), " ") + " ok",
 	}
-	for _, sep := range []string{"·", "・", ".", "_", "-", "*", "\u200b", "\u200c", "\u200d", "\u2060", "\ufeff", "．", "＿", "－", "＊"} {
+	for _, sep := range []string{"·", "・", ".", "_", "-", "*", "\u200b", "\u200c", "\u200d", "\u2060", "\ufeff", "．", "＿", "－", "＊",
+		"\ufe0f", "\ufe0e", "\U000e0100", "\u0301", "\u0332", "\u20dd"} {
 		vs = append(vs, joinRunes(w, sep))
 	}
 	return vs
@@ -274,6 +275,38 @@ func TestOutputProtected_AllowsDailyChat(t *testing.T) {
 		if got.Verdict != VerdictAllow || got.Text != s || len(got.Reasons) != 0 {
 			t.Errorf("OutputProtected(%q) = %+v", s, got)
 		}
+	}
+}
+
+// crossWordSentencesB64 are ordinary sentences, base64-encoded, in which
+// spans across word boundaries spell what would be lexicon-like entries once
+// white space and separators are dropped.
+var crossWordSentencesB64 = []string{
+	"5a2m5qCh55qE5pep5pON6YC85b6X5oiR5aSp5aSp5YWt54K56LW35bqK44CC",
+	"6L+Z5aWX5L2T5pON6YC855yf5Zyw5qih5Lu/5LqG5Yqo54mp55qE5Yqo5L2c44CC",
+	"SGUgdG9vayBhIHN0YWdlaGFuZCBqb2IgYXQgdGhlIHRoZWF0ZXIgbGFzdCBzdW1tZXIu",
+	"TXkgY291c2luIGZvdW5kIGEgZmFybWhhbmQgam9iIHVwIG5vcnRoLg==",
+	"Q2xlYW5pbmcgdGhlIGRyYWlucyBpcyBhIGdyaW0gam9iLCBidXQgc29tZW9uZSBoYXMgdG8gZG8gaXQu",
+	"Rml4ZWQgdGhlIHdoZWVsIHJpbS4gSm9iIGRvbmUh",
+}
+
+func TestOutputProtected_AllowsPhrasesAcrossWordBoundaries(t *testing.T) {
+	r := New(nil, Options{})
+	for i, enc := range crossWordSentencesB64 {
+		b, err := base64.StdEncoding.Strict().DecodeString(enc)
+		if err != nil {
+			t.Fatalf("sentence #%d: %v", i+1, err)
+		}
+		s := string(b)
+		if got := r.OutputProtected(s, basicPolicy()); got.Verdict != VerdictAllow || got.Text != s || len(got.Reasons) != 0 {
+			t.Errorf("sentence #%d: verdict=%q reasons=%v", i+1, got.Verdict, got.Reasons)
+		}
+	}
+}
+
+func TestNormalizeProtected_KeepsWordSeparatingPunctuation(t *testing.T) {
+	if got, want := normalizeProtected("A/b~c、d ❤\ufe0f e\u0301"), "a/b~c、d❤e"; got != want {
+		t.Errorf("normalizeProtected = %q, want %q", got, want)
 	}
 }
 
