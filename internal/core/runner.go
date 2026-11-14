@@ -344,7 +344,13 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		out.skipped = true
 		return out
 	}
-	res := o.reviewer.Output(text, pol.Review)
+	// The whole reply is reviewed before it is split into parts. Every mode
+	// other than ContentOpen is protected.
+	check := o.reviewer.OutputProtected
+	if system.Mode == conloomapi.ContentOpen {
+		check = o.reviewer.Output
+	}
+	res := check(text, pol.Review)
 	o.metrics.Review.WithLabelValues("output", res.Verdict).Inc()
 	if res.Verdict == review.VerdictBlock {
 		out.meta.ReviewResult = reviewResultBlocked

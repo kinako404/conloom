@@ -16,8 +16,9 @@ import (
 const ReasonProtectedContent = "protected_content"
 
 // protectedSeparators are dropped before lexicon matching, besides white
-// space and format characters such as zero-width spaces.
-const protectedSeparators = "·・‧•._-*"
+// space and format characters such as zero-width spaces. They include '|',
+// which makes up the line that separates reply parts.
+const protectedSeparators = "·・‧•._-*|"
 
 // protectedWordsB64 is the built-in lexicon of explicit sexual terms blocked
 // in protected mode, one base64-encoded entry per line, so that the public
