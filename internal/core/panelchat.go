@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -24,6 +25,9 @@ const (
 	// panelSpeakerLookback is how many of a conversation's newest messages
 	// SubmitPanel searches for the user it speaks as.
 	panelSpeakerLookback = 200
+	// platformActorPrefix starts the actor ID the adapters give a platform
+	// user: user_<platform user ID>.
+	platformActorPrefix = "user_"
 )
 
 // SubmitPanel accepts text written in the panel by panelUser into the private
@@ -31,11 +35,14 @@ const (
 // on the panel channel, so the reply to a task it is the newest trigger of is
 // delivered to the panel only (see replyChannel). In a panel chat
 // (store.PlatformPanel) it speaks as panel_<panelUser>, under the display name
-// the chat was created with; elsewhere it takes over the conversation's user,
-// the sender of its newest user message. It returns the new message's ID;
-// that message is not stored if the bot ignores it (e.g. its user is no longer
-// allowed to chat privately). An unknown conversation is store.ErrNotFound.
+// the chat was created with; elsewhere it takes over the conversation's user
+// (see panelSpeaker). It returns the new message's ID. A message the bot
+// ignores, and so does not store (its user is not allowed to chat privately),
+// is ErrNotAllowed; an unknown conversation, also one deleted meanwhile (see
+// DeletePanelChat), store.ErrNotFound.
 func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text string) (messageID string, err error) {
+	unlock := o.panelLocks.lock(convKey)
+	defer unlock()
 	conv, err := o.panelConversation(ctx, convKey)
 	if err != nil {
 		return "", err
@@ -68,15 +75,24 @@ func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text
 	if err != nil {
 		return "", err
 	}
-	if _, _, err := o.submitOn(ctx, conv.BotInstanceID, pmid, body, ev, store.ChannelPanel); err != nil {
+	resp, _, err := o.submitOn(ctx, conv.BotInstanceID, pmid, body, ev, store.ChannelPanel)
+	if err != nil {
 		return "", err
+	}
+	// Every disposition but ignore stores the message.
+	if resp.Disposition == conloomapi.DispositionIgnore {
+		return "", ErrNotAllowed
 	}
 	return ev.Message.ID, nil
 }
 
 // panelSpeaker is the actor a panel message in conv is sent as (see
-// SubmitPanel). It is never the bot itself; a conversation without a user
-// message is ErrNoUserYet.
+// SubmitPanel). Outside panel chats it is the sender of the newest user
+// message among the conversation's newest panelSpeakerLookback messages or,
+// without one there, the user the private conversation is with (its
+// PlatformConversationID) if they ever wrote in it, under their newest
+// display name. It is never the bot itself; a conversation without a known
+// user is ErrNoUserYet.
 func (o *Orchestrator) panelSpeaker(ctx context.Context, conv store.ConversationRecord, bot config.BotConfig, panelUser string) (conloomapi.Actor, error) {
 	if conv.Platform == store.PlatformPanel {
 		id := panelActorID(panelUser)
@@ -91,7 +107,23 @@ func (o *Orchestrator) panelSpeaker(ctx context.Context, conv store.Conversation
 			return conloomapi.Actor{ID: m.ActorID, PlatformUserID: m.PlatformUserID, DisplayName: m.DisplayName}, nil
 		}
 	}
-	return conloomapi.Actor{}, ErrNoUserYet
+	uid := conv.PlatformConversationID
+	if uid == "" || uid == bot.PlatformSelfID {
+		return conloomapi.Actor{}, ErrNoUserYet
+	}
+	actorID := platformActorPrefix + uid
+	users, err := o.st.UserIDsForActors(ctx, conv.Key, []string{actorID})
+	if err != nil {
+		return conloomapi.Actor{}, err
+	}
+	if users[actorID] == "" {
+		return conloomapi.Actor{}, ErrNoUserYet
+	}
+	names, err := o.st.LatestDisplayNames(ctx, conv.Key, []string{actorID})
+	if err != nil {
+		return conloomapi.Actor{}, err
+	}
+	return conloomapi.Actor{ID: actorID, PlatformUserID: users[actorID], DisplayName: names[actorID]}, nil
 }
 
 // panelDisplayName is the name actorID goes by in the panel chat conv: the
@@ -160,13 +192,19 @@ func (o *Orchestrator) CreatePanelChat(ctx context.Context, botID, panelUser, di
 }
 
 // DeletePanelChat deletes the panel chat convKey: it cancels the chat's
-// queued and running tasks, waiting up to cancelWait for the running ones to
-// stop, drops its scheduler session, deletes what is stored under convKey
-// (see store.Store.DeleteConversation) and then forgets the chat's session,
-// lull timer, rate-limit hits and cached persona prompt and policy. A
-// conversation not on store.PlatformPanel is ErrNotPanelChat, an unknown one
-// store.ErrNotFound.
+// queued and running tasks, waits up to panelDeleteWait for the running ones
+// to stop, drops its scheduler session, deletes what is stored under
+// convKey (see store.Store.DeleteConversation) and then forgets the chat's
+// session, lull timer, rate-limit hits and cached persona prompt and policy.
+// It holds the chat's panel lock throughout, so a SubmitPanel waits for it
+// and then finds no conversation. If a task has not stopped in time nothing
+// is deleted and errTasksStopping is returned; the tasks stay cancelled, so a
+// retry succeeds once they stopped. Thus no task of the chat runs after it is
+// deleted to store or cache anything under its key again. A conversation not
+// on store.PlatformPanel is ErrNotPanelChat, an unknown one store.ErrNotFound.
 func (o *Orchestrator) DeletePanelChat(ctx context.Context, convKey string) error {
+	unlock := o.panelLocks.lock(convKey)
+	defer unlock()
 	conv, err := o.panelConversation(ctx, convKey)
 	if err != nil {
 		return err
@@ -184,10 +222,12 @@ func (o *Orchestrator) DeletePanelChat(ctx context.Context, convKey string) erro
 			running = append(running, done)
 		}
 	}
-	o.sched.Forget(convKey)
+	// The session is kept until its tasks stopped, so a retry finds a task
+	// still running among them.
 	if err := o.awaitStopped(ctx, convKey, running); err != nil {
 		return err
 	}
+	o.sched.Forget(convKey)
 	if err := o.st.DeleteConversation(ctx, convKey); err != nil {
 		return err
 	}
@@ -200,20 +240,24 @@ func (o *Orchestrator) DeletePanelChat(ctx context.Context, convKey string) erro
 	return nil
 }
 
-// awaitStopped waits up to cancelWait in all for the cancelled tasks' owners
-// to let go of them.
+// errTasksStopping refuses to delete a panel chat whose cancelled tasks did
+// not stop in time.
+var errTasksStopping = errors.New("core: the chat's cancelled tasks are still stopping; try again")
+
+// awaitStopped waits up to panelDeleteWait in all for the cancelled tasks'
+// owners to let go of them, and returns errTasksStopping if they did not.
 func (o *Orchestrator) awaitStopped(ctx context.Context, convKey string, owners []<-chan struct{}) error {
 	if len(owners) == 0 {
 		return nil
 	}
-	timer := time.NewTimer(cancelWait)
+	timer := time.NewTimer(o.panelDeleteWait)
 	defer timer.Stop()
 	for _, done := range owners {
 		select {
 		case <-done:
 		case <-timer.C:
-			o.log.Warn("deleting panel chat before its cancelled tasks stopped", "conversation", convKey)
-			return nil
+			o.log.Warn("panel chat not deleted: its cancelled tasks are still stopping", "conversation", convKey)
+			return errTasksStopping
 		case <-ctx.Done():
 			return ctx.Err()
 		}

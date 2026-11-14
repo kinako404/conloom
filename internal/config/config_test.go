@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -1174,7 +1173,7 @@ func TestBotConfig_PrivateAllowed(t *testing.T) {
 			if got := bot.PrivateAllowed("qq", user); got != w {
 				t.Errorf("%s: PrivateAllowed(qq, %s) = %v, want %v", mode, user, got, w)
 			}
-			if !bot.PrivateAllowed(store.PlatformPanel, user) {
+			if !bot.PrivateAllowed(conloomapi.PlatformPanel, user) {
 				t.Errorf("%s: PrivateAllowed(panel, %s) = false, want true", mode, user)
 			}
 		}

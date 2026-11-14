@@ -136,8 +136,15 @@ type Orchestrator struct {
 	sessions  chatSessions
 	lulls     lullTimers
 	joinPlans joinPlans
-	// partWakes notifies the adapters when later reply parts become due.
+	// partWakes tells the notifier (which wakes the adapters and the panel
+	// deliverer) when later reply parts become due.
 	partWakes partWakes
+
+	// panelLocks serialise SubmitPanel and DeletePanelChat per conversation;
+	// panelDeleteWait is how long DeletePanelChat waits for the chat's
+	// cancelled tasks to stop.
+	panelLocks      keyedLocks
+	panelDeleteWait time.Duration
 }
 
 // taskOwner is the one party in this process allowed to execute and complete
@@ -182,6 +189,8 @@ func New(d Deps) (*Orchestrator, error) {
 		limiter:  NewRateLimiter(),
 		owners:   map[string]*taskOwner{},
 		ftsRetry: ftsBackfillRetry,
+
+		panelDeleteWait: cancelWait,
 
 		cleanupBatch: defaultCleanupBatch, cleanupMaxBatches: defaultCleanupMaxBatches,
 	}

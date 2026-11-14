@@ -14,7 +14,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -152,9 +151,9 @@ func (b BotConfig) UnusedPrivateConversations() []string {
 // PrivateAllowed reports whether the user of platform may chat with the bot
 // privately under PrivateChat: never for "off", only admins for "admins",
 // admins and the private entries of EnabledConversations for "allowlist",
-// anyone for "all". Panel chats (store.PlatformPanel) are always allowed.
+// anyone for "all". Panel chats (conloomapi.PlatformPanel) are always allowed.
 func (b BotConfig) PrivateAllowed(platform, platformUserID string) bool {
-	if platform == store.PlatformPanel {
+	if platform == conloomapi.PlatformPanel {
 		return true
 	}
 	admin := slices.Contains(b.Admins, platformUserID)

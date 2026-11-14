@@ -136,6 +136,9 @@ func (c *Config) ValidateServe() error {
 		}
 		botIDs[b.ID] = true
 		p.required(path+".platform", b.Platform)
+		if b.Platform == conloomapi.PlatformPanel {
+			p.addf(path+".platform", "%q is reserved for chats held in the panel", b.Platform)
+		}
 		p.required(path+".platform_self_id", b.PlatformSelfID)
 		for j, a := range b.Admins {
 			p.required(fmt.Sprintf("%s.admins[%d]", path, j), a)

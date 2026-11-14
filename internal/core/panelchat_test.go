@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -319,6 +321,10 @@ func TestDeletePanelChat(t *testing.T) {
 	if !env.o.Busy(key) {
 		t.Fatal("Busy = false with a queued task")
 	}
+	convID := strings.Split(key, ":")[3]
+	if _, err := env.st.GetEvent(ctx, testBot, convID); err != nil {
+		t.Fatalf("creation event: %v", err)
+	}
 
 	if err := env.o.DeletePanelChat(ctx, key); err != nil {
 		t.Fatalf("DeletePanelChat: %v", err)
@@ -347,6 +353,9 @@ func TestDeletePanelChat(t *testing.T) {
 	}
 	if _, err := env.st.GetTask(ctx, testBot, taskID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("task after delete: %v", err)
+	}
+	if _, err := env.st.GetEvent(ctx, testBot, convID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("creation event after delete: %v", err)
 	}
 	if msgs, err := env.st.RecentMessages(ctx, testConvKey, 10); err != nil || len(msgs) != 1 {
 		t.Errorf("other conversation's messages = %d, %v; want kept", len(msgs), err)
@@ -391,6 +400,193 @@ func TestDeletePanelChat_CancelsRunningTask(t *testing.T) {
 	}
 	if got := env.hooks.completed(taskID); len(got) != 1 || got[0] != conloomapi.TaskCancelled {
 		t.Errorf("running task completed as %v, want cancelled before the delete", got)
+	}
+	if _, err := env.st.GetTask(ctx, testBot, taskID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("task after delete: %v", err)
+	}
+}
+
+// ingestMessage stores m in the private conversation of user without
+// deciding anything.
+func (e *testEnv) ingestMessage(t *testing.T, user string, m store.MessageRecord) {
+	t.Helper()
+	key := privateKey(user)
+	m.BotInstanceID, m.ConversationKey, m.Platform, m.CreatedAt = testBot, key, "qq", time.Now()
+	if m.OccurredAt.IsZero() {
+		m.OccurredAt = m.CreatedAt
+	}
+	if _, err := e.st.Ingest(context.Background(), store.Ingest{
+		Event: store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "seed_" + m.ID, EventID: "evt_" + m.ID},
+		Conversation: &store.ConversationRecord{BotInstanceID: testBot, ID: "private_" + user, Key: key,
+			Type: conloomapi.ConvPrivate, Platform: "qq", PlatformConversationID: user},
+		Message: &m,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func userMessage(id, user, name string) store.MessageRecord {
+	return store.MessageRecord{ID: id, PlatformMessageID: strings.TrimPrefix(id, "msg_"), ActorID: "user_" + user,
+		PlatformUserID: user, DisplayName: name, Text: "在吗"}
+}
+
+func botMessage(id string) store.MessageRecord {
+	return store.MessageRecord{ID: id, PlatformMessageID: strings.TrimPrefix(id, "msg_"), ActorID: "bot_30001",
+		PlatformUserID: "30001", Text: "我在", FromBot: true}
+}
+
+func TestSubmitPanel_NotAllowedIsNotStored(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	ctx := context.Background()
+	env.ingestMessage(t, "20001", userMessage("msg_seed1", "20001", "小明"))
+	if _, err := env.o.SubmitPanel(ctx, privateKey("20001"), "admin", "你好"); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("takeover of a user private_chat does not allow: err = %v, want ErrNotAllowed", err)
+	}
+	if msgs, err := env.st.RecentMessages(ctx, privateKey("20001"), 10); err != nil || len(msgs) != 1 {
+		t.Errorf("messages = %d, %v; want only the seeded one", len(msgs), err)
+	}
+}
+
+func TestSubmitPanel_TakeoverFallsBackToConversationUser(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	ctx := context.Background()
+	env.ingestMessage(t, "20001", userMessage("msg_seed0", "20001", "小明"))
+	for i := range panelSpeakerLookback {
+		env.ingestMessage(t, "20001", botMessage(fmt.Sprintf("msg_bot%d", i)))
+	}
+	msg, err := env.st.GetMessage(ctx, testBot, env.submitPanel(t, privateKey("20001"), "admin", "你好"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.PlatformUserID != "20001" || msg.ActorID != "user_20001" || msg.DisplayName != "小明" {
+		t.Errorf("speaker = %s/%s/%s, want the conversation's user", msg.ActorID, msg.PlatformUserID, msg.DisplayName)
+	}
+
+	env.ingestMessage(t, "20002", botMessage("msg_bot_only"))
+	if _, err := env.o.SubmitPanel(ctx, privateKey("20002"), "admin", "你好"); !errors.Is(err, ErrNoUserYet) {
+		t.Errorf("only bot messages: err = %v, want ErrNoUserYet", err)
+	}
+}
+
+func TestSubmitPanel_InputReviewed(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	env.waitTask(t, env.submit(t, env.event(conloomapi.ConvPrivate, "20001", "20001", "在吗")).TaskID)
+	id := env.submitPanel(t, privateKey("20001"), "admin", "你好\x07呀")
+	if task := env.waitTask(t, env.panelResponse(t, id).TaskID); task.Status != conloomapi.TaskSucceeded {
+		t.Fatalf("task = %+v", task)
+	}
+	reqs := append(env.short.Requests(), env.long.Requests()...)
+	last := requestMessages(t, reqs[len(reqs)-1])
+	content, _ := last[len(last)-1]["content"].(string)
+	if !strings.Contains(content, "你好呀") || strings.Contains(content, "\x07") {
+		t.Errorf("model saw %q, want the reviewed text without control characters", content)
+	}
+}
+
+func TestSubmitPanel_SupersedesRunningPlatformTask(t *testing.T) {
+	var calls atomic.Int64
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	model := func(map[string]any) (int, string) {
+		if calls.Add(1) == 1 {
+			started <- struct{}{}
+			<-release
+		}
+		return 200, fakeReply
+	}
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate, short: model, long: model})
+	t.Cleanup(func() { close(release) })
+	first := env.submit(t, env.event(conloomapi.ConvPrivate, "20001", "20001", "在吗"))
+	select {
+	case <-started:
+	case <-time.After(waitLimit):
+		t.Fatal("model never called")
+	}
+	resp := env.panelResponse(t, env.submitPanel(t, privateKey("20001"), "admin", "换个话题"))
+	if resp.Disposition != conloomapi.DispositionReply || resp.TaskID == first.TaskID {
+		t.Fatalf("panel message response = %+v, want a new task", resp)
+	}
+	task := env.waitTask(t, resp.TaskID)
+	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 {
+		t.Fatalf("new task = %+v, want one reply", task)
+	}
+	wantChannels(t, "superseding panel message", env.actionChannels(t, task), store.ChannelPanel)
+	if old := env.waitTask(t, first.TaskID); old.Status != conloomapi.TaskCancelled || len(old.Actions) != 0 {
+		t.Errorf("superseded task = %+v, want cancelled without a reply", old)
+	}
+}
+
+func TestDeletePanelChat_SubmitWaitsAndFindsNothing(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	ctx := context.Background()
+	key, err := env.o.CreatePanelChat(ctx, testBot, "admin", "小明")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := env.blockFirstCompletion(t, func(store.TaskCompletion) bool { return true })
+	taskID := env.panelResponse(t, env.submitPanel(t, key, "admin", "你好")).TaskID
+	waitEntered(t, entered)
+
+	deleted := make(chan error, 1)
+	go func() { deleted <- env.o.DeletePanelChat(ctx, key) }()
+	waitUntil(t, "the delete to cancel the running task", func() bool {
+		env.o.mu.Lock()
+		defer env.o.mu.Unlock()
+		ow := env.o.owners[taskID]
+		return ow != nil && ow.cancelled
+	})
+	submitted := make(chan error, 1)
+	go func() {
+		_, err := env.o.SubmitPanel(ctx, key, "admin", "还在吗")
+		submitted <- err
+	}()
+	select {
+	case err := <-submitted:
+		t.Fatalf("SubmitPanel returned %v while the chat was being deleted", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	if err := <-deleted; err != nil {
+		t.Fatalf("DeletePanelChat: %v", err)
+	}
+	if err := <-submitted; !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("SubmitPanel after the delete: err = %v, want store.ErrNotFound", err)
+	}
+	if env.o.Busy(key) {
+		t.Error("Busy after delete")
+	}
+	if _, err := env.st.GetConversation(ctx, testBot, strings.Split(key, ":")[3]); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("conversation after delete: %v", err)
+	}
+}
+
+func TestDeletePanelChat_KeepsChatWhileATaskStillRuns(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	env.o.panelDeleteWait = 50 * time.Millisecond
+	ctx := context.Background()
+	key, err := env.o.CreatePanelChat(ctx, testBot, "admin", "小明")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := env.blockFirstCompletion(t, func(store.TaskCompletion) bool { return true })
+	taskID := env.panelResponse(t, env.submitPanel(t, key, "admin", "你好")).TaskID
+	waitEntered(t, entered)
+	if err := env.o.DeletePanelChat(ctx, key); !errors.Is(err, errTasksStopping) {
+		t.Fatalf("DeletePanelChat while a task of the chat still runs: err = %v, want errTasksStopping", err)
+	}
+	if _, err := env.st.GetConversation(ctx, testBot, strings.Split(key, ":")[3]); err != nil {
+		t.Fatalf("conversation after a refused delete: %v", err)
+	}
+	if err := env.o.DeletePanelChat(ctx, key); !errors.Is(err, errTasksStopping) {
+		t.Fatalf("retry while the task still runs: err = %v, want errTasksStopping", err)
+	}
+	env.o.panelDeleteWait = waitLimit
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		release()
+	}()
+	if err := env.o.DeletePanelChat(ctx, key); err != nil {
+		t.Fatalf("DeletePanelChat once the task stopped: %v", err)
 	}
 	if _, err := env.st.GetTask(ctx, testBot, taskID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("task after delete: %v", err)
