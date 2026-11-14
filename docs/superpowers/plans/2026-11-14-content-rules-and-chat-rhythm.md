@@ -29,8 +29,7 @@
 
 - 不新增依赖；`CGO_ENABLED=0` 可编译；全量 `go test -race`、`go vet`、`gofmt -l .` 干净。
 - 公开仓库：测试只用假数据；内置色情词表以 base64 存放，源码和测试中不出现明文露骨词。测试可以把词表里的条目解码后使用。
-- 受保护名单：`{某未成年角色, 未成年模板}`、`{某孩童化角色, 孩童化模板}`。
-- 开放模式的条件：`adult && !protected && convType == "private"`，三者缺一不可。
+- 代码里不写死任何角色名。人设新增 `minor`，与 `adult` 互斥；开放模式的条件：`adult && !minor && convType == "private"`，三者缺一不可（spec §8）。
 - `max_parts` 取 1 到 5，默认 1。`private_wait` 默认 6s，范围 0 到 60s。`private_max_wait` 默认 20s，范围从 `private_wait` 到 2m。
 - 分条分隔符：单独一行的 `|||`。分条间隔为 `clamp(800ms + 60ms × 段的字数, 1s, 4s)`，从上一段起累计。
 - `max_parts=1` 时，群聊和私聊的回复形态与现在一致。
@@ -38,7 +37,7 @@
 
 ## Review Focus
 
-1. **受保护角色经任何路径进入开放模式**：配置、PUT、套模板、回滚、库里的旧数据。由 A1 和 A2 的测试覆盖。
+1. **未成年人设经任何路径进入开放模式**：配置、PUT、套模板、回滚、库里的旧数据。由 A1 和 A2 的测试覆盖。
 2. **取消与完成的竞态**：可能导致重复回复或丢消息。由 B3 的测试覆盖。
 3. **分条与"正在输入"阻塞其他会话**。由 B2 和 B5 的测试覆盖。
 4. **词表误伤日常聊天，或被空格、全角绕过**。由 A3 的测试覆盖。
@@ -53,7 +52,7 @@
 
 ---
 
-### Task A1：内容字段、受保护名单与校验
+### Task A1：内容字段、未成年标记与校验
 
 **Files:**
 - `pkg/conloomapi/persona.go`：新增字段、长度上限、`Validate` 增加长度检查
@@ -67,6 +66,7 @@
 ```go
 // PersonaDoc 新字段
 Adult        bool   `json:"adult,omitempty" yaml:"adult,omitempty"`
+Minor        bool   `json:"minor,omitempty" yaml:"minor,omitempty"`
 ContentRules string `json:"content_rules,omitempty" yaml:"content_rules,omitempty"`
 MemoryRules  string `json:"memory_rules,omitempty" yaml:"memory_rules,omitempty"`
 const MaxContentRulesRunes = 2000
@@ -78,21 +78,18 @@ const (
 	ContentProtected ContentMode = "protected"
 	ContentOpen      ContentMode = "open"
 )
-// ProtectedCharacter：CharacterName 或 PersonaName（TrimSpace 后完全相等）属于 {某未成年角色, 某孩童化角色}，
-// 或 templateName 属于 {未成年模板, 孩童化模板}。
-func ProtectedCharacter(doc PersonaDoc, templateName string) bool
-// ModeFor：只有 doc.Adult && !ProtectedCharacter && convType == ConvPrivate 时返回 ContentOpen。
-func ModeFor(doc PersonaDoc, templateName, convType string) ContentMode
-// ValidateContent：受保护角色设了 Adult 时报错，报错文字："protected character cannot be an adult persona"。
-func ValidateContent(doc PersonaDoc, templateName string) error
+// ModeFor：只有 doc.Adult && !doc.Minor && convType == ConvPrivate 时返回 ContentOpen。
+func ModeFor(doc PersonaDoc, convType string) ContentMode
+// ValidateContent：Adult 与 Minor 同时为 true 时报错，报错文字："a minor persona cannot be adult"。
+func ValidateContent(doc PersonaDoc) error
 ```
 
 - [ ] **测试**：
-  - `TestModeFor_Table`：8 种组合中只有一种是开放模式。
-  - `TestProtectedCharacter_ByNameAndTemplate`：按角色名、按人设名、按模板名、带首尾空白，都能命中；其他名字不命中。
+  - `TestModeFor_Table`：adult × minor × 群聊/私聊 共 8 种组合中，只有一种是开放模式。
+  - 代码和测试里不出现任何具体角色名（用"角色甲"之类的假名）。
   - `TestValidate_ContentRulesLength`：两个字段超长都报错。
-  - `TestUpdate_RejectsProtectedAdult`：整份替换、套模板、回滚到一个被手动写成 `adult: true` 的受保护版本，三种情况都返回 `persona.ErrInvalid`。
-  - `TestValidateConfig_ProtectedTemplateAdult`：配置里 未成年模板 设了 `adult: true`，校验报错。
+  - `TestUpdate_RejectsMinorAdult`：整份替换、套模板、回滚到一个被手动写成 `minor: true, adult: true` 的版本，三种情况都返回 `persona.ErrInvalid`。
+  - `TestValidateConfig_MinorTemplateAdult`：配置里某个模板同时设了 `minor` 和 `adult`，校验报错。
 - [ ] 先跑测试，确认失败；再实现，确认通过；然后提交：`feat(persona): adult flag, content rules and the protected characters`。
 
 ### Task B1：节奏相关的策略字段
@@ -160,7 +157,7 @@ CancelPendingActions(ctx context.Context, taskID string, now time.Time) (int, er
 
 **`SystemPrompt` 的改动：**
 - 从 `convKey`（格式 `bot:platform:type:id`）解析出会话类型；
-- 用当前人设版本的 `Persona` 和 `TemplateName` 计算模式；
+- 用当前人设版本的 `Persona` 和会话类型，通过 `conloomapi.ModeFor` 计算模式；
 - 在 core 之后、人设渲染之前插入：保护模式插入 `protectionRules` 常量，开放模式插入 `ContentRules`（为空就不插）；
 - 缓存键加上模式。
 
@@ -170,7 +167,7 @@ CancelPendingActions(ctx context.Context, taskID string, now time.Time) (int, er
   - 保护模式的提示词包含 `protectionRules`，不包含 `ContentRules`；
   - 开放模式包含 `ContentRules`，不包含 `protectionRules`；`ContentRules` 为空时两者都不出现；
   - 群聊里即使是成年人设也是保护模式；
-  - 受保护角色库里存了 `adult: true`，仍是保护模式；
+  - 库里存了 `minor: true, adult: true`（绕过校验写入）的版本，仍是保护模式；
   - 按 `core.md` 的新文字更新相关断言（`persona_test.go:54,60`）。
 - [ ] 提交：`feat(persona): content rules by mode in the system prompt`。
 
@@ -215,13 +212,13 @@ func (r *Reviewer) OutputProtected(text string, pol conloomapi.ReviewPolicy) Res
 
 ### Task A5：面板的人设表单与相关文档
 
-**Files:** `internal/panel/readviews.go`（`GET …/persona` 新增 `protected`、`content_mode` 两个字段，`content_mode` 按私聊计算）、`internal/panel/web/views/conversation.js`（人设表单）、`docs/configuration.md`、`docs/panel.md`、`docs/architecture.md`、`docs/usage.md`、`conloom.example.yaml`（字段示例，`content_rules` 用中性占位文字）。
+**Files:** `internal/panel/readviews.go`（`GET …/persona` 新增 `minor`、`content_mode` 两个字段，`content_mode` 按私聊计算；人设表单新增"未成年角色"开关，勾选后"成年人设"开关不可用）、`internal/panel/web/views/conversation.js`（人设表单）、`docs/configuration.md`、`docs/panel.md`、`docs/architecture.md`、`docs/usage.md`、`conloom.example.yaml`（字段示例，`content_rules` 用中性占位文字）。
 
 **Consumes：** A1。
 
 - [ ] **测试**：
-  - `GET persona`：受保护角色返回 `protected: true`；成年、不受保护的人设返回 `content_mode: open`；
-  - 受保护角色 PUT `adult: true` 返回 400；
+  - `GET persona`：`minor` 原样返回；成年、非未成年的人设返回 `content_mode: open`；
+  - PUT 同时设 `minor` 和 `adult` 返回 400；
   - 前端：`web_test.go` 照常通过，并用 `node --check` 检查改过的文件。
 - [ ] 提交：`feat(panel): edit adult flag and content rules; docs`。
 
@@ -305,7 +302,7 @@ func partDelay(part string) time.Duration
 **Consumes：** A2 的 `Prompt.Mode`、A3 的 `OutputProtected`。
 
 - [ ] **端到端测试**（假模型返回词表里的一个词）：
-  - 受保护人设的私聊：被拦截，有审计；
+  - 未成年人设的私聊：被拦截，有审计；
   - 成年人设的私聊：正常发出；
   - 成年人设的群聊：被拦截；
   - 开放模式下，系统提示词里出现 `content_rules`。
@@ -327,9 +324,9 @@ func partDelay(part string) time.Duration
 2. 部署。
 3. 线上配置：
    - `default_private_policy.reply.max_parts: 3`；
-   - 成年模板 模板加上 `adult: true`，规则字段留空。
+   - 成年模板 模板加上 `adult: true`，规则字段留空；未成年模板、孩童化模板 模板加上 `minor: true`，并在已有会话上重新套用模板，让库里的版本也带上这个标记。
 4. 重启。
 5. 实测：
-   - 面板显示某未成年角色会话是保护模式；
+   - 面板显示某未成年角色会话是未成年、保护模式；
    - 私聊连发三句只回复一次，并且分条发出、中间有"正在输入"；
    - 中途补话会放弃当前回复，重新组织。
