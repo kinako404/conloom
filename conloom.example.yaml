@@ -234,6 +234,11 @@ default_group_policy:
     max_unprompted_replies: 4     # 自上次被 @ 以来最多回复几轮就结束会话，1~20
     max_consecutive_skips: 2      # 连续几轮不回应就结束会话，1~10
     quote: auto                   # 群里回复何时引用原消息：auto 只在中间有别人插话或原消息超过 60 秒时引用；always 总是引用；never 从不引用
+    max_parts: 1                  # 一次回复最多分成几条消息发出，1~5；1 表示不分条
+    # 私聊等对方停顿多久才回复（0~60s），以及从任务创建起最多等多久（private_wait~2m）；只对私聊生效。
+    # 两项都缺失或都为 0 时一起按默认值补齐。
+    private_wait: 6s
+    private_max_wait: 20s
   context:
     max_recent_messages: 50
     max_context_tokens: 0         # 0 表示不额外限制
@@ -273,6 +278,10 @@ default_group_policy:
 # 不取上面 default_group_policy 里的配置，所以像 review.blocked_words 这样想在私聊里也生效的设置
 # 需要在这里再写一遍。整段省略时，私聊沿用 default_group_policy。已有策略版本的会话以库里的版本为准。
 default_private_policy:
+  reply:
+    max_parts: 3                  # 私聊像聊天那样把回复分成最多 3 条，按每条的长度隔 1~4 秒发出
+    private_wait: 6s              # 等对方停顿 6 秒再回，连发几句只回一次
+    private_max_wait: 20s
   context:
     max_recent_messages: 200      # 私聊只有一个人，可以带更长的历史
   memory:
@@ -290,7 +299,7 @@ runtime:
   max_merge_window: 4.5s        # 连续消息最长合并窗口
   session_idle: 5m              # 会话空闲回收时长
   # 流水表清理（每小时一次，分批删除）。聊天消息、记忆、群策略和人格版本永不清理。
-  ops_retention: 720h           # 已结束的任务及其已确认/已过期的发件箱动作保留时长，24h~8760h；至少保留到 idempotency_retention
+  ops_retention: 720h           # 已结束的任务及其已确认/已过期/已取消的发件箱动作保留时长，24h~8760h；至少保留到 idempotency_retention
   audit_retention: 2160h        # 审计记录保留时长，24h~87600h
   usage_retention: 9600h        # 模型调用用量记录保留时长（400 天），面板的用量统计最多查 400 天
 

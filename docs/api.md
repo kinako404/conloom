@@ -53,6 +53,8 @@
 
 - `GET /api/v1/outbox?limit=&wait=`：`limit` 默认 10，取值限制在 1~50；`wait` 是 Go 时长写法（如 `25s`），服务端最长等 30 秒。没有动作时一直等到有新动作、超时或服务关闭，然后返回空列表。
 - 每个会话每次只发放最老的一条未确认动作，并加租约（`runtime.outbox_lease`，默认 60 秒）；租约到期还没确认的动作会重新发放。
+- 一次回复分成多条（`reply.max_parts` 大于 1）时，每条是一个动作，带 `part_index`（从 1 开始）和 `part_count`；只有一条时两个字段都省略。第 1 条立即可发，后面每条有最早发送时间，到时间之前不会发放，也挡住同一会话后面的动作，但不影响别的会话。适配器不需要自己等待，可以用这两个字段判断后面是否还有分条（Telegram 适配器据此在两条之间显示“正在输入”）。
+- 私聊里回复被放弃时（见 [使用指南：私聊的节奏](usage.md#私聊的节奏)），还没发放的动作标记为已取消，不再发放；已经发放的照常发送和确认。
 - `POST /api/v1/outbox/{action_id}/ack`：请求体 `{"status":"sent|unsupported|failed","platform_message_id":"…","error":"…"}`。动作不存在返回 404，重复确认也返回 200。`sent` 时核心把这条回复记为机器人自己的消息。
 - 投递语义（至少一次）和残留风险见 [架构 7 节](architecture.md#7-可靠性语义)。
 
@@ -76,7 +78,8 @@
 
 - 请求体完全不含 `proactive` 段时，保留本群**当前**的主动搭话设置。
 - 只要含有 `proactive` 段，它就必须是完整且合法的一段。API 不会把它与当前设置或默认值合并，像 `{"enabled": false}` 这样只写部分字段的请求会被拒绝并返回校验错误。
-- 例外：`reply.turn_gap`、`turn_max_wait`、`turn_cooldown`、`max_unprompted_replies`、`max_consecutive_skips`、`quote` 和 `proactive.join_*` 在请求里缺少时逐字段按默认值补齐，方便旧的调用方继续使用；已移除的 `proactive.contact_cooldown` 出现在请求里会被忽略。
+- 例外：`reply.turn_gap`、`turn_max_wait`、`turn_cooldown`、`max_unprompted_replies`、`max_consecutive_skips`、`quote`、`max_parts` 和 `proactive.join_*` 在请求里缺少时逐字段按默认值补齐，方便旧的调用方继续使用；已移除的 `proactive.contact_cooldown` 出现在请求里会被忽略。
+- `reply.private_wait` 和 `private_max_wait` 成对补齐：两者都缺少或都为 0 时，一起取会话类型对应的默认值，所以请求里把两者都设为 0 表示“用默认值”，存下来的是默认值；只要有一个不为 0，就按写的值校验（`private_wait` 0~60s，`private_max_wait` 从 `private_wait` 到 2m）。
 - 请求体完全不含 `memory` 段时，同样保留本群**当前**的记忆设置，与 `proactive` 相同。含有 `memory` 段时，段内缺少的键取内置默认值，不与当前设置合并：`{"memory":{"enabled":true}}` 得到 `affinity: true`、`consolidate_every: 150`、`consolidate_interval: 6h`、`backlog: 1000`；显式写出的 `0` 和 `false` 保留。`memory.enabled` 为 true 时要求 `concurrency.allow_long_requests` 也为 true，否则返回校验错误。
 - 只想关闭主动搭话时，管理员可以在群里发 `/主动 全群 关`：它以当前版本为基础写入一个新版本，只改 `proactive.enabled`（`开` 同理），可以用 `GET …/policy` 查看结果。
 - 把 `concurrency.max_interactive_requests` 设为 0 等同于 `/pause`：本群正在生成和排队的回复会被静默取消。

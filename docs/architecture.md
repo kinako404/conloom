@@ -84,8 +84,8 @@ NapCat      Adapter                 Core                          SQLite        
 5. **落库**：判定结果连同事件、消息、新任务在**一个事务**里写入（`internal/store/sqlite/ingest.go:15`），消息同时写进关键词索引 `message_fts`（5.7）。`ignore` 的消息正文不落库，只留幂等记录。事件发生时间已超过 `runtime.stale_task_after`（默认 2 分钟）的消息只记录、不回复。
 6. **调度**：任务进入该群的调度会话，等合并窗口关闭、并发和最短间隔满足后开始执行（第 3 节）。
 7. **执行**（`internal/core/runner.go:160`）：取历史、审查输入、拼 prompt、路由选模型、申请准入、调用模型，再处理 `[[SKIP]]`、清洗、审查输出（第 5 节）。
-8. **写 Outbox**：`complete` 在一个事务里写任务终态和 `outbox_actions` 行（`orchestrator.go:801`），然后唤醒正在长轮询的适配器。是否引用触发消息由 `reply.quote` 决定（`orchestrator.go:858`）。
-9. **投递**：适配器 `GET /outbox` 长轮询（最长 30 秒）。每个会话每次只发放最老的一条动作，并加 60 秒租约（`internal/store/sqlite/outbox.go:39`）。
+8. **写 Outbox**：`complete` 在一个事务里写任务终态和 `outbox_actions` 行（`orchestrator.go:801`），然后唤醒正在长轮询的适配器。是否引用触发消息由 `reply.quote` 决定（`orchestrator.go:858`）。`reply.max_parts` 大于 1 时一次回复可以写成几行动作，后面的带最早发送时间（3.7）。
+9. **投递**：适配器 `GET /outbox` 长轮询（最长 30 秒）。每个会话每次只发放最老的一条动作，并加 60 秒租约（`internal/store/sqlite/outbox.go:39`）；最老的一条还没到最早发送时间时，这个会话这次什么也不发，别的会话不受影响。
 10. **发送与 ACK**（`adapter.go:424`）：先查去重日志；发送成功后把 `action_id` 和平台消息 ID 写入去重日志并 fsync，再 `POST /outbox/{action_id}/ack`。
 11. **记录机器人自己的消息**：ACK 为 `sent` 时，核心在同一事务里把这条回复作为 `from_bot` 消息写进消息表和关键词索引（`internal/store/sqlite/outbox.go:102`）。之后群友回复这条消息，就会被识别为“回复机器人”；下一次调用模型时，它会作为 assistant 历史出现。
 
@@ -100,7 +100,7 @@ NapCat      Adapter                 Core                          SQLite        
 - **@**：消息（或图片说明）的 entities 里，`mention` 文本等于 `@<机器人用户名>`（不分大小写）算 @ 机器人，这段文字从正文去掉；其他 `mention` 算 @ 群友，ID 为 `username_<用户名小写>`（entity 只带用户名），`text_mention` 带用户对象，ID 为 `user_<用户ID>`。offset 按 UTF-16 计（`convert.go:180`）。
 - **正文和命令**：文字原样提交；媒体写成 `[图片]`、`[表情]`、`[语音]`、`[视频]`、`[文件]` 占位并接上说明文字，不传附件元数据；`/start` 转成“你好”。命令带 `@<机器人用户名>` 后缀时去掉后缀；后缀是别的机器人时原样上报，核心的 `ParseCommand` 不认这种词，按普通消息处理（`convert.go:232`）。
 - **发消息**：`sendMessage` 纯文本、不设 `parse_mode`。超过 4096 个 UTF-16 单位时按空行、换行或字数拆成多条，只有第一条带 `reply_parameters`（`allow_sending_without_reply: true`）（`send.go:31`、`send.go:99`）。429 按 `retry_after` 等待后重试，最多 5 次（`send.go:184`）。
-- **“正在输入”**：核心对这条消息返回 `disposition=reply` 后，每 4 秒发一次 `sendChatAction(typing)`。每次发之前用 `GET /api/v1/tasks/{id}` 查回复任务，任务已结束就停止（需要 `tasks:read`，没有时警告一次、退回只按下面两条停止）；该会话的回复发出时停止；最长 60 秒（`typing.go:46`、`adapter.go:369`）。
+- **“正在输入”**：核心对这条消息返回 `disposition=reply` 后，每 4 秒发一次 `sendChatAction(typing)`。每次发之前用 `GET /api/v1/tasks/{id}` 查回复任务，任务已结束就停止（需要 `tasks:read`，没有时警告一次、退回只按下面两条停止）；该会话的回复发出时停止；最长 60 秒（`typing.go:46`、`adapter.go:369`）。分条回复里，发完不是最后一条的分条（`part_index < part_count`）后再发一次“正在输入”，在后台发、不耽误投递（`send.go:177`）。
 - **隐私模式**：Telegram 默认的隐私模式下，机器人在群里只收到发给它的命令和回复它的消息，看不到普通聊天。要让在聊会话、观望加入和上下文正常工作，需要在 BotFather 关闭隐私模式或把机器人设为群管理员，见 [接入 Telegram](telegram.md#4-群里的隐私模式)。
 - **结果不明不重发**：与 NapCat 相同。请求没写出去（连接失败）时不 ACK，等租约过期重新投递；Telegram 明确拒绝（4xx），或请求已写出但没拿到明确结果（超时、5xx、无法解析的响应），记入去重日志并以 `failed` 确认。是否写出由 `httptrace` 判断（`api.go:88`）。
 - **token**：Bot API 的请求地址含 token，`botAPI` 返回的所有错误都把 token（含各种转义形式）替换成 `REDACTED`（`api.go:61`）。
@@ -135,6 +135,7 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 
 - 直接对话：`reply.debounce`（1.5s）滑动防抖，每并入一条就顺延，从入队算起最多 `runtime.max_merge_window`（4.5s）。
 - 一轮：用 `reply.turn_gap`（6s）判断“说完了”，最多等 `reply.turn_max_wait`（20s）；被接话冷却挂起后改按 4.6 的规则（每句重新等 `turn_gap`，最多挂起 `turn_cooldown + turn_max_wait`）。
+- 私聊：`reply.private_wait`（6s）滑动等待，每并入一条就顺延，从任务创建起最多 `reply.private_max_wait`（20s）。回复开始之后再来的消息不是并入，而是打断重来（3.7）。
 - 加入群聊任务：窗口立即关闭，不并入任何消息。
 - 一轮正在等待时，同一个人 @ 或回复了机器人：这条消息并入这一轮，任务标记为“被点名”，等待时间收紧到 `debounce` 以内，整轮按直接对话处理。
 - 普通 `observe` 消息也会并进同一发送者还开着的窗口，所以“@机器人 + 紧接着补充一句”只回一次。
@@ -147,7 +148,7 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 2. 本群运行中的任务数 < `concurrency.max_interactive_requests`（0/1/2，默认 1；0 表示暂停）；
 3. 距离本群上一个任务**结束**至少 `reply.min_reply_interval`（2s）。不满足时只是延后，不丢弃。
 
-其他限速：每人每分钟 `reply.user_rate_limit_per_minute`（6）次，超出只记录（`rate_limited`）；本群排队任务超过 `concurrency.max_queued_requests`（10）时新任务只记录（`queue_full`）。
+其他限速：每人每分钟 `reply.user_rate_limit_per_minute`（6）次，按新建的任务计，并入已有任务的消息不扣，私聊打断重来新建的任务也扣一次；超出只记录（`rate_limited`）；本群排队任务超过 `concurrency.max_queued_requests`（10）时新任务只记录（`queue_full`）。
 
 模型调用前还有一道全局准入（`internal/admission`）：按 Profile 限制并发（`runtime.max_concurrency`，默认 2）和 token 预算，按优先级排队，直接对话优先于加入群聊任务，最多等 60 秒。
 
@@ -156,10 +157,27 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 - `POST /tasks/{id}/cancel`：正在执行的任务取消它的 context，最多等 5 秒让 Runner 记成 `cancelled`；还在排队的直接从队列删除。正在执行的命令无法取消。
 - `/stop`：取消本群里发送者自己发起的任务，管理员可以取消全部。
 - `/pause`（或策略并发改为 0）：结束在聊会话、停掉停顿计时器、取消所有活跃任务。
+- 私聊打断重来：回复开始后同一个人又发来消息，旧任务被取代，见 3.7。
 
 ### 3.6 重启恢复
 
-`Recover`（`internal/core/recover.go:46`）在开始对外服务前运行一次：列出 `queued` / `running` 任务，事件距今已超过 `stale_task_after` 的记为 `failed/STALE`、不发任何东西；命令立即重跑；其余重新入队，立刻可执行。合并窗口、接话冷却、在聊会话等内存状态不会恢复（第 6 节）。之后维护协程每 30 秒让过期的 Outbox 动作失效，每小时清理过期的幂等记录和 7 天前的主动搭话日志，并分批清理过期的流水数据（`internal/core/cleanup.go`）：结束超过 `ops_retention`（且超过 `idempotency_retention`）的任务连同它们的 Outbox 动作、已确认或已过期且任务已不存在的动作、超过 `audit_retention` 的审计记录、超过 `usage_retention` 的模型用量明细（8.1），以及过期的面板登录会话（8.2）。每张表每个事务最多 1000 行、每轮最多 10 个事务；还有待投递或已租出动作的任务不删；排队中和运行中的任务不删，所以 `Recover` 不受影响。这些清理在维护开始时也各执行一次。另一个协程在后台补建关键词索引（5.7）。
+`Recover`（`internal/core/recover.go:46`）在开始对外服务前运行一次：列出 `queued` / `running` 任务，事件距今已超过 `stale_task_after` 的记为 `failed/STALE`、不发任何东西；命令立即重跑；其余重新入队，立刻可执行。合并窗口、接话冷却、在聊会话等内存状态不会恢复（第 6 节）。之后维护协程每 30 秒让过期的 Outbox 动作失效，每小时清理过期的幂等记录和 7 天前的主动搭话日志，并分批清理过期的流水数据（`internal/core/cleanup.go`）：结束超过 `ops_retention`（且超过 `idempotency_retention`）的任务连同它们的 Outbox 动作、已确认、已过期或已取消且任务已不存在的动作、超过 `audit_retention` 的审计记录、超过 `usage_retention` 的模型用量明细（8.1），以及过期的面板登录会话（8.2）。每张表每个事务最多 1000 行、每轮最多 10 个事务；还有待投递或已租出动作的任务不删；排队中和运行中的任务不删，所以 `Recover` 不受影响。这些清理在维护开始时也各执行一次。另一个协程在后台补建关键词索引（5.7）。
+
+### 3.7 私聊节奏和分条
+
+**私聊的时序**（`submitPrivate`，`orchestrator.go:539`；`MergeOptions.Interrupt`，`scheduler.go:83`）：私聊消息新建的任务按 `reply.private_wait` 滑动等待、从创建起最多 `reply.private_max_wait`（3.3）。同一个人的后续消息按他最新一个任务所处的阶段处理：
+
+1. **还没开始执行**（在等待，或等待已结束但还在排队）：并入这个任务，重新计时。
+2. **正在生成**（库里还没写出结果）：取代它（`supersede`，`orchestrator.go:570`）。新任务的触发消息是旧任务的全部触发消息加上这一条，与把旧任务记为 `cancelled` 在同一个事务里写入；旧任务的 context 被取消，它的 Runner 之后只会把任务再记一次 `cancelled`，不写任何动作。新任务重新等 `private_wait`。
+3. **结果已写出，但一条动作都还没发放**：同样取代，旧任务的全部动作在同一个事务里标成 `cancelled`（`abandonReply`，`internal/store/sqlite/outbox.go:159`），新任务带上旧任务的全部触发消息；审计记一条 `outbox.superseded`（含旧任务、被取消的条数和新任务）。
+4. **已经有动作发放过**：不取代。新任务只含这一条消息；新任务写入之后，旧任务还没发放的动作标成 `cancelled`（`cancelUnsentParts`，`orchestrator.go:662`；`CancelPendingActions`，`outbox.go:151`），也记 `outbox.superseded`。已发放的照常发送，ACK 后作为机器人的消息进入新任务的上下文。
+5. **全部发出**：正常新建任务。
+
+取代和完成的竞态由同一把提交锁和事务收口：Runner 写结果（`complete`）和取代都要先拿到任务的提交锁；取代时库里任务已结束（`ErrTaskFinished`）就改按第 3 步作废它的动作，这时有动作已发放（`ErrReplyHandedOut`）或任务根本没有动作（跳过、被拦截）就改按第 4 步新建任务，所以同一批消息不会回复两次，也不会没人回。每次取代都会新建任务，按 3.4 扣一次每人限流；超出时这条消息只记录（`rate_limited`），旧任务不受影响，照常完成。被取消的动作 ACK 时仍保持 `cancelled`，不会写成机器人的消息。私聊里的命令不进调度器，不并入也不取代；处理命令前先结束这个人的这一轮（`Scheduler.EndTurn`），命令之前的任务不再被并入或取代。群聊不打断。
+
+**分条**（`splitParts`，`parts.go:23`；`newActions`，`orchestrator.go:1146`）：`reply.max_parts` 大于 1 时，系统提示词末尾说明最多可以分几条、分隔符是单独一行的 `|||`（`partsDirective`，`runner.go:516`；为 1 时说明只发一条）。输出审查对整段做一次，然后按分隔符切分：去掉首尾空白、丢弃空段、超过 `max_parts` 的段用换行并入最后一段；被拦截时一条都不写。每段一行动作，带 `part_index` 和 `part_count`；只有第 1 条可能引用（4.8）。
+
+**分条的节奏**：第 1 条立即可发；第 i 条（i ≥ 2）的最早发送时间 `not_before` 是第 i−1 条的加上 `clamp(800ms + 60ms × 第 i 条的字数, 1s, 4s)`（`partDelay`，`parts.go:51`），从写出结果的时刻起累计。所有分条的过期时间都和第 1 条相同（写出时刻加 `action_ttl`），不会出现前面的过期、后面的单独发出。`LeaseOutbox` 只发放 `not_before` 已到的动作（迁移 `0010_outbox_not_before.sql`，旧动作为空，表示立即可发）；同一会话仍严格按顺序，没到时间的分条挡住这个会话后面的动作，但不挡别的会话。适配器不睡眠等待；长轮询每 2 秒重新检查一次，所以实际间隔可能比计算值多出最多约 2 秒。
 
 ## 4. 群聊参与
 
@@ -294,6 +312,9 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | `reply.max_unprompted_replies` | 4 | 未点名回复上限，到了结束会话，1..20 |
 | `reply.max_consecutive_skips` | 2 | 连续跳过上限，到了结束会话，1..10 |
 | `reply.quote` | auto | 引用规则：auto / always / never |
+| `reply.max_parts` | 1 | 一次回复最多分几条，1..5；1 表示不分条 |
+| `reply.private_wait` | 6s | 私聊停顿多久才开始回复，0..60s |
+| `reply.private_max_wait` | 20s | 私聊从任务创建起最多等多久，private_wait..2m；和 `private_wait` 都为 0 时两者一起取默认值 |
 | `proactive.enabled` | true | 观望加入的群开关 |
 | `proactive.default_level` | low | 没自己设过档位的成员用的档位 |
 | `proactive.eligibility_ttl` | 720h | 资格有效期（30 天），1h..8760h |
@@ -370,7 +391,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 3. **`[[SKIP]]`**：命中即结束，任务 `succeeded`、`review_result=skipped`，不产生动作。
 4. **清洗聊天记录格式**（`StripTranscriptPrefix`，`internal/contextbuilder/strip.go`）：模型有时会把 `[12:30] 小明：`（含回复和 @ 注释）、【当前消息】、`（@了 …）` 这类格式抄进回复里，这里反复去掉开头的这些前缀。开头抄了记忆块时，去掉【你记得的事 标题行，再接着去掉紧随其后的记忆块行（“群里最近：…”、“名字（档位）：…”或“名字：…”、以“好感度只表示”开头的结尾行），直到遇到不像记忆块的行为止；结尾行被改写或缺失时笔记也不会被发出去。名字里有句读标点时不删，避免误删正文。轮次和加入群聊任务清完为空时按跳过处理。
 5. **输出审查**（`Reviewer.Output`，`internal/review/review.go:109`）：删除 `[CQ:...]` 平台控制码，配置里的密钥原值和常见密钥模式打码，屏蔽词按 `review.action` 处理（block / sanitize / allow），最长 1500 字。被拦截时写审计 `review.block`（不记正文），任务 `succeeded`、`review_result=blocked`，什么也不发。
-6. **写 Outbox**：生成动作，决定是否引用，和任务终态一起提交。
+6. **写 Outbox**：按 `reply.max_parts` 切成一条或几条（3.7），生成动作，决定是否引用，和任务终态一起提交。
 
 适配器发送时只用消息段数组（可选的 reply 段加一个 text 段），不用 CQ 字符串，所以模型输出里的控制码不会生效；机器人也不会 @ 人或发图片。
 
@@ -499,7 +520,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 |---|---|---|
 | 事件幂等记录 | SQLite `events` | 保留 `idempotency_retention`（168h） |
 | 消息 | SQLite `messages` | 永久保留 |
-| 任务、Outbox 动作 | SQLite `tasks`、`outbox_actions` | 未完成任务由 `Recover` 恢复；已结束的任务和已确认 / 已过期的动作保留 `ops_retention`（720h，且不短于 `idempotency_retention`） |
+| 任务、Outbox 动作 | SQLite `tasks`、`outbox_actions` | 未完成任务由 `Recover` 恢复；已结束的任务和已确认 / 已过期 / 已取消的动作保留 `ops_retention`（720h，且不短于 `idempotency_retention`） |
 | 群策略、人格版本 | SQLite | 永久保留 |
 | 审计 | SQLite `audit_events` | 保留 `audit_retention`（2160h） |
 | 成员资格、档位、兴趣画像 | SQLite `conversation_members` | 保留 |

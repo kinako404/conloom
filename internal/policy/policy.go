@@ -67,7 +67,9 @@ func (s *Service) OnChange(fn func(convKey string)) {
 // Current returns the latest stored policy, or the defaults of the conversation's type (see
 // WithPrivateDefaults) as version 0 without writing anything.
 // A section or setting missing from a stored version (such as proactive or memory, or the turn-taking,
-// quote and join settings, in versions written before they existed) is filled from the defaults.
+// quote, max_parts and join settings, in versions written before they existed) is filled from the
+// defaults; private_wait and private_max_wait are filled as a pair, only when both are zero (see
+// conloomapi.GroupPolicy.WithDefaults).
 func (s *Service) Current(ctx context.Context, convKey string) (store.PolicyVersion, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -94,8 +96,8 @@ func (s *Service) current(ctx context.Context, convKey string) (store.PolicyVers
 // Update stores put.Policy as a new version. When put omits the proactive or memory section (see
 // conloomapi.PolicyPut.ProactiveOmitted and MemoryOmitted) the group's current section is kept,
 // which is the defaults for a group that never configured one; a section that is present is
-// validated as given, except that zero turn-taking, quote and join settings are filled from the
-// defaults as in Current.
+// validated as given, except that zero turn-taking, quote, max_parts and join settings, and
+// private_wait and private_max_wait when both are zero, are filled from the defaults as in Current.
 func (s *Service) Update(ctx context.Context, convKey string, put conloomapi.PolicyPut, by string) (store.PolicyVersion, error) {
 	return s.change(ctx, convKey, by, "update", func(cur store.PolicyVersion) (conloomapi.GroupPolicy, string, bool, error) {
 		p := put.Policy

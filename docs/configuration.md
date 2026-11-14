@@ -169,6 +169,9 @@ default_group_policy:
     max_unprompted_replies: 4     # 两次被直接点名之间最多几次未点名回复，达到后会话结束，1~20
     max_consecutive_skips: 2      # 连续几轮没回后会话结束，1~10
     quote: auto                   # 群里回复何时引用原消息：auto（必要时）| always | never
+    max_parts: 1                  # 一次回复最多分成几条消息发出，1~5；1 表示不分条
+    private_wait: 6s              # 私聊里对方停顿多久才开始回复，0~60s；只对私聊生效
+    private_max_wait: 20s         # 私聊从任务创建起最多等多久，private_wait~2m；只对私聊生效
   context:
     max_recent_messages: 50       # 上下文最多带多少条历史消息，0~500
     max_context_tokens: 0         # 本群的上下文窗口上限，0 表示不额外限制
@@ -205,6 +208,10 @@ default_group_policy:
 
 ```yaml
 default_private_policy:
+  reply:
+    max_parts: 3
+    private_wait: 6s
+    private_max_wait: 20s
   context:
     max_recent_messages: 200
   memory:
@@ -216,13 +223,21 @@ default_private_policy:
 
 私聊的记忆、`/记住` 等用法见 [使用指南：记忆与好感度](usage.md#记忆与好感度)。
 
+**分条和私聊节奏**：
+
+- `reply.max_parts` 大于 1 时，模型可以把一次回复分成最多这么多条消息，条与条之间用单独一行的 `|||` 分隔；多出来的段并入最后一段，空段丢弃。群聊和私聊都生效；为 1 时回复只发一条，和以前一样。
+- 第 1 条立即发出，之后每一条都比前一条晚 `clamp(800ms + 60ms × 这一条的字数, 1s, 4s)`，也就是按这一条自己的长度模拟打字时间。所有分条和第 1 条同时过期（`runtime.action_ttl`）。
+- `reply.private_wait` 和 `private_max_wait` 只对私聊生效：私聊消息等对方停顿 `private_wait` 才开始回复，期间的新消息都并入同一个任务；从任务创建起最多等 `private_max_wait`。`private_wait` 可以是 0，表示收到消息后立即开始。
+- 私聊里回复生成期间对方又发来消息时，会放弃这次回复、带着全部消息重新开始，每次重来都重新等 `private_wait`。完整规则见 [使用指南：私聊的节奏](usage.md#私聊的节奏)。
+
 **审查**：基础审查不可关闭。触发消息会清理控制字符并限制长度（4000 字）；模型输出会剥离平台控制码（如 `[CQ:…]`）、对密钥打码、按 `review.action` 处理屏蔽词，并截断到 1500 字。被拦截的回复不发送，只写一条不含正文的审计记录。详见 [架构 5.4 节](architecture.md#54-输出处理链)。
 
 **缺省与兼容规则**：
 
 - YAML 配置里省略的任何字段（或省略整个 `proactive` 段）都保持上面的默认值。
 - 已存库的策略版本缺少 `proactive` 段时，读取时按默认值补齐，即主动搭话默认开启、档位默认为低。
-- 已存库的版本或 API 请求里缺少 `reply.turn_gap`、`turn_max_wait`、`turn_cooldown`、`max_unprompted_replies`、`max_consecutive_skips`、`quote` 或 `proactive.join_*` 时，逐字段按默认值补齐（`quote` 补为 `auto`，`turn_cooldown` 补为 45s）；这些字段的零值本身都不合法，所以不会覆盖有意的设置。补齐用的是会话类型对应的默认策略：群聊用 `default_group_policy`，私聊用 `default_private_policy`（没配置时也是 `default_group_policy`）。
+- 已存库的版本或 API 请求里缺少 `reply.turn_gap`、`turn_max_wait`、`turn_cooldown`、`max_unprompted_replies`、`max_consecutive_skips`、`quote`、`max_parts` 或 `proactive.join_*` 时，逐字段按默认值补齐（`quote` 补为 `auto`，`turn_cooldown` 补为 45s，`max_parts` 补为默认策略里的值，内置默认是 1）；这些字段的零值本身都不合法，所以不会覆盖有意的设置。补齐用的是会话类型对应的默认策略：群聊用 `default_group_policy`，私聊用 `default_private_policy`（没配置时也是 `default_group_policy`）。
+- `reply.private_wait` 的 0 是合法值，所以 `private_wait` 和 `private_max_wait` 成对补齐：两者**都**缺少或都为 0 时，一起取默认策略里的值；只要有一个不为 0，就按写的值校验。也就是说，通过 API 或面板把两者都设为 0，表示“用默认值”，存下来的是默认值（内置默认 6s 和 20s），不是 0；想让私聊收到消息立即开始，把 `private_wait` 设为 0、`private_max_wait` 设为大于 0 的值。
 - `continuation_window` 不补，旧版本里的 `0s` 仍表示不开启在聊模式；它不为 0 时必须大于 `turn_cooldown`，否则校验失败（否则挂起的一轮会在会话超时后才放行，然后被丢弃）。
 - 已存库的策略版本缺少整个 `memory` 段时，读取时用会话类型对应的默认策略里的 `memory` 补齐，即群聊记忆按配置默认关闭，私聊按 `default_private_policy.memory`。
 - `memory` 段内缺少的键取内置默认值（`affinity: true`、`consolidate_every: 150`、`consolidate_interval: 6h`、`consolidate_min: 20`、`backlog: 1000`，`enabled` 为 `false`）；显式写出的 `0` 和 `false` 保留。加入 `consolidate_min` 之前存库的版本读出来是 20，和原来写死的条数一致。
@@ -240,7 +255,7 @@ default_private_policy:
 | `idempotency_retention` | 168h | 事件幂等记录的保留时长 |
 | `max_merge_window` | 4.5s | 直接对话合并连续消息的最长窗口 |
 | `session_idle` | 5m | 调度会话（每个会话的任务队列）空闲多久后回收，最小 1m |
-| `ops_retention` | 720h | 已结束（成功、失败、取消）的任务和它们已确认或已过期的发件箱动作的保留时长，24h~8760h。实际保留时长取它和 `idempotency_retention` 中较长的一个，保证重放的事件响应里的 `task_id` 仍能查到 |
+| `ops_retention` | 720h | 已结束（成功、失败、取消）的任务和它们已确认、已过期或已取消的发件箱动作的保留时长，24h~8760h。实际保留时长取它和 `idempotency_retention` 中较长的一个，保证重放的事件响应里的 `task_id` 仍能查到 |
 | `audit_retention` | 2160h | 审计记录（策略和人格修改、审查拦截、面板登录和修改）的保留时长，24h~87600h |
 | `usage_retention` | 9600h | 模型用量明细（`model_calls` 表，每次模型调用一行）的保留时长，默认 400 天；面板的用量统计最长也是 400 天，调短后更早的日子显示为 0。体积见 [Web 管理面板：模型用量](panel.md#模型用量) |
 
