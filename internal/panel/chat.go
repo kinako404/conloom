@@ -82,8 +82,8 @@ func (s *Server) postChatMessage(w http.ResponseWriter, r *http.Request, sess *S
 
 // getChat lists the conversation's messages after the seq cursor after,
 // oldest first and at most 200, and whether the bot is still answering: the
-// conversation has queued or running tasks, or panel-channel actions not yet
-// delivered. NextAfter is the cursor of the next poll.
+// conversation has queued or running tasks, or panel-channel actions neither
+// delivered nor expired. NextAfter is the cursor of the next poll.
 func (s *Server) getChat(w http.ResponseWriter, r *http.Request, _ *Session) {
 	chat, ok := s.chatService(w, r)
 	if !ok {
@@ -105,7 +105,7 @@ func (s *Server) getChat(w http.ResponseWriter, r *http.Request, _ *Session) {
 	// shows next to a stale indicator rather than neither showing.
 	typing := chat.Busy(conv.Key)
 	if !typing {
-		pending, err := s.d.Store.PendingPanelActions(r.Context(), conv.Key)
+		pending, err := s.d.Store.PendingPanelActions(r.Context(), conv.Key, s.now())
 		if err != nil {
 			s.fail(w, r, err)
 			return

@@ -63,8 +63,9 @@ type Store interface {
 	// LeasePanelOutbox leases due actions with channel "panel" across all bots: per
 	// conversation only the head of that channel, same not_before/lease rules as LeaseOutbox.
 	LeasePanelOutbox(ctx context.Context, limit int, now time.Time, lease time.Duration) ([]OutboxRecord, error)
-	// PendingPanelActions counts the conversation's pending or leased panel-channel actions.
-	PendingPanelActions(ctx context.Context, convKey string) (int, error)
+	// PendingPanelActions counts the conversation's pending or leased panel-channel
+	// actions not yet expired at now.
+	PendingPanelActions(ctx context.Context, convKey string, now time.Time) (int, error)
 	GetOutbox(ctx context.Context, botID, actionID string) (OutboxRecord, error)
 	AckOutbox(ctx context.Context, botID, actionID string, ack conloomapi.AckRequest, botMsg *MessageRecord, now time.Time) (alreadyAcked bool, err error)
 	ExpireOutbox(ctx context.Context, now time.Time) (int, error)

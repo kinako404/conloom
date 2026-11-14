@@ -115,7 +115,7 @@ NapCat      Adapter                 Core                          SQLite        
 - **队首按（会话，通道）判断**：适配器的 `LeaseOutbox` 只看原平台通道，面板投递器的 `LeasePanelOutbox` 只看 `panel` 通道（`internal/store/sqlite/outbox.go:46`、`:51`），每个会话在每个通道里各自只发放最老的一条。一个通道里没到时间的分条或没确认的动作只挡这个通道，不挡同一会话的另一个通道。
 - **面板投递器**（`outbox.PanelDeliverer`，`internal/outbox/panel.go`）：一个后台协程，每秒一次、以及每次被唤醒时，租出所有 bot 已到期的面板动作（每批最多 50 条），直接以 `sent` 确认，平台消息 ID 合成为 `panel_<action_id>`。确认和适配器的 ACK 走同一个 `outbox.Service.Ack`，机器人的消息同样写进消息表，带 `panel` 通道。确认后同一会话的下一条成为队首，所以每轮一直拉到没有到期的动作为止。
 - **唤醒**：核心的 `Notifier` 是 `core.Notifiers{发件箱, 面板投递器}`（`orchestrator.go:52`，在 `internal/app/app.go` 装配），任务写出动作和分条到点（`partWakes`）时两边同时被唤醒，所以分条在面板里的间隔和原平台一样。重启后剩下的面板分条由每秒一次的轮询发出。
-- **“正在输入”**：会话里有排队或运行中的任务（`Orchestrator.Busy`），或者面板通道还有没确认的动作（`PendingPanelActions`）时，聊天接口返回 `typing: true`。
+- **“正在输入”**：会话里有排队或运行中的任务（`Orchestrator.Busy`），或者面板通道还有没确认、也没过期的动作（`PendingPanelActions`）时，聊天接口返回 `typing: true`。
 - **新建**（`CreatePanelChat`）：写一个 `panel` 平台的私聊会话（ID `panel_<随机>`）、它的用户，和一条不带消息的创建事件（记住称呼）。`panel` 平台的发言人一律算管理员（`isAdmin`，`orchestrator.go:802`），不受 `private_chat` 和白名单限制（`config.BotConfig.PrivateAllowed`）。
 - **删除**（`DeletePanelChat`，`panelchat.go:205`）：只允许 `panel` 平台的会话。先取消会话里排队和运行中的任务，最多等 5 秒让运行中的停下；没停下就什么都不删，返回 `ErrChatBusy`（面板返回 409，可以重试）。随后在一个事务里删掉这个会话键下所有表的数据和它的事件（`DeleteConversation`，`internal/store/sqlite/delete.go:22`），保留 `model_calls` 和审计；再清掉内存里的调度会话、限流记录、人设和策略缓存。被忽略的消息的事件既不存原文也没有任务，删除时认不出它属于这个会话，留到事件保留期（`idempotency_retention`）满由清理任务删除。
 - **锁**：同一个聊天的提交和删除按会话键串行（`lockTable`，`panelchat.go`），删除时提交等它结束，然后发现会话已不存在（404）。锁表只放正在使用的键，用完即删；不同聊天互不等待。

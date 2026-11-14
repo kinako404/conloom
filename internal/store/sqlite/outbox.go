@@ -106,11 +106,11 @@ func (db *DB) leaseHeads(ctx context.Context, scope string, scopeArgs []any, lim
 	return out, nil
 }
 
-func (db *DB) PendingPanelActions(ctx context.Context, convKey string) (int, error) {
+func (db *DB) PendingPanelActions(ctx context.Context, convKey string, now time.Time) (int, error) {
 	var n int
 	err := db.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_actions
-		WHERE channel = ? AND status IN (?, ?) AND conversation_key = ?`,
-		store.ChannelPanel, store.OutboxPending, store.OutboxLeased, convKey).Scan(&n)
+		WHERE channel = ? AND status IN (?, ?) AND conversation_key = ? AND expires_at > ?`,
+		store.ChannelPanel, store.OutboxPending, store.OutboxLeased, convKey, fmtTime(now)).Scan(&n)
 	return n, err
 }
 

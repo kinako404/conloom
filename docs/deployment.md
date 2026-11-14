@@ -418,13 +418,22 @@ sudo journalctl -u conloom | grep 'panel listening'
 
 **回退到没有 Web 管理面板的旧版本**（没有迁移 0008、0009）：先从 `conloom.yaml` 里删掉整个 `panel` 段和 `runtime.usage_retention`，否则旧二进制因为未知字段启动失败。旧二进制会忽略 `model_calls`、`panel_sessions` 两张表，不需要用备份恢复；回退期间的模型调用不会记入用量，再升级回来后这段时间在用量页上是空白。
 
-**回退到没有面板聊天的旧版本**（没有迁移 0011，也就是 `messages`、`outbox_actions` 没有 `channel` 列的版本）：旧二进制不认识通道，会把面板通道里还没送达的回复交给适配器发到真实平台。所以停掉新版本之后、启动旧版本之前，先把这些动作取消：
+**回退到没有面板聊天的旧版本**（没有迁移 0011，也就是 `messages`、`outbox_actions` 没有 `channel` 列的版本）：旧二进制不认识通道。面板触发、还没送达的回复会被它当成普通回复：接管的私聊里发到真实平台的用户那里，面板里新建的聊天（`panel_…`）则交给适配器（发不出去）。这包括发件箱里还没送达的动作，也包括还在排队、等待或生成中的任务——旧二进制启动时会恢复这些任务，写出的回复同样没有通道。按下面的步骤回退：
 
-```sql
-UPDATE outbox_actions SET status='cancelled' WHERE channel='panel' AND status IN ('pending','leased');
-```
+1. 停止新版本之前，先在面板里确认所有面板聊天和被接管的私聊都不再显示“对方正在输入…”，并且这段时间不要再从面板发消息。
+2. 停止新版本，并且在启动旧版本之前，对数据库执行下面两条语句（先备份）：
 
-旧二进制忽略 `channel` 列。面板里新建的聊天（平台为 `panel`）留在库里，旧版本没有面板聊天，再升级回来后可以继续聊或删除。
+   ```sql
+   UPDATE tasks SET status='cancelled' WHERE status IN ('queued','running')
+     AND (conversation_key LIKE '%:panel:private:%'
+          OR conversation_key IN (SELECT DISTINCT conversation_key FROM messages WHERE channel='panel'));
+   UPDATE outbox_actions SET status='cancelled' WHERE channel='panel' AND status IN ('pending','leased');
+   ```
+
+   **注意**：第一条按会话取消，不分通道。被接管过的私聊里，平台用户刚发、还在排队或生成中的消息也会被取消，这些用户收不到这次回复。所以第 1 步仍然要做，尽量让这条语句什么都不用取消。
+3. 启动旧版本。
+
+旧二进制忽略 `channel` 列。面板里新建的聊天（平台为 `panel`）留在库里，但在旧版本上不能用：旧版本没有面板聊天，也没有对应的适配器，不要在旧版本上给这些会话发消息或触发主动发言。再升级回来后可以继续聊或删除。
 
 **回退到没有私聊节奏的旧版本**（没有迁移 0010，也就是没有分条发送和私聊等待的版本）：先从 `conloom.yaml` 里删掉 `reply.max_parts`、`reply.private_wait`、`reply.private_max_wait`（包括 `default_private_policy` 里的），否则旧二进制因为未知字段启动失败。旧二进制忽略 `outbox_actions` 的 `not_before` 列，回退时还没发出的分条会立即接连发出；已取消的动作它不会发放，会随所属任务一起被清理。存库的策略版本里这三个键会被旧二进制忽略，它写入的新版本（API、面板、`/pause` 等）不带这三个键，再升级回来后按默认值补齐，`max_parts` 变回默认策略里的值。
 

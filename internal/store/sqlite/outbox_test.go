@@ -724,18 +724,23 @@ func TestPendingPanelActions(t *testing.T) {
 	now := time.Now().UTC()
 	acked := panelAction("p0", testConvKey, now)
 	acked.Status = store.OutboxAcked
-	insertActions(t, db, acked, panelAction("p1", testConvKey, now), panelAction("p2", testConvKey, now),
+	late := panelAction("p3", testConvKey, now)
+	late.ExpiresAt = now.Add(time.Second)
+	insertActions(t, db, acked, panelAction("p1", testConvKey, now), panelAction("p2", testConvKey, now), late,
 		convAction("a1", testConvKey, now), panelAction("q1", testConvKeyB, now))
 	leasePanel(t, db, 10, now)
-	if n, err := db.PendingPanelActions(ctx, testConvKey); err != nil || n != 2 {
-		t.Fatalf("PendingPanelActions = %d, %v; want 2", n, err)
+	if n, err := db.PendingPanelActions(ctx, testConvKey, now); err != nil || n != 3 {
+		t.Fatalf("PendingPanelActions = %d, %v; want 3", n, err)
+	}
+	if n, err := db.PendingPanelActions(ctx, testConvKey, now.Add(time.Second)); err != nil || n != 2 {
+		t.Fatalf("PendingPanelActions once p3 expired = %d, %v; want 2", n, err)
 	}
 	ack(t, db, "p1", nil, now)
 	ack(t, db, "p2", nil, now)
-	if n, err := db.PendingPanelActions(ctx, testConvKey); err != nil || n != 0 {
+	if n, err := db.PendingPanelActions(ctx, testConvKey, now.Add(time.Second)); err != nil || n != 0 {
 		t.Fatalf("PendingPanelActions after acks = %d, %v; want 0", n, err)
 	}
-	if n, err := db.PendingPanelActions(ctx, "missing"); err != nil || n != 0 {
+	if n, err := db.PendingPanelActions(ctx, "missing", now); err != nil || n != 0 {
 		t.Fatalf("PendingPanelActions of unknown conversation = %d, %v; want 0", n, err)
 	}
 }

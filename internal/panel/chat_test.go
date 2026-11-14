@@ -297,7 +297,7 @@ func TestChat_Typing(t *testing.T) {
 	h, chat := newChatHarness(t)
 	ctx := context.Background()
 	private := h.seedConv("qq", conloomapi.ConvPrivate, "20001")
-	at := time.Date(2026, 11, 13, 7, 0, 0, 0, time.UTC)
+	at := h.now
 
 	if h.chat(private.Key, 0).Typing {
 		t.Fatal("typing with nothing running")
@@ -332,6 +332,10 @@ func TestChat_Typing(t *testing.T) {
 	}
 	if !h.chat(private.Key, 0).Typing {
 		t.Fatal("not typing while a panel part is still to be delivered")
+	}
+	h.advance(time.Hour)
+	if h.chat(private.Key, 0).Typing {
+		t.Fatal("typing for an expired panel part")
 	}
 }
 
