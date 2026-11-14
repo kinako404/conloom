@@ -96,6 +96,8 @@ func buildSend(a conloomapi.Action) (sendPlan, error) {
 // recorded with an empty platform message ID and ACKed failed, so it is never
 // sent again. Once the first part is sent the action is recorded with that
 // part's ID; a later part that fails is dropped rather than risking a resend.
+// A sent action that is not the last part of its reply is followed by one
+// typing action, sent in the background so it never holds up delivery.
 func (a *Adapter) deliver(ctx context.Context, act conloomapi.Action) error {
 	log := a.log.With("action_id", act.ActionID, "conversation_id", act.ConversationID)
 	if pmid, ok := a.dedup.Seen(act.ActionID); ok {
@@ -171,6 +173,9 @@ func (a *Adapter) deliver(ctx context.Context, act conloomapi.Action) error {
 		}
 		a.ack(ctx, log, act.ActionID, conloomapi.AckRequest{Status: conloomapi.AckFailed, Error: reason})
 		return nil
+	}
+	if act.PartIndex > 0 && act.PartIndex < act.PartCount {
+		a.typing.once(plan.chatID)
 	}
 	log.Info("message sent", "platform_message_id", first, "parts", len(plan.parts), obs.MessageAttr(a.logCfg, act.Content.Text))
 	a.ack(ctx, log, act.ActionID, conloomapi.AckRequest{Status: conloomapi.AckSent, PlatformMessageID: first})

@@ -124,6 +124,80 @@ func replyActionTo(actionID, text, id string) conloomapi.Action {
 	return a
 }
 
+// stallingTransport holds every sendChatAction request until release is
+// closed and passes everything else on.
+type stallingTransport struct {
+	release chan struct{}
+}
+
+func (t *stallingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(r.URL.Path, "/sendChatAction") {
+		select {
+		case <-t.release:
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		}
+	}
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// partAction is replyAction numbered as part index of count.
+func partAction(actionID, text string, index, count int) conloomapi.Action {
+	a := replyAction(actionID, text, "")
+	a.PartIndex, a.PartCount = index, count
+	return a
+}
+
+func TestDeliver_TypingAfterANonFinalPart(t *testing.T) {
+	tg, core := newFakeTG(t), newFakeCore(t)
+	startAdapter(t, tgConfig(tg.URL, core.URL, t.TempDir()), nil)
+
+	core.Enqueue(partAction("act_p1", "第一句", 1, 3))
+	waitFor(t, 5*time.Second, "the first part's ACK", func() bool { return len(core.Acks()) == 1 })
+	waitFor(t, 5*time.Second, "typing after the first part", func() bool { return len(typingCalls(tg)) == 1 })
+	if typed, sent := typingCalls(tg)[0].At, tg.Calls("sendMessage")[0].At; typed.Before(sent) {
+		t.Errorf("typing sent at %v, before the first part at %v", typed, sent)
+	}
+
+	core.Enqueue(partAction("act_p3", "第三句", 3, 3))
+	waitFor(t, 5*time.Second, "the last part's ACK", func() bool { return len(core.Acks()) == 2 })
+	time.Sleep(300 * time.Millisecond)
+	if n := len(typingCalls(tg)); n != 1 {
+		t.Errorf("typing calls = %d, want only the one after part 1/3 and none after part 3/3", n)
+	}
+}
+
+func TestDeliver_NoTypingWithoutPartNumbers(t *testing.T) {
+	tg, core := newFakeTG(t), newFakeCore(t)
+	startAdapter(t, tgConfig(tg.URL, core.URL, t.TempDir()), nil)
+
+	core.Enqueue(replyAction("act_1", replyText, ""))
+	waitFor(t, 5*time.Second, "the ACK", func() bool { return len(core.Acks()) == 1 })
+	time.Sleep(300 * time.Millisecond)
+	if n := len(tg.Calls("sendChatAction")); n != 0 {
+		t.Errorf("sendChatAction calls = %d for an action without part numbers, want 0", n)
+	}
+	if ack := core.Acks()[0]; ack.Req.Status != conloomapi.AckSent || ack.Req.PlatformMessageID != "20001_501" {
+		t.Errorf("ack = %+v, want sent with 20001_501", ack)
+	}
+}
+
+func TestDeliver_TypingBetweenPartsDoesNotHoldDelivery(t *testing.T) {
+	tg, core := newFakeTG(t), newFakeCore(t)
+	core.Enqueue(partAction("act_p1", "第一句", 1, 2))
+	core.Enqueue(replyActionTo("act_b", "给小红的", "20002"))
+	transport := &stallingTransport{release: make(chan struct{})}
+	startAdapter(t, tgConfig(tg.URL, core.URL, t.TempDir()), func(a *Adapter) {
+		a.api.hc = &http.Client{Transport: transport}
+	})
+	defer close(transport.release)
+
+	waitFor(t, 2*time.Second, "both ACKs while the typing request hangs", func() bool { return len(core.Acks()) == 2 })
+	if n := len(tg.Calls("sendChatAction")); n != 0 {
+		t.Errorf("sendChatAction calls reaching Telegram = %d, want the request still held", n)
+	}
+}
+
 func TestDeliver_NotSentHoldsOnlyItsConversation(t *testing.T) {
 	tg, core := newFakeTG(t), newFakeCore(t)
 	core.Enqueue(replyActionTo("act_a", "给小明的第一句", "20001"))
