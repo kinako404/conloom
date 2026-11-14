@@ -97,6 +97,63 @@ type ProactivePolicy struct {
 	JoinEvaluationsPerHour int `json:"join_evaluations_per_hour" yaml:"join_evaluations_per_hour"`
 	// JoinCooldown is how long after the bot last spoke in the group before it may join.
 	JoinCooldown Duration `json:"join_cooldown" yaml:"join_cooldown"`
+	// Private controls the messages the bot starts in a private chat; group chats ignore it.
+	Private PrivateProactivePolicy `json:"private,omitzero" yaml:"private,omitempty"`
+}
+
+// Levels of PrivateProactivePolicy.Level.
+const (
+	PrivateLevelOff  = "off"
+	PrivateLevelLow  = "low"
+	PrivateLevelMid  = "mid"
+	PrivateLevelHigh = "high"
+)
+
+// PrivateProactivePolicy sets how often the bot starts a private chat and when it stays quiet.
+// An empty field means the private chat's default, so WithDefaults never fills it: an empty
+// Level is mid, and empty quiet hours are inferred from the user's messages. QuietStart and
+// QuietEnd are "HH:MM" in server.timezone and are set together.
+type PrivateProactivePolicy struct {
+	Level      string `json:"level,omitempty" yaml:"level,omitempty"`
+	QuietStart string `json:"quiet_start,omitempty" yaml:"quiet_start,omitempty"`
+	QuietEnd   string `json:"quiet_end,omitempty" yaml:"quiet_end,omitempty"`
+}
+
+// EffectiveLevel returns Level, or PrivateLevelMid when it is empty.
+func (p PrivateProactivePolicy) EffectiveLevel() string {
+	if p.Level == "" {
+		return PrivateLevelMid
+	}
+	return p.Level
+}
+
+// QuietMinutes returns the quiet hours as minutes of the day; start after end means they wrap
+// midnight. set is false when the quiet hours are empty (or invalid, which Validate rejects).
+func (p PrivateProactivePolicy) QuietMinutes() (start, end int, set bool) {
+	start, okStart := parseClock(p.QuietStart)
+	end, okEnd := parseClock(p.QuietEnd)
+	if !okStart || !okEnd {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+// parseClock parses "HH:MM" in 00:00..23:59 into minutes of the day.
+func parseClock(s string) (int, bool) {
+	if len(s) != 5 || s[2] != ':' {
+		return 0, false
+	}
+	for _, i := range []int{0, 1, 3, 4} {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+	}
+	h := int(s[0]-'0')*10 + int(s[1]-'0')
+	m := int(s[3]-'0')*10 + int(s[4]-'0')
+	if h > 23 || m > 59 {
+		return 0, false
+	}
+	return h*60 + m, true
 }
 
 type ProactiveDailyLimits struct {
@@ -310,7 +367,8 @@ func DefaultGroupPolicy() GroupPolicy {
 // private_wait, so private_wait and private_max_wait are taken from def only when both are zero.
 // Within a stored memory section, zero summary_max_chars and note_max_chars are kept, not filled
 // from def: their zero means the default of the conversation's type. A missing memory section is
-// replaced by def's whole section, limits included.
+// replaced by def's whole section, limits included. Likewise, proactive.private of a stored
+// proactive section is kept as stored, and a missing proactive section takes def's, private included.
 func (p GroupPolicy) WithDefaults(def GroupPolicy) GroupPolicy {
 	if p.Proactive == (ProactivePolicy{}) {
 		p.Proactive = def.Proactive
@@ -468,6 +526,24 @@ func (p GroupPolicy) Validate() error {
 	}
 	if a.JoinEvaluationsPerHour < 1 || a.JoinEvaluationsPerHour > 60 {
 		fail("proactive.join_evaluations_per_hour must be in [1, 60], got %d", a.JoinEvaluationsPerHour)
+	}
+	pp := a.Private
+	if pp.Level != "" && !slices.Contains([]string{PrivateLevelOff, PrivateLevelLow, PrivateLevelMid, PrivateLevelHigh}, pp.Level) {
+		fail("proactive.private.level must be empty or one of off|low|mid|high, got %q", pp.Level)
+	}
+	if (pp.QuietStart == "") != (pp.QuietEnd == "") {
+		fail("proactive.private.quiet_start and proactive.private.quiet_end must both be set or both be empty, got %q and %q", pp.QuietStart, pp.QuietEnd)
+	}
+	for _, q := range []struct{ path, v string }{
+		{"proactive.private.quiet_start", pp.QuietStart},
+		{"proactive.private.quiet_end", pp.QuietEnd},
+	} {
+		if _, ok := parseClock(q.v); q.v != "" && !ok {
+			fail("%s must be HH:MM in [00:00, 23:59], got %q", q.path, q.v)
+		}
+	}
+	if start, end, set := pp.QuietMinutes(); set && start == end {
+		fail("proactive.private.quiet_start and proactive.private.quiet_end must differ, got %q", pp.QuietStart)
 	}
 	m := p.Memory
 	if m.ConsolidateEvery < 30 || m.ConsolidateEvery > 2000 {

@@ -292,6 +292,13 @@ default_private_policy:
     consolidate_every: 40
     consolidate_interval: 1h
     consolidate_min: 6
+  # 私聊里机器人主动找人：proactive.enabled（默认 true）是总开关，private 段只对私聊生效。
+  # 整段省略时档位为 mid，免打扰时段按对方的作息推算（消息不够时 00:30–08:00）。
+  # proactive:
+  #   private:
+  #     level: mid                # off | low | mid | high；留空 = mid
+  #     quiet_start: "23:00"      # 免打扰时段，"HH:MM"，按 server.timezone，可以跨午夜；
+  #     quiet_end: "07:00"        # 两个同时填或同时留空，留空时按作息推算
 
 # 运行时参数。
 runtime:

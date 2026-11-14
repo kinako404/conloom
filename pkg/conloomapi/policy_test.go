@@ -932,3 +932,160 @@ func TestValidateRhythmFields(t *testing.T) {
 		})
 	}
 }
+
+func TestPrivateProactive_LevelConstants(t *testing.T) {
+	if PrivateLevelOff != "off" || PrivateLevelLow != "low" || PrivateLevelMid != "mid" || PrivateLevelHigh != "high" {
+		t.Fatal("private proactive level constants changed")
+	}
+}
+
+func TestPrivateProactive_Validate(t *testing.T) {
+	tests := []struct {
+		name    string
+		private PrivateProactivePolicy
+		wantErr string
+	}{
+		{"empty ok", PrivateProactivePolicy{}, ""},
+		{"level off ok", PrivateProactivePolicy{Level: PrivateLevelOff}, ""},
+		{"level low ok", PrivateProactivePolicy{Level: PrivateLevelLow}, ""},
+		{"level mid ok", PrivateProactivePolicy{Level: PrivateLevelMid}, ""},
+		{"level high ok", PrivateProactivePolicy{Level: PrivateLevelHigh}, ""},
+		{"level medium", PrivateProactivePolicy{Level: "medium"}, "proactive.private.level"},
+		{"quiet wraps midnight ok", PrivateProactivePolicy{QuietStart: "23:00", QuietEnd: "07:00"}, ""},
+		{"quiet bounds ok", PrivateProactivePolicy{QuietStart: "00:00", QuietEnd: "23:59"}, ""},
+		{"level and quiet ok", PrivateProactivePolicy{Level: PrivateLevelHigh, QuietStart: "00:30", QuietEnd: "08:00"}, ""},
+		{"only start", PrivateProactivePolicy{QuietStart: "23:00"}, "proactive.private.quiet_start and proactive.private.quiet_end must both be set or both be empty"},
+		{"only end", PrivateProactivePolicy{QuietEnd: "07:00"}, "proactive.private.quiet_start and proactive.private.quiet_end must both be set or both be empty"},
+		{"start 24:00", PrivateProactivePolicy{QuietStart: "24:00", QuietEnd: "07:00"}, "proactive.private.quiet_start must be HH:MM"},
+		{"end 24:00", PrivateProactivePolicy{QuietStart: "23:00", QuietEnd: "24:00"}, "proactive.private.quiet_end must be HH:MM"},
+		{"minute 60", PrivateProactivePolicy{QuietStart: "23:60", QuietEnd: "07:00"}, "proactive.private.quiet_start must be HH:MM"},
+		{"single digit hour", PrivateProactivePolicy{QuietStart: "23:00", QuietEnd: "7:00"}, "proactive.private.quiet_end must be HH:MM"},
+		{"seconds", PrivateProactivePolicy{QuietStart: "23:00:00", QuietEnd: "07:00"}, "proactive.private.quiet_start must be HH:MM"},
+		{"not a time", PrivateProactivePolicy{QuietStart: "ab:cd", QuietEnd: "07:00"}, "proactive.private.quiet_start must be HH:MM"},
+		{"signed", PrivateProactivePolicy{QuietStart: "+1:00", QuietEnd: "07:00"}, "proactive.private.quiet_start must be HH:MM"},
+		{"equal", PrivateProactivePolicy{QuietStart: "08:00", QuietEnd: "08:00"}, "proactive.private.quiet_start and proactive.private.quiet_end must differ"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := DefaultGroupPolicy()
+			p.Proactive.Private = tt.private
+			err := p.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestPrivateProactive_EffectiveLevel(t *testing.T) {
+	for level, want := range map[string]string{
+		"":               PrivateLevelMid,
+		PrivateLevelOff:  PrivateLevelOff,
+		PrivateLevelLow:  PrivateLevelLow,
+		PrivateLevelMid:  PrivateLevelMid,
+		PrivateLevelHigh: PrivateLevelHigh,
+	} {
+		if got := (PrivateProactivePolicy{Level: level}).EffectiveLevel(); got != want {
+			t.Errorf("EffectiveLevel(%q) = %q, want %q", level, got, want)
+		}
+	}
+}
+
+func TestPrivateProactive_QuietMinutes(t *testing.T) {
+	tests := []struct {
+		start, end         string
+		wantStart, wantEnd int
+		wantSet            bool
+	}{
+		{"00:30", "08:00", 30, 480, true},
+		{"23:00", "07:00", 1380, 420, true},
+		{"00:00", "23:59", 0, 1439, true},
+		{"", "", 0, 0, false},
+	}
+	for _, tt := range tests {
+		start, end, set := PrivateProactivePolicy{QuietStart: tt.start, QuietEnd: tt.end}.QuietMinutes()
+		if start != tt.wantStart || end != tt.wantEnd || set != tt.wantSet {
+			t.Errorf("QuietMinutes(%q, %q) = %d, %d, %v; want %d, %d, %v", tt.start, tt.end, start, end, set, tt.wantStart, tt.wantEnd, tt.wantSet)
+		}
+	}
+}
+
+func TestWithDefaults_KeepsPrivateZero(t *testing.T) {
+	def := DefaultGroupPolicy()
+	def.Proactive.Private = PrivateProactivePolicy{Level: PrivateLevelHigh, QuietStart: "23:00", QuietEnd: "07:00"}
+
+	var stored GroupPolicy
+	if err := json.Unmarshal([]byte(`{"proactive":{"enabled":true,"default_level":"low","eligibility_ttl":"720h","user_cooldown":"30m",`+
+		`"group_hourly_limit":4,"daily_limits":{"low":2,"mid":4,"high":8}}}`), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if got := stored.WithDefaults(DefaultGroupPolicy()).Proactive.Private; got != (PrivateProactivePolicy{}) {
+		t.Fatalf("stored proactive without private = %+v after WithDefaults, want zero", got)
+	}
+	if got := stored.WithDefaults(def).Proactive.Private; got != (PrivateProactivePolicy{}) {
+		t.Fatalf("default's private %+v copied into a stored proactive section: %+v", def.Proactive.Private, got)
+	}
+	stored.Proactive.Private.Level = PrivateLevelLow
+	if got := stored.WithDefaults(def).Proactive.Private; got != (PrivateProactivePolicy{Level: PrivateLevelLow}) {
+		t.Fatalf("stored private level only = %+v after WithDefaults, want the level alone", got)
+	}
+
+	if got := (GroupPolicy{}).WithDefaults(def).Proactive; got != def.Proactive {
+		t.Fatalf("missing proactive section = %+v after WithDefaults, want def's whole section %+v", got, def.Proactive)
+	}
+}
+
+func TestPrivateProactive_Encoding(t *testing.T) {
+	b, err := json.Marshal(DefaultGroupPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), `"private"`) {
+		t.Fatalf("zero private marshalled: %s", b)
+	}
+	y, err := yaml.Marshal(DefaultGroupPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(y), "private:") {
+		t.Fatalf("zero private marshalled to yaml:\n%s", y)
+	}
+
+	for _, tc := range []struct {
+		private PrivateProactivePolicy
+		want    string
+	}{
+		{PrivateProactivePolicy{Level: PrivateLevelLow}, `"private":{"level":"low"}`},
+		{PrivateProactivePolicy{QuietStart: "23:00", QuietEnd: "07:00"}, `"private":{"quiet_start":"23:00","quiet_end":"07:00"}`},
+		{PrivateProactivePolicy{Level: PrivateLevelHigh, QuietStart: "00:30", QuietEnd: "08:00"},
+			`"private":{"level":"high","quiet_start":"00:30","quiet_end":"08:00"}`},
+	} {
+		p := DefaultGroupPolicy()
+		p.Proactive.Private = tc.private
+		b, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), tc.want) {
+			t.Errorf("json %s missing %s", b, tc.want)
+		}
+		var back GroupPolicy
+		if err := json.Unmarshal(b, &back); err != nil || !reflect.DeepEqual(back, p) {
+			t.Errorf("json round trip = %+v, %v; want %+v", back.Proactive, err, p.Proactive)
+		}
+	}
+
+	var fromYAML GroupPolicy
+	if err := yaml.Unmarshal([]byte("proactive:\n  private:\n    level: off\n    quiet_start: 23:00\n    quiet_end: \"07:00\"\n"), &fromYAML); err != nil {
+		t.Fatal(err)
+	}
+	if want := (PrivateProactivePolicy{Level: PrivateLevelOff, QuietStart: "23:00", QuietEnd: "07:00"}); fromYAML.Proactive.Private != want {
+		t.Fatalf("yaml private = %+v, want %+v", fromYAML.Proactive.Private, want)
+	}
+}
