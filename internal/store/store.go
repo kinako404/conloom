@@ -25,6 +25,8 @@ var (
 	ErrTaskFinished   = errors.New("store: task already finished")
 	ErrReplyHandedOut = errors.New("store: reply already handed out")
 	ErrTimerGone      = errors.New("store: timer gone")
+	// ErrBuffDuplicate refuses an UpdateBuff of a bar its task already changed.
+	ErrBuffDuplicate = errors.New("store: bar already adjusted by this task")
 )
 
 // ConversationKey returns the canonical "bot:platform:type:id" key of a conversation.
@@ -206,6 +208,24 @@ type Store interface {
 	// 4×limit messages, bot messages included, so fewer may be returned even
 	// when older member messages would match.
 	UserMessageTimes(ctx context.Context, convKey string, since time.Time, limit int) ([]time.Time, error)
+	// GetBuffs returns the conversation's stored bar values ordered by Name,
+	// including bars its persona no longer has.
+	GetBuffs(ctx context.Context, convKey string) ([]BuffValue, error)
+	// UpdateBuff changes the conversation's bar name in one transaction. If
+	// ev.TaskID is set and that task already changed a bar of that name,
+	// nothing is written and it returns ErrBuffDuplicate. Otherwise it calls
+	// apply with the stored value (zero and found false without one), stores
+	// and returns apply's result under convKey and name (a zero UpdatedAt as
+	// now), and records ev under convKey and name with After the new value,
+	// Before the stored value when found (ev.Before, the bar's baseline,
+	// otherwise) and a zero CreatedAt as now. When apply fails nothing is
+	// written and its error is returned.
+	UpdateBuff(ctx context.Context, convKey, name string, ev BuffEvent, apply func(cur BuffValue, found bool) (BuffValue, error)) (BuffValue, error)
+	// ListBuffEvents returns the conversation's newest up to limit bar changes,
+	// newest first (none when limit <= 0).
+	ListBuffEvents(ctx context.Context, convKey string, limit int) ([]BuffEvent, error)
+	// PurgeBuffEvents deletes bar changes created before before.
+	PurgeBuffEvents(ctx context.Context, before time.Time) (int64, error)
 	// DeleteConversation deletes everything stored under convKey (messages and their
 	// keyword index rows, tasks, outbox actions, personas, policies, members, memory,
 	// chunks, proactive log, status, timers, bars, users only referenced by this

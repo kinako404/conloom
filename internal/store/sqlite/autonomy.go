@@ -21,6 +21,10 @@ const statusCols = `conversation_key, activity, started_at, until_at, task_id, u
 
 const timerCols = `conversation_key, kind, bot_instance_id, platform_user_id, due_at, anchor_seq, lease_until, created_at`
 
+const buffCols = `conversation_key, name, value, day, day_delta, updated_at`
+
+const buffEventCols = `conversation_key, name, task_id, source, before, after, reason, created_at`
+
 // SetStatus stores a zero UpdatedAt as now.
 func (db *DB) SetStatus(ctx context.Context, s store.ConversationStatus, ret *store.ConversationTimer) error {
 	if s.ConversationKey == "" {
@@ -210,6 +214,92 @@ func fireTimer(ctx context.Context, tx *sql.Tx, ref store.TimerRef) error {
 	return nil
 }
 
+func (db *DB) GetBuffs(ctx context.Context, convKey string) ([]store.BuffValue, error) {
+	return queryBuffs(ctx, db.r, `SELECT `+buffCols+` FROM conversation_buffs WHERE conversation_key = ? ORDER BY name`, convKey)
+}
+
+func (db *DB) UpdateBuff(ctx context.Context, convKey, name string, ev store.BuffEvent,
+	apply func(cur store.BuffValue, found bool) (store.BuffValue, error)) (store.BuffValue, error) {
+	if convKey == "" || name == "" {
+		return store.BuffValue{}, errors.New("update bar: empty conversation key or name")
+	}
+	var next store.BuffValue
+	err := db.inTx(ctx, func(tx *sql.Tx) error {
+		if ev.TaskID != "" {
+			var n int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_buff_events WHERE task_id = ? AND name = ?`,
+				ev.TaskID, name).Scan(&n); err != nil {
+				return err
+			}
+			if n > 0 {
+				return store.ErrBuffDuplicate
+			}
+		}
+		stored, err := queryBuffs(ctx, tx, `SELECT `+buffCols+` FROM conversation_buffs WHERE conversation_key = ? AND name = ?`,
+			convKey, name)
+		if err != nil {
+			return err
+		}
+		var cur store.BuffValue
+		before := ev.Before
+		found := len(stored) > 0
+		if found {
+			cur, before = stored[0], stored[0].Value
+		}
+		if next, err = apply(cur, found); err != nil {
+			return err
+		}
+		next.ConversationKey, next.Name, next.UpdatedAt = convKey, name, nowIfZero(next.UpdatedAt)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_buffs (`+buffCols+`) VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT (conversation_key, name) DO UPDATE SET value = excluded.value, day = excluded.day,
+				day_delta = excluded.day_delta, updated_at = excluded.updated_at`,
+			convKey, name, next.Value, next.Day, next.DayDelta, fmtTime(next.UpdatedAt)); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO conversation_buff_events (`+buffEventCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			convKey, name, ev.TaskID, ev.Source, before, next.Value, ev.Reason, fmtTime(nowIfZero(ev.CreatedAt)))
+		return err
+	})
+	if err != nil {
+		return store.BuffValue{}, err
+	}
+	return next, nil
+}
+
+func (db *DB) ListBuffEvents(ctx context.Context, convKey string, limit int) ([]store.BuffEvent, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := db.r.QueryContext(ctx, `SELECT id, `+buffEventCols+` FROM conversation_buff_events
+		WHERE conversation_key = ? ORDER BY created_at DESC, id DESC LIMIT ?`, convKey, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.BuffEvent
+	for rows.Next() {
+		var e store.BuffEvent
+		var created string
+		if err := rows.Scan(&e.ID, &e.ConversationKey, &e.Name, &e.TaskID, &e.Source, &e.Before, &e.After, &e.Reason,
+			&created); err != nil {
+			return nil, err
+		}
+		if e.CreatedAt, err = parseTime(created); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) PurgeBuffEvents(ctx context.Context, before time.Time) (int64, error) {
+	res, err := db.w.ExecContext(ctx, `DELETE FROM conversation_buff_events WHERE created_at < ?`, fmtTime(before))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // deleteAutonomy deletes the conversation's rows in autonomyTables.
 func deleteAutonomy(ctx context.Context, tx *sql.Tx, convKey string) error {
 	for _, table := range autonomyTables {
@@ -248,6 +338,27 @@ func queryTimers(ctx context.Context, q rowsQueryer, query string, args ...any) 
 			return nil, err
 		}
 		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func queryBuffs(ctx context.Context, q rowsQueryer, query string, args ...any) ([]store.BuffValue, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.BuffValue
+	for rows.Next() {
+		var b store.BuffValue
+		var updated string
+		if err := rows.Scan(&b.ConversationKey, &b.Name, &b.Value, &b.Day, &b.DayDelta, &updated); err != nil {
+			return nil, err
+		}
+		if b.UpdatedAt, err = parseTime(updated); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
 	}
 	return out, rows.Err()
 }

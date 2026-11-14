@@ -310,3 +310,36 @@ type ConversationStatus struct {
 	UntilAt         time.Time
 	UpdatedAt       time.Time
 }
+
+// BuffValue is a hidden bar's value in a private conversation as last
+// written at UpdatedAt, before any decay since. DayDelta is the bar's net
+// change on Day, a local date as "2006-01-02".
+type BuffValue struct {
+	ConversationKey string
+	Name            string
+	Value           float64
+	Day             string
+	DayDelta        int
+	UpdatedAt       time.Time
+}
+
+const (
+	BuffSourceModel = "model"
+	BuffSourcePanel = "panel"
+	BuffSourceAPI   = "api"
+)
+
+// BuffEvent records one change of a bar from Before to After. Source is one
+// of the BuffSource* constants; TaskID is the task that made the change,
+// empty for none.
+type BuffEvent struct {
+	ID              int64
+	ConversationKey string
+	Name            string
+	TaskID          string
+	Source          string
+	Before          float64
+	After           float64
+	Reason          string
+	CreatedAt       time.Time
+}

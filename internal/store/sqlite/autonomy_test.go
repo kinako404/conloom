@@ -533,6 +533,240 @@ func TestForgetPrivate_ClearsAutonomy(t *testing.T) {
 	}
 }
 
+// setBuff stores value as the bar's new value through UpdateBuff, with the
+// event's time as the value's.
+func setBuff(t *testing.T, db *DB, key, name string, value float64, ev store.BuffEvent) store.BuffValue {
+	t.Helper()
+	got, err := db.UpdateBuff(context.Background(), key, name, ev, func(cur store.BuffValue, _ bool) (store.BuffValue, error) {
+		cur.Value, cur.Day, cur.UpdatedAt = value, "2026-11-14", ev.CreatedAt
+		return cur, nil
+	})
+	if err != nil {
+		t.Fatalf("UpdateBuff %s %s: %v", key, name, err)
+	}
+	return got
+}
+
+func getBuffs(t *testing.T, db *DB, key string) []store.BuffValue {
+	t.Helper()
+	got, err := db.GetBuffs(context.Background(), key)
+	if err != nil {
+		t.Fatalf("GetBuffs: %v", err)
+	}
+	return got
+}
+
+func listBuffEvents(t *testing.T, db *DB, key string, limit int) []store.BuffEvent {
+	t.Helper()
+	got, err := db.ListBuffEvents(context.Background(), key, limit)
+	if err != nil {
+		t.Fatalf("ListBuffEvents: %v", err)
+	}
+	return got
+}
+
+func sameBuffs(got, want []store.BuffValue) bool {
+	return slices.EqualFunc(got, want, func(a, b store.BuffValue) bool {
+		return a.ConversationKey == b.ConversationKey && a.Name == b.Name && a.Value == b.Value && a.Day == b.Day &&
+			a.DayDelta == b.DayDelta && a.UpdatedAt.Equal(b.UpdatedAt)
+	})
+}
+
+// sameBuffEvents compares events ignoring IDs.
+func sameBuffEvents(got, want []store.BuffEvent) bool {
+	return slices.EqualFunc(got, want, func(a, b store.BuffEvent) bool {
+		return a.ConversationKey == b.ConversationKey && a.Name == b.Name && a.TaskID == b.TaskID && a.Source == b.Source &&
+			a.Before == b.Before && a.After == b.After && a.Reason == b.Reason && a.CreatedAt.Equal(b.CreatedAt)
+	})
+}
+
+func TestBuffs_UpdateAndList(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	key, other := privKey("20001"), privKey("20002")
+	at := time.Date(2026, 11, 14, 20, 0, 0, 0, time.UTC)
+	if got := getBuffs(t, db, key); len(got) != 0 {
+		t.Fatalf("GetBuffs without bars = %+v, want none", got)
+	}
+
+	first := store.BuffEvent{TaskID: "task_1", Source: store.BuffSourceModel, Before: 60, After: 99, Reason: "聊得开心", CreatedAt: at}
+	got, err := db.UpdateBuff(ctx, key, "心情", first, func(cur store.BuffValue, found bool) (store.BuffValue, error) {
+		if found || cur != (store.BuffValue{}) {
+			t.Errorf("apply of a new bar got %+v, found %v; want a zero value, not found", cur, found)
+		}
+		return store.BuffValue{Value: 65, Day: "2026-11-14", DayDelta: 5, UpdatedAt: at}, nil
+	})
+	want1 := store.BuffValue{ConversationKey: key, Name: "心情", Value: 65, Day: "2026-11-14", DayDelta: 5, UpdatedAt: at}
+	if err != nil || !sameBuffs([]store.BuffValue{got}, []store.BuffValue{want1}) {
+		t.Fatalf("first UpdateBuff = %+v, %v; want %+v", got, err, want1)
+	}
+
+	second := store.BuffEvent{TaskID: "task_2", Source: store.BuffSourceModel, Before: 60, Reason: "被夸了", CreatedAt: at.Add(time.Hour)}
+	got, err = db.UpdateBuff(ctx, key, "心情", second, func(cur store.BuffValue, found bool) (store.BuffValue, error) {
+		if !found || !sameBuffs([]store.BuffValue{cur}, []store.BuffValue{want1}) {
+			t.Errorf("apply of a stored bar got %+v, found %v; want %+v, found", cur, found, want1)
+		}
+		cur.Value, cur.DayDelta, cur.UpdatedAt = 72.5, 12, at.Add(time.Hour)
+		return cur, nil
+	})
+	want2 := store.BuffValue{ConversationKey: key, Name: "心情", Value: 72.5, Day: "2026-11-14", DayDelta: 12, UpdatedAt: at.Add(time.Hour)}
+	if err != nil || !sameBuffs([]store.BuffValue{got}, []store.BuffValue{want2}) {
+		t.Fatalf("second UpdateBuff = %+v, %v; want %+v", got, err, want2)
+	}
+
+	panel := store.BuffEvent{Source: store.BuffSourcePanel, Before: 70, Reason: "手动调整", CreatedAt: at.Add(2 * time.Hour)}
+	want3 := setBuff(t, db, key, "精力", 40, panel)
+	if want3.ConversationKey != key || want3.Name != "精力" || want3.Value != 40 {
+		t.Fatalf("UpdateBuff 精力 = %+v", want3)
+	}
+	otherBuff := setBuff(t, db, other, "心情", 30, store.BuffEvent{Source: store.BuffSourceAPI, Before: 60, Reason: "接口"})
+	if otherBuff.UpdatedAt.IsZero() {
+		t.Fatalf("UpdateBuff with a zero UpdatedAt returned %+v, want it set to now", otherBuff)
+	}
+	keep := func(cur store.BuffValue, _ bool) (store.BuffValue, error) { return cur, nil }
+	if _, err := db.UpdateBuff(ctx, key, "", panel, keep); err == nil {
+		t.Fatal("UpdateBuff without a name succeeded")
+	}
+	if _, err := db.UpdateBuff(ctx, "", "心情", panel, keep); err == nil {
+		t.Fatal("UpdateBuff without a conversation succeeded")
+	}
+
+	if got := getBuffs(t, db, key); !sameBuffs(got, []store.BuffValue{want2, want3}) {
+		t.Fatalf("GetBuffs = %+v, want 心情 then 精力: %+v, %+v", got, want2, want3)
+	}
+	if got := getBuffs(t, db, other); len(got) != 1 || got[0].Value != 30 || got[0].UpdatedAt.IsZero() {
+		t.Fatalf("other conversation's bars = %+v, want 心情 30 with UpdatedAt set", got)
+	}
+
+	wantEvents := []store.BuffEvent{
+		{ConversationKey: key, Name: "精力", Source: store.BuffSourcePanel, Before: 70, After: 40, Reason: "手动调整", CreatedAt: panel.CreatedAt},
+		{ConversationKey: key, Name: "心情", TaskID: "task_2", Source: store.BuffSourceModel, Before: 65, After: 72.5, Reason: "被夸了", CreatedAt: second.CreatedAt},
+		{ConversationKey: key, Name: "心情", TaskID: "task_1", Source: store.BuffSourceModel, Before: 60, After: 65, Reason: "聊得开心", CreatedAt: at},
+	}
+	events := listBuffEvents(t, db, key, 10)
+	if !sameBuffEvents(events, wantEvents) {
+		t.Fatalf("ListBuffEvents = %+v, want newest first %+v", events, wantEvents)
+	}
+	for _, ev := range events {
+		if ev.ID == 0 {
+			t.Fatalf("event without an ID: %+v", ev)
+		}
+	}
+	if got := listBuffEvents(t, db, key, 2); !sameBuffEvents(got, wantEvents[:2]) {
+		t.Fatalf("ListBuffEvents limit 2 = %+v, want the newest two", got)
+	}
+	if got := listBuffEvents(t, db, key, 0); len(got) != 0 {
+		t.Fatalf("ListBuffEvents limit 0 = %+v, want none", got)
+	}
+	if got := listBuffEvents(t, db, other, 10); len(got) != 1 || got[0].Source != store.BuffSourceAPI || got[0].Before != 60 ||
+		got[0].After != 30 || got[0].CreatedAt.IsZero() {
+		t.Fatalf("other conversation's events = %+v, want one api event 60 -> 30 with CreatedAt set", got)
+	}
+}
+
+func TestBuffs_DuplicateTask(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	key := privKey("20001")
+	at := time.Date(2026, 11, 14, 20, 0, 0, 0, time.UTC)
+	byTask := store.BuffEvent{TaskID: "task_1", Source: store.BuffSourceModel, Before: 60, Reason: "聊得开心", CreatedAt: at}
+	setBuff(t, db, key, "心情", 65, byTask)
+
+	called := false
+	_, err := db.UpdateBuff(ctx, key, "心情", byTask, func(cur store.BuffValue, _ bool) (store.BuffValue, error) {
+		called = true
+		cur.Value = 70
+		return cur, nil
+	})
+	if !errors.Is(err, store.ErrBuffDuplicate) {
+		t.Fatalf("second UpdateBuff of the task err = %v, want ErrBuffDuplicate", err)
+	}
+	if called {
+		t.Error("apply was called for a duplicate")
+	}
+	if got := getBuffs(t, db, key); len(got) != 1 || got[0].Value != 65 {
+		t.Fatalf("bars after the duplicate = %+v, want 心情 65 kept", got)
+	}
+	if got := listBuffEvents(t, db, key, 10); len(got) != 1 {
+		t.Fatalf("events after the duplicate = %+v, want one", got)
+	}
+
+	setBuff(t, db, key, "精力", 75, byTask)
+	panel := store.BuffEvent{Source: store.BuffSourcePanel, Before: 60, CreatedAt: at.Add(time.Minute)}
+	setBuff(t, db, key, "心情", 50, panel)
+	setBuff(t, db, key, "心情", 55, panel)
+	if got := getBuffs(t, db, key); len(got) != 2 || got[0].Name != "心情" || got[0].Value != 55 || got[1].Name != "精力" || got[1].Value != 75 {
+		t.Fatalf("bars = %+v, want 心情 55 and 精力 75", got)
+	}
+	if got := listBuffEvents(t, db, key, 10); len(got) != 4 {
+		t.Fatalf("events = %+v, want 4", got)
+	}
+}
+
+func TestBuffs_ApplyErrorRollsBack(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	key := privKey("20001")
+	at := time.Date(2026, 11, 14, 20, 0, 0, 0, time.UTC)
+	setBuff(t, db, key, "心情", 65, store.BuffEvent{TaskID: "task_1", Source: store.BuffSourceModel, Before: 60, CreatedAt: at})
+
+	boom := errors.New("boom")
+	fail := func(cur store.BuffValue, _ bool) (store.BuffValue, error) {
+		cur.Value = 10
+		return cur, boom
+	}
+	ev := store.BuffEvent{TaskID: "task_2", Source: store.BuffSourceModel, Before: 60, Reason: "失败", CreatedAt: at.Add(time.Hour)}
+	if _, err := db.UpdateBuff(ctx, key, "心情", ev, fail); !errors.Is(err, boom) {
+		t.Fatalf("UpdateBuff with a failing apply err = %v, want boom", err)
+	}
+	if _, err := db.UpdateBuff(ctx, key, "精力", ev, fail); !errors.Is(err, boom) {
+		t.Fatalf("UpdateBuff of a new bar with a failing apply err = %v, want boom", err)
+	}
+	if got := getBuffs(t, db, key); len(got) != 1 || got[0].Name != "心情" || got[0].Value != 65 || !got[0].UpdatedAt.Equal(at) {
+		t.Fatalf("bars after failing applies = %+v, want only 心情 65 kept", got)
+	}
+	if got := listBuffEvents(t, db, key, 10); len(got) != 1 || got[0].TaskID != "task_1" {
+		t.Fatalf("events after failing applies = %+v, want only task_1's", got)
+	}
+	if got := setBuff(t, db, key, "心情", 70, ev); got.Value != 70 {
+		t.Fatalf("retry of the failed task = %+v, want 心情 70", got)
+	}
+}
+
+func TestBuffs_Purge(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	key, other := privKey("20001"), privKey("20002")
+	cutoff := time.Date(2026, 10, 15, 20, 0, 0, 0, time.UTC)
+	panel := func(at time.Time) store.BuffEvent {
+		return store.BuffEvent{Source: store.BuffSourcePanel, Before: 60, CreatedAt: at}
+	}
+	setBuff(t, db, key, "心情", 50, panel(cutoff.Add(-time.Hour)))
+	setBuff(t, db, key, "心情", 55, panel(cutoff))
+	setBuff(t, db, key, "精力", 40, panel(cutoff.Add(time.Hour)))
+	setBuff(t, db, other, "心情", 30, panel(cutoff.Add(-2*time.Hour)))
+
+	n, err := db.PurgeBuffEvents(ctx, cutoff)
+	if err != nil || n != 2 {
+		t.Fatalf("PurgeBuffEvents = %d, %v; want 2", n, err)
+	}
+	if got := listBuffEvents(t, db, key, 10); len(got) != 2 || !got[0].CreatedAt.Equal(cutoff.Add(time.Hour)) || !got[1].CreatedAt.Equal(cutoff) {
+		t.Fatalf("events kept = %+v, want those at and after the cutoff", got)
+	}
+	if got := listBuffEvents(t, db, other, 10); len(got) != 0 {
+		t.Fatalf("other conversation's events = %+v, want none", got)
+	}
+	if got := getBuffs(t, db, key); len(got) != 2 {
+		t.Fatalf("bars after purging = %+v, want both kept", got)
+	}
+	if got := getBuffs(t, db, other); len(got) != 1 {
+		t.Fatalf("other conversation's bars after purging = %+v, want kept", got)
+	}
+	if n, err := db.PurgeBuffEvents(ctx, cutoff); err != nil || n != 0 {
+		t.Fatalf("second PurgeBuffEvents = %d, %v; want 0", n, err)
+	}
+}
+
 // schemaObjects maps every table and index to its SQL (empty for automatic
 // indexes).
 func schemaObjects(t *testing.T, db *DB) map[string]string {
