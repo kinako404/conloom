@@ -435,7 +435,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 4. 输出是 JSON `{"group_summary":…,"members":[{"ref":"P1","note":…,"affinity_delta":…,"reason":…}]}`，容忍代码块包裹；`affinity_delta` 四舍五入后截到 [-3, 3]（不是数字时算 0），未知代号忽略，没出现的群友笔记不变。代码兜底：摘要、笔记和原因里仍然出现的本批代号换成名字（“名字（P1）”“P1（名字）”只留名字，单独的 P1 按完整代号匹配，不在本批的代号不动；本批输入里原样出现过的代号，比如消息里的游戏名 P5、旧摘要或旧笔记里残留的代号，单独出现时不替换）。解析时只去掉首尾空白，替换之后才按存储上限（`memory.summary_max_chars`、`note_max_chars`，为 0 时按会话类型的默认值）截断，优先截在上限以内最后一个句末标点（。！？；）处，但截完要保留至少一半上限，否则直接截断。
 5. 写回在一个事务里完成：摘要、游标、笔记、好感度和 revisions。按成员做乐观检查（`version`）：整理期间被改过的人重读一遍，笔记和 `forgotten_at` 都没变（只是规则加分改了好感度、日期或名字）时，用 `memory.UpdateMember` 把这一批的笔记和模型的好感度变化重新套上去，来源仍是 consolidate，仍受每日上限约束；笔记或 `forgotten_at` 变了（`/忘记我`、API 修改）就不写这个人。其他人照常写。私聊整段都关于那一个人，所以多几层保护：
 
-   - 私聊的 `/忘记我` 和 API 删除通过 `memory.Forget` 调用 `Store.ForgetPrivate`，在一个事务里清空成员记录和他的 revisions、清空摘要并删除摘要的全部 revisions，再把游标推进到这个会话当前最新的消息，忘记之前双方说过的话（包括机器人的回复）都不会再被整理；
+   - 私聊的 `/忘记我` 和 API 删除通过 `memory.Forget` 调用 `Store.ForgetPrivate`，在一个事务里清空成员记录和他的 revisions、清空摘要并删除摘要的全部 revisions，再把游标推进到这个会话当前最新的消息，忘记之前双方说过的话（包括机器人的回复）都不会再被整理；同一个事务还删除这个会话的状态、定时、状态条数值和变化记录（`conversation_status`、`conversation_timers`、`conversation_buffs`、`conversation_buff_events`）；
    - 每批开始前重读这个会话的记忆行（摘要和游标）；
    - 本批成员的 `forgotten_at` 不早于本轮整理开始时，整批放弃（结果 `forgotten`）：不调用模型，不写笔记和摘要，也不动游标；
    - 写回时带上这个人的版本作为摘要守卫（`MemoryWrite.SummaryGuards`），调用模型期间他被忘记（版本变了）时摘要不写、不留 revision；

@@ -17,6 +17,7 @@ var conversationTables = []string{
 	"messages", "tasks", "outbox_actions", "persona_instances", "persona_versions", "group_policies",
 	"conversation_members", "proactive_log", "group_memory", "member_memory", "memory_revisions",
 	"memory_chunks", "memory_chunk_state", "memory_chunk_rebuild", "memory_chunk_forgets",
+	"conversation_status", "conversation_timers", "conversation_buffs", "conversation_buff_events",
 }
 
 func (db *DB) DeleteConversation(ctx context.Context, convKey string) error {

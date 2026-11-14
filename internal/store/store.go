@@ -20,10 +20,11 @@ type MessageHit struct {
 var (
 	ErrNotFound         = errors.New("store: not found")
 	ErrDuplicateMessage = errors.New("store: duplicate platform message")
-	// ErrTaskFinished and ErrReplyHandedOut refuse an Ingest (see
-	// Ingest.CancelTaskID and Ingest.AbandonReplyOf).
+	// ErrTaskFinished, ErrReplyHandedOut and ErrTimerGone refuse an Ingest
+	// (see Ingest.CancelTaskID, Ingest.AbandonReplyOf and Ingest.FireTimer).
 	ErrTaskFinished   = errors.New("store: task already finished")
 	ErrReplyHandedOut = errors.New("store: reply already handed out")
+	ErrTimerGone      = errors.New("store: timer gone")
 )
 
 // ConversationKey returns the canonical "bot:platform:type:id" key of a conversation.
@@ -130,7 +131,8 @@ type Store interface {
 	// cursor up to the newest message, so nothing said before (by either side)
 	// is consolidated again. A conversation without a memory row gets one. Its
 	// semantic search chunks that start before at are deleted, and those
-	// running past at queued to be rebuilt.
+	// running past at queued to be rebuilt. The conversation's status, timers,
+	// bar values and bar changes are deleted too.
 	ForgetPrivate(ctx context.Context, convKey, userID string, at time.Time) error
 	// ForgetMember clears the user's memory, marks it forgotten at at (creating
 	// the row if needed) and deletes the user's revisions in the conversation.
@@ -171,10 +173,42 @@ type Store interface {
 	// at any time, and also picks up messages written by binaries without the
 	// index.
 	BackfillMessageIndex(ctx context.Context, batch int) (indexed, remaining int, err error)
+	// SetStatus stores s as the conversation's only status and, in the same
+	// transaction, ret as its status_return timer (ConversationKey and Kind may
+	// be left empty), or deletes that timer when ret is nil.
+	SetStatus(ctx context.Context, s ConversationStatus, ret *ConversationTimer) error
+	// GetStatus returns the conversation's status, expired or not, or ErrNotFound.
+	GetStatus(ctx context.Context, convKey string) (ConversationStatus, error)
+	// ClearStatus deletes the conversation's status if its UntilAt equals
+	// untilAt (any status for a zero untilAt), together with its status_return
+	// timer, and reports whether a status was deleted. A zero untilAt deletes
+	// the timer even without a status.
+	ClearStatus(ctx context.Context, convKey string, untilAt time.Time) (bool, error)
+	// ArmTimer stores t, replacing the conversation's timer of the same kind,
+	// unclaimed.
+	ArmTimer(ctx context.Context, t ConversationTimer) error
+	// CancelTimers deletes the conversation's timers of kinds (none without
+	// kinds) and returns how many it deleted.
+	CancelTimers(ctx context.Context, convKey string, kinds ...TimerKind) (int, error)
+	// ListTimers returns the conversation's timers ordered by DueAt.
+	ListTimers(ctx context.Context, convKey string) ([]ConversationTimer, error)
+	// ClaimDueTimers leases, until now+lease, up to limit timers due at or
+	// before now that are unclaimed or whose lease ran out before now, and
+	// returns them ordered by DueAt.
+	ClaimDueTimers(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]ConversationTimer, error)
+	// PostponeTimer moves the timer ref names to dueAt, unclaimed, and reports
+	// whether it did; a timer cancelled, re-armed or postponed since is left as
+	// it is.
+	PostponeTimer(ctx context.Context, ref TimerRef, dueAt time.Time) (bool, error)
+	// UserMessageTimes returns when the conversation's newest up to limit
+	// member (not bot) messages occurred at or after since, newest first (none
+	// when limit <= 0).
+	UserMessageTimes(ctx context.Context, convKey string, since time.Time, limit int) ([]time.Time, error)
 	// DeleteConversation deletes everything stored under convKey (messages and their
 	// keyword index rows, tasks, outbox actions, personas, policies, members, memory,
-	// chunks, proactive log, users only referenced by this conversation, events of it)
-	// except model_calls and audit_events, then the conversation row. ErrNotFound if absent.
+	// chunks, proactive log, status, timers, bars, users only referenced by this
+	// conversation, events of it) except model_calls and audit_events, then the
+	// conversation row. ErrNotFound if absent.
 	DeleteConversation(ctx context.Context, convKey string) error
 	Backup(ctx context.Context, path string) error
 	Close() error

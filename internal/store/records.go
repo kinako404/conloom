@@ -253,7 +253,9 @@ type MemberVersion struct {
 // returns ErrTaskFinished. AbandonReplyOf, when set, cancels all pending
 // actions of that task, as CancelPendingActions does at Event.CreatedAt; if
 // any of its actions was handed out (leased or acked), nothing is written and
-// Ingest returns ErrReplyHandedOut.
+// Ingest returns ErrReplyHandedOut. FireTimer, when set, deletes that timer;
+// if it was cancelled, re-armed or postponed meanwhile, nothing is written and
+// Ingest returns ErrTimerGone.
 type Ingest struct {
 	Event           EventRecord
 	Conversation    *ConversationRecord
@@ -263,4 +265,48 @@ type Ingest struct {
 	MergeIntoTaskID string
 	CancelTaskID    string
 	AbandonReplyOf  string
+	FireTimer       *TimerRef
+}
+
+// TimerKind is the kind of a conversation timer. A conversation has at most
+// one timer of each kind.
+type TimerKind string
+
+const (
+	TimerStatusReturn TimerKind = "status_return"
+	TimerInitiate     TimerKind = "initiate"
+	TimerFollowUp     TimerKind = "follow_up"
+)
+
+// ConversationTimer is a durable wake-up of a private conversation at DueAt.
+// AnchorSeq is the conversation's newest message seq when it was armed. A
+// claimed timer has LeaseUntil in the future; zero means unclaimed.
+type ConversationTimer struct {
+	ConversationKey string
+	Kind            TimerKind
+	BotInstanceID   string
+	PlatformUserID  string
+	DueAt           time.Time
+	AnchorSeq       int64
+	LeaseUntil      time.Time
+	CreatedAt       time.Time
+}
+
+// TimerRef names one arming of a conversation's timer: re-arming or
+// postponing it changes DueAt, so an older reference no longer matches.
+type TimerRef struct {
+	ConversationKey string
+	Kind            TimerKind
+	DueAt           time.Time
+}
+
+// ConversationStatus is what the bot said it is doing in a private
+// conversation, from StartedAt until UntilAt. TaskID is the task that set it.
+type ConversationStatus struct {
+	ConversationKey string
+	Activity        string
+	TaskID          string
+	StartedAt       time.Time
+	UntilAt         time.Time
+	UpdatedAt       time.Time
 }

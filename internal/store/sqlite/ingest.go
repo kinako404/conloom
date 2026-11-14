@@ -35,6 +35,11 @@ func (db *DB) Ingest(ctx context.Context, in store.Ingest) (*store.EventRecord, 
 				return err
 			}
 		}
+		if in.FireTimer != nil {
+			if err := fireTimer(ctx, tx, *in.FireTimer); err != nil {
+				return err
+			}
+		}
 		if err := insertEvent(ctx, tx, in.Event); err != nil {
 			return err
 		}

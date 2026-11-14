@@ -206,6 +206,9 @@ func (db *DB) ForgetPrivate(ctx context.Context, convKey, userID string, at time
 		if err := forgetPrivateChunks(ctx, tx, convKey, userID, at); err != nil {
 			return err
 		}
+		if err := deleteAutonomy(ctx, tx, convKey); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM memory_revisions WHERE conversation_key = ? AND platform_user_id = '' AND field = ?`,
 			convKey, store.FieldSummary); err != nil {
 			return err

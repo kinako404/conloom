@@ -22,6 +22,7 @@ var keyedTables = []string{
 	"messages", "tasks", "outbox_actions", "persona_instances", "persona_versions", "group_policies",
 	"conversation_members", "proactive_log", "group_memory", "member_memory", "memory_revisions",
 	"memory_chunks", "memory_chunk_state", "memory_chunk_rebuild", "memory_chunk_forgets",
+	"conversation_status", "conversation_timers", "conversation_buffs", "conversation_buff_events",
 }
 
 type seededConversation struct {
@@ -162,6 +163,12 @@ func seedConversation(t *testing.T, db *DB, platform, convID, note string, users
 	if err := db.PutGroupMemory(ctx, store.GroupMemory{ConversationKey: key, Summary: "约了周末爬山", CursorSeq: 1}); err != nil {
 		t.Fatalf("PutGroupMemory: %v", err)
 	}
+	until := now.Add(20 * time.Minute)
+	if err := db.SetStatus(ctx, store.ConversationStatus{ConversationKey: key, Activity: "洗澡", TaskID: taskID,
+		StartedAt: now, UntilAt: until}, &store.ConversationTimer{BotInstanceID: testBot, PlatformUserID: users[0], DueAt: until}); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	seedBuffRows(t, db, key, taskID, now)
 	at := fmtTime(now)
 	for _, seed := range []struct {
 		stmt string
