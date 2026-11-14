@@ -238,6 +238,13 @@ type MemberVersion struct {
 
 // Ingest is everything written for one incoming event. Nil parts are skipped.
 // MergeIntoTaskID, when set, appends Message.ID to that task's trigger messages.
+//
+// CancelTaskID, when set, stores that task as cancelled with error code
+// task_cancelled; if it is already finished, nothing is written and Ingest
+// returns ErrTaskFinished. AbandonReplyOf, when set, cancels all pending
+// actions of that task, as CancelPendingActions does at Event.CreatedAt; if
+// any of its actions was handed out (leased or acked), nothing is written and
+// Ingest returns ErrReplyHandedOut.
 type Ingest struct {
 	Event           EventRecord
 	Conversation    *ConversationRecord
@@ -245,4 +252,6 @@ type Ingest struct {
 	Message         *MessageRecord
 	NewTask         *TaskRecord
 	MergeIntoTaskID string
+	CancelTaskID    string
+	AbandonReplyOf  string
 }

@@ -454,3 +454,103 @@ func TestConcurrentIngest_NoBusyErrors(t *testing.T) {
 		t.Fatalf("messages = %d, want 1000", n)
 	}
 }
+
+func seedQueuedTask(t *testing.T, db *DB, key, msgID, taskID string) {
+	t.Helper()
+	in := testIngest(key, msgID, "p_"+msgID)
+	in.NewTask = &store.TaskRecord{
+		ID: taskID, BotInstanceID: testBot, ConversationKey: testConvKey,
+		Status: conloomapi.TaskQueued, TriggerMessageIDs: []string{msgID},
+	}
+	if _, err := db.Ingest(context.Background(), in); err != nil {
+		t.Fatalf("seed %s: %v", taskID, err)
+	}
+}
+
+func supersedingIngest(key, msgID, taskID string) store.Ingest {
+	in := testIngest(key, msgID, "p_"+msgID)
+	in.NewTask = &store.TaskRecord{
+		ID: taskID, BotInstanceID: testBot, ConversationKey: testConvKey,
+		Status: conloomapi.TaskQueued, TriggerMessageIDs: []string{"m1", msgID},
+	}
+	return in
+}
+
+func TestIngest_CancelTaskInSameTransaction(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	seedQueuedTask(t, db, "k1", "m1", "task_1")
+	if err := db.SetTaskStatus(ctx, "task_1", conloomapi.TaskRunning); err != nil {
+		t.Fatal(err)
+	}
+	in := supersedingIngest("k2", "m2", "task_2")
+	in.CancelTaskID = "task_1"
+	if _, err := db.Ingest(ctx, in); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	old, err := db.GetTask(ctx, testBot, "task_1")
+	if err != nil || old.Status != conloomapi.TaskCancelled || old.ErrorCode != conloomapi.CodeTaskCancelled {
+		t.Fatalf("superseded task = %+v, %v", old, err)
+	}
+	if _, err := db.GetTask(ctx, testBot, "task_2"); err != nil {
+		t.Fatalf("new task: %v", err)
+	}
+
+	// A finished task is not superseded: nothing of the event is written.
+	in = supersedingIngest("k3", "m3", "task_3")
+	in.CancelTaskID = "task_1"
+	if _, err := db.Ingest(ctx, in); !errors.Is(err, store.ErrTaskFinished) {
+		t.Fatalf("Ingest cancelling a finished task err = %v, want ErrTaskFinished", err)
+	}
+	in.CancelTaskID = "task_missing"
+	if _, err := db.Ingest(ctx, in); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Ingest cancelling a missing task err = %v, want ErrNotFound", err)
+	}
+	if n := countRows(t, db, "events"); n != 2 {
+		t.Fatalf("events = %d, want 2", n)
+	}
+	if _, err := db.GetTask(ctx, testBot, "task_3"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("task_3 err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestIngest_AbandonReplyInSameTransaction(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	insertActions(t, db,
+		taskAction("a1", "task_1", store.OutboxPending, now),
+		taskAction("a2", "task_1", store.OutboxPending, now),
+		taskAction("b1", "task_b", store.OutboxPending, now),
+	)
+	in := supersedingIngest("k1", "m2", "task_2")
+	in.AbandonReplyOf = "task_1"
+	if _, err := db.Ingest(ctx, in); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	for id, want := range map[string]string{"a1": store.OutboxCancelled, "a2": store.OutboxCancelled, "b1": store.OutboxPending} {
+		if status, _ := outboxStatus(t, db, id); status != want {
+			t.Fatalf("%s = %s, want %s", id, status, want)
+		}
+	}
+
+	// A reply whose first part was leased, even if not acked, is not abandoned.
+	if ids := actionIDs(lease(t, db, 10, now)); !reflect.DeepEqual(ids, []string{"b1"}) {
+		t.Fatalf("lease = %v, want [b1]", ids)
+	}
+	insertActions(t, db, taskAction("b2", "task_b", store.OutboxPending, now))
+	in = supersedingIngest("k2", "m3", "task_3")
+	in.AbandonReplyOf = "task_b"
+	if _, err := db.Ingest(ctx, in); !errors.Is(err, store.ErrReplyHandedOut) {
+		t.Fatalf("Ingest abandoning a leased reply err = %v, want ErrReplyHandedOut", err)
+	}
+	if status, _ := outboxStatus(t, db, "b2"); status != store.OutboxPending {
+		t.Fatalf("b2 = %s, want pending", status)
+	}
+	if _, err := db.GetTask(ctx, testBot, "task_3"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("task_3 err = %v, want ErrNotFound", err)
+	}
+	if n := countRows(t, db, "events"); n != 1 {
+		t.Fatalf("events = %d, want 1", n)
+	}
+}

@@ -72,7 +72,7 @@ model_profiles:
     privacy: {allow_sensitive_content: true}
 default_group_policy:
   concurrency: {max_interactive_requests: 1, max_queued_requests: 10, priority: normal, allow_long_requests: true}
-  reply: {command_prefix: /, continuation_window: 0s, debounce: 30ms, min_reply_interval: 0s, user_rate_limit_per_minute: 6}
+  reply: {command_prefix: /, continuation_window: 0s, debounce: 30ms, min_reply_interval: 0s, user_rate_limit_per_minute: 6, private_wait: 30ms, private_max_wait: 1s}
   context: {max_recent_messages: 50, max_context_tokens: 0}
   review: {level: basic, review_input: true, review_output: true, action: block}
 `

@@ -25,6 +25,16 @@ func (db *DB) Ingest(ctx context.Context, in store.Ingest) (*store.EventRecord, 
 		if !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
+		if in.CancelTaskID != "" {
+			if err := cancelUnfinishedTask(ctx, tx, in.Event.BotInstanceID, in.CancelTaskID); err != nil {
+				return err
+			}
+		}
+		if in.AbandonReplyOf != "" {
+			if err := abandonReply(ctx, tx, in.AbandonReplyOf, nowIfZero(in.Event.CreatedAt)); err != nil {
+				return err
+			}
+		}
 		if err := insertEvent(ctx, tx, in.Event); err != nil {
 			return err
 		}

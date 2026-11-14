@@ -103,7 +103,8 @@ func (db *DB) GetOutbox(ctx context.Context, botID, actionID string) (store.Outb
 // AckOutbox marks an action acked (including an expired one, since it was sent)
 // and stores botMsg in the same transaction. A botMsg whose ID or platform
 // message ID is already taken is skipped so the ack still commits. Re-acking
-// reports alreadyAcked.
+// reports alreadyAcked, and so does acking a cancelled action, which stays
+// cancelled without storing botMsg.
 func (db *DB) AckOutbox(ctx context.Context, botID, actionID string, ack conloomapi.AckRequest, botMsg *store.MessageRecord, now time.Time) (bool, error) {
 	var alreadyAcked bool
 	err := db.inTx(ctx, func(tx *sql.Tx) error {
@@ -113,7 +114,7 @@ func (db *DB) AckOutbox(ctx context.Context, botID, actionID string, ack conloom
 		if err != nil {
 			return notFound(err)
 		}
-		if status == store.OutboxAcked {
+		if status == store.OutboxAcked || status == store.OutboxCancelled {
 			alreadyAcked = true
 			return nil
 		}
@@ -151,4 +152,21 @@ func (db *DB) CancelPendingActions(ctx context.Context, taskID string, now time.
 	return execCount(ctx, db.w, `UPDATE outbox_actions SET status = ?, acked_at = ?
 		WHERE task_id = ? AND status = ?`,
 		store.OutboxCancelled, fmtTime(now), taskID, store.OutboxPending)
+}
+
+// abandonReply cancels the task's pending actions at now unless one of its
+// actions was handed out, which gives store.ErrReplyHandedOut.
+func abandonReply(ctx context.Context, tx *sql.Tx, taskID string, now time.Time) error {
+	var handedOut int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_actions WHERE task_id = ? AND status IN (?, ?)`,
+		taskID, store.OutboxLeased, store.OutboxAcked).Scan(&handedOut)
+	if err != nil {
+		return err
+	}
+	if handedOut > 0 {
+		return store.ErrReplyHandedOut
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE outbox_actions SET status = ?, acked_at = ? WHERE task_id = ? AND status = ?`,
+		store.OutboxCancelled, fmtTime(now), taskID, store.OutboxPending)
+	return err
 }
