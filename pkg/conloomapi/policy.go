@@ -144,6 +144,12 @@ type ReplyPolicy struct {
 	MaxConsecutiveSkips int `json:"max_consecutive_skips" yaml:"max_consecutive_skips"`
 	// Quote is when group replies quote the message they answer: auto, always or never.
 	Quote string `json:"quote" yaml:"quote"`
+	// MaxParts is how many separate messages one reply may be split into.
+	MaxParts int `json:"max_parts" yaml:"max_parts"`
+	// PrivateWait is the pause in a private chat that ends the user's turn;
+	// PrivateMaxWait caps how long the turn may keep growing.
+	PrivateWait    Duration `json:"private_wait" yaml:"private_wait"`
+	PrivateMaxWait Duration `json:"private_max_wait" yaml:"private_max_wait"`
 }
 
 type ContextPolicy struct {
@@ -255,6 +261,9 @@ func DefaultGroupPolicy() GroupPolicy {
 			MaxUnpromptedReplies:   4,
 			MaxConsecutiveSkips:    2,
 			Quote:                  QuoteAuto,
+			MaxParts:               1,
+			PrivateWait:            Duration{6 * time.Second},
+			PrivateMaxWait:         Duration{20 * time.Second},
 		},
 		Context: ContextPolicy{
 			MaxRecentMessages: 50,
@@ -284,8 +293,9 @@ func DefaultGroupPolicy() GroupPolicy {
 }
 
 // WithDefaults returns p with a missing (zero) Proactive or Memory section replaced by def's,
-// and each turn-taking, quote and join setting that is zero (missing from policies stored
-// before it existed; zero is never valid for them) taken from def.
+// and each turn-taking, quote, max_parts and join setting that is zero (missing from policies
+// stored before it existed; zero is never valid for them) taken from def. Zero is a valid
+// private_wait, so private_wait and private_max_wait are taken from def only when both are zero.
 func (p GroupPolicy) WithDefaults(def GroupPolicy) GroupPolicy {
 	if p.Proactive == (ProactivePolicy{}) {
 		p.Proactive = def.Proactive
@@ -299,6 +309,11 @@ func (p GroupPolicy) WithDefaults(def GroupPolicy) GroupPolicy {
 	fillZero(&p.Reply.MaxUnpromptedReplies, def.Reply.MaxUnpromptedReplies)
 	fillZero(&p.Reply.MaxConsecutiveSkips, def.Reply.MaxConsecutiveSkips)
 	fillZero(&p.Reply.Quote, def.Reply.Quote)
+	fillZero(&p.Reply.MaxParts, def.Reply.MaxParts)
+	if p.Reply.PrivateWait == (Duration{}) && p.Reply.PrivateMaxWait == (Duration{}) {
+		p.Reply.PrivateWait = def.Reply.PrivateWait
+		p.Reply.PrivateMaxWait = def.Reply.PrivateMaxWait
+	}
 	fillZero(&p.Proactive.JoinLull, def.Proactive.JoinLull)
 	fillZero(&p.Proactive.JoinWindow, def.Proactive.JoinWindow)
 	fillZero(&p.Proactive.JoinMinMessages, def.Proactive.JoinMinMessages)
@@ -368,6 +383,15 @@ func (p GroupPolicy) Validate() error {
 	}
 	if !slices.Contains([]string{QuoteAuto, QuoteAlways, QuoteNever}, r.Quote) {
 		fail("reply.quote must be one of auto|always|never, got %q", r.Quote)
+	}
+	if r.MaxParts < 1 || r.MaxParts > 5 {
+		fail("reply.max_parts must be in [1, 5], got %d", r.MaxParts)
+	}
+	if r.PrivateWait.Duration < 0 || r.PrivateWait.Duration > time.Minute {
+		fail("reply.private_wait must be in [0, 60s], got %s", r.PrivateWait)
+	}
+	if r.PrivateMaxWait.Duration < r.PrivateWait.Duration || r.PrivateMaxWait.Duration > 2*time.Minute {
+		fail("reply.private_max_wait must be in [reply.private_wait (%s), 2m], got %s", r.PrivateWait, r.PrivateMaxWait)
 	}
 	if p.Context.MaxRecentMessages < 0 || p.Context.MaxRecentMessages > 500 {
 		fail("context.max_recent_messages must be in [0, 500], got %d", p.Context.MaxRecentMessages)
