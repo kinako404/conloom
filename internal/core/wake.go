@@ -242,6 +242,27 @@ func (o *Orchestrator) fireTimer(ctx context.Context, t store.ConversationTimer)
 	return nil
 }
 
+// staleWake follows up a wake task that Recover failed as stale, without a
+// message: an initiate, whose timer went when it fired, is planned again
+// (replanInitiate); a status return ends the status it returned from, which
+// had ended by the time the task was created, and leaves a newer one; a
+// follow-up is not tried again. Failures are logged.
+func (o *Orchestrator) staleWake(ctx context.Context, task store.TaskRecord) {
+	switch task.Meta.Trigger {
+	case TriggerInitiate:
+		o.replanInitiate(ctx, task.ConversationKey)
+	case TriggerStatusReturn:
+		st, err := o.st.GetStatus(ctx, task.ConversationKey)
+		if err == nil && !st.UntilAt.After(task.EventOccurredAt) {
+			_, err = o.st.ClearStatus(ctx, task.ConversationKey, st.UntilAt)
+		}
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			o.log.Error("end status of a stale status return failed", "task_id", task.ID, "conversation", task.ConversationKey,
+				"error", err)
+		}
+	}
+}
+
 // dropFiredTimer deletes t if it is armed again for the time it already fired
 // at.
 func (o *Orchestrator) dropFiredTimer(ctx context.Context, t store.ConversationTimer) {

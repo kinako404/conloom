@@ -44,7 +44,8 @@ const (
 
 // Recover resumes tasks left queued or running by a previous process: tasks
 // whose event is younger than StaleTaskAfter run again (commands at once,
-// replies through the scheduler); older ones fail with STALE and no action.
+// replies through the scheduler); older ones fail with STALE and no action
+// (a wake task among them is followed up by staleWake).
 // It then starts background maintenance, which expires undelivered outbox
 // actions every 30s and, every hour until Close, purges old idempotency
 // records, proactive log entries older than 7 days and bar changes older than
@@ -166,7 +167,11 @@ func (o *Orchestrator) recoverOwned(ctx context.Context, t store.TaskRecord, now
 	case taskFinished(rec.Status):
 		return recoverSkipped, rec, nil
 	case now.Sub(rec.EventOccurredAt) >= staleAfter:
-		return recoverStale, rec, o.complete(ctx, rec, conloomapi.TaskFailed, rec.Meta, errorCodeStale, nil)
+		if err := o.complete(ctx, rec, conloomapi.TaskFailed, rec.Meta, errorCodeStale, nil); err != nil {
+			return recoverStale, rec, err
+		}
+		o.staleWake(ctx, rec)
+		return recoverStale, rec, nil
 	case rec.Command != "":
 		return recoverRan, rec, o.runStoredCommand(ctx, rec)
 	}

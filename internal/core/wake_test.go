@@ -823,16 +823,16 @@ func TestWake_GroupTimerRefused(t *testing.T) {
 	}
 }
 
-// storeWakeTask stores a queued initiate task of the private chat, as one
-// left by a process that stopped before running it.
-func (e *testEnv) storeWakeTask(t *testing.T, now time.Time) string {
+// storeWakeTask stores a queued wake task of the private chat with trigger,
+// as one left by a process that stopped before running it.
+func (e *testEnv) storeWakeTask(t *testing.T, trigger string, now time.Time) string {
 	t.Helper()
 	id := "task_wake_left"
 	_, err := e.st.Ingest(context.Background(), store.Ingest{
 		Event: store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "conloom:timer:left", EventID: "timer_left",
 			Response: []byte("{}"), CreatedAt: now},
 		NewTask: &store.TaskRecord{ID: id, BotInstanceID: testBot, ConversationKey: privateConvKey, Status: conloomapi.TaskQueued,
-			ActorPlatformUserID: privateUser, Meta: conloomapi.TaskMeta{Trigger: TriggerInitiate},
+			ActorPlatformUserID: privateUser, Meta: conloomapi.TaskMeta{Trigger: trigger},
 			EventOccurredAt: now, CreatedAt: now, UpdatedAt: now},
 	})
 	if err != nil {
@@ -847,7 +847,7 @@ func TestWake_RecoverKeepsWakeActor(t *testing.T) {
 	t.Cleanup(model.open)
 	env.seedPrivateMessage(t, clock, "晚安")
 	clock.set(clock.now().Add(5 * time.Hour))
-	wakeID := env.storeWakeTask(t, clock.now())
+	wakeID := env.storeWakeTask(t, TriggerInitiate, clock.now())
 	clock.set(clock.now().Add(time.Minute))
 
 	if err := env.o.Recover(context.Background()); err != nil {
@@ -861,6 +861,60 @@ func TestWake_RecoverKeepsWakeActor(t *testing.T) {
 	reply := env.submit(t, env.event(conloomapi.ConvPrivate, privateUser, privateUser, "在吗", withName("小明"), clock.stamp))
 	requireCancelledWithoutActions(t, env, wakeID)
 	requireOneReply(t, env, reply.TaskID)
+}
+
+func TestWake_RecoverStale(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		trigger string
+		// statusFor is how long before the task's creation a status ended;
+		// a negative value is a status still lasting then, none without one.
+		statusFor  time.Duration
+		hasStatus  bool
+		wantStatus bool
+		wantKinds  []store.TimerKind
+	}{
+		{name: "initiate planned again", trigger: TriggerInitiate, wantKinds: []store.TimerKind{store.TimerInitiate}},
+		{name: "follow-up dropped", trigger: TriggerFollowUp},
+		{name: "status return ends its status", trigger: TriggerStatusReturn, statusFor: time.Minute, hasStatus: true},
+		{name: "status return keeps a newer status", trigger: TriggerStatusReturn, statusFor: -time.Hour, hasStatus: true,
+			wantStatus: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env, clock := newWakeEnv(t, nil, nil, nil)
+			ctx := context.Background()
+			env.seedPrivateMessage(t, clock, "晚安")
+			clock.set(clock.now().Add(10 * time.Minute))
+			created := clock.now()
+			if c.hasStatus {
+				until := created.Add(-c.statusFor)
+				if err := env.st.SetStatus(ctx, store.ConversationStatus{ConversationKey: privateConvKey, Activity: "洗澡",
+					TaskID: "task_seed", StartedAt: until.Add(-20 * time.Minute), UntilAt: until}, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			id := env.storeWakeTask(t, c.trigger, created)
+			clock.set(created.Add(3 * time.Minute))
+
+			if err := env.o.Recover(ctx); err != nil {
+				t.Fatal(err)
+			}
+			task := env.getTask(t, id)
+			if task.Status != conloomapi.TaskFailed || task.Error == nil || task.Error.Code != errorCodeStale || len(task.Actions) != 0 {
+				t.Fatalf("task = %+v, want failed as stale", task)
+			}
+			if got := wakeKinds(env.privateTimers(t)); !slices.Equal(got, c.wantKinds) {
+				t.Fatalf("timers = %v, want %v", got, c.wantKinds)
+			}
+			if len(c.wantKinds) > 0 {
+				requireInitiatePlanned(t, env, created.Add(-10*time.Minute), 4*time.Hour, autonomy.DefaultQuiet)
+			}
+			_, err := env.st.GetStatus(ctx, privateConvKey)
+			if kept := err == nil; kept != c.wantStatus || err != nil && !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("status kept = %v (%v), want %v", kept, err, c.wantStatus)
+			}
+		})
+	}
 }
 
 func TestWake_StopCancelsWake(t *testing.T) {
