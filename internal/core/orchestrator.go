@@ -143,7 +143,7 @@ type Orchestrator struct {
 	// panelLocks serialise SubmitPanel and DeletePanelChat per conversation;
 	// panelDeleteWait is how long DeletePanelChat waits for the chat's
 	// cancelled tasks to stop.
-	panelLocks      keyedLocks
+	panelLocks      lockTable
 	panelDeleteWait time.Duration
 }
 

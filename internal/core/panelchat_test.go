@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -571,14 +572,14 @@ func TestDeletePanelChat_KeepsChatWhileATaskStillRuns(t *testing.T) {
 	entered, release := env.blockFirstCompletion(t, func(store.TaskCompletion) bool { return true })
 	taskID := env.panelResponse(t, env.submitPanel(t, key, "admin", "你好")).TaskID
 	waitEntered(t, entered)
-	if err := env.o.DeletePanelChat(ctx, key); !errors.Is(err, errTasksStopping) {
-		t.Fatalf("DeletePanelChat while a task of the chat still runs: err = %v, want errTasksStopping", err)
+	if err := env.o.DeletePanelChat(ctx, key); !errors.Is(err, ErrChatBusy) {
+		t.Fatalf("DeletePanelChat while a task of the chat still runs: err = %v, want ErrChatBusy", err)
 	}
 	if _, err := env.st.GetConversation(ctx, testBot, strings.Split(key, ":")[3]); err != nil {
 		t.Fatalf("conversation after a refused delete: %v", err)
 	}
-	if err := env.o.DeletePanelChat(ctx, key); !errors.Is(err, errTasksStopping) {
-		t.Fatalf("retry while the task still runs: err = %v, want errTasksStopping", err)
+	if err := env.o.DeletePanelChat(ctx, key); !errors.Is(err, ErrChatBusy) {
+		t.Fatalf("retry while the task still runs: err = %v, want ErrChatBusy", err)
 	}
 	env.o.panelDeleteWait = waitLimit
 	go func() {
@@ -591,4 +592,98 @@ func TestDeletePanelChat_KeepsChatWhileATaskStillRuns(t *testing.T) {
 	if _, err := env.st.GetTask(ctx, testBot, taskID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("task after delete: %v", err)
 	}
+}
+
+func TestDeletePanelChat_DoesNotBlockOtherChats(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	env.o.panelDeleteWait = waitLimit
+	ctx := context.Background()
+	key, err := env.o.CreatePanelChat(ctx, testBot, "admin", "小明")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// other's key shares a mutex with key's in a table of 64 hashed mutexes,
+	// so a lock per hash slot would serialise the two chats.
+	slot := func(k string) uint32 {
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(k))
+		return h.Sum32() % 64
+	}
+	var other string
+	for range 5000 {
+		k, err := env.o.CreatePanelChat(ctx, testBot, "admin", "小红")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slot(k) == slot(key) {
+			other = k
+			break
+		}
+	}
+	if other == "" {
+		t.Fatal("no chat key shares a hash slot with the first")
+	}
+
+	entered, release := env.blockFirstCompletion(t, func(store.TaskCompletion) bool { return true })
+	defer release()
+	taskID := env.panelResponse(t, env.submitPanel(t, key, "admin", "你好")).TaskID
+	waitEntered(t, entered)
+	deleted := make(chan error, 1)
+	go func() { deleted <- env.o.DeletePanelChat(ctx, key) }()
+	waitUntil(t, "the delete to cancel the running task", func() bool {
+		env.o.mu.Lock()
+		defer env.o.mu.Unlock()
+		ow := env.o.owners[taskID]
+		return ow != nil && ow.cancelled
+	})
+
+	submitted := make(chan error, 1)
+	go func() {
+		_, err := env.o.SubmitPanel(ctx, other, "admin", "在吗")
+		submitted <- err
+	}()
+	select {
+	case err := <-submitted:
+		if err != nil {
+			t.Fatalf("SubmitPanel to another chat: %v", err)
+		}
+	case err := <-deleted:
+		t.Fatalf("DeletePanelChat returned %v before the other chat's SubmitPanel", err)
+	case <-time.After(waitLimit / 2):
+		t.Fatal("SubmitPanel to another chat waited for the delete of the first")
+	}
+	release()
+	if err := <-deleted; err != nil {
+		t.Fatalf("DeletePanelChat: %v", err)
+	}
+}
+
+func TestLockTable(t *testing.T) {
+	var l lockTable
+	unlockA := l.lock("a")
+	unlockB := l.lock("b")
+
+	acquired := make(chan struct{})
+	go func() {
+		unlock := l.lock("a")
+		close(acquired)
+		unlock()
+	}()
+	select {
+	case <-acquired:
+		t.Fatal("a second lock of a key was acquired while the first was held")
+	case <-time.After(20 * time.Millisecond):
+	}
+	unlockB()
+	unlockA()
+	select {
+	case <-acquired:
+	case <-time.After(waitLimit):
+		t.Fatal("the waiting lock was not acquired after the unlock")
+	}
+	waitUntil(t, "the table to drop its unused entries", func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return len(l.locks) == 0
+	})
 }

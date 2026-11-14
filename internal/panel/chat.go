@@ -32,9 +32,15 @@ func (s *Server) chatService(w http.ResponseWriter, r *http.Request) (ChatServic
 }
 
 // chatFail is fail for the chat service: a request it refuses is 400 with
-// the reason.
+// the reason, a delete refused while the chat's tasks are still stopping is
+// 409 CHAT_BUSY.
 func (s *Server) chatFail(w http.ResponseWriter, r *http.Request, err error) {
-	for _, refused := range []error{core.ErrNotPrivate, core.ErrNotPanelChat, core.ErrNoUserYet, core.ErrBadText} {
+	if errors.Is(err, core.ErrChatBusy) {
+		s.respondError(w, r, http.StatusConflict, conloomapi.CodeChatBusy,
+			strings.TrimPrefix(core.ErrChatBusy.Error(), "core: "), err)
+		return
+	}
+	for _, refused := range []error{core.ErrNotPrivate, core.ErrNotPanelChat, core.ErrNoUserYet, core.ErrBadText, core.ErrNotAllowed} {
 		if errors.Is(err, refused) {
 			s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
 				strings.TrimPrefix(refused.Error(), "core: "), err)

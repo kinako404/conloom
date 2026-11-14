@@ -11,3 +11,7 @@ var (
 	ErrBadText      = errors.New("core: message text must be 1 to 2000 characters")
 	ErrNotAllowed   = errors.New("core: the bot does not answer this user in private chat")
 )
+
+// ErrChatBusy refuses to delete a panel chat whose cancelled tasks did not
+// stop in time; the panel API answers it with 409.
+var ErrChatBusy = errors.New("core: the chat's cancelled tasks are still stopping; try again")

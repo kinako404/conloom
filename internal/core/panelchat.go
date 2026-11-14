@@ -5,9 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -198,7 +198,7 @@ func (o *Orchestrator) CreatePanelChat(ctx context.Context, botID, panelUser, di
 // session, lull timer, rate-limit hits and cached persona prompt and policy.
 // It holds the chat's panel lock throughout, so a SubmitPanel waits for it
 // and then finds no conversation. If a task has not stopped in time nothing
-// is deleted and errTasksStopping is returned; the tasks stay cancelled, so a
+// is deleted and ErrChatBusy is returned; the tasks stay cancelled, so a
 // retry succeeds once they stopped. Thus no task of the chat runs after it is
 // deleted to store or cache anything under its key again. A conversation not
 // on store.PlatformPanel is ErrNotPanelChat, an unknown one store.ErrNotFound.
@@ -240,12 +240,8 @@ func (o *Orchestrator) DeletePanelChat(ctx context.Context, convKey string) erro
 	return nil
 }
 
-// errTasksStopping refuses to delete a panel chat whose cancelled tasks did
-// not stop in time.
-var errTasksStopping = errors.New("core: the chat's cancelled tasks are still stopping; try again")
-
 // awaitStopped waits up to panelDeleteWait in all for the cancelled tasks'
-// owners to let go of them, and returns errTasksStopping if they did not.
+// owners to let go of them, and returns ErrChatBusy if they did not.
 func (o *Orchestrator) awaitStopped(ctx context.Context, convKey string, owners []<-chan struct{}) error {
 	if len(owners) == 0 {
 		return nil
@@ -257,7 +253,7 @@ func (o *Orchestrator) awaitStopped(ctx context.Context, convKey string, owners 
 		case <-done:
 		case <-timer.C:
 			o.log.Warn("panel chat not deleted: its cancelled tasks are still stopping", "conversation", convKey)
-			return errTasksStopping
+			return ErrChatBusy
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -315,4 +311,41 @@ func convPlatform(convKey string) string {
 		return ""
 	}
 	return parts[1]
+}
+
+// lockTable serialises work per key with a mutex for each key in use, so
+// work on one key never waits for another; a key's entry is dropped once no
+// one holds or waits for it. The zero value is ready to use.
+type lockTable struct {
+	mu    sync.Mutex
+	locks map[string]*tableLock
+}
+
+type tableLock struct {
+	mu sync.Mutex
+	// users counts who hold or wait for mu, guarded by lockTable.mu.
+	users int
+}
+
+func (l *lockTable) lock(key string) (unlock func()) {
+	l.mu.Lock()
+	if l.locks == nil {
+		l.locks = map[string]*tableLock{}
+	}
+	e := l.locks[key]
+	if e == nil {
+		e = &tableLock{}
+		l.locks[key] = e
+	}
+	e.users++
+	l.mu.Unlock()
+	e.mu.Lock()
+	return func() {
+		e.mu.Unlock()
+		l.mu.Lock()
+		if e.users--; e.users == 0 {
+			delete(l.locks, key)
+		}
+		l.mu.Unlock()
+	}
 }

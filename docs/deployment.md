@@ -418,6 +418,14 @@ sudo journalctl -u conloom | grep 'panel listening'
 
 **回退到没有 Web 管理面板的旧版本**（没有迁移 0008、0009）：先从 `conloom.yaml` 里删掉整个 `panel` 段和 `runtime.usage_retention`，否则旧二进制因为未知字段启动失败。旧二进制会忽略 `model_calls`、`panel_sessions` 两张表，不需要用备份恢复；回退期间的模型调用不会记入用量，再升级回来后这段时间在用量页上是空白。
 
+**回退到没有面板聊天的旧版本**（没有迁移 0011，也就是 `messages`、`outbox_actions` 没有 `channel` 列的版本）：旧二进制不认识通道，会把面板通道里还没送达的回复交给适配器发到真实平台。所以停掉新版本之后、启动旧版本之前，先把这些动作取消：
+
+```sql
+UPDATE outbox_actions SET status='cancelled' WHERE channel='panel' AND status IN ('pending','leased');
+```
+
+旧二进制忽略 `channel` 列。面板里新建的聊天（平台为 `panel`）留在库里，旧版本没有面板聊天，再升级回来后可以继续聊或删除。
+
 **回退到没有私聊节奏的旧版本**（没有迁移 0010，也就是没有分条发送和私聊等待的版本）：先从 `conloom.yaml` 里删掉 `reply.max_parts`、`reply.private_wait`、`reply.private_max_wait`（包括 `default_private_policy` 里的），否则旧二进制因为未知字段启动失败。旧二进制忽略 `outbox_actions` 的 `not_before` 列，回退时还没发出的分条会立即接连发出；已取消的动作它不会发放，会随所属任务一起被清理。存库的策略版本里这三个键会被旧二进制忽略，它写入的新版本（API、面板、`/pause` 等）不带这三个键，再升级回来后按默认值补齐，`max_parts` 变回默认策略里的值。
 
 **回退到没有长期检索的旧版本**（没有迁移 0006、0007，也就是没有关键词索引和语义检索的版本）：
