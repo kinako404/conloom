@@ -76,6 +76,16 @@ func (t *typing) stop(chatID int64) {
 	}
 }
 
+// once sends the chat action to chatID one time, in the background: the
+// reply sent there goes on with another part.
+func (t *typing) once(chatID int64) {
+	t.wg.Add(1)
+	go func() {
+		defer t.wg.Done()
+		t.send(t.ctx, chatID)
+	}()
+}
+
 func (t *typing) loop(chatID int64, r *typingRun) {
 	defer t.wg.Done()
 	for {
