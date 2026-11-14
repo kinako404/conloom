@@ -28,7 +28,9 @@ const (
 )
 
 // Input describes one reply's context. History is ordered oldest to newest
-// and excludes Current. MaxRecent <= 0 means no count limit on History.
+// and excludes Current. Current is empty for a turn the bot starts itself: the
+// final user message then has no 【当前消息】 block and Directive must be set.
+// MaxRecent <= 0 means no count limit on History.
 // ReplyTargets maps message IDs to the stored messages that History and
 // Current reply to; a missing target is shown as an earlier message.
 // ReplyTarget, when set, overrides the current message's target. BotName is
@@ -46,12 +48,17 @@ type Input struct {
 	TokenFactor                    float64
 	Location                       *time.Location
 	// Directive, when set, is appended to the current message after a blank
-	// line. It never changes the system prompt and counts toward BaseTokens.
+	// line, or takes its place when Current is empty. It never changes the
+	// system prompt and counts toward BaseTokens.
 	Directive string
 	// Memory, when set, starts the final user message, followed by a blank
-	// line and then the recent history and current message. It never changes
-	// the system prompt and counts toward BaseTokens.
+	// line and then the state block, recent history and current message. It
+	// never changes the system prompt and counts toward BaseTokens.
 	Memory string
+	// State, when set, is the bot's hidden state block, placed after Memory
+	// and followed by a blank line. It never changes the system prompt and
+	// counts toward BaseTokens.
+	State string
 	// ToolSchema is the JSON of the tool definitions sent with the request.
 	// It is never rendered but counts toward BaseTokens and EstimatedTokens.
 	ToolSchema string
@@ -71,12 +78,15 @@ var defaultLocation = sync.OnceValue(func() *time.Location {
 })
 
 // BaseTokens estimates the system prompt plus the current input (including
-// the reply target, mentions and directive) and the memory block, which are
-// always sent regardless of Budget.
+// the reply target, mentions and directive), the memory block and the state
+// block, which are always sent regardless of Budget.
 func BaseTokens(in Input) int {
 	n := Estimate(renderCurrent(in), in.TokenFactor) + MessageOverhead
 	if in.Memory != "" {
 		n += Estimate(in.Memory+"\n\n", in.TokenFactor)
+	}
+	if in.State != "" {
+		n += Estimate(in.State+"\n\n", in.TokenFactor)
 	}
 	if in.SystemPrompt != "" {
 		n += Estimate(in.SystemPrompt, in.TokenFactor) + MessageOverhead
@@ -90,7 +100,8 @@ func BaseTokens(in Input) int {
 // body is capped at HistoryMessageMaxRunes before it is costed. Roles strictly alternate after
 // the system prompt: adjacent same-role history is merged, history never
 // starts with assistant, and trailing user history is merged into the final
-// user message under recentLabel, after the memory block if any. Each user
+// user message under recentLabel, after the memory and state blocks if any.
+// Without a current message the directive follows that history directly. Each user
 // history line names the message it replies to (looked up in ReplyTargets)
 // and who it mentions, and the annotations count toward its cost. Bot history has echoed transcript prefixes stripped; a bot message left
 // with nothing is skipped and counted as dropped.
@@ -146,6 +157,9 @@ func Build(in Input) Output {
 	if n := len(groups); n > 0 && groups[n-1].role == "user" {
 		current = recentLabel + "\n" + strings.Join(groups[n-1].lines, "\n") + "\n" + current
 		groups = groups[:n-1]
+	}
+	if in.State != "" {
+		current = in.State + "\n\n" + current
 	}
 	if in.Memory != "" {
 		current = in.Memory + "\n\n" + current
@@ -366,12 +380,13 @@ func renderCappedBody(rec store.MessageRecord) string {
 	return renderBody(rec)
 }
 
+// renderCurrent renders the current message block followed by the directive,
+// or only the directive when there is no current message.
 func renderCurrent(in Input) string {
-	speaker := ""
-	if len(in.Current) > 0 {
-		speaker = displayName(in.Current[0])
+	if len(in.Current) == 0 {
+		return in.Directive
 	}
-	lines := []string{"【当前消息】发送者：" + speaker}
+	lines := []string{"【当前消息】发送者：" + displayName(in.Current[0])}
 	if t, replies, known := currentReplyTarget(in); known {
 		lines = append(lines, "（回复 "+replyName(t, in.BotName)+" 在 "+clock(t, in.location())+" 说的：「"+replyExcerpt(t, in.BotName, in.SpeakerNames(), replyTargetMaxRunes)+"」）")
 	} else if replies {

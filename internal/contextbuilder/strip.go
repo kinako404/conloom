@@ -21,7 +21,7 @@ const (
 // transcriptPrefixes match, at the start of a reply, the history line prefix
 // "[HH:MM] 名字：" (optionally with its annotations), the header lines of the
 // current message, the recent-history block and the current message's mention
-// line. The memory block is cut by cutMemoryBlock.
+// line. The memory and state blocks are cut by cutBlock.
 var transcriptPrefixes = []*regexp.Regexp{
 	regexp.MustCompile(`^\[\d{1,2}:\d{2}\]\s*` + transcriptName + `{1,40}?(?:` + replyAnnotationRE + `(?:` + mentionAnnotationRE + `)?|` + mentionAnnotationRE + `)\s*[：:]`),
 	regexp.MustCompile(`^\[\d{1,2}:\d{2}\]\s*` + transcriptName + `{1,40}[：:]`),
@@ -35,30 +35,44 @@ var (
 	transcriptNameTail = regexp.MustCompile(`^` + annotationsRE + `(?:\s*[：:]|[ \t]*(?:\n|$))`)
 
 	memoryBlockHeader = regexp.MustCompile(`^【你记得的事[^\n]*(?:\n|$)`)
-	// memoryBlockLine matches a line of the memory block: the summary
-	// "群里最近：…" or "你们最近聊过：…", a note "名字（档位）：…" or "名字：…" (a name without sentence
-	// punctuation, not starting with "[" or "【"), or the closing reminder
-	// starting "好感度只表示".
-	memoryBlockLine = regexp.MustCompile(`^[ \t]*(?:群里最近[：:]|你们最近聊过[：:]|好感度只表示|[^\s\[【:：，。！？、；,.!?;]` +
-		transcriptName + `{0,39}[：:])[^\n]*(?:\n|$)`)
+	memoryBlockLine   = blockLine(memoryLineStart)
+
+	stateBlockHeader = regexp.MustCompile(`^【你的状态[^\n]*(?:\n|$)`)
+	// stateBlockLine matches a line of the state block: the status
+	// "正在：…", a bar "名字：档位（说明）" (read as a memory block line) or the
+	// closing reminder starting "这些只影响".
+	stateBlockLine = blockLine(`正在[：:]|这些只影响|` + memoryLineStart)
 )
 
-// cutMemoryBlock removes an echoed memory block from the start of s: its
-// header line and then every following line that reads like a block line,
-// up to the first line that does not, so the notes go even when the closing
+// memoryLineStart matches the start of a memory block line: the summary
+// "群里最近：…" or "你们最近聊过：…", a note "名字（档位）：…" or "名字：…" (a
+// name without sentence punctuation, not starting with "[" or "【"), or the
+// closing reminder starting "好感度只表示".
+const memoryLineStart = `群里最近[：:]|你们最近聊过[：:]|好感度只表示|[^\s\[【:：，。！？、；,.!?;]` +
+	transcriptName + `{0,39}[：:]`
+
+// blockLine matches a whole line, optionally indented, that starts with one of
+// the alternatives in starts.
+func blockLine(starts string) *regexp.Regexp {
+	return regexp.MustCompile(`^[ \t]*(?:` + starts + `)[^\n]*(?:\n|$)`)
+}
+
+// cutBlock removes an echoed prompt block from the start of s: its header
+// line and then every following line that reads like a block line, up to the
+// first line that does not, so the block's lines go even when its closing
 // line was reworded or left out.
-func cutMemoryBlock(s string) (string, bool) {
-	loc := memoryBlockHeader.FindStringIndex(s)
+func cutBlock(s string, header, line *regexp.Regexp) (string, bool) {
+	loc := header.FindStringIndex(s)
 	if loc == nil {
 		return s, false
 	}
 	s = s[loc[1]:]
 	for {
-		line := memoryBlockLine.FindStringIndex(s)
-		if line == nil {
+		next := line.FindStringIndex(s)
+		if next == nil {
 			return s, true
 		}
-		s = s[line[1]:]
+		s = s[next[1]:]
 	}
 }
 
@@ -66,7 +80,8 @@ func cutMemoryBlock(s string) (string, bool) {
 // model echoed at the start of its reply: repeated "[HH:MM] 名字：" prefixes
 // (with or without their "（回复 …）" and "（@了 …）" annotations), the
 // 【当前消息】 and 【近期消息…】 header lines, the 【你记得的事…】 header with the
-// summary, note and closing lines after it (see cutMemoryBlock), a
+// summary, note and closing lines after it, the 【你的状态…】 header with the
+// status, bar and closing lines after it (see cutBlock), a
 // "（@了 …）" line and "<botName>：". A name holds no sentence punctuation
 // unless it is one of knownNames (the conversation's speakers) or botName. For those names a bare
 // header line "[HH:MM] 名字" without the colon (optionally with its
@@ -86,7 +101,10 @@ func StripTranscriptPrefix(text, botName string, knownNames ...string) string {
 				s, cut = s[loc[1]:], true
 			}
 		}
-		if rest, ok := cutMemoryBlock(s); ok {
+		if rest, ok := cutBlock(s, memoryBlockHeader, memoryBlockLine); ok {
+			s, cut = rest, true
+		}
+		if rest, ok := cutBlock(s, stateBlockHeader, stateBlockLine); ok {
 			s, cut = rest, true
 		}
 		if rest, ok := cutKnownSpeaker(s, names); ok {
