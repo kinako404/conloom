@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -91,7 +90,13 @@ func TestE2E_PrivateBurstGetsOneReply(t *testing.T) {
 }
 
 func TestE2E_PrivateReplyPartsArePaced(t *testing.T) {
-	parts := []string{"我刚到家", "今天路上特别堵，公交车走走停停开了快一个小时", "晚安"}
+	// Parts 2 and 3 take over 2s to type, longer than the outbox's 2s recheck,
+	// so each is still pending right after the part before it arrives.
+	parts := []string{
+		"我刚到家",
+		"今天路上特别堵，公交车走走停停开了快一个小时",
+		"早点休息吧，明天还要早起上班，记得把闹钟定好，别又像上周那样睡过头了，晚安",
+	}
 	fake := fakeopenai.New(t, answer(strings.Join(parts, "\n|||\n")))
 	e := newEnv(t, rhythmConfig(t, fake.URL, 50*time.Millisecond, 3))
 	ctx := context.Background()
@@ -102,23 +107,18 @@ func TestE2E_PrivateReplyPartsArePaced(t *testing.T) {
 	got := []conloomapi.Action{first}
 	for i := 1; i < len(parts); i++ {
 		due = due.Add(typingTime(parts[i]))
-		actions, err := e.client.PollOutbox(ctx, 0, 0)
+		early, err := e.client.PollOutbox(ctx, 0, 0)
 		if err != nil {
 			t.Fatalf("PollOutbox: %v", err)
 		}
-		if len(actions) == 0 {
-			// Not handed out yet: wait for it as an adapter would.
-			actions = []conloomapi.Action{e.drainOne()}
-		} else if err := e.client.Ack(ctx, actions[0].ActionID, conloomapi.AckRequest{Status: conloomapi.AckSent, PlatformMessageID: "mockbot-part-" + strconv.Itoa(i+1)}); err != nil {
-			t.Fatalf("Ack: %v", err)
+		if len(early) != 0 {
+			t.Fatalf("part %d handed out at %v right after part %d, want it held until %v: %+v", i+1, time.Now(), i, due, early)
 		}
+		a := e.drainOne()
 		if at := time.Now(); at.Before(due) {
 			t.Fatalf("part %d handed out at %v, before it was due at %v", i+1, at, due)
 		}
-		if len(actions) != 1 {
-			t.Fatalf("handed out %d actions, want only part %d: %+v", len(actions), i+1, actions)
-		}
-		got = append(got, actions[0])
+		got = append(got, a)
 	}
 	for i, a := range got {
 		if a.Content.Text != parts[i] || a.PartIndex != i+1 || a.PartCount != len(parts) {

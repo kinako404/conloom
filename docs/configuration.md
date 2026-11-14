@@ -237,7 +237,8 @@ default_private_policy:
 - YAML 配置里省略的任何字段（或省略整个 `proactive` 段）都保持上面的默认值。
 - 已存库的策略版本缺少 `proactive` 段时，读取时按默认值补齐，即主动搭话默认开启、档位默认为低。
 - 已存库的版本或 API 请求里缺少 `reply.turn_gap`、`turn_max_wait`、`turn_cooldown`、`max_unprompted_replies`、`max_consecutive_skips`、`quote`、`max_parts` 或 `proactive.join_*` 时，逐字段按默认值补齐（`quote` 补为 `auto`，`turn_cooldown` 补为 45s，`max_parts` 补为默认策略里的值，内置默认是 1）；这些字段的零值本身都不合法，所以不会覆盖有意的设置。补齐用的是会话类型对应的默认策略：群聊用 `default_group_policy`，私聊用 `default_private_policy`（没配置时也是 `default_group_policy`）。
-- `reply.private_wait` 的 0 是合法值，所以 `private_wait` 和 `private_max_wait` 成对补齐：两者**都**缺少或都为 0 时，一起取默认策略里的值；只要有一个不为 0，就按写的值校验。也就是说，通过 API 或面板把两者都设为 0，表示“用默认值”，存下来的是默认值（内置默认 6s 和 20s），不是 0；想让私聊收到消息立即开始，把 `private_wait` 设为 0、`private_max_wait` 设为大于 0 的值。
+- `reply.private_wait` 的 0 是合法值，所以已存库的版本和 API 请求里 `private_wait` 和 `private_max_wait` 成对补齐：两者**都**缺少或都为 0 时，一起取会话类型对应的默认策略里的值；只要有一个不为 0，就按写的值校验。也就是说，通过 API 或面板把两者都设为 0，表示“用默认值”，存下来的是默认策略里的值（内置默认 6s 和 20s），不是 0；想让私聊收到消息立即开始，把 `private_wait` 设为 0、`private_max_wait` 设为大于 0 的值。
+- YAML 配置里不一样：和其他字段一样，省略才取内置默认值（6s 和 20s）；在 `default_group_policy` 或 `default_private_policy` 里明确写 `private_wait: 0` 和 `private_max_wait: 0`，就是不等待、收到消息立即开始回复，不会被换成默认值。这时上一条里的“取默认值”取到的也是 0 和 0。
 - `continuation_window` 不补，旧版本里的 `0s` 仍表示不开启在聊模式；它不为 0 时必须大于 `turn_cooldown`，否则校验失败（否则挂起的一轮会在会话超时后才放行，然后被丢弃）。
 - 已存库的策略版本缺少整个 `memory` 段时，读取时用会话类型对应的默认策略里的 `memory` 补齐，即群聊记忆按配置默认关闭，私聊按 `default_private_policy.memory`。
 - `memory` 段内缺少的键取内置默认值（`affinity: true`、`consolidate_every: 150`、`consolidate_interval: 6h`、`consolidate_min: 20`、`backlog: 1000`，`enabled` 为 `false`）；显式写出的 `0` 和 `false` 保留。加入 `consolidate_min` 之前存库的版本读出来是 20，和原来写死的条数一致。
