@@ -268,7 +268,7 @@ func TestConsolidate_SplitsBatchesByBudget(t *testing.T) {
 
 func TestConsMemberCap(t *testing.T) {
 	for _, c := range []struct{ out, summary, note, want int }{
-		{0, 1500, 300, 1}, {2000, 1500, 300, 1}, {3400, 1500, 300, 2}, {4096, 1500, 300, 3}, {8192, 1500, 300, 11},
+		{0, 1500, 300, maxBatchMessages}, {-1, 3000, 1000, maxBatchMessages}, {2000, 1500, 300, 1}, {3400, 1500, 300, 2}, {4096, 1500, 300, 3}, {8192, 1500, 300, 11},
 		{4096, 3000, 1000, 1}, {8192, 3000, 1000, 2}, {8192, 8000, 2000, 1}, {4096, 400, 80, 16},
 	} {
 		if got := consMemberCap(c.out, c.summary, c.note); got != c.want {

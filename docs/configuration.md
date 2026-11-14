@@ -244,7 +244,7 @@ default_private_policy:
 - `continuation_window` 不补，旧版本里的 `0s` 仍表示不开启在聊模式；它不为 0 时必须大于 `turn_cooldown`，否则校验失败（否则挂起的一轮会在会话超时后才放行，然后被丢弃）。
 - 已存库的策略版本缺少整个 `memory` 段时，读取时用会话类型对应的默认策略里的 `memory` 补齐，即群聊记忆按配置默认关闭，私聊按 `default_private_policy.memory`。
 - `memory` 段内缺少的键取内置默认值（`affinity: true`、`consolidate_every: 150`、`consolidate_interval: 6h`、`consolidate_min: 20`、`backlog: 1000`、`summary_max_chars: 0`、`note_max_chars: 0`，`enabled` 为 `false`）；显式写出的 `0` 和 `false` 保留。加入 `consolidate_min` 之前存库的版本读出来是 20，和原来写死的条数一致。
-- `memory.summary_max_chars` 和 `note_max_chars` 是摘要和每人笔记的字数上限（按字符计）：整理提示词按它要求篇幅（素材足够时写到上限的 60%~90%，不超过上限），写入时超出的部分截掉，`/记住` 写满时从最前面腾位置，API、面板和命令修改笔记时超过上限会被拒绝。0 表示按会话类型的默认值：群聊 1500 / 300，私聊 3000 / 1000。存库的旧版本没有这两个键，读出来是 0，也就是按会话类型取默认值，不会把群聊的数字带进私聊；补齐默认策略时也不填它们。调大上限后整理的输出变长，`long_context` 的 `reserved_output_tokens` 要跟着留足（见上面模型配置表）；输出预留放不下一个人的摘要加笔记时，整理会按比例缩短要求的字数（不低于 200 / 50 字）并记一条警告，见 [架构 5.5 节](architecture.md#55-记忆和好感度)。
+- `memory.summary_max_chars` 和 `note_max_chars` 是摘要和每人笔记的字数上限（按字符计）：整理提示词按它要求篇幅（素材足够时写到上限的 60%~90%，不超过上限），写入时超出的部分截掉，`/记住` 写满时从最前面腾位置，API、面板和命令修改笔记时超过上限会被拒绝。0 表示按会话类型的默认值：群聊 1500 / 300，私聊 3000 / 1000。存库的旧版本没有这两个键，读出来是 0，也就是按会话类型取默认值，不会把群聊的数字带进私聊；补齐默认策略时也不填它们。调大上限后整理的输出变长，`long_context` 的 `reserved_output_tokens` 要跟着留足（见上面模型配置表）；输出预留放不下一个人的摘要加笔记时，整理会按比例缩短提示词要求的字数（不低于 200 / 50 字，存储仍按上限截断）并记一条警告，见 [架构 5.5 节](architecture.md#55-记忆和好感度)。
 - 群策略 API 对 `proactive` 和 `memory` 段的处理不同于 YAML，见 [API：群策略](api.md#群策略)。
 - `default_private_policy` 段里省略的字段同样取上面的内置默认值（不是 `default_group_policy` 的值），校验规则也一样；整段省略时，私聊会话直接沿用 `default_group_policy`。
 - `proactive.contact_cooldown` 已移除：已存库的旧版本里的这个键在读取时被忽略；但配置文件不接受未知字段，升级后要从 `conloom.yaml` 里删掉这一行，否则启动时报错。

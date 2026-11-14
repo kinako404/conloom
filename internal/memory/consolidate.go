@@ -59,8 +59,12 @@ const (
 
 // consMemberCap is how many members a batch may show, at least 1, for a
 // model that may output outputBudget tokens when the summary may be
-// summaryMax and each note noteMax characters long.
+// summaryMax and each note noteMax characters long. An outputBudget of 0
+// leaves the output unlimited, and then only maxBatchMessages caps it.
 func consMemberCap(outputBudget, summaryMax, noteMax int) int {
+	if outputBudget <= 0 {
+		return maxBatchMessages
+	}
 	room := int(float64(outputBudget)*consOutputShare) - consPlannedOutput(0, summaryMax, noteMax)
 	return max(consMinBatchMembers, room/(noteMax+consOutputPerMember))
 }
@@ -70,12 +74,14 @@ func consPlannedOutput(members, summaryMax, noteMax int) int {
 	return summaryMax + consOutputFrame + members*(noteMax+consOutputPerMember)
 }
 
-// consFitLimits is the summary and note limits a batch asks for and stores
+// consFitLimits is the summary and note lengths a batch's prompt asks for
 // when the model may output outputBudget tokens: summaryMax and noteMax when
 // a batch of one member fits within consOutputShare of it (or the output is
 // unlimited, outputBudget 0), else both scaled by the same factor so that it
 // fits, but never below conloomapi.MinSummaryMaxChars and MinNoteMaxChars.
-// Smaller batches cannot help here: the summary is rewritten whole.
+// Smaller batches cannot help here: the summary is rewritten whole. Storage
+// keeps the policy's limits, so an echoed longer note (with the remembered
+// items at its end) is not cut on every run.
 func consFitLimits(outputBudget, summaryMax, noteMax int) (int, int) {
 	share := int(float64(outputBudget) * consOutputShare)
 	if outputBudget <= 0 || consPlannedOutput(1, summaryMax, noteMax) <= share {
@@ -291,13 +297,14 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 		return consOutcome{skipped: "long_unavailable"}, nil
 	}
 	p := d.Profile
-	if s, n := consFitLimits(d.MaxOutputTokens, style.summaryMax, style.noteMax); s != style.summaryMax || n != style.noteMax {
-		c.warnFitted(convKey, d.MaxOutputTokens, style, s, n)
-		style = style.withLimits(s, n)
+	askSummary, askNote := consFitLimits(d.MaxOutputTokens, style.summaryMax, style.noteMax)
+	if askSummary != style.summaryMax || askNote != style.noteMax {
+		c.warnFitted(convKey, d.MaxOutputTokens, style, askSummary, askNote)
+		style = style.asking(askSummary, askNote)
 	}
 	in.BotName, in.Location, in.Unnamed = botName, c.d.Location, style.unnamed
 	in.BaseTokens, in.Budget, in.TokenFactor = base, d.PromptBudget, p.Config.TokenEstimateFactor
-	memberCap := consMemberCap(d.MaxOutputTokens, style.summaryMax, style.noteMax)
+	memberCap := consMemberCap(d.MaxOutputTokens, askSummary, askNote)
 	in.MaxMembers = c.memberLimit(convKey, memberCap)
 	b := consPlanBatch(in)
 	now := c.d.Now()
@@ -600,9 +607,9 @@ func (c *Consolidator) refreshGroup(ctx context.Context, g *store.GroupMemory) e
 	return nil
 }
 
-// warnFitted logs that the conversation's limits were reduced to summaryMax
-// and noteMax for an output reservation of reserved tokens, once for each
-// combination of the three.
+// warnFitted logs that the conversation's prompt asks for summaryMax and
+// noteMax characters, less than its limits, for an output reservation of
+// reserved tokens, once for each combination of the three.
 func (c *Consolidator) warnFitted(convKey string, reserved int, style consStyle, summaryMax, noteMax int) {
 	c.mu.Lock()
 	key := [3]int{reserved, style.summaryMax, style.noteMax}
@@ -614,7 +621,7 @@ func (c *Consolidator) warnFitted(convKey string, reserved int, style consStyle,
 	}
 	c.d.Logger.Warn("memory consolidation limits reduced to fit the long model's output reservation", "conversation", convKey,
 		"reserved_output_tokens", reserved, "summary_max_chars", style.summaryMax, "note_max_chars", style.noteMax,
-		"effective_summary_max_chars", summaryMax, "effective_note_max_chars", noteMax,
+		"requested_summary_chars", summaryMax, "requested_note_chars", noteMax,
 		"recommended_reserved_output_tokens", RecommendedOutputTokens)
 }
 

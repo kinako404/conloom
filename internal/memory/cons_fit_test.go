@@ -9,6 +9,7 @@ import (
 
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/router"
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -41,8 +42,13 @@ func TestConsolidate_ClampsLimitsToTheOutputReservation(t *testing.T) {
 	e := newConsEnv(t, consOpts{private: true, reservedOutput: 4096})
 	for i := range 2 {
 		e.add(t, e.msg("20001", "小明", "我最近在学钢琴", consAt(2*i)), e.botMsg("加油", consAt(2*i+1)))
-		e.long.answer(`{"group_summary":"` + strings.Repeat("聊", 2900) + `","members":[{"ref":"P1","note":"` + strings.Repeat("记", 950) + `"}]}`)
+		e.long.answer(`{"group_summary":"` + strings.Repeat("聊", 2900+400*i) + `","members":[{"ref":"P1","note":"` + strings.Repeat("记", 950+100*i) + `"}]}`)
 		e.run(t, false)
+		if i == 0 {
+			if s, n := utf8.RuneCountInString(e.group(t).Summary), utf8.RuneCountInString(getMember(t, e.st, testPrivateKey, "20001").Note); s != 2900 || n != 950 {
+				t.Fatalf("stored %d/%d runes, want the 2900/950 given kept: only the prompt asks for less", s, n)
+			}
+		}
 		system := e.long.request(t, i).Messages[0].Content
 		for _, want := range []string{"不超过 2030 字", "不超过 676 字"} {
 			if !strings.Contains(system, want) {
@@ -50,21 +56,38 @@ func TestConsolidate_ClampsLimitsToTheOutputReservation(t *testing.T) {
 			}
 		}
 	}
-	if n := utf8.RuneCountInString(e.group(t).Summary); n != 2030 {
-		t.Errorf("summary = %d runes, want cut to the 2030 the prompt asked for", n)
+	if n := utf8.RuneCountInString(e.group(t).Summary); n != PrivateSummaryMaxRunes {
+		t.Errorf("summary = %d runes, want cut to the policy's %d", n, PrivateSummaryMaxRunes)
 	}
-	if n := utf8.RuneCountInString(getMember(t, e.st, testPrivateKey, "20001").Note); n != 676 {
-		t.Errorf("note = %d runes, want cut to 676", n)
+	if n := utf8.RuneCountInString(getMember(t, e.st, testPrivateKey, "20001").Note); n != PrivateNoteMaxRunes {
+		t.Errorf("note = %d runes, want cut to the policy's %d", n, PrivateNoteMaxRunes)
 	}
 	logs := e.logs.String()
 	if got := strings.Count(logs, "memory consolidation limits reduced"); got != 1 {
 		t.Fatalf("clamp warnings = %d, want 1 per conversation:\n%s", got, logs)
 	}
 	for _, want := range []string{"reserved_output_tokens=4096", "summary_max_chars=3000", "note_max_chars=1000",
-		"effective_summary_max_chars=2030", "effective_note_max_chars=676"} {
+		"requested_summary_chars=2030", "requested_note_chars=676"} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("clamp warning lacks %q:\n%s", want, logs)
 		}
+	}
+}
+
+func TestConsolidate_ShrunkPromptKeepsARememberedTail(t *testing.T) {
+	e := newConsEnv(t, consOpts{private: true, reservedOutput: 4096})
+	item := RememberMarker + "生日是三月五日"
+	note := strings.Repeat("记", PrivateNoteMaxRunes-utf8.RuneCountInString(item)) + item
+	putMember(t, e.st, store.MemberMemory{ConversationKey: testPrivateKey, PlatformUserID: "20001", DisplayName: "小明", Note: note})
+	e.add(t, e.msg("20001", "小明", "今天弹了一首曲子", consAt(0)), e.botMsg("真好", consAt(1)))
+	e.long.answer(`{"group_summary":"弹了一首曲子。","members":[{"ref":"P1","note":"` + note + `"}]}`)
+	e.run(t, false)
+	if system := e.long.request(t, 0).Messages[0].Content; !strings.Contains(system, "不超过 676 字") {
+		t.Fatalf("prompt does not ask for the shrunk note length:\n%s", system)
+	}
+	if got := getMember(t, e.st, testPrivateKey, "20001").Note; got != note {
+		t.Fatalf("note = %d runes ending %q, want the echoed %d-rune note with its remembered tail kept",
+			utf8.RuneCountInString(got), string([]rune(got)[max(0, utf8.RuneCountInString(got)-10):]), PrivateNoteMaxRunes)
 	}
 }
 

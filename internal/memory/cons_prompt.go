@@ -107,8 +107,9 @@ func consRule9(private bool, summaryMax, noteMax int) string {
 
 // consStyle is how a conversation is consolidated: the system prompt, the
 // section labels, the name of a member without one and the storage limits of
-// its summary and notes, which the prompt asks the model to keep to. private
-// and rule6 are what the prompt was built from (see withLimits).
+// its summary and notes, which the prompt asks the model to keep to unless a
+// small output reservation makes it ask for less (see asking). private and
+// rule6 are what the prompt was built from.
 type consStyle struct {
 	system, summaryLabel, membersLabel, unnamed string
 	summaryMax, noteMax                         int
@@ -120,6 +121,12 @@ type consStyle struct {
 // for storage.
 func (style consStyle) withLimits(summaryMax, noteMax int) consStyle {
 	style.summaryMax, style.noteMax = summaryMax, noteMax
+	return style.asking(summaryMax, noteMax)
+}
+
+// asking is style with a prompt that asks for summaryMax and noteMax
+// characters; its storage limits stay as they are.
+func (style consStyle) asking(summaryMax, noteMax int) consStyle {
 	style.system = consSystemPrompt(style.private, style.rule6, summaryMax, noteMax)
 	return style
 }
