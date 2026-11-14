@@ -519,15 +519,22 @@ func (o *Orchestrator) privateStarted(ctx context.Context, convKey string, since
 // the user's last message; all those still logged when none of the chat's
 // newest messages is the user's (see store.UserMessageTimes).
 func (o *Orchestrator) unanswered(ctx context.Context, convKey string) (int, error) {
-	times, err := o.st.UserMessageTimes(ctx, convKey, time.Time{}, lastUserScan)
+	since, _, err := o.lastUserMessage(ctx, convKey)
 	if err != nil {
 		return 0, err
 	}
-	var since time.Time
-	if len(times) > 0 {
-		since = times[0]
-	}
 	return o.privateStarted(ctx, convKey, since)
+}
+
+// lastUserMessage returns when the private chat's user sent their newest
+// message, and false when none of the chat's newest messages is theirs (see
+// store.UserMessageTimes).
+func (o *Orchestrator) lastUserMessage(ctx context.Context, convKey string) (time.Time, bool, error) {
+	times, err := o.st.UserMessageTimes(ctx, convKey, time.Time{}, lastUserScan)
+	if err != nil || len(times) == 0 {
+		return time.Time{}, false, err
+	}
+	return times[0], true, nil
 }
 
 // quietFor returns the private chat's quiet hours: its policy's, or else
@@ -651,12 +658,15 @@ func (o *Orchestrator) withholdWake(ctx context.Context, task store.TaskRecord, 
 // follow-up (armFollowUp); any other initiate or follow-up that was not
 // cancelled is logged as skipped, and an initiate is planned again
 // (replanInitiate, after the lock is released); a status return ends the
-// status it returned from, if it is still the conversation's.
+// status it returned from, if it is still the conversation's, and once sent
+// plans the next initiate again with the level's gap counted from now
+// (replanAfter), as its message is not stored until it is delivered.
 func (o *Orchestrator) finishWake(ctx context.Context, task store.TaskRecord, out *outcome) (sent bool, err error) {
 	replan := false
+	var spoke time.Time
 	defer func() {
 		if replan {
-			o.replanInitiate(ctx, task.ConversationKey)
+			o.replanAfter(ctx, task.ConversationKey, spoke)
 		}
 	}()
 	unlock := o.proactiveLocks.lock(task.ConversationKey)
@@ -687,6 +697,9 @@ func (o *Orchestrator) finishWake(ctx context.Context, task store.TaskRecord, ou
 			if _, err := o.st.ClearStatus(ctx, task.ConversationKey, w.statusUntil); err != nil {
 				o.log.Error("end status after its return failed", "task_id", task.ID, "error", err)
 			}
+		}
+		if sent {
+			replan, spoke = true, o.now()
 		}
 	case store.TimerInitiate, store.TimerFollowUp:
 		kind := store.ProactivePrivateSkip

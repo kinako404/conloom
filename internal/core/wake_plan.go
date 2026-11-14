@@ -19,12 +19,19 @@ import (
 // must not hold, and does nothing for a group or once the orchestrator is
 // closing. Failures are logged.
 func (o *Orchestrator) replanInitiate(ctx context.Context, convKey string) {
+	o.replanAfter(ctx, convKey, time.Time{})
+}
+
+// replanAfter is replanInitiate for a chat in which the bot spoke at spoke
+// with a message not stored yet (one is stored once delivered): the level's
+// gap counts from spoke when that is later than the chat's newest message.
+func (o *Orchestrator) replanAfter(ctx context.Context, convKey string, spoke time.Time) {
 	if convType(convKey) != conloomapi.ConvPrivate || o.closing.Load() {
 		return
 	}
 	unlock := o.proactiveLocks.lock(convKey)
 	defer unlock()
-	next, keepFollowUp, reason, err := o.nextInitiate(ctx, convKey)
+	next, keepFollowUp, reason, err := o.nextInitiate(ctx, convKey, spoke)
 	if err != nil {
 		o.log.Error("plan initiate failed; none planned", "conversation", convKey, "error", err)
 		reason = "error"
@@ -55,10 +62,11 @@ func (o *Orchestrator) replanInitiate(ctx context.Context, convKey string) {
 // follow-up is then kept (keepFollowUp); the user wrote nothing within
 // proactiveLogRetention, the time started messages stay logged, or since they
 // were forgotten; or autonomy.PlanInitiate finds no time. The plan counts the
-// level's gap from the chat's newest message, from either side, uses the quiet
-// hours and hourly rhythm of the user's messages (userTimes) and today's
-// started messages, and anchors the timer at that newest message.
-func (o *Orchestrator) nextInitiate(ctx context.Context, convKey string) (next *store.ConversationTimer, keepFollowUp bool, reason string, err error) {
+// level's gap from the chat's newest message, from either side, or from
+// spoke when later, uses the quiet hours and hourly rhythm of the user's
+// messages (userTimes) and today's started messages, and anchors the timer at
+// that newest message.
+func (o *Orchestrator) nextInitiate(ctx context.Context, convKey string, spoke time.Time) (next *store.ConversationTimer, keepFollowUp bool, reason string, err error) {
 	conv, err := o.conversation(ctx, convKey)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -108,10 +116,14 @@ func (o *Orchestrator) nextInitiate(ctx context.Context, convKey string) (next *
 	if err != nil {
 		return nil, false, "", err
 	}
+	last := newest[0].OccurredAt
+	if spoke.After(last) {
+		last = spoke
+	}
 	// Started messages are logged at o.now(), so no later day has any.
 	day := now.In(o.loc).Format(time.DateOnly)
 	due, ok := autonomy.PlanInitiate(autonomy.PlanInput{
-		Now: now, Last: newest[0].OccurredAt, Level: pol.Proactive.Private.EffectiveLevel(),
+		Now: now, Last: last, Level: pol.Proactive.Private.EffectiveLevel(),
 		Quiet: autonomy.ResolveQuiet(pol.Proactive.Private, times, o.loc),
 		Hist:  autonomy.HistOf(times, o.loc), Enough: autonomy.EnoughData(times, o.loc),
 		SentOn: func(d string) int {

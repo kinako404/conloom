@@ -162,6 +162,18 @@ type hookStore struct {
 	failNames atomic.Bool
 	// backfill, when set, replaces BackfillMessageIndex.
 	backfill func(batch int) (indexed, remaining int, err error)
+	// beforeArm, when set, runs before ArmTimer stores a timer.
+	beforeArm func(store.ConversationTimer)
+}
+
+func (h *hookStore) ArmTimer(ctx context.Context, t store.ConversationTimer) error {
+	h.mu.Lock()
+	fn := h.beforeArm
+	h.mu.Unlock()
+	if fn != nil {
+		fn(t)
+	}
+	return h.Store.ArmTimer(ctx, t)
 }
 
 func (h *hookStore) BackfillMessageIndex(ctx context.Context, batch int) (int, int, error) {

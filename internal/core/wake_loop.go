@@ -137,7 +137,9 @@ func (o *Orchestrator) dueStart(ctx context.Context, t store.ConversationTimer) 
 // checkStart runs the checks of a due initiate or follow-up t in order: the
 // chat must still be a private chat, not one started in the panel (else
 // drop); the bot must still be allowed to start messages in it (mayStart,
-// else drop); now must be outside its quiet hours and today below the daily
+// else drop); the user, if ever forgotten, must have written since (else
+// drop: a forget racing the plan that armed t leaves no message to start
+// from); now must be outside its quiet hours and today below the daily
 // cap (else an initiate is planned again and a follow-up moved by
 // followUpAgain); the bot must have started no message since the user's last
 // one before an initiate, exactly one before a follow-up (else drop); the
@@ -172,7 +174,17 @@ func (o *Orchestrator) checkStart(ctx context.Context, t store.ConversationTimer
 	if err != nil {
 		return wakeVerdict{}, err
 	}
-	q := o.quietFor(ctx, key, rows[t.PlatformUserID].ForgottenAt)
+	forgotten := rows[t.PlatformUserID].ForgottenAt
+	if !forgotten.IsZero() {
+		last, ok, err := o.lastUserMessage(ctx, key)
+		if err != nil {
+			return wakeVerdict{}, err
+		}
+		if !ok || forgotten.After(last) {
+			return drop("forgotten")
+		}
+	}
+	q := o.quietFor(ctx, key, forgotten)
 	today, err := o.privateStarted(ctx, key, o.dayStart(now))
 	if err != nil {
 		return wakeVerdict{}, err
@@ -306,14 +318,14 @@ func (o *Orchestrator) chatBusy(convKey string, msgs []store.MessageRecord, pol 
 }
 
 // followUpAgain is when a follow-up due now in quiet hours q, or on a day the
-// bot already started its daily cap of messages (atCap), is tried again: from
-// the start of the next local day when atCap, past the end of q when that is
-// in q, plus up to followUpJitterMinutes random minutes that keep it outside
-// q.
+// bot already started its daily cap of messages (atCap), is tried again: when
+// atCap, when the next local day opens after q (Quiet.Morning: the end of the
+// quiet hours of that night or morning); else past the end of q; plus up to
+// followUpJitterMinutes random minutes that keep it outside q.
 func (o *Orchestrator) followUpAgain(now time.Time, q autonomy.Quiet, atCap bool) time.Time {
 	at := now
 	if atCap {
-		at = o.dayStart(now).AddDate(0, 0, 1)
+		at = q.Morning(o.dayStart(now).AddDate(0, 0, 1), o.loc)
 	}
 	if q.Contains(at, o.loc) {
 		at = q.EndAfter(at, o.loc)

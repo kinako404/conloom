@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math/rand/v2"
 	"os"
 	"reflect"
 	"slices"
@@ -241,14 +242,38 @@ func TestWake_StatusReturnSends(t *testing.T) {
 		t.Errorf("request has a current message:\n%s", text)
 	}
 	requireNoStatus(t, env)
-	if timers := env.privateTimers(t); len(timers) != 0 {
-		t.Errorf("timers = %+v, want none", timers)
+	if got := wakeKinds(env.privateTimers(t)); !reflect.DeepEqual(got, []store.TimerKind{store.TimerInitiate}) {
+		t.Errorf("timers = %v, want only the initiate planned after the return", got)
 	}
 	if n := env.wakeCount(t, store.TimerStatusReturn, "sent"); n != 1 {
 		t.Errorf("wake sent metric = %v, want 1", n)
 	}
 	if n := env.privateLog(t, store.ProactivePrivateInitiate) + env.privateLog(t, store.ProactivePrivateSkip); n != 0 {
 		t.Errorf("private proactive log entries = %d, want none for a status return", n)
+	}
+}
+
+// firstSource makes a rand.Rand whose Float64 and IntN (for n up to 2048)
+// return 0, so plans pick their first candidate without jitter.
+type firstSource struct{}
+
+func (firstSource) Uint64() uint64 { return 1 << 53 }
+
+func TestWake_StatusReturnReplansFromItsMessage(t *testing.T) {
+	env, clock := newWakeEnv(t, nil, nil, nil)
+	env.o.rand = rand.New(firstSource{})
+	env.seedPrivateMessage(t, clock, "我去洗个澡")
+	until := clock.now().Add(3 * time.Hour)
+	timer := env.setWakeStatus(t, "洗澡", clock.now(), until)
+	clock.set(until)
+
+	if task := env.fireWake(t, timer); len(task.Actions) != 1 {
+		t.Fatalf("task = %+v, want the return sent", task)
+	}
+	// The earliest initiate is the level's gap (4 hours at 中) after the
+	// return, not after 小明's message.
+	if next := env.onlyInitiate(t); !next.DueAt.Equal(until.Add(4 * time.Hour)) {
+		t.Fatalf("initiate due %v, want %v", next.DueAt, until.Add(4*time.Hour))
 	}
 }
 
@@ -706,8 +731,8 @@ func TestWake_FireTwiceOneTask(t *testing.T) {
 	if err := env.o.fireTimer(context.Background(), timer); err != nil {
 		t.Fatalf("third fireTimer: %v", err)
 	}
-	if timers := env.privateTimers(t); len(timers) != 0 {
-		t.Errorf("timers = %+v, want the re-armed one dropped", timers)
+	if timers := env.privateTimers(t); slices.ContainsFunc(timers, func(t store.ConversationTimer) bool { return t.Kind == store.TimerStatusReturn }) {
+		t.Errorf("timers = %+v, want the re-armed status return dropped", timers)
 	}
 	time.Sleep(50 * time.Millisecond)
 	if n := env.modelCalls(); n != 1 {

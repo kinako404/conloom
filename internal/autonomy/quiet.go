@@ -49,6 +49,16 @@ func (q Quiet) EndAfter(t time.Time, loc *time.Location) time.Time {
 	return end
 }
 
+// Morning returns when the local day beginning at midnight opens after q: the
+// end of q when q covers the start of that day's morning (it contains
+// midnight, or starts after midnight and before noon), else midnight itself.
+func (q Quiet) Morning(midnight time.Time, loc *time.Location) time.Time {
+	if q.Contains(midnight, loc) || q.Start < q.End && q.Start < 12*60 {
+		return q.EndAfter(midnight, loc)
+	}
+	return midnight
+}
+
 // String formats q as "00:30–08:00".
 func (q Quiet) String() string {
 	return fmt.Sprintf("%02d:%02d–%02d:%02d", q.Start/60, q.Start%60, q.End/60, q.End%60)

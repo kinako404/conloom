@@ -3,6 +3,9 @@ package core
 import (
 	"context"
 	"reflect"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -122,11 +125,24 @@ func TestWakeLoop_Checks(t *testing.T) {
 				return env.armWake(t, store.TimerFollowUp, clock.now())
 			},
 			check: func(t *testing.T, env *testEnv, _ *injectClock, _ store.ConversationTimer) {
-				timers := env.privateTimers(t)
-				if len(timers) != 1 || timers[0].Kind != store.TimerFollowUp || timers[0].DueAt.In(env.o.loc).Day() != 13 ||
-					autonomy.DefaultQuiet.Contains(timers[0].DueAt, env.o.loc) {
-					t.Fatalf("timers = %+v, want the follow-up on the next day outside quiet hours", timers)
-				}
+				requireFollowUpBetween(t, env, localAt(env, 1, 8, 0), localAt(env, 1, 9, 0))
+			},
+			result: wakePostponed,
+		},
+		{
+			name: "daily cap moves a follow-up past the next night's quiet hours",
+			configure: func(c *config.Config) {
+				c.DefaultGroupPolicy.Proactive.Private = conloomapi.PrivateProactivePolicy{
+					Level: conloomapi.PrivateLevelLow, QuietStart: "23:00", QuietEnd: "07:00"}
+			},
+			prepare: func(t *testing.T, env *testEnv, clock *injectClock) store.ConversationTimer {
+				env.seedPrivateMessage(t, clock, "晚安")
+				env.appendPrivateLog(t, store.ProactivePrivateInitiate, localAt(env, 0, 12, 0))
+				clock.set(localAt(env, 0, 15, 0))
+				return env.armWake(t, store.TimerFollowUp, clock.now())
+			},
+			check: func(t *testing.T, env *testEnv, _ *injectClock, _ store.ConversationTimer) {
+				requireFollowUpBetween(t, env, localAt(env, 1, 7, 0), localAt(env, 1, 8, 0))
 			},
 			result: wakePostponed,
 		},
@@ -210,6 +226,16 @@ func TestWakeLoop_Checks(t *testing.T) {
 	}
 }
 
+// requireFollowUpBetween checks that the private chat's only timer is a
+// follow-up due at or after from and before to.
+func requireFollowUpBetween(t *testing.T, env *testEnv, from, to time.Time) {
+	t.Helper()
+	timers := env.privateTimers(t)
+	if len(timers) != 1 || timers[0].Kind != store.TimerFollowUp || timers[0].DueAt.Before(from) || !timers[0].DueAt.Before(to) {
+		t.Fatalf("timers = %+v, want the follow-up at %v–%v", timers, from, to)
+	}
+}
+
 // requirePostponed checks that the private chat's only timer is timer moved
 // to due and unclaimed.
 func requirePostponed(t *testing.T, env *testEnv, timer store.ConversationTimer, due time.Time) {
@@ -220,14 +246,75 @@ func requirePostponed(t *testing.T, env *testEnv, timer store.ConversationTimer,
 	}
 }
 
+func TestWakeLoop_ForgottenSinceLastMessageDrops(t *testing.T) {
+	ctx := context.Background()
+	t.Run("initiate armed while the user is forgotten", func(t *testing.T) {
+		env, clock := newWakeEnv(t, nil, nil, nil)
+		env.seedPrivateMessage(t, clock, "晚安")
+		clock.set(clock.now().Add(time.Minute))
+		// The panel forgets 小明 after the plan read his messages, before
+		// it armed the initiate.
+		var once sync.Once
+		env.hooks.mu.Lock()
+		env.hooks.beforeArm = func(store.ConversationTimer) {
+			once.Do(func() {
+				if err := env.st.ForgetPrivate(ctx, privateConvKey, privateUser, clock.now()); err != nil {
+					t.Error(err)
+				}
+			})
+		}
+		env.hooks.mu.Unlock()
+		env.o.replanInitiate(ctx, privateConvKey)
+		initiate := env.onlyInitiate(t)
+
+		clock.set(initiate.DueAt)
+		env.o.pollWakes(ctx)
+		requireForgottenDrop(t, env, initiate)
+	})
+	t.Run("follow-up armed while the user is forgotten", func(t *testing.T) {
+		env, clock := newWakeEnv(t, nil, nil, nil)
+		env.seedPrivateMessage(t, clock, "晚安")
+		env.appendPrivateLog(t, store.ProactivePrivateInitiate, clock.now().Add(time.Hour))
+		clock.set(clock.now().Add(2 * time.Hour))
+		if err := env.st.ForgetPrivate(ctx, privateConvKey, privateUser, clock.now()); err != nil {
+			t.Fatal(err)
+		}
+		followUp := env.armWake(t, store.TimerFollowUp, clock.now().Add(time.Hour))
+
+		clock.set(followUp.DueAt)
+		env.o.pollWakes(ctx)
+		requireForgottenDrop(t, env, followUp)
+	})
+}
+
+// requireForgottenDrop checks that the poll dropped timer without a task or
+// a model call.
+func requireForgottenDrop(t *testing.T, env *testEnv, timer store.ConversationTimer) {
+	t.Helper()
+	requireNoWakeTask(t, env, timer)
+	if timers := env.privateTimers(t); len(timers) != 0 {
+		t.Fatalf("timers = %+v, want the %s dropped", timers, timer.Kind)
+	}
+	if n := env.wakeCount(t, timer.Kind, wakeDropped); n != 1 {
+		t.Errorf("wake dropped metric = %v, want 1", n)
+	}
+	if n := env.modelCalls(); n != 0 {
+		t.Errorf("model calls = %d, want 0", n)
+	}
+	if !strings.Contains(env.logs.String(), "reason=forgotten") {
+		t.Errorf("logs lack the forgotten drop:\n%s", env.logs.String())
+	}
+}
+
 func TestWakeLoop_StatusReturnIgnoresQuietAndCap(t *testing.T) {
 	env, clock := newWakeEnv(t, nil, nil, func(c *config.Config) {
 		c.DefaultGroupPolicy.Proactive.Private.Level = conloomapi.PrivateLevelLow
 	})
-	env.appendPrivateLog(t, store.ProactivePrivateInitiate, clock.now().Add(-time.Hour))
 	env.seedPrivateMessage(t, clock, "我去睡一会儿")
 	start := localAt(env, 0, 23, 50)
 	until := localAt(env, 1, 1, 0)
+	// The cap of 低 is already reached on the day the status ends.
+	env.appendPrivateLog(t, store.ProactivePrivateInitiate, localAt(env, 1, 0, 10))
 	timer := env.setWakeStatus(t, "午睡", start, until)
 	clock.set(until)
 
@@ -362,8 +449,12 @@ func TestWakeLoop_StopsOnClose(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	requireNoWakeTask(t, env, second)
 	env.o.pollWakes(ctx)
-	timers := env.privateTimers(t)
-	if len(timers) != 1 || !timers[0].LeaseUntil.IsZero() {
-		t.Fatalf("timers = %+v, want the status return unclaimed after Close", timers)
+	for _, timer := range env.privateTimers(t) {
+		if timer.Kind == store.TimerStatusReturn && (!timer.DueAt.Equal(second.DueAt) || !timer.LeaseUntil.IsZero()) {
+			t.Fatalf("status return = %+v, want it unclaimed after Close", timer)
+		}
+	}
+	if timers := env.privateTimers(t); !slices.ContainsFunc(timers, func(t store.ConversationTimer) bool { return t.Kind == store.TimerStatusReturn }) {
+		t.Fatalf("timers = %+v, want the status return kept", timers)
 	}
 }

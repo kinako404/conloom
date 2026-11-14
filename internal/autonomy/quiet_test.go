@@ -75,6 +75,30 @@ func TestQuiet_String(t *testing.T) {
 	}
 }
 
+func TestQuiet_Morning(t *testing.T) {
+	loc := shanghai(t)
+	midnight := time.Date(2026, 11, 15, 0, 0, 0, 0, loc)
+	at := func(h int) time.Time { return time.Date(2026, 11, 15, h, 0, 0, 0, loc) }
+	tests := []struct {
+		name string
+		q    Quiet
+		want time.Time
+	}{
+		{"default starts after midnight", DefaultQuiet, at(8)},
+		{"wraps midnight", Quiet{Start: 23 * 60, End: 7 * 60}, at(7)},
+		{"starts at midnight", Quiet{Start: 0, End: 8 * 60}, at(8)},
+		{"starts in the morning", Quiet{Start: 9 * 60, End: 17 * 60}, at(17)},
+		{"afternoon", Quiet{Start: 13 * 60, End: 21 * 60}, midnight},
+		{"evening ending at midnight", Quiet{Start: 16 * 60, End: 0}, midnight},
+		{"empty", Quiet{Start: 480, End: 480}, midnight},
+	}
+	for _, tt := range tests {
+		if got := tt.q.Morning(midnight, loc); !got.Equal(tt.want) {
+			t.Errorf("%s: %v.Morning() = %v, want %v", tt.name, tt.q, got.In(loc), tt.want)
+		}
+	}
+}
+
 func TestQuiet_EndAfter(t *testing.T) {
 	loc := shanghai(t)
 	at := func(d, h, m int) time.Time { return time.Date(2026, 11, d, h, m, 0, 0, loc) }
