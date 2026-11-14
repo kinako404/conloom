@@ -204,6 +204,13 @@ func (s *Service) SystemPrompt(ctx context.Context, convKey, templateName, botNa
 	return p, nil
 }
 
+// Forget drops the conversation's cached system prompt.
+func (s *Service) Forget(convKey string) {
+	s.promptMu.Lock()
+	defer s.promptMu.Unlock()
+	delete(s.prompts, convKey)
+}
+
 // botID returns the bot instance part of a "bot:platform:type:id" conversation key.
 func botID(convKey string) string {
 	id, _, _ := strings.Cut(convKey, ":")

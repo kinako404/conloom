@@ -192,3 +192,12 @@ func TestSecrets_IncludePanelPasswordHashes(t *testing.T) {
 		t.Errorf("Secrets() = %v, want %v", got, want)
 	}
 }
+
+func TestValidate_PanelPlatformIsReserved(t *testing.T) {
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	cfg.Bots[0].Platform = conloomapi.PlatformPanel
+	err := cfg.ValidateServe()
+	if want := "bots[0].platform"; err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("err = %v, want %s reported as reserved", err, want)
+	}
+}

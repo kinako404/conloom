@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -42,13 +43,16 @@ type DecideInput struct {
 	BotInstanceID    string
 	SelfPlatformID   string
 	ConversationType string
-	PlatformUserID   string
-	Text             string
-	CommandPrefix    string
-	PrivateChat      string // "off", "admins", "allowlist" or "all"
-	Mentions         []conloomapi.Mention
-	Enabled          bool
-	IsAdmin          bool
+	// Platform is the conversation's platform; private chats on
+	// store.PlatformPanel are never denied.
+	Platform       string
+	PlatformUserID string
+	Text           string
+	CommandPrefix  string
+	PrivateChat    string // "off", "admins", "allowlist" or "all"
+	Mentions       []conloomapi.Mention
+	Enabled        bool
+	IsAdmin        bool
 	// PrivateListed is set when the sender is listed as a private
 	// conversation in the bot's enabled_conversations; only the "allowlist"
 	// private chat mode uses it.
@@ -112,6 +116,9 @@ func Decide(in DecideInput) Decision {
 }
 
 func privateDenied(in DecideInput) bool {
+	if in.Platform == store.PlatformPanel {
+		return false
+	}
 	switch in.PrivateChat {
 	case "off":
 		return true

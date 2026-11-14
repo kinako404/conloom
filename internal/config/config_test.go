@@ -1170,8 +1170,11 @@ func TestBotConfig_PrivateAllowed(t *testing.T) {
 	} {
 		bot.PrivateChat = mode
 		for user, w := range want {
-			if got := bot.PrivateAllowed(user); got != w {
-				t.Errorf("%s: PrivateAllowed(%s) = %v, want %v", mode, user, got, w)
+			if got := bot.PrivateAllowed("qq", user); got != w {
+				t.Errorf("%s: PrivateAllowed(qq, %s) = %v, want %v", mode, user, got, w)
+			}
+			if !bot.PrivateAllowed(conloomapi.PlatformPanel, user) {
+				t.Errorf("%s: PrivateAllowed(panel, %s) = false, want true", mode, user)
 			}
 		}
 	}

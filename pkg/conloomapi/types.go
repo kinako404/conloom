@@ -13,6 +13,16 @@ const (
 )
 
 const (
+	// PlatformPanel is the platform of conversations held in the panel; no
+	// bot may use it as its own platform.
+	PlatformPanel = "panel"
+	// ChannelPanel is the channel of messages written in the panel and of the
+	// actions answering them, which only the panel delivers. The empty
+	// channel is the platform's, delivered by its adapter.
+	ChannelPanel = "panel"
+)
+
+const (
 	DispositionReply   = "reply"
 	DispositionObserve = "observe"
 	DispositionIgnore  = "ignore"

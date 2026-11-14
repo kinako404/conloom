@@ -730,3 +730,23 @@ func (r *auditRecorder) all() []store.AuditEvent {
 	defer r.mu.Unlock()
 	return slices.Clone(r.events)
 }
+
+func TestService_ForgetDropsCachedPrompt(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newTestStore(t), nil)
+	other := store.ConversationKey(testBot, "qq", conloomapi.ConvGroup, "10002")
+	for _, key := range []string{testConvKey, other} {
+		if _, err := svc.SystemPrompt(ctx, key, "default", "小助手"); err != nil {
+			t.Fatalf("SystemPrompt(%s): %v", key, err)
+		}
+	}
+	svc.Forget(testConvKey)
+	svc.promptMu.Lock()
+	defer svc.promptMu.Unlock()
+	if _, ok := svc.prompts[testConvKey]; ok {
+		t.Error("prompt still cached after Forget")
+	}
+	if _, ok := svc.prompts[other]; !ok {
+		t.Error("Forget dropped another conversation's prompt")
+	}
+}

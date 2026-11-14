@@ -130,15 +130,19 @@ func TestIndexer_OnlyConversationsWithMemoryInEffect(t *testing.T) {
 func TestIndexer_OnlyAllowedPrivateChats(t *testing.T) {
 	e := newEnv(t)
 	private2Key := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "20002")
+	panelKey := store.ConversationKey(testBot, store.PlatformPanel, conloomapi.ConvPrivate, "panel_1")
 	e.say(privateKey, "20001", "小明", "草莓", at(0))
 	e.say(private2Key, "20002", "小红", "猫", at(0))
 	e.say(groupKey, "20002", "小红", "旅行", at(0))
+	e.say(panelKey, "panel_admin", "小刚", "电影", at(0))
 	e.cfg = &config.Config{Bots: []config.BotConfig{{ID: testBot, PrivateChat: "admins", Admins: []string{"20001"}}}}
 	e.run(e.indexer("m1", 16))
 	got := flat(e.emb.take())
 	slices.Sort(got)
-	if want := []string{"[11-13 09:00] 小明：草莓", "[11-13 09:00] 小红：旅行"}; !slices.Equal(got, want) {
-		t.Fatalf("embedded %q, want the group and the allowed private chat only", got)
+	want := []string{"[11-13 09:00] 小明：草莓", "[11-13 09:00] 小红：旅行", "[11-13 09:00] 小刚：电影"}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("embedded %q, want the group, the panel chat and the allowed private chat only", got)
 	}
 	if e.cursor(private2Key) != 0 {
 		t.Error("cursor moved in a private chat that is no longer allowed")

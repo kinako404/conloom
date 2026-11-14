@@ -573,13 +573,24 @@ func TestScheduler_OnlyAllowedPrivateChats(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			panelKey := store.ConversationKey("bot_test", store.PlatformPanel, conloomapi.ConvPrivate, "panel_1")
+			if _, err := e.st.Ingest(ctx, store.Ingest{
+				Event: store.EventRecord{BotInstanceID: "bot_test", IdempotencyKey: "seed:panel", EventID: "evt_panel"},
+				Conversation: &store.ConversationRecord{BotInstanceID: "bot_test", ID: "panel_1", Key: panelKey,
+					Type: conloomapi.ConvPrivate, Platform: store.PlatformPanel, PlatformConversationID: "panel_1"},
+				Message: &store.MessageRecord{ID: "msg_panel_1", BotInstanceID: "bot_test", ConversationKey: panelKey,
+					Platform: store.PlatformPanel, PlatformMessageID: "panel_1", ActorID: "panel_admin", PlatformUserID: "panel_admin",
+					DisplayName: "小明", Text: "你好", Channel: store.ChannelPanel, OccurredAt: time.Now()},
+			}); err != nil {
+				t.Fatal(err)
+			}
 			e.sched.tick(ctx)
 			var got []string
 			for _, c := range e.runner.takeCalls() {
 				got = append(got, strings.TrimPrefix(c.convKey, "bot_test:qq:private:private_"))
 			}
 			slices.Sort(got)
-			w := slices.Clone(want)
+			w := append(slices.Clone(want), panelKey)
 			slices.Sort(w)
 			if !slices.Equal(got, w) {
 				t.Fatalf("consolidated %v, want %v", got, w)

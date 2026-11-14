@@ -627,3 +627,23 @@ func TestPolicy_SetProactiveEnabledKeepsConcurrentPause(t *testing.T) {
 		t.Fatalf("OnChange calls = %d, want 3", calls)
 	}
 }
+
+func TestPolicy_ForgetDropsCachedVersion(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newTestStore(t), conloomapi.DefaultGroupPolicy())
+	other := store.ConversationKey(testBot, "qq", conloomapi.ConvGroup, "10002")
+	for _, key := range []string{testConvKey, other} {
+		if _, err := svc.Current(ctx, key); err != nil {
+			t.Fatalf("Current(%s): %v", key, err)
+		}
+	}
+	svc.Forget(testConvKey)
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if _, ok := svc.cache[testConvKey]; ok {
+		t.Error("policy still cached after Forget")
+	}
+	if _, ok := svc.cache[other]; !ok {
+		t.Error("Forget dropped another conversation's policy")
+	}
+}

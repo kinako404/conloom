@@ -263,14 +263,14 @@ func (e *env) say(convKey, user, name, text string, when time.Time) int64 {
 	msgCount++
 	id := fmt.Sprintf("msg_%05d", msgCount)
 	parts := strings.Split(convKey, ":")
-	m := store.MessageRecord{ID: id, BotInstanceID: testBot, ConversationKey: convKey, Platform: "qq",
+	m := store.MessageRecord{ID: id, BotInstanceID: testBot, ConversationKey: convKey, Platform: parts[1],
 		PlatformMessageID: "p" + id, ActorID: "user_" + user, PlatformUserID: user, DisplayName: name, Text: text, OccurredAt: when}
 	if user == "" {
 		m.ActorID, m.PlatformUserID, m.DisplayName, m.FromBot = "bot_30001", "30001", "织语", true
 	}
 	ev := store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "k_" + id, RequestHash: "h", EventID: "evt_" + id,
 		Response: []byte("{}"), RawEvent: []byte("{}")}
-	conv := store.ConversationRecord{BotInstanceID: testBot, ID: parts[3], Type: parts[2], Platform: "qq", PlatformConversationID: parts[3]}
+	conv := store.ConversationRecord{BotInstanceID: testBot, ID: parts[3], Type: parts[2], Platform: parts[1], PlatformConversationID: parts[3]}
 	if _, err := e.st.Ingest(context.Background(), store.Ingest{Event: ev, Conversation: &conv, Message: &m}); err != nil {
 		e.t.Fatalf("Ingest: %v", err)
 	}

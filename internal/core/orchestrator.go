@@ -47,6 +47,16 @@ const (
 // Notifier is told when a bot has new outbox actions.
 type Notifier interface{ Notify(botID string) }
 
+// Notifiers tells each of its notifiers, e.g. the outbox service and the
+// panel deliverer.
+type Notifiers []Notifier
+
+func (ns Notifiers) Notify(botID string) {
+	for _, n := range ns {
+		n.Notify(botID)
+	}
+}
+
 // Deps are the Orchestrator's collaborators. Store, Router, Admission,
 // Personas, Policies, Reviewer and Config are required. A nil Notifier does
 // nothing, nil Metrics are registered on a private registry, a nil Logger
@@ -126,8 +136,15 @@ type Orchestrator struct {
 	sessions  chatSessions
 	lulls     lullTimers
 	joinPlans joinPlans
-	// partWakes notifies the adapters when later reply parts become due.
+	// partWakes tells the notifier (which wakes the adapters and the panel
+	// deliverer) when later reply parts become due.
 	partWakes partWakes
+
+	// panelLocks serialise SubmitPanel and DeletePanelChat per conversation;
+	// panelDeleteWait is how long DeletePanelChat waits for the chat's
+	// cancelled tasks to stop.
+	panelLocks      keyedLocks
+	panelDeleteWait time.Duration
 }
 
 // taskOwner is the one party in this process allowed to execute and complete
@@ -172,6 +189,8 @@ func New(d Deps) (*Orchestrator, error) {
 		limiter:  NewRateLimiter(),
 		owners:   map[string]*taskOwner{},
 		ftsRetry: ftsBackfillRetry,
+
+		panelDeleteWait: cancelWait,
 
 		cleanupBatch: defaultCleanupBatch, cleanupMaxBatches: defaultCleanupMaxBatches,
 	}
@@ -349,11 +368,14 @@ func (o *Orchestrator) dropHeldTurn(qt QueuedTask) {
 	}
 }
 
-// submission is one incoming event being accepted.
+// submission is one incoming event being accepted. channel is the channel
+// its message came in on: "" for the platform's, store.ChannelPanel for the
+// panel's.
 type submission struct {
 	botID, key, hash string
 	body             []byte
 	ev               conloomapi.Event
+	channel          string
 	bot              config.BotConfig
 	convKey          string
 	isAdmin          bool
@@ -371,6 +393,11 @@ func (e *replayError) Error() string { return "core: event already stored" }
 // returns store.ErrDuplicateMessage. A reply or command trigger that occurred
 // StaleTaskAfter or longer ago is only observed, with reason stale.
 func (o *Orchestrator) Submit(ctx context.Context, botID, idemKey string, body []byte, ev conloomapi.Event) (resp conloomapi.EventAccepted, replayed bool, err error) {
+	return o.submitOn(ctx, botID, idemKey, body, ev, "")
+}
+
+// submitOn is Submit for an event whose message came in on channel.
+func (o *Orchestrator) submitOn(ctx context.Context, botID, idemKey string, body []byte, ev conloomapi.Event, channel string) (resp conloomapi.EventAccepted, replayed bool, err error) {
 	if o.closing.Load() {
 		return conloomapi.EventAccepted{}, false, ErrSchedulerClosed
 	}
@@ -388,9 +415,9 @@ func (o *Orchestrator) Submit(ctx context.Context, botID, idemKey string, body [
 		return conloomapi.EventAccepted{}, false, fmt.Errorf("core: unknown bot %q", botID)
 	}
 	s := &submission{
-		botID: botID, key: idemKey, hash: hash, body: body, ev: ev, bot: bot,
+		botID: botID, key: idemKey, hash: hash, body: body, ev: ev, channel: channel, bot: bot,
 		convKey: store.ConversationKey(botID, ev.Platform, ev.Conversation.Type, ev.Conversation.ID),
-		isAdmin: slices.Contains(bot.Admins, ev.Actor.PlatformUserID),
+		isAdmin: isAdmin(bot, ev.Platform, ev.Actor.PlatformUserID),
 		now:     o.now(),
 	}
 	resp, err = o.submit(ctx, s)
@@ -405,7 +432,7 @@ func (o *Orchestrator) Submit(ctx context.Context, botID, idemKey string, body [
 	if resp.Disposition != conloomapi.DispositionReply && resp.SuppressedReason == "" {
 		level = slog.LevelDebug
 	}
-	o.log.Log(ctx, level, "event accepted", "bot", botID, "conversation", s.convKey, "event_id", ev.EventID,
+	o.log.Log(ctx, level, "event accepted", "bot", botID, "conversation", s.convKey, "event_id", ev.EventID, "channel", channel,
 		"disposition", resp.Disposition, "suppressed_reason", resp.SuppressedReason, "task_id", resp.TaskID,
 		"merged", resp.Merged, obs.MessageAttr(o.cfg.Observability, ev.Message.Text))
 	return resp, false, nil
@@ -726,6 +753,7 @@ func (o *Orchestrator) decide(ctx context.Context, s *submission) (Decision, con
 		BotInstanceID:    s.botID,
 		SelfPlatformID:   s.bot.PlatformSelfID,
 		ConversationType: ev.Conversation.Type,
+		Platform:         ev.Platform,
 		PlatformUserID:   ev.Actor.PlatformUserID,
 		Text:             ev.Message.Text,
 		PrivateChat:      s.bot.PrivateChat,
@@ -734,6 +762,11 @@ func (o *Orchestrator) decide(ctx context.Context, s *submission) (Decision, con
 		IsAdmin:          s.isAdmin,
 		PrivateListed:    privateListed(s.bot, ev.Actor.PlatformUserID),
 		MentionsOthers:   mentionsOthers(ev.Message.Mentions),
+	}
+	if ev.Platform == store.PlatformPanel {
+		// The bot never speaks on the panel platform, so no panel user is the
+		// bot itself.
+		in.SelfPlatformID = ""
 	}
 	// Ignore decisions do not depend on policy, so no policy is loaded (and
 	// cached) for conversations the bot does not serve.
@@ -762,6 +795,12 @@ func (o *Orchestrator) decide(ctx context.Context, s *submission) (Decision, con
 		in.InContinuation = o.inSession(s.convKey, ev.Actor.PlatformUserID, s.now, w)
 	}
 	return Decide(in), pol, nil
+}
+
+// isAdmin reports whether the user of platform is one of the bot's admins;
+// every user of a panel chat (store.PlatformPanel) is.
+func isAdmin(bot config.BotConfig, platform, platformUserID string) bool {
+	return platform == store.PlatformPanel || slices.Contains(bot.Admins, platformUserID)
 }
 
 func enabledIn(bot config.BotConfig, c conloomapi.Conversation) bool {
@@ -927,7 +966,7 @@ func (s *submission) records(resp conloomapi.EventAccepted) (store.Ingest, error
 			ID: ev.Message.ID, BotInstanceID: s.botID, ConversationKey: s.convKey, Platform: ev.Platform,
 			PlatformMessageID: ev.Message.PlatformMessageID, ActorID: ev.Actor.ID,
 			PlatformUserID: ev.Actor.PlatformUserID, DisplayName: ev.Actor.DisplayName, Text: ev.Message.Text,
-			ReplyTo: replyTo, Mentions: ev.Message.Mentions, Attachments: ev.Message.Attachments,
+			ReplyTo: replyTo, Mentions: ev.Message.Mentions, Attachments: ev.Message.Attachments, Channel: s.channel,
 			OccurredAt: s.occurredAt(), CreatedAt: s.now,
 		},
 	}, nil
@@ -1111,9 +1150,10 @@ func (o *Orchestrator) complete(ctx context.Context, task store.TaskRecord, stat
 	return nil
 }
 
-// record stores the task's final state and actions and notifies the bot's
-// adapter when there are actions, and again as each later part of the reply
-// becomes due. A meta without a trigger keeps the task's.
+// record stores the task's final state and actions and tells the notifier
+// (which wakes the bot's adapter and the panel deliverer) when there are
+// actions, and again as each later part of the reply becomes due. A meta
+// without a trigger keeps the task's.
 // A join plan the task did not use is dropped.
 func (o *Orchestrator) record(ctx context.Context, task store.TaskRecord, status string, meta conloomapi.TaskMeta, code string, actions []store.OutboxRecord) error {
 	o.joinPlans.take(task.ID)
@@ -1140,8 +1180,9 @@ func (o *Orchestrator) record(ctx context.Context, task store.TaskRecord, status
 	return nil
 }
 
-// newAction builds a text message action for task. A group reply quotes the
-// newest trigger message when shouldQuote says so; private replies quote nothing.
+// newAction builds a text message action for task on the channel of the
+// newest trigger message (see replyChannel). A group reply quotes the newest
+// trigger message when shouldQuote says so; private replies quote nothing.
 func (o *Orchestrator) newAction(ctx context.Context, task store.TaskRecord, conv store.ConversationRecord, triggers []store.MessageRecord, text string) store.OutboxRecord {
 	now := o.now().UTC()
 	a := conloomapi.Action{
@@ -1161,14 +1202,29 @@ func (o *Orchestrator) newAction(ctx context.Context, task store.TaskRecord, con
 	return store.OutboxRecord{
 		Action: a, BotInstanceID: task.BotInstanceID, ConversationKey: task.ConversationKey, TaskID: task.ID,
 		Platform: conv.Platform, Status: store.OutboxPending, CreatedAt: now, ExpiresAt: now.Add(o.actionTTL),
+		Channel: replyChannel(conv, triggers),
 	}
 }
 
-// newActions builds one text message action per part of a reply, in order.
-// Only the first part may quote (see newAction). Parts of a reply with more
-// than one carry their index and count; the first is sent at once and each
-// later one partDelay of itself (the time to type it) after the one before.
-// All parts expire with the first, so none outlives a part ahead of it.
+// replyChannel is the channel a reply to triggers is delivered on: that of
+// the newest trigger message or, without triggers, the panel's in a panel chat
+// and the platform's elsewhere.
+func replyChannel(conv store.ConversationRecord, triggers []store.MessageRecord) string {
+	switch {
+	case len(triggers) > 0:
+		return triggers[len(triggers)-1].Channel
+	case conv.Platform == store.PlatformPanel:
+		return store.ChannelPanel
+	}
+	return ""
+}
+
+// newActions builds one text message action per part of a reply, in order,
+// all on the first part's channel. Only the first part may quote (see
+// newAction). Parts of a reply with more than one carry their index and count;
+// the first is sent at once and each later one partDelay of itself (the time
+// to type it) after the one before. All parts expire with the first, so none
+// outlives a part ahead of it.
 func (o *Orchestrator) newActions(ctx context.Context, task store.TaskRecord, conv store.ConversationRecord, triggers []store.MessageRecord, parts []string) []store.OutboxRecord {
 	if len(parts) == 1 {
 		return []store.OutboxRecord{o.newAction(ctx, task, conv, triggers, parts[0])}
@@ -1183,7 +1239,7 @@ func (o *Orchestrator) newActions(ctx context.Context, task store.TaskRecord, co
 		} else {
 			rec = o.newAction(ctx, task, conv, nil, part)
 			at = at.Add(partDelay(part))
-			rec.NotBefore, rec.ExpiresAt = at, expires
+			rec.NotBefore, rec.ExpiresAt, rec.Channel = at, expires, recs[0].Channel
 		}
 		rec.Action.PartIndex, rec.Action.PartCount = i+1, len(parts)
 		recs = append(recs, rec)
