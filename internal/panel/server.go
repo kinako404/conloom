@@ -43,7 +43,8 @@ type Auditor interface {
 // The fields after Now serve the API beyond logging in. Memory starts a
 // memory consolidation; Gatherer is the registry the live metrics are read
 // from; Presence holds when each bot's adapter last called the core; a nil
-// Location is UTC; StartedAt is when the process started.
+// Location is UTC; StartedAt is when the process started. Chat serves the
+// panel chat API, which answers 503 while it is nil.
 type Deps struct {
 	Config   *config.Config
 	Sessions SessionStore
@@ -58,6 +59,7 @@ type Deps struct {
 	Personas        *persona.Service
 	MemoryAdmin     *memory.Admin
 	Memory          interface{ Trigger(convKey string) }
+	Chat            ChatService
 	Gatherer        prometheus.Gatherer
 	Presence        *obs.Presence
 	Location        *time.Location

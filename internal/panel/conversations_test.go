@@ -30,8 +30,9 @@ func TestConversations_ListAndDetail(t *testing.T) {
 	dh := newDataHarness(t)
 	ctx := context.Background()
 
-	if body := string(dh.getJSON("/panel/api/conversations", nil)); body != "{\"conversations\":[]}\n" {
-		t.Fatalf("empty store: body %q, want {\"conversations\":[]}", body)
+	want := `{"conversations":[],"bots":[{"id":"qq-main","name":"织语","platform":"qq"}]}` + "\n"
+	if body := string(dh.getJSON("/panel/api/conversations", nil)); body != want {
+		t.Fatalf("empty store: body %q, want %q", body, want)
 	}
 
 	group := dh.seedConv("qq", conloomapi.ConvGroup, "10001")

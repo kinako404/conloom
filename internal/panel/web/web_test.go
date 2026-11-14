@@ -41,7 +41,7 @@ func TestAssets_PlannedFilesPresent(t *testing.T) {
 		"index.html", "style.css", "app.js",
 		"lib/api.js", "lib/router.js", "lib/dom.js", "lib/chart.js", "lib/format.js",
 		"views/login.js", "views/overview.js", "views/usage.js", "views/conversations.js",
-		"views/conversation.js", "views/tasks.js", "views/audit.js", "views/config.js",
+		"views/conversation.js", "views/chat.js", "views/tasks.js", "views/audit.js", "views/config.js",
 	} {
 		if _, err := fs.Stat(FS, name); err != nil {
 			t.Errorf("%s: %v", name, err)

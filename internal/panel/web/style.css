@@ -203,6 +203,31 @@ input[type=checkbox] { width: 16px; height: 16px; vertical-align: middle; }
 .messages .meta { color: var(--muted); font-size: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
 .messages .body { white-space: pre-wrap; word-break: break-word; margin-top: 4px; }
 
+.chat { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.chat-log {
+  list-style: none;
+  margin: 0;
+  padding: 0 4px;
+  height: 60vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bubble { max-width: 75%; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--border); }
+.bubble.bot { align-self: flex-start; background: var(--code-bg); border-bottom-left-radius: 2px; }
+.bubble.user { align-self: flex-end; background: var(--panel); border-color: var(--accent); border-bottom-right-radius: 2px; }
+.bubble .meta { color: var(--muted); font-size: 12px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.bubble.user .meta { justify-content: flex-end; }
+.bubble .body { white-space: pre-wrap; word-break: break-word; }
+.chat-typing { color: var(--muted); font-size: 12px; padding: 4px; }
+.chat-form { display: flex; gap: 8px; align-items: flex-end; margin-top: 8px; }
+.chat-form .chat-input { flex: 1; min-height: 60px; }
+
+dialog.dialog { width: min(420px, 92vw); color: var(--text); }
+dialog.dialog select, dialog.dialog input { width: 100%; }
+dialog::backdrop { background: rgba(0, 0, 0, .4); }
+
 .login { max-width: 360px; margin: 10vh auto; }
 .login input { width: 100%; }
 

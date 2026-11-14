@@ -4,8 +4,10 @@ import { go, href, withQuery } from '../lib/router.js';
 import { fmtTime, fmtInt, pretty, label, CONV_TYPE } from '../lib/format.js';
 import { statusBadges, personaLabel } from './conversations.js';
 import { taskList } from './tasks.js';
+import { chatTab } from './chat.js';
 
 const TABS = [
+  ['chat', '聊天'],
   ['messages', '消息'],
   ['policy', '策略'],
   ['persona', '人设'],
@@ -55,6 +57,7 @@ function messageItem(m) {
       h('strong', null, m.sender_name || m.sender_id),
       h('span', { class: 'mono' }, m.sender_id),
       m.from_bot ? h('span', { class: 'badge' }, 'Bot') : null,
+      m.channel === 'panel' ? h('span', { class: 'badge' }, '面板') : null,
       h('span', { class: 'mono' }, `#${m.seq}`),
       m.reply_to ? h('span', null, `回复 ${m.reply_to}`) : null),
     h('div', { class: 'body' }, m.text));
@@ -606,12 +609,44 @@ function tasksTab({ key, signal }) {
 }
 
 const TAB_VIEWS = {
+  chat: chatTab,
   messages: messagesTab,
   policy: policyTab,
   persona: personaTab,
   memory: memoryTab,
   tasks: tasksTab,
 };
+
+// PANEL is the platform of conversations held in the panel (store.PlatformPanel).
+const PANEL = 'panel';
+
+// tabsOf are the conversation's tabs: chatting needs a private conversation.
+function tabsOf(c) {
+  return TABS.filter(([t]) => t !== 'chat' || c.type === 'private');
+}
+
+// deleteChat is the button that deletes a panel chat after confirmation.
+function deleteChat(c) {
+  const msg = h('div');
+  const button = h('button', {
+    type: 'button',
+    class: 'danger',
+    onclick: async () => {
+      if (!confirm('删除这个聊天？聊天记录、记忆、人设和策略都会删除，不能恢复；用量统计和审计记录保留。')) return;
+      button.disabled = true;
+      mount(msg);
+      try {
+        await del(convPath(c.key));
+        go('#/conversations');
+      } catch (err) {
+        if (!isAbort(err)) mount(msg, errorBox(err));
+      } finally {
+        button.disabled = false;
+      }
+    },
+  }, '删除这个聊天');
+  return [h('div', { class: 'toolbar' }, button), msg];
+}
 
 function header(c) {
   return [
@@ -625,20 +660,23 @@ function header(c) {
       ['最后消息', fmtTime(c.last_message_at)],
       ['状态', statusBadges(c)],
       ['人设', personaLabel(c)],
-    ])),
+    ]),
+    c.platform === PANEL ? deleteChat(c) : null),
   ];
 }
 
 export async function conversationView(ctx) {
   const key = ctx.params.key;
-  const tab = TABS.some(([t]) => t === ctx.params.tab) ? ctx.params.tab : 'messages';
   const conv = await get(convPath(key), null, ctx.signal);
+  const tabs = tabsOf(conv);
+  const fallback = conv.platform === PANEL && conv.type === 'private' ? 'chat' : 'messages';
+  const tab = tabs.some(([t]) => t === ctx.params.tab) ? ctx.params.tab : fallback;
   const note = flash ? h('div', { class: 'notice' }, flash) : null;
   flash = '';
   const body = h('div', null, loading());
   ctx.show(
     header(conv),
-    h('nav', { class: 'tabs' }, TABS.map(([t, title]) => h('a', {
+    h('nav', { class: 'tabs' }, tabs.map(([t, title]) => h('a', {
       href: href('conversations', key, t),
       class: t === tab ? 'active' : null,
     }, title))),
