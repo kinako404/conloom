@@ -235,7 +235,7 @@ func (ix *Indexer) privateAllowed(c store.ConversationRecord) bool {
 		return true
 	}
 	bot, ok := ix.d.Config.Bot(c.BotInstanceID)
-	return ok && bot.PrivateAllowed(c.PlatformConversationID)
+	return ok && bot.PrivateAllowed(c.Platform, c.PlatformConversationID)
 }
 
 // unchunked estimates the chunks of convKey still to be cut: its messages

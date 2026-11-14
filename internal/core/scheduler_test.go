@@ -672,3 +672,47 @@ func TestScheduler_CloseCancelsRunningAndWaits(t *testing.T) {
 	}
 	s.Close()
 }
+
+func TestScheduler_ForgetDropsSession(t *testing.T) {
+	rec := newSchedRecorder()
+	rec.hold = make(chan struct{})
+	var cfgReads atomic.Int64
+	s := newTestScheduler(t, rec.run, func(string) SessionConfig {
+		cfgReads.Add(1)
+		return SessionConfig{MaxConcurrent: 1, MaxQueued: 10, Debounce: time.Hour}
+	})
+	s.Restore(QueuedTask{TaskID: "task_running", ConversationKey: "c1", ActorID: "u2", TriggerMessageIDs: []string{"m0"}})
+	rec.waitStarted(t)
+	mustAdmit(t, s, "c1", "u1", "m1", AdmitNew)
+	mustAdmit(t, s, "c2", "u1", "m3", AdmitNew)
+	if !s.Busy("c1") {
+		t.Fatal("Busy(c1) = false with a running and a queued task")
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	reads := cfgReads.Load()
+	s.Forget("c1")
+	if s.Busy("c1") {
+		t.Error("Busy(c1) after Forget")
+	}
+	if runs := rec.waitFinished(t, 1); runs[0].ctxErr == nil {
+		t.Error("running task not cancelled")
+	}
+	s.mu.Lock()
+	_, kept := s.sessions["c1"]
+	_, other := s.sessions["c2"]
+	s.mu.Unlock()
+	if kept || !other {
+		t.Errorf("sessions after Forget: c1 kept %v, c2 kept %v", kept, other)
+	}
+	rec.assertNotStarted(t, 50*time.Millisecond)
+	if !s.Busy("c2") {
+		t.Error("Forget(c1) dropped c2's task")
+	}
+	if n := cfgReads.Load(); n != reads {
+		t.Errorf("forgotten session read its config %d more times", n-reads)
+	}
+	if res := mustAdmit(t, s, "c1", "u1", "m4", AdmitNew); !res.Created || !s.Busy("c1") {
+		t.Errorf("Admit after Forget = %+v, want a new task in a new session", res)
+	}
+}

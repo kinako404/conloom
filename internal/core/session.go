@@ -226,6 +226,16 @@ func (o *Orchestrator) endSession(convKey, reason string) {
 	o.endLocked(convKey, reason)
 }
 
+// forgetConversation ends the conversation's session without counting it and
+// forgets when the bot last spoke there.
+func (o *Orchestrator) forgetConversation(convKey string) {
+	o.sessions.mu.Lock()
+	defer o.sessions.mu.Unlock()
+	delete(o.sessions.byConv, convKey)
+	delete(o.sessions.botSpoke, convKey)
+	delete(o.sessions.seeded, convKey)
+}
+
 // clearSessions ends every session without counting them.
 func (o *Orchestrator) clearSessions() {
 	o.sessions.mu.Lock()

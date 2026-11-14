@@ -76,6 +76,13 @@ func (s *Service) Current(ctx context.Context, convKey string) (store.PolicyVers
 	return s.current(ctx, convKey)
 }
 
+// Forget drops the conversation's cached policy.
+func (s *Service) Forget(convKey string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.cache, convKey)
+}
+
 func (s *Service) current(ctx context.Context, convKey string) (store.PolicyVersion, error) {
 	if pv, ok := s.cache[convKey]; ok {
 		return pv, nil

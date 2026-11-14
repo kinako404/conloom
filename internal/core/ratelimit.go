@@ -1,6 +1,7 @@
 package core
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -43,6 +44,17 @@ func (r *RateLimiter) Allow(key string, perMinute int, now time.Time) bool {
 	}
 	r.hits[key] = append(hits, now)
 	return true
+}
+
+// Forget drops the hits of every key starting with prefix.
+func (r *RateLimiter) Forget(prefix string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for k := range r.hits {
+		if strings.HasPrefix(k, prefix) {
+			delete(r.hits, k)
+		}
+	}
 }
 
 func (r *RateLimiter) sweep(cutoff time.Time) {

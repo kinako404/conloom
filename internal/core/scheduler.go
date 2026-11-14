@@ -388,6 +388,35 @@ func (s *Scheduler) Active(convKey string) []QueuedTask {
 	return out
 }
 
+// Busy reports whether the conversation has queued or running tasks.
+func (s *Scheduler) Busy(convKey string) bool {
+	sess := s.lockSession(convKey, false)
+	if sess == nil {
+		return false
+	}
+	defer sess.mu.Unlock()
+	return len(sess.pending) > 0 || len(sess.running) > 0
+}
+
+// Forget drops the conversation's session: its queued tasks are removed, its
+// running tasks cancelled like by Cancel, and its pacing forgotten. Its
+// goroutine ends once no task of it runs; a later Admit starts a new session.
+func (s *Scheduler) Forget(convKey string) {
+	sess := s.lockSession(convKey, false)
+	if sess == nil {
+		return
+	}
+	sess.pending = nil
+	for _, rt := range sess.running {
+		rt.settled = true
+		rt.cancel()
+	}
+	sess.dead = true
+	sess.mu.Unlock()
+	sess.signal()
+	s.forget(sess)
+}
+
 // Kick makes the conversation re-evaluate its queue against its current
 // SessionConfig, e.g. after MaxConcurrent changed from 0.
 func (s *Scheduler) Kick(convKey string) {
@@ -476,9 +505,20 @@ func (s *Scheduler) loop(sess *session) {
 	timer.Stop()
 	defer timer.Stop()
 	for {
-		cfg := s.cfg(sess.key)
+		// A forgotten session has nothing queued, so its policy is not read
+		// again (see Forget).
+		sess.mu.Lock()
+		forgotten := sess.dead
+		sess.mu.Unlock()
+		var cfg SessionConfig
+		if !forgotten {
+			cfg = s.cfg(sess.key)
+		}
 		sess.mu.Lock()
 		wait, idle, held, dropped := s.dispatchLocked(sess, cfg, time.Now())
+		if forgotten && len(sess.running) == 0 {
+			idle = true
+		}
 		if idle {
 			sess.dead = true
 		}

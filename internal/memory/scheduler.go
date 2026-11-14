@@ -373,7 +373,7 @@ func (s *Scheduler) privateAllowed(ctx context.Context, convKey string) bool {
 		s.logError(ctx, "memory: read private conversation failed", "conversation", convKey, "error", err)
 		return false
 	}
-	return bot.PrivateAllowed(conv.PlatformConversationID)
+	return bot.PrivateAllowed(conv.Platform, conv.PlatformConversationID)
 }
 
 func (s *Scheduler) logError(ctx context.Context, msg string, args ...any) {
