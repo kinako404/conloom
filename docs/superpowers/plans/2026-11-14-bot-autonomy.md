@@ -124,11 +124,11 @@
   const BuffSourceModel, BuffSourcePanel, BuffSourceAPI = "model", "panel", "api"
   var ErrBuffDuplicate = errors.New("store: bar already adjusted by this task")
   GetBuffs(ctx context.Context, convKey string) ([]BuffValue, error)
-  UpdateBuff(ctx context.Context, convKey, name string, ev BuffEvent, apply func(cur BuffValue, found bool) (BuffValue, error)) (BuffValue, error)
+  UpdateBuff(ctx context.Context, convKey, name string, ev BuffEvent, apply func(cur BuffValue, found bool) (next BuffValue, before float64, err error)) (BuffValue, error)
   ListBuffEvents(ctx context.Context, convKey string, limit int) ([]BuffEvent, error) // newest first
   PurgeBuffEvents(ctx context.Context, before time.Time) (int64, error)
   ```
-  `UpdateBuff` runs in one tx: if `ev.TaskID != ""` and an event `(task_id,name)` exists → `ErrBuffDuplicate`, nothing changes; else calls `apply`, upserts the returned value and inserts `ev` with `After = new.Value` and `Before = cur.Value` when a row was found, otherwise the caller's `ev.Before` (callers pass the bar's baseline).
+  `UpdateBuff` runs in one tx: if `ev.TaskID != ""` and an event `(task_id,name)` exists → `ErrBuffDuplicate`, nothing changes; else calls `apply`, upserts `next` and inserts `ev` with `Before = before` (callers report the decayed current value, or the baseline when nothing is stored) and `After = next.Value`. (Amended during Task 6.)
 
 - [ ] **Step 1: Write failing tests** `TestBuffs_UpdateAndList` (first update inserts with caller Before; second uses stored value as Before; events newest first), `TestBuffs_DuplicateTask` (same task+name → `ErrBuffDuplicate`, value unchanged; same task other name ok; empty task id never duplicate), `TestBuffs_ApplyErrorRollsBack`, `TestBuffs_Purge`.
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** **Step 4: Run** `go test -race ./internal/store/...` → PASS.
