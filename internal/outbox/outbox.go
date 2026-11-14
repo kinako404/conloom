@@ -134,6 +134,7 @@ func (s *Service) Ack(ctx context.Context, botID, actionID string, req conloomap
 			PlatformMessageID: req.PlatformMessageID,
 			Text:              rec.Action.Content.Text,
 			ReplyTo:           rec.Action.ReplyToMessageID,
+			Channel:           rec.Channel,
 			FromBot:           true,
 			OccurredAt:        now,
 			CreatedAt:         now,

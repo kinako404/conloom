@@ -116,7 +116,7 @@ func upsertUser(ctx context.Context, tx *sql.Tx, u store.UserRecord) error {
 }
 
 const messageCols = `seq, bot_instance_id, id, conversation_key, platform, platform_message_id, actor_id,
-	platform_user_id, display_name, text, reply_to, mentions, attachments, from_bot, occurred_at, created_at`
+	platform_user_id, display_name, text, reply_to, mentions, attachments, from_bot, occurred_at, created_at, channel`
 
 func insertMessage(ctx context.Context, tx *sql.Tx, m store.MessageRecord) error {
 	err := execInsertMessage(ctx, tx, m, "")
@@ -146,11 +146,11 @@ func execInsertMessage(ctx context.Context, tx *sql.Tx, m store.MessageRecord, o
 	var seq int64
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO messages (bot_instance_id, id, conversation_key, platform, platform_message_id, actor_id,
-			platform_user_id, display_name, text, reply_to, mentions, attachments, from_bot, occurred_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`+onConflict+` RETURNING seq`,
+			platform_user_id, display_name, text, reply_to, mentions, attachments, from_bot, occurred_at, created_at, channel)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`+onConflict+` RETURNING seq`,
 		m.BotInstanceID, m.ID, m.ConversationKey, m.Platform, m.PlatformMessageID, m.ActorID,
 		m.PlatformUserID, m.DisplayName, m.Text, m.ReplyTo, string(mentions), string(attachments), m.FromBot,
-		fmtTime(m.OccurredAt), fmtTime(nowIfZero(m.CreatedAt))).Scan(&seq)
+		fmtTime(m.OccurredAt), fmtTime(nowIfZero(m.CreatedAt)), m.Channel).Scan(&seq)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -168,7 +168,8 @@ func scanMessage(row scanner) (store.MessageRecord, error) {
 	var m store.MessageRecord
 	var mentions, attachments, occurred, created string
 	err := row.Scan(&m.Seq, &m.BotInstanceID, &m.ID, &m.ConversationKey, &m.Platform, &m.PlatformMessageID, &m.ActorID,
-		&m.PlatformUserID, &m.DisplayName, &m.Text, &m.ReplyTo, &mentions, &attachments, &m.FromBot, &occurred, &created)
+		&m.PlatformUserID, &m.DisplayName, &m.Text, &m.ReplyTo, &mentions, &attachments, &m.FromBot, &occurred, &created,
+		&m.Channel)
 	if err != nil {
 		return m, notFound(err)
 	}

@@ -627,3 +627,166 @@ func TestLastReplyTask_NewestReplyOfActorInConversation(t *testing.T) {
 		t.Fatalf("LastReplyTask = %q, %v; want task_new", got, err)
 	}
 }
+
+func panelAction(id, convKey string, now time.Time) store.OutboxRecord {
+	a := convAction(id, convKey, now)
+	a.Channel = store.ChannelPanel
+	return a
+}
+
+func leasePanel(t *testing.T, db *DB, limit int, now time.Time) []store.OutboxRecord {
+	t.Helper()
+	recs, err := db.LeasePanelOutbox(context.Background(), limit, now, time.Minute)
+	if err != nil {
+		t.Fatalf("LeasePanelOutbox: %v", err)
+	}
+	return recs
+}
+
+func TestLeaseOutbox_SkipsPanelChannel(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+	p1 := panelAction("p1", testConvKey, now)
+	p1.NotBefore = now.Add(time.Hour)
+	insertActions(t, db, p1, convAction("a1", testConvKey, now), panelAction("p2", testConvKeyB, now))
+
+	if ids := actionIDs(lease(t, db, 10, now)); !reflect.DeepEqual(ids, []string{"a1"}) {
+		t.Fatalf("platform lease behind a panel head not due = %v, want [a1]", ids)
+	}
+	if ids := actionIDs(lease(t, db, 10, now.Add(2*time.Hour))); len(ids) != 0 {
+		t.Fatalf("platform lease with only panel actions due = %v, want none", ids)
+	}
+
+	db = newTestDB(t)
+	a1 := convAction("a1", testConvKey, now)
+	a1.NotBefore = now.Add(time.Hour)
+	insertActions(t, db, a1, panelAction("p1", testConvKey, now), convAction("b1", testConvKeyB, now))
+
+	got := leasePanel(t, db, 10, now)
+	if ids := actionIDs(got); !reflect.DeepEqual(ids, []string{"p1"}) {
+		t.Fatalf("panel lease behind a platform head not due = %v, want [p1]", ids)
+	}
+	if got[0].Channel != store.ChannelPanel || got[0].Status != store.OutboxLeased || got[0].Attempts != 1 {
+		t.Fatalf("leased panel action = %+v", got[0])
+	}
+	if ids := actionIDs(lease(t, db, 10, now)); !reflect.DeepEqual(ids, []string{"b1"}) {
+		t.Fatalf("platform lease = %v, want [b1]", ids)
+	}
+	if stored, err := db.GetOutbox(context.Background(), testBot, "a1"); err != nil || stored.Channel != "" {
+		t.Fatalf("platform action channel = %q, %v; want empty", stored.Channel, err)
+	}
+}
+
+func TestLeasePanelOutbox_HeadOfLineAndNotBefore(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+	keyOther := store.ConversationKey("bot_other", store.PlatformPanel, conloomapi.ConvPrivate, "panel_b")
+	q1 := panelAction("q1", keyOther, now)
+	q1.BotInstanceID = "bot_other"
+	q1.NotBefore = now.Add(5 * time.Second)
+	stale := panelAction("s1", testConvKeyB, now)
+	stale.ExpiresAt = now
+	insertActions(t, db, panelAction("p1", testConvKey, now), panelAction("p2", testConvKey, now), q1, stale)
+
+	if ids := actionIDs(leasePanel(t, db, 0, now)); len(ids) != 0 {
+		t.Fatalf("lease limit 0 = %v, want none", ids)
+	}
+	if ids := actionIDs(leasePanel(t, db, 10, now)); !reflect.DeepEqual(ids, []string{"p1"}) {
+		t.Fatalf("first lease = %v, want [p1]", ids)
+	}
+	if ids := actionIDs(leasePanel(t, db, 10, now.Add(time.Second))); len(ids) != 0 {
+		t.Fatalf("lease while p1 leased and q1 not due = %v, want none", ids)
+	}
+	got := leasePanel(t, db, 10, now.Add(5*time.Second))
+	if ids := actionIDs(got); !reflect.DeepEqual(ids, []string{"q1"}) {
+		t.Fatalf("lease once q1 is due = %v, want [q1]", ids)
+	}
+	if got[0].BotInstanceID != "bot_other" {
+		t.Fatalf("q1 bot = %q, want bot_other", got[0].BotInstanceID)
+	}
+	got = leasePanel(t, db, 10, now.Add(61*time.Second))
+	if ids := actionIDs(got); !reflect.DeepEqual(ids, []string{"p1"}) || got[0].Attempts != 2 {
+		t.Fatalf("lease after p1's lease ran out = %v, want [p1] on attempt 2", ids)
+	}
+	ack(t, db, "p1", nil, now.Add(62*time.Second))
+	if ids := actionIDs(leasePanel(t, db, 10, now.Add(62*time.Second))); !reflect.DeepEqual(ids, []string{"p2"}) {
+		t.Fatalf("lease after ack p1 = %v, want [p2]", ids)
+	}
+	if status, attempts := outboxStatus(t, db, "s1"); status != store.OutboxPending || attempts != 0 {
+		t.Fatalf("s1 = %s/%d, want untouched pending/0", status, attempts)
+	}
+}
+
+func TestPendingPanelActions(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	acked := panelAction("p0", testConvKey, now)
+	acked.Status = store.OutboxAcked
+	insertActions(t, db, acked, panelAction("p1", testConvKey, now), panelAction("p2", testConvKey, now),
+		convAction("a1", testConvKey, now), panelAction("q1", testConvKeyB, now))
+	leasePanel(t, db, 10, now)
+	if n, err := db.PendingPanelActions(ctx, testConvKey); err != nil || n != 2 {
+		t.Fatalf("PendingPanelActions = %d, %v; want 2", n, err)
+	}
+	ack(t, db, "p1", nil, now)
+	ack(t, db, "p2", nil, now)
+	if n, err := db.PendingPanelActions(ctx, testConvKey); err != nil || n != 0 {
+		t.Fatalf("PendingPanelActions after acks = %d, %v; want 0", n, err)
+	}
+	if n, err := db.PendingPanelActions(ctx, "missing"); err != nil || n != 0 {
+		t.Fatalf("PendingPanelActions of unknown conversation = %d, %v; want 0", n, err)
+	}
+}
+
+func TestMigration0011_ExistingRowsArePlatformChannel(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "conloom.db")
+	old, err := open(ctx, path, migrationsUpTo(t, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	payload, err := json.Marshal(testAction("a1", now).Action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.w.Exec(`INSERT INTO outbox_actions (action_id, bot_instance_id, conversation_key, task_id, platform,
+		status, payload, lease_until, attempts, platform_message_id, created_at, expires_at, acked_at, not_before)
+		VALUES (?, ?, ?, 'task_1', ?, ?, ?, ?, 0, '', ?, ?, '', '')`,
+		"a1", testBot, testConvKey, testPlatform, store.OutboxPending, string(payload),
+		fmtTime(time.Time{}), fmtTime(now), fmtTime(now.Add(10*time.Minute))); err != nil {
+		t.Fatalf("raw outbox insert: %v", err)
+	}
+	if _, err := old.w.Exec(`INSERT INTO messages (bot_instance_id, id, conversation_key, platform, platform_message_id,
+		actor_id, platform_user_id, display_name, text, reply_to, mentions, attachments, from_bot, occurred_at, created_at)
+		VALUES (?, 'm1', ?, ?, 'p1', 'usr_20001', '20001', '小明', 'hello', '', 'null', 'null', 0, ?, ?)`,
+		testBot, testConvKey, testPlatform, fmtTime(now), fmtTime(now)); err != nil {
+		t.Fatalf("raw message insert: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, table := range []string{"messages", "outbox_actions"} {
+		var channel string
+		if err := db.r.QueryRow(`SELECT channel FROM ` + table).Scan(&channel); err != nil || channel != "" {
+			t.Fatalf("migrated %s channel = %q, %v; want empty", table, channel, err)
+		}
+	}
+	if m, err := db.GetMessage(ctx, testBot, "m1"); err != nil || m.Channel != "" {
+		t.Fatalf("migrated message channel = %q, %v; want empty", m.Channel, err)
+	}
+	if ids := actionIDs(leasePanel(t, db, 10, now)); len(ids) != 0 {
+		t.Fatalf("panel lease of a migrated action = %v, want none", ids)
+	}
+	got := lease(t, db, 10, now)
+	if ids := actionIDs(got); !reflect.DeepEqual(ids, []string{"a1"}) || got[0].Channel != "" {
+		t.Fatalf("platform lease = %v, want [a1] with empty channel", ids)
+	}
+}
