@@ -246,6 +246,51 @@ func requirePostponed(t *testing.T, env *testEnv, timer store.ConversationTimer,
 	}
 }
 
+func TestWakeLoop_LastingStatusHoldsStarts(t *testing.T) {
+	ctx := context.Background()
+	t.Run("initiate planned again after the status", func(t *testing.T) {
+		env, clock := newWakeEnv(t, nil, nil, nil)
+		env.seedPrivateMessage(t, clock, "晚安")
+		clock.set(clock.now().Add(5 * time.Hour))
+		until := clock.now().Add(2 * time.Hour)
+		env.setWakeStatus(t, "看书", clock.now().Add(-time.Minute), until)
+		timer := env.armWake(t, store.TimerInitiate, clock.now())
+
+		env.o.pollWakes(ctx)
+		requireNoWakeTask(t, env, timer)
+		timers := env.privateTimers(t)
+		if got := wakeKinds(timers); !reflect.DeepEqual(got, []store.TimerKind{store.TimerStatusReturn, store.TimerInitiate}) {
+			t.Fatalf("timers = %v, want the status return and a re-planned initiate", got)
+		}
+		if due := timers[1].DueAt; due.Before(until.Add(4 * time.Hour)) {
+			t.Errorf("re-planned initiate due %v, want no earlier than the level's gap after the status ends (%v)", due, until.Add(4*time.Hour))
+		}
+		if n := env.wakeCount(t, store.TimerInitiate, wakePostponed); n != 1 {
+			t.Errorf("wake postponed metric = %v, want 1", n)
+		}
+		if !strings.Contains(env.logs.String(), "reason=status") {
+			t.Errorf("logs lack the status re-plan:\n%s", env.logs.String())
+		}
+	})
+	t.Run("follow-up dropped", func(t *testing.T) {
+		env, clock := newWakeEnv(t, nil, nil, nil)
+		env.seedPrivateMessage(t, clock, "晚安")
+		env.appendPrivateLog(t, store.ProactivePrivateInitiate, clock.now().Add(3*time.Hour))
+		clock.set(clock.now().Add(5 * time.Hour))
+		env.setWakeStatus(t, "看书", clock.now().Add(-time.Minute), clock.now().Add(time.Hour))
+		timer := env.armWake(t, store.TimerFollowUp, clock.now())
+
+		env.o.pollWakes(ctx)
+		requireNoWakeTask(t, env, timer)
+		if got := wakeKinds(env.privateTimers(t)); !reflect.DeepEqual(got, []store.TimerKind{store.TimerStatusReturn}) {
+			t.Fatalf("timers = %v, want only the status return", got)
+		}
+		if n := env.wakeCount(t, store.TimerFollowUp, wakeDropped); n != 1 {
+			t.Errorf("wake dropped metric = %v, want 1", n)
+		}
+	})
+}
+
 func TestWakeLoop_ForgottenSinceLastMessageDrops(t *testing.T) {
 	ctx := context.Background()
 	t.Run("initiate armed while the user is forgotten", func(t *testing.T) {
@@ -306,16 +351,15 @@ func requireForgottenDrop(t *testing.T, env *testEnv, timer store.ConversationTi
 	}
 }
 
-func TestWakeLoop_StatusReturnIgnoresQuietAndCap(t *testing.T) {
+func TestWakeLoop_StatusReturnIgnoresCap(t *testing.T) {
 	env, clock := newWakeEnv(t, nil, nil, func(c *config.Config) {
 		c.DefaultGroupPolicy.Proactive.Private.Level = conloomapi.PrivateLevelLow
 	})
-	env.seedPrivateMessage(t, clock, "我去睡一会儿")
-	start := localAt(env, 0, 23, 50)
-	until := localAt(env, 1, 1, 0)
-	// The cap of 低 is already reached on the day the status ends.
-	env.appendPrivateLog(t, store.ProactivePrivateInitiate, localAt(env, 1, 0, 10))
-	timer := env.setWakeStatus(t, "午睡", start, until)
+	// The cap of 低 is already reached today.
+	env.appendPrivateLog(t, store.ProactivePrivateInitiate, clock.now().Add(-time.Hour))
+	env.seedPrivateMessage(t, clock, "我去洗个澡")
+	until := clock.now().Add(20 * time.Minute)
+	timer := env.setWakeStatus(t, "洗澡", clock.now(), until)
 	clock.set(until)
 
 	env.o.pollWakes(context.Background())
@@ -327,6 +371,31 @@ func TestWakeLoop_StatusReturnIgnoresQuietAndCap(t *testing.T) {
 		t.Fatalf("task = %+v, want the status return answered", task)
 	}
 	requireNoStatus(t, env)
+}
+
+func TestWakeLoop_StatusReturnInQuietHoursEndsSilently(t *testing.T) {
+	env, clock := newWakeEnv(t, nil, nil, nil)
+	clock.set(localAt(env, 0, 23, 0))
+	env.seedPrivateMessage(t, clock, "晚安，去睡吧")
+	until := clock.now().Add(240 * time.Minute)
+	timer := env.setWakeStatus(t, "睡觉", clock.now(), until)
+	clock.set(until)
+
+	env.o.pollWakes(context.Background())
+	requireNoWakeTask(t, env, timer)
+	requireNoStatus(t, env)
+	if timers := env.privateTimers(t); len(timers) != 0 {
+		t.Fatalf("timers = %+v, want none", timers)
+	}
+	if n := env.wakeCount(t, store.TimerStatusReturn, wakeDropped); n != 1 {
+		t.Errorf("wake dropped metric = %v, want 1", n)
+	}
+	if n := env.modelCalls(); n != 0 {
+		t.Errorf("model calls = %d, want 0", n)
+	}
+	if !strings.Contains(env.logs.String(), "reason=quiet") {
+		t.Errorf("logs lack the quiet drop:\n%s", env.logs.String())
+	}
 }
 
 func TestWakeLoop_StatusReturnSwitchOffClearsStatus(t *testing.T) {

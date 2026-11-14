@@ -62,10 +62,10 @@ func (o *Orchestrator) replanAfter(ctx context.Context, convKey string, spoke ti
 // follow-up is then kept (keepFollowUp); the user wrote nothing within
 // proactiveLogRetention, the time started messages stay logged, or since they
 // were forgotten; or autonomy.PlanInitiate finds no time. The plan counts the
-// level's gap from the chat's newest message, from either side, or from
-// spoke when later, uses the quiet hours and hourly rhythm of the user's
-// messages (userTimes) and today's started messages, and anchors the timer at
-// that newest message.
+// level's gap from the chat's newest message, from either side, from spoke,
+// or from the end of the chat's status still lasting, whichever is latest,
+// uses the quiet hours and hourly rhythm of the user's messages (userTimes)
+// and today's started messages, and anchors the timer at that newest message.
 func (o *Orchestrator) nextInitiate(ctx context.Context, convKey string, spoke time.Time) (next *store.ConversationTimer, keepFollowUp bool, reason string, err error) {
 	conv, err := o.conversation(ctx, convKey)
 	switch {
@@ -119,6 +119,13 @@ func (o *Orchestrator) nextInitiate(ctx context.Context, convKey string, spoke t
 	last := newest[0].OccurredAt
 	if spoke.After(last) {
 		last = spoke
+	}
+	switch st, err := o.st.GetStatus(ctx, convKey); {
+	case errors.Is(err, store.ErrNotFound):
+	case err != nil:
+		return nil, false, "", err
+	case st.UntilAt.After(now) && st.UntilAt.After(last):
+		last = st.UntilAt
 	}
 	// Started messages are logged at o.now(), so no later day has any.
 	day := now.In(o.loc).Format(time.DateOnly)

@@ -139,9 +139,11 @@ func (o *Orchestrator) dueStart(ctx context.Context, t store.ConversationTimer) 
 // drop); the bot must still be allowed to start messages in it (mayStart,
 // else drop); the user, if ever forgotten, must have written since (else
 // drop: a forget racing the plan that armed t leaves no message to start
-// from); now must be outside its quiet hours and today below the daily
-// cap (else an initiate is planned again and a follow-up moved by
-// followUpAgain); the bot must have started no message since the user's last
+// from); the chat must have no status still lasting (else an initiate is
+// planned again, after the status, and a follow-up dropped); now must be
+// outside its quiet hours and today below the daily cap (else an initiate is
+// planned again and a follow-up moved by followUpAgain); the bot must have
+// started no message since the user's last
 // one before an initiate, exactly one before a follow-up (else drop); the
 // user must not have written since t was armed (else drop); and the chat must
 // have no queued or running task and the user's newest message must be
@@ -183,6 +185,16 @@ func (o *Orchestrator) checkStart(ctx context.Context, t store.ConversationTimer
 		if !ok || forgotten.After(last) {
 			return drop("forgotten")
 		}
+	}
+	switch st, err := o.st.GetStatus(ctx, key); {
+	case errors.Is(err, store.ErrNotFound):
+	case err != nil:
+		return wakeVerdict{}, err
+	case st.UntilAt.After(now):
+		if t.Kind == store.TimerInitiate {
+			return wakeVerdict{act: wakeReplan, reason: "status"}, nil
+		}
+		return drop("status")
 	}
 	q := o.quietFor(ctx, key, forgotten)
 	today, err := o.privateStarted(ctx, key, o.dayStart(now))
@@ -227,14 +239,15 @@ func (o *Orchestrator) checkStart(ctx context.Context, t store.ConversationTimer
 	return wakeVerdict{act: wakeFire}, nil
 }
 
-// dueStatusReturn handles a due status return t (spec §7.4), which looks at
-// neither quiet hours nor the daily cap. Without a status, or with a newer
-// one still lasting, t is dropped. Otherwise the status ends, without a
-// message, when it ended more than wakeMissedGrace ago, when the chat is
-// gone, proactive replies are off, the chat is paused or its user may no
-// longer chat privately. While the chat is busy (chatBusy, or fireTimer
-// refusing) t is postponed by statusReturnDelay, and the status ends once
-// that would take it past wakeMissedGrace after the status ended.
+// dueStatusReturn handles a due status return t (spec §7.4), which does not
+// look at the daily cap. Without a status, or with a newer one still lasting,
+// t is dropped. Otherwise the status ends, without a message, when it ended
+// more than wakeMissedGrace ago, when the chat is gone, proactive replies are
+// off, the chat is paused, its user may no longer chat privately or now is in
+// the chat's quiet hours (quietFor), when the user is asleep. While the chat
+// is busy (chatBusy, or fireTimer refusing) t is postponed by
+// statusReturnDelay, and the status ends once that would take it past
+// wakeMissedGrace after the status ended.
 func (o *Orchestrator) dueStatusReturn(ctx context.Context, t store.ConversationTimer) error {
 	now, key := o.now(), t.ConversationKey
 	st, err := o.st.GetStatus(ctx, key)
@@ -279,6 +292,13 @@ func (o *Orchestrator) dueStatusReturn(ctx context.Context, t store.Conversation
 	if !ok || !pol.Proactive.Enabled || pol.Concurrency.MaxInteractiveRequests == 0 ||
 		!privateAllowed(bot, conv.Platform, t.PlatformUserID) {
 		return end(wakeDropped, "not_allowed")
+	}
+	rows, err := o.st.GetMemberMemories(ctx, key, []string{t.PlatformUserID})
+	if err != nil {
+		return err
+	}
+	if o.quietFor(ctx, key, rows[t.PlatformUserID].ForgottenAt).Contains(now, o.loc) {
+		return end(wakeDropped, "quiet")
 	}
 	postpone := func() error {
 		at := now.Add(statusReturnDelay)

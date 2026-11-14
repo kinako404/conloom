@@ -168,6 +168,25 @@ func TestReplan_Exclusions(t *testing.T) {
 	})
 }
 
+func TestReplan_GapCountsFromLastingStatusEnd(t *testing.T) {
+	env, clock := newWakeEnv(t, nil, nil, nil)
+	env.o.rand = rand.New(firstSource{})
+	env.seedPrivateMessage(t, clock, "我去洗个澡")
+	until := clock.now().Add(3 * time.Hour)
+	env.setWakeStatus(t, "洗澡", clock.now(), until)
+
+	env.o.replanInitiate(context.Background(), privateConvKey)
+	timers := env.privateTimers(t)
+	if got := wakeKinds(timers); !reflect.DeepEqual(got, []store.TimerKind{store.TimerStatusReturn, store.TimerInitiate}) {
+		t.Fatalf("timers = %v, want the status return and an initiate", got)
+	}
+	// The earliest initiate is the level's gap (4 hours at 中) after the
+	// status ends, not after 小明's message.
+	if due := timers[1].DueAt; !due.Equal(until.Add(4 * time.Hour)) {
+		t.Fatalf("initiate due %v, want %v", due, until.Add(4*time.Hour))
+	}
+}
+
 func TestReplan_OneUnansweredKeepsFollowUp(t *testing.T) {
 	env, clock := newWakeEnv(t, nil, nil, nil)
 	env.seedPrivateMessage(t, clock, "晚安")
