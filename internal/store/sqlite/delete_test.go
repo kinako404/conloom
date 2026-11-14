@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -316,9 +317,6 @@ func TestDeleteConversation_ClearsOnlyThatKey(t *testing.T) {
 	if n := searchHits(t, db, a.key); n != 0 {
 		t.Errorf("search hits in the deleted conversation = %d, want 0", n)
 	}
-	if userExists(t, db, store.PlatformPanel, "20001") {
-		t.Error("user only in the deleted conversation is kept")
-	}
 	if !userExists(t, db, store.PlatformPanel, "panel_admin") || !userExists(t, db, testPlatform, "20001") {
 		t.Error("user also in another conversation was deleted")
 	}
@@ -383,5 +381,60 @@ func TestDeleteConversation_CoversEveryKeyedTable(t *testing.T) {
 	}
 	if tables := slices.Sorted(slices.Values(conversationTables)); !slices.Equal(tables, slices.Sorted(slices.Values(keyedTables))) {
 		t.Fatalf("conversationTables = %v, want %v", conversationTables, keyedTables)
+	}
+}
+
+// createEmptyChat stores a conversation and its user without any message, as
+// creating a panel chat does.
+func createEmptyChat(t *testing.T, db *DB, platform, convID, uid string) {
+	t.Helper()
+	ctx := context.Background()
+	err := db.inTx(ctx, func(tx *sql.Tx) error {
+		if err := upsertConversation(ctx, tx, store.ConversationRecord{
+			BotInstanceID: testBot, ID: convID, Type: conloomapi.ConvPrivate, Platform: platform, PlatformConversationID: convID,
+		}); err != nil {
+			return err
+		}
+		return upsertUser(ctx, tx, store.UserRecord{BotInstanceID: testBot, Platform: platform, PlatformUserID: uid, DisplayName: "小明"})
+	})
+	if err != nil {
+		t.Fatalf("create chat %s: %v", convID, err)
+	}
+}
+
+func TestDeleteConversation_UserRows(t *testing.T) {
+	ctx := context.Background()
+
+	db := newTestDB(t)
+	a := seedConversation(t, db, store.PlatformPanel, "panel_a", "", "panel_admin")
+	createEmptyChat(t, db, store.PlatformPanel, "panel_b", "panel_admin")
+	if err := db.DeleteConversation(ctx, a.key); err != nil {
+		t.Fatalf("DeleteConversation: %v", err)
+	}
+	if !userExists(t, db, store.PlatformPanel, "panel_admin") {
+		t.Error("panel user of another panel chat without messages was deleted")
+	}
+
+	db = newTestDB(t)
+	a = seedConversation(t, db, store.PlatformPanel, "panel_a", "", "panel_admin")
+	createEmptyChat(t, db, testPlatform, "conv_b", "panel_admin")
+	if err := db.DeleteConversation(ctx, a.key); err != nil {
+		t.Fatalf("DeleteConversation: %v", err)
+	}
+	if userExists(t, db, store.PlatformPanel, "panel_admin") {
+		t.Error("panel user of the only panel chat is kept")
+	}
+
+	db = newTestDB(t)
+	x := seedConversation(t, db, testPlatform, "conv_x", "", "20003")
+	seedConversation(t, db, testPlatform, "conv_y", "", "20004")
+	if err := db.DeleteConversation(ctx, x.key); err != nil {
+		t.Fatalf("DeleteConversation: %v", err)
+	}
+	if userExists(t, db, testPlatform, "20003") {
+		t.Error("platform user only in the deleted conversation is kept")
+	}
+	if !userExists(t, db, testPlatform, "20004") {
+		t.Error("platform user of another conversation was deleted")
 	}
 }

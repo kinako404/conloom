@@ -7,6 +7,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -788,5 +789,38 @@ func TestMigration0011_ExistingRowsArePlatformChannel(t *testing.T) {
 	got := lease(t, db, 10, now)
 	if ids := actionIDs(got); !reflect.DeepEqual(ids, []string{"a1"}) || got[0].Channel != "" {
 		t.Fatalf("platform lease = %v, want [a1] with empty channel", ids)
+	}
+}
+
+func TestLeaseOutbox_QueriesUseScopedIndexes(t *testing.T) {
+	db := newTestDB(t)
+	now := fmtTime(time.Now())
+	for _, tc := range []struct {
+		scope string
+		args  []any
+		want  string
+	}{
+		{platformScope, []any{testBot}, "SEARCH outbox_actions USING INDEX outbox_actions_lease (bot_instance_id=? AND channel=? AND status=?)"},
+		{panelScope, []any{store.ChannelPanel}, "SEARCH outbox_actions USING INDEX outbox_actions_channel (channel=? AND status=?)"},
+	} {
+		args := append(tc.args, store.OutboxPending, store.OutboxLeased, now, store.OutboxPending, now, now, 10)
+		rows, err := db.r.Query(`EXPLAIN QUERY PLAN `+leaseHeadsQuery(tc.scope), args...)
+		if err != nil {
+			t.Fatalf("explain %s: %v", tc.scope, err)
+		}
+		var details []string
+		for rows.Next() {
+			var detail string
+			if err := rows.Scan(new(int), new(int), new(int), &detail); err != nil {
+				t.Fatal(err)
+			}
+			details = append(details, detail)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(details, tc.want) {
+			t.Errorf("plan for %s = %q, want a step %q", tc.scope, details, tc.want)
+		}
 	}
 }

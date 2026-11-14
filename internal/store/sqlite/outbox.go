@@ -44,17 +44,36 @@ func scanOutbox(row scanner) (store.OutboxRecord, error) {
 // holds back the rest of its conversation's platform channel, but not other
 // conversations nor the conversation's panel channel.
 func (db *DB) LeaseOutbox(ctx context.Context, botID string, limit int, now time.Time, lease time.Duration) ([]store.OutboxRecord, error) {
-	return db.leaseHeads(ctx, `bot_instance_id = ? AND channel = ''`, []any{botID}, limit, now, lease)
+	return db.leaseHeads(ctx, platformScope, []any{botID}, limit, now, lease)
 }
 
 // LeasePanelOutbox is LeaseOutbox for the panel channel of every bot.
 func (db *DB) LeasePanelOutbox(ctx context.Context, limit int, now time.Time, lease time.Duration) ([]store.OutboxRecord, error) {
-	return db.leaseHeads(ctx, `channel = ?`, []any{store.ChannelPanel}, limit, now, lease)
+	return db.leaseHeads(ctx, panelScope, []any{store.ChannelPanel}, limit, now, lease)
 }
 
-// leaseHeads leases, per conversation, the oldest live action among those
-// matching scope (a condition on one channel, taking scopeArgs) if it is
-// pending or its lease has run out and its not_before has come.
+// platformScope (taking the bot ID) and panelScope (taking ChannelPanel) are
+// the scopes of leaseHeadsQuery.
+const (
+	platformScope = `bot_instance_id = ? AND channel = ''`
+	panelScope    = `channel = ?`
+)
+
+// leaseHeadsQuery selects, per conversation, the oldest live action among
+// those matching scope (a condition on one channel) if it is pending or its
+// lease has run out and its not_before has come. It takes scope's arguments,
+// then pending, leased, now, pending, now, now and the limit.
+func leaseHeadsQuery(scope string) string {
+	return `SELECT ` + outboxCols + ` FROM outbox_actions
+		WHERE seq IN (
+			SELECT MIN(seq) FROM outbox_actions
+			WHERE ` + scope + ` AND status IN (?, ?) AND expires_at > ?
+			GROUP BY conversation_key)
+		AND (status = ? OR lease_until < ?) AND not_before <= ?
+		ORDER BY seq LIMIT ?`
+}
+
+// leaseHeads leases the actions leaseHeadsQuery selects for scope.
 func (db *DB) leaseHeads(ctx context.Context, scope string, scopeArgs []any, limit int, now time.Time, lease time.Duration) ([]store.OutboxRecord, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -66,13 +85,7 @@ func (db *DB) leaseHeads(ctx context.Context, scope string, scopeArgs []any, lim
 	var out []store.OutboxRecord
 	err := db.inTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		out, err = queryOutbox(ctx, tx, `SELECT `+outboxCols+` FROM outbox_actions
-			WHERE seq IN (
-				SELECT MIN(seq) FROM outbox_actions
-				WHERE `+scope+` AND status IN (?, ?) AND expires_at > ?
-				GROUP BY conversation_key)
-			AND (status = ? OR lease_until < ?) AND not_before <= ?
-			ORDER BY seq LIMIT ?`, args...)
+		out, err = queryOutbox(ctx, tx, leaseHeadsQuery(scope), args...)
 		if err != nil {
 			return err
 		}

@@ -29,13 +29,17 @@ func (db *DB) DeleteConversation(ctx context.Context, convKey string) error {
 		if err := deleteConversationEvents(ctx, tx, c); err != nil {
 			return err
 		}
+		// A panel chat stores its user when it is created, before any
+		// message, so another panel chat of the bot keeps the bot's panel users.
 		if _, err := tx.ExecContext(ctx, `DELETE FROM users
 			WHERE (bot_instance_id, platform, platform_user_id) IN (
 				SELECT bot_instance_id, platform, platform_user_id FROM messages WHERE conversation_key = ?)
 			AND NOT EXISTS (SELECT 1 FROM messages m
 				WHERE m.bot_instance_id = users.bot_instance_id AND m.platform = users.platform
-				AND m.platform_user_id = users.platform_user_id AND m.conversation_key <> ?)`,
-			convKey, convKey); err != nil {
+				AND m.platform_user_id = users.platform_user_id AND m.conversation_key <> ?)
+			AND NOT (users.platform = ? AND EXISTS (SELECT 1 FROM conversations c
+				WHERE c.bot_instance_id = users.bot_instance_id AND c.platform = ? AND c.key <> ?))`,
+			convKey, convKey, store.PlatformPanel, store.PlatformPanel, convKey); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM message_fts
