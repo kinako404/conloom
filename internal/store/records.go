@@ -14,6 +14,15 @@ const (
 	OutboxCancelled = "cancelled"
 )
 
+const (
+	// ChannelPanel is the channel of messages written in the panel and of the
+	// actions answering them, which only the panel delivers. The empty
+	// channel is the platform's, delivered by its adapter.
+	ChannelPanel = "panel"
+	// PlatformPanel is the platform of conversations held in the panel.
+	PlatformPanel = "panel"
+)
+
 type ConversationRecord struct {
 	BotInstanceID          string
 	ID                     string
@@ -54,6 +63,7 @@ type MessageRecord struct {
 	ReplyTo           string
 	Mentions          []conloomapi.Mention
 	Attachments       []conloomapi.Attachment
+	Channel           string // "" or ChannelPanel
 	FromBot           bool
 	OccurredAt        time.Time
 	CreatedAt         time.Time
@@ -90,6 +100,7 @@ type OutboxRecord struct {
 	CreatedAt         time.Time
 	ExpiresAt         time.Time
 	NotBefore         time.Time // earliest lease time; zero means immediately
+	Channel           string    // "" or ChannelPanel
 }
 
 type TaskCompletion struct {

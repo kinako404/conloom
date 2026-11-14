@@ -134,11 +134,11 @@ func insertOutbox(ctx context.Context, tx *sql.Tx, o store.OutboxRecord) error {
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO outbox_actions (action_id, bot_instance_id, conversation_key, task_id, platform, status, payload,
-			lease_until, attempts, platform_message_id, created_at, expires_at, acked_at, not_before)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)`,
+			lease_until, attempts, platform_message_id, created_at, expires_at, acked_at, not_before, channel)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)`,
 		o.Action.ActionID, o.BotInstanceID, o.ConversationKey, o.TaskID, o.Platform, o.Status, string(payload),
 		fmtTime(o.LeaseUntil), o.Attempts, o.PlatformMessageID, fmtTime(nowIfZero(o.CreatedAt)), fmtTime(o.ExpiresAt),
-		fmtTime(o.NotBefore))
+		fmtTime(o.NotBefore), o.Channel)
 	return err
 }
 

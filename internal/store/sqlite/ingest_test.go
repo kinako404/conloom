@@ -581,3 +581,26 @@ func TestIngest_AbandonReplyRefusesExpiredHandedOutAction(t *testing.T) {
 		t.Fatalf("b2 = %s, want cancelled", status)
 	}
 }
+
+func TestIngest_MessageChannelRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	if _, err := db.Ingest(ctx, testIngest("k1", "msg_1", "p1")); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	in := testIngest("k2", "msg_2", "panel_x1")
+	in.Message.Channel = store.ChannelPanel
+	if _, err := db.Ingest(ctx, in); err != nil {
+		t.Fatalf("Ingest panel message: %v", err)
+	}
+	if m, err := db.GetMessage(ctx, testBot, "msg_1"); err != nil || m.Channel != "" {
+		t.Fatalf("platform message channel = %q, %v; want empty", m.Channel, err)
+	}
+	msgs, err := db.RecentMessages(ctx, testConvKey, 10)
+	if err != nil || len(msgs) != 2 {
+		t.Fatalf("RecentMessages = %d, %v; want 2", len(msgs), err)
+	}
+	if msgs[0].Channel != "" || msgs[1].Channel != store.ChannelPanel {
+		t.Fatalf("channels = %q, %q; want empty, panel", msgs[0].Channel, msgs[1].Channel)
+	}
+}

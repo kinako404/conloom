@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"slices"
 	"time"
 
 	"github.com/kinako404/conloom/internal/store"
@@ -11,13 +12,13 @@ import (
 )
 
 const outboxCols = `seq, bot_instance_id, conversation_key, task_id, platform, status, payload,
-	lease_until, attempts, platform_message_id, created_at, expires_at, not_before`
+	lease_until, attempts, platform_message_id, created_at, expires_at, not_before, channel`
 
 func scanOutbox(row scanner) (store.OutboxRecord, error) {
 	var o store.OutboxRecord
 	var payload, leaseUntil, created, expires, notBefore string
 	err := row.Scan(&o.Seq, &o.BotInstanceID, &o.ConversationKey, &o.TaskID, &o.Platform, &o.Status, &payload,
-		&leaseUntil, &o.Attempts, &o.PlatformMessageID, &created, &expires, &notBefore)
+		&leaseUntil, &o.Attempts, &o.PlatformMessageID, &created, &expires, &notBefore, &o.Channel)
 	if err != nil {
 		return o, notFound(err)
 	}
@@ -37,27 +38,54 @@ func scanOutbox(row scanner) (store.OutboxRecord, error) {
 	return o, err
 }
 
-// LeaseOutbox hands out, per conversation, the oldest live action if it is
-// pending or its lease has run out, and marks the handed-out actions leased.
-// An oldest action whose not_before is still ahead holds back the rest of its
-// conversation, but not other conversations.
+// LeaseOutbox hands out, per conversation, the oldest live action of the
+// platform channel if it is pending or its lease has run out, and marks the
+// handed-out actions leased. An oldest action whose not_before is still ahead
+// holds back the rest of its conversation's platform channel, but not other
+// conversations nor the conversation's panel channel.
 func (db *DB) LeaseOutbox(ctx context.Context, botID string, limit int, now time.Time, lease time.Duration) ([]store.OutboxRecord, error) {
+	return db.leaseHeads(ctx, platformScope, []any{botID}, limit, now, lease)
+}
+
+// LeasePanelOutbox is LeaseOutbox for the panel channel of every bot.
+func (db *DB) LeasePanelOutbox(ctx context.Context, limit int, now time.Time, lease time.Duration) ([]store.OutboxRecord, error) {
+	return db.leaseHeads(ctx, panelScope, []any{store.ChannelPanel}, limit, now, lease)
+}
+
+// platformScope (taking the bot ID) and panelScope (taking ChannelPanel) are
+// the scopes of leaseHeadsQuery.
+const (
+	platformScope = `bot_instance_id = ? AND channel = ''`
+	panelScope    = `channel = ?`
+)
+
+// leaseHeadsQuery selects, per conversation, the oldest live action among
+// those matching scope (a condition on one channel) if it is pending or its
+// lease has run out and its not_before has come. It takes scope's arguments,
+// then pending, leased, now, pending, now, now and the limit.
+func leaseHeadsQuery(scope string) string {
+	return `SELECT ` + outboxCols + ` FROM outbox_actions
+		WHERE seq IN (
+			SELECT MIN(seq) FROM outbox_actions
+			WHERE ` + scope + ` AND status IN (?, ?) AND expires_at > ?
+			GROUP BY conversation_key)
+		AND (status = ? OR lease_until < ?) AND not_before <= ?
+		ORDER BY seq LIMIT ?`
+}
+
+// leaseHeads leases the actions leaseHeadsQuery selects for scope.
+func (db *DB) leaseHeads(ctx context.Context, scope string, scopeArgs []any, limit int, now time.Time, lease time.Duration) ([]store.OutboxRecord, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
 	nowStr := fmtTime(now)
 	until := now.Add(lease).UTC()
+	args := append(slices.Clone(scopeArgs),
+		store.OutboxPending, store.OutboxLeased, nowStr, store.OutboxPending, nowStr, nowStr, limit)
 	var out []store.OutboxRecord
 	err := db.inTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		out, err = queryOutbox(ctx, tx, `SELECT `+outboxCols+` FROM outbox_actions
-			WHERE seq IN (
-				SELECT MIN(seq) FROM outbox_actions
-				WHERE bot_instance_id = ? AND status IN (?, ?) AND expires_at > ?
-				GROUP BY conversation_key)
-			AND (status = ? OR lease_until < ?) AND not_before <= ?
-			ORDER BY seq LIMIT ?`,
-			botID, store.OutboxPending, store.OutboxLeased, nowStr, store.OutboxPending, nowStr, nowStr, limit)
+		out, err = queryOutbox(ctx, tx, leaseHeadsQuery(scope), args...)
 		if err != nil {
 			return err
 		}
@@ -76,6 +104,14 @@ func (db *DB) LeaseOutbox(ctx context.Context, botID string, limit int, now time
 		return nil, err
 	}
 	return out, nil
+}
+
+func (db *DB) PendingPanelActions(ctx context.Context, convKey string) (int, error) {
+	var n int
+	err := db.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_actions
+		WHERE channel = ? AND status IN (?, ?) AND conversation_key = ?`,
+		store.ChannelPanel, store.OutboxPending, store.OutboxLeased, convKey).Scan(&n)
+	return n, err
 }
 
 func queryOutbox(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]store.OutboxRecord, error) {

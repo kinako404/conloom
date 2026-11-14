@@ -57,7 +57,14 @@ type Store interface {
 	ListUnfinishedTasks(ctx context.Context) ([]TaskRecord, error)
 	ActionsForTask(ctx context.Context, taskID string) ([]conloomapi.Action, error)
 	PurgeEvents(ctx context.Context, before time.Time) (int, error)
+	// LeaseOutbox leases the bot's due actions of the platform channel (""):
+	// per conversation only the head of that channel.
 	LeaseOutbox(ctx context.Context, botID string, limit int, now time.Time, lease time.Duration) ([]OutboxRecord, error)
+	// LeasePanelOutbox leases due actions with channel "panel" across all bots: per
+	// conversation only the head of that channel, same not_before/lease rules as LeaseOutbox.
+	LeasePanelOutbox(ctx context.Context, limit int, now time.Time, lease time.Duration) ([]OutboxRecord, error)
+	// PendingPanelActions counts the conversation's pending or leased panel-channel actions.
+	PendingPanelActions(ctx context.Context, convKey string) (int, error)
 	GetOutbox(ctx context.Context, botID, actionID string) (OutboxRecord, error)
 	AckOutbox(ctx context.Context, botID, actionID string, ack conloomapi.AckRequest, botMsg *MessageRecord, now time.Time) (alreadyAcked bool, err error)
 	ExpireOutbox(ctx context.Context, now time.Time) (int, error)
@@ -163,6 +170,11 @@ type Store interface {
 	// at any time, and also picks up messages written by binaries without the
 	// index.
 	BackfillMessageIndex(ctx context.Context, batch int) (indexed, remaining int, err error)
+	// DeleteConversation deletes everything stored under convKey (messages and their
+	// keyword index rows, tasks, outbox actions, personas, policies, members, memory,
+	// chunks, proactive log, users only referenced by this conversation, events of it)
+	// except model_calls and audit_events, then the conversation row. ErrNotFound if absent.
+	DeleteConversation(ctx context.Context, convKey string) error
 	Backup(ctx context.Context, path string) error
 	Close() error
 }

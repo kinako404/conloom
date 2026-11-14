@@ -90,6 +90,10 @@ func (f *fixture) addActions(t *testing.T, taskID string, actionIDs ...string) {
 }
 
 func (f *fixture) insertActions(taskID string, actionIDs ...string) error {
+	return f.insertChannelActions(taskID, "", actionIDs...)
+}
+
+func (f *fixture) insertChannelActions(taskID, channel string, actionIDs ...string) error {
 	ctx := context.Background()
 	now := f.clock.now()
 	_, err := f.st.Ingest(ctx, store.Ingest{
@@ -131,6 +135,7 @@ func (f *fixture) insertActions(taskID string, actionIDs ...string) error {
 			BotInstanceID:   testBot,
 			ConversationKey: testConvKey,
 			Platform:        testPlatform,
+			Channel:         channel,
 			CreatedAt:       now,
 			ExpiresAt:       now.Add(time.Hour),
 		})
@@ -350,6 +355,26 @@ func TestAck_SentWithoutPlatformID(t *testing.T) {
 	msg, err := f.st.GetMessage(ctx, testBot, "msg_bot_act_1")
 	if err != nil || !msg.FromBot || msg.Text != "reply act_1" {
 		t.Fatalf("bot message = %+v, %v", msg, err)
+	}
+}
+
+func TestAck_BotMessageKeepsChannel(t *testing.T) {
+	f := newFixture(t)
+	f.addActions(t, "task_1", "act_1")
+	if err := f.insertChannelActions("task_2", store.ChannelPanel, "act_2"); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, id := range []string{"act_1", "act_2"} {
+		if err := f.svc.Ack(ctx, testBot, id, conloomapi.AckRequest{Status: conloomapi.AckSent}); err != nil {
+			t.Fatalf("Ack %s: %v", id, err)
+		}
+	}
+	for id, want := range map[string]string{"msg_bot_act_1": "", "msg_bot_act_2": store.ChannelPanel} {
+		msg, err := f.st.GetMessage(ctx, testBot, id)
+		if err != nil || msg.Channel != want {
+			t.Fatalf("%s channel = %q, %v; want %q", id, msg.Channel, err, want)
+		}
 	}
 }
 
