@@ -70,7 +70,7 @@ func withMaxParts(n int) func(*config.Config) {
 
 func TestRunner_SplitsReplyIntoParts(t *testing.T) {
 	clock := &testClock{t: time.Date(2026, 11, 14, 8, 0, 0, 0, time.UTC)}
-	p1, p2, p3, p4 := strings.Repeat("一", 10), strings.Repeat("二", 20), "三", "四"
+	p1, p2, p3, p4 := strings.Repeat("一", 10), strings.Repeat("二", 20), strings.Repeat("三", 30), "四"
 	env := newTestOrchestrator(t, testOpts{
 		now:       clock.now,
 		short:     answer(p1 + "\n|||\n" + p2 + "\n|||\n" + p3 + "\n|||\n" + p4),
@@ -82,14 +82,17 @@ func TestRunner_SplitsReplyIntoParts(t *testing.T) {
 		t.Fatalf("task = %+v", task)
 	}
 	done := clock.now().UTC()
+	// The pause before a part is the time to type it: 20 runes take 2s, the
+	// merged 32-rune last part 2.72s.
 	want := []struct {
 		text      string
 		notBefore time.Time
 	}{
 		{p1, time.Time{}},
-		{p2, done.Add(1400 * time.Millisecond)},
-		{p3 + "\n" + p4, done.Add(1400*time.Millisecond + 2000*time.Millisecond)},
+		{p2, done.Add(2000 * time.Millisecond)},
+		{p3 + "\n" + p4, done.Add(2000*time.Millisecond + 2720*time.Millisecond)},
 	}
+	var firstExpires time.Time
 	for i, a := range task.Actions {
 		if a.Content.Text != want[i].text || a.PartIndex != i+1 || a.PartCount != 3 {
 			t.Errorf("action %d = text %q part %d/%d, want %q part %d/3", i, a.Content.Text, a.PartIndex, a.PartCount, want[i].text, i+1)
@@ -104,8 +107,11 @@ func TestRunner_SplitsReplyIntoParts(t *testing.T) {
 		if !rec.NotBefore.Equal(want[i].notBefore) {
 			t.Errorf("action %d not before = %v, want %v", i, rec.NotBefore, want[i].notBefore)
 		}
-		if rec.ExpiresAt.Before(rec.NotBefore.Add(defaultActionTTL)) {
-			t.Errorf("action %d expires at %v, before a full TTL after it is due (%v)", i, rec.ExpiresAt, rec.NotBefore)
+		if i == 0 {
+			firstExpires = rec.ExpiresAt
+		}
+		if !rec.ExpiresAt.Equal(firstExpires) || !rec.NotBefore.Before(rec.ExpiresAt) {
+			t.Errorf("action %d expires at %v (due %v), want the first part's expiry %v, after it is due", i, rec.ExpiresAt, rec.NotBefore, firstExpires)
 		}
 	}
 	sys, _ := requestMessages(t, env.short.Requests()[0])[0]["content"].(string)

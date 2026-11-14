@@ -46,8 +46,8 @@ func splitParts(text string, max int) []string {
 	return parts
 }
 
-// partDelay is how long after a part the next part of the same reply is sent:
-// longer parts take longer to read.
+// partDelay is how long after the part before it a later part of a reply is
+// sent: the time to type it, so longer parts take longer.
 func partDelay(part string) time.Duration {
 	d := partDelayBase + partDelayPerRune*time.Duration(utf8.RuneCountInString(part))
 	return min(max(d, partDelayMin), partDelayMax)
