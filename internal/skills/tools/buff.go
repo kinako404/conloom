@@ -108,8 +108,8 @@ func (t *adjustBuffTool) Call(ctx context.Context, inv skills.Invocation, args j
 	day := now.In(loc).Format(time.DateOnly)
 	var before float64
 	after, err := t.st.UpdateBuff(ctx, inv.ConversationKey, bar.Name,
-		store.BuffEvent{TaskID: inv.TaskID, Source: store.BuffSourceModel, Before: float64(bar.Baseline), Reason: reason, CreatedAt: now},
-		func(cur store.BuffValue, found bool) (store.BuffValue, error) {
+		store.BuffEvent{TaskID: inv.TaskID, Source: store.BuffSourceModel, Reason: reason, CreatedAt: now},
+		func(cur store.BuffValue, found bool) (store.BuffValue, float64, error) {
 			before = float64(bar.Baseline)
 			dayDelta := 0
 			if found {
@@ -120,9 +120,10 @@ func (t *adjustBuffTool) Call(ctx context.Context, inv skills.Invocation, args j
 			}
 			d := dayCapped(delta, dayDelta)
 			if d == 0 {
-				return store.BuffValue{}, errDayCapped
+				return store.BuffValue{}, 0, errDayCapped
 			}
-			return store.BuffValue{Value: autonomy.Clamp(before + float64(d)), Day: day, DayDelta: dayDelta + d, UpdatedAt: now}, nil
+			next := store.BuffValue{Value: autonomy.Clamp(before + float64(d)), Day: day, DayDelta: dayDelta + d, UpdatedAt: now}
+			return next, before, nil
 		})
 	switch {
 	case errors.Is(err, store.ErrBuffDuplicate):

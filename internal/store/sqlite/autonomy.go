@@ -219,7 +219,7 @@ func (db *DB) GetBuffs(ctx context.Context, convKey string) ([]store.BuffValue, 
 }
 
 func (db *DB) UpdateBuff(ctx context.Context, convKey, name string, ev store.BuffEvent,
-	apply func(cur store.BuffValue, found bool) (store.BuffValue, error)) (store.BuffValue, error) {
+	apply func(cur store.BuffValue, found bool) (store.BuffValue, float64, error)) (store.BuffValue, error) {
 	if convKey == "" || name == "" {
 		return store.BuffValue{}, errors.New("update bar: empty conversation key or name")
 	}
@@ -241,12 +241,12 @@ func (db *DB) UpdateBuff(ctx context.Context, convKey, name string, ev store.Buf
 			return err
 		}
 		var cur store.BuffValue
-		before := ev.Before
 		found := len(stored) > 0
 		if found {
-			cur, before = stored[0], stored[0].Value
+			cur = stored[0]
 		}
-		if next, err = apply(cur, found); err != nil {
+		var before float64
+		if next, before, err = apply(cur, found); err != nil {
 			return err
 		}
 		next.ConversationKey, next.Name, next.UpdatedAt = convKey, name, nowIfZero(next.UpdatedAt)

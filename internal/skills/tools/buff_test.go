@@ -21,9 +21,9 @@ func newAdjustBuff(st store.Store, doc conloomapi.PersonaDoc) skills.Tool {
 func seedBuff(t *testing.T, st store.Store, convKey, name string, value float64, day string, dayDelta int, at time.Time) {
 	t.Helper()
 	if _, err := st.UpdateBuff(context.Background(), convKey, name,
-		store.BuffEvent{Source: store.BuffSourcePanel, Before: value, Reason: "seed", CreatedAt: at},
-		func(store.BuffValue, bool) (store.BuffValue, error) {
-			return store.BuffValue{Value: value, Day: day, DayDelta: dayDelta, UpdatedAt: at}, nil
+		store.BuffEvent{Source: store.BuffSourcePanel, Reason: "seed", CreatedAt: at},
+		func(store.BuffValue, bool) (store.BuffValue, float64, error) {
+			return store.BuffValue{Value: value, Day: day, DayDelta: dayDelta, UpdatedAt: at}, value, nil
 		}); err != nil {
 		t.Fatalf("seed %s: %v", name, err)
 	}
@@ -76,8 +76,11 @@ func TestAdjustBuff_DecayThenDelta(t *testing.T) {
 	}
 	ev := buffEvents(t, st, privateKey)[0]
 	if ev.Name != "心情" || ev.Source != store.BuffSourceModel || ev.TaskID != "task_test" || ev.Reason != "聊得开心" ||
-		math.Abs(ev.After-80) > 1e-9 || !ev.CreatedAt.Equal(testNow) {
+		!ev.CreatedAt.Equal(testNow) {
 		t.Errorf("event = %+v", ev)
+	}
+	if math.Abs(ev.Before-75) > 1e-9 || math.Abs(ev.After-80) > 1e-9 {
+		t.Errorf("event records %v → %v, want the decayed 75 → 80", ev.Before, ev.After)
 	}
 
 	inv.TaskID = "task_next"

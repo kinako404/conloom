@@ -215,12 +215,13 @@ type Store interface {
 	// ev.TaskID is set and that task already changed a bar of that name,
 	// nothing is written and it returns ErrBuffDuplicate. Otherwise it calls
 	// apply with the stored value (zero and found false without one), stores
-	// and returns apply's result under convKey and name (a zero UpdatedAt as
-	// now), and records ev under convKey and name with After the new value,
-	// Before the stored value when found (ev.Before, the bar's baseline,
-	// otherwise) and a zero CreatedAt as now. When apply fails nothing is
-	// written and its error is returned.
-	UpdateBuff(ctx context.Context, convKey, name string, ev BuffEvent, apply func(cur BuffValue, found bool) (BuffValue, error)) (BuffValue, error)
+	// and returns apply's next under convKey and name (a zero UpdatedAt as
+	// now), and records ev under convKey and name with Before apply's before
+	// (the value next replaced, such as the stored value decayed to now),
+	// After next.Value and a zero CreatedAt as now; ev.Before and ev.After are
+	// not used. When apply fails nothing is written and its error is returned.
+	UpdateBuff(ctx context.Context, convKey, name string, ev BuffEvent,
+		apply func(cur BuffValue, found bool) (next BuffValue, before float64, err error)) (BuffValue, error)
 	// ListBuffEvents returns the conversation's newest up to limit bar changes,
 	// newest first (none when limit <= 0).
 	ListBuffEvents(ctx context.Context, convKey string, limit int) ([]BuffEvent, error)

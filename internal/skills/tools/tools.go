@@ -37,7 +37,7 @@ type StatusStore interface {
 // BuffStore is the part of store.Store that adjust_buff uses.
 type BuffStore interface {
 	UpdateBuff(ctx context.Context, convKey, name string, ev store.BuffEvent,
-		apply func(cur store.BuffValue, found bool) (store.BuffValue, error)) (store.BuffValue, error)
+		apply func(cur store.BuffValue, found bool) (next store.BuffValue, before float64, err error)) (store.BuffValue, error)
 	GetBuffs(ctx context.Context, convKey string) ([]store.BuffValue, error)
 }
 

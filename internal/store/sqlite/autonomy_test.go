@@ -534,12 +534,12 @@ func TestForgetPrivate_ClearsAutonomy(t *testing.T) {
 }
 
 // setBuff stores value as the bar's new value through UpdateBuff, with the
-// event's time as the value's.
-func setBuff(t *testing.T, db *DB, key, name string, value float64, ev store.BuffEvent) store.BuffValue {
+// event's time as the value's, and reports before as the value it replaced.
+func setBuff(t *testing.T, db *DB, key, name string, before, value float64, ev store.BuffEvent) store.BuffValue {
 	t.Helper()
-	got, err := db.UpdateBuff(context.Background(), key, name, ev, func(cur store.BuffValue, _ bool) (store.BuffValue, error) {
+	got, err := db.UpdateBuff(context.Background(), key, name, ev, func(cur store.BuffValue, _ bool) (store.BuffValue, float64, error) {
 		cur.Value, cur.Day, cur.UpdatedAt = value, "2026-11-14", ev.CreatedAt
-		return cur, nil
+		return cur, before, nil
 	})
 	if err != nil {
 		t.Fatalf("UpdateBuff %s %s: %v", key, name, err)
@@ -589,41 +589,44 @@ func TestBuffs_UpdateAndList(t *testing.T) {
 		t.Fatalf("GetBuffs without bars = %+v, want none", got)
 	}
 
-	first := store.BuffEvent{TaskID: "task_1", Source: store.BuffSourceModel, Before: 60, After: 99, Reason: "聊得开心", CreatedAt: at}
-	got, err := db.UpdateBuff(ctx, key, "心情", first, func(cur store.BuffValue, found bool) (store.BuffValue, error) {
+	// The event's Before and After come from apply, never from the event passed in.
+	first := store.BuffEvent{TaskID: "task_1", Source: store.BuffSourceModel, Before: 1, After: 99, Reason: "聊得开心", CreatedAt: at}
+	got, err := db.UpdateBuff(ctx, key, "心情", first, func(cur store.BuffValue, found bool) (store.BuffValue, float64, error) {
 		if found || cur != (store.BuffValue{}) {
 			t.Errorf("apply of a new bar got %+v, found %v; want a zero value, not found", cur, found)
 		}
-		return store.BuffValue{Value: 65, Day: "2026-11-14", DayDelta: 5, UpdatedAt: at}, nil
+		return store.BuffValue{Value: 65, Day: "2026-11-14", DayDelta: 5, UpdatedAt: at}, 60, nil
 	})
 	want1 := store.BuffValue{ConversationKey: key, Name: "心情", Value: 65, Day: "2026-11-14", DayDelta: 5, UpdatedAt: at}
 	if err != nil || !sameBuffs([]store.BuffValue{got}, []store.BuffValue{want1}) {
 		t.Fatalf("first UpdateBuff = %+v, %v; want %+v", got, err, want1)
 	}
 
-	second := store.BuffEvent{TaskID: "task_2", Source: store.BuffSourceModel, Before: 60, Reason: "被夸了", CreatedAt: at.Add(time.Hour)}
-	got, err = db.UpdateBuff(ctx, key, "心情", second, func(cur store.BuffValue, found bool) (store.BuffValue, error) {
+	// A stored bar's event records the before apply reports (here a decayed
+	// 63.25), not the stored 65.
+	second := store.BuffEvent{TaskID: "task_2", Source: store.BuffSourceModel, Before: 1, Reason: "被夸了", CreatedAt: at.Add(time.Hour)}
+	got, err = db.UpdateBuff(ctx, key, "心情", second, func(cur store.BuffValue, found bool) (store.BuffValue, float64, error) {
 		if !found || !sameBuffs([]store.BuffValue{cur}, []store.BuffValue{want1}) {
 			t.Errorf("apply of a stored bar got %+v, found %v; want %+v, found", cur, found, want1)
 		}
 		cur.Value, cur.DayDelta, cur.UpdatedAt = 72.5, 12, at.Add(time.Hour)
-		return cur, nil
+		return cur, 63.25, nil
 	})
 	want2 := store.BuffValue{ConversationKey: key, Name: "心情", Value: 72.5, Day: "2026-11-14", DayDelta: 12, UpdatedAt: at.Add(time.Hour)}
 	if err != nil || !sameBuffs([]store.BuffValue{got}, []store.BuffValue{want2}) {
 		t.Fatalf("second UpdateBuff = %+v, %v; want %+v", got, err, want2)
 	}
 
-	panel := store.BuffEvent{Source: store.BuffSourcePanel, Before: 70, Reason: "手动调整", CreatedAt: at.Add(2 * time.Hour)}
-	want3 := setBuff(t, db, key, "精力", 40, panel)
+	panel := store.BuffEvent{Source: store.BuffSourcePanel, Reason: "手动调整", CreatedAt: at.Add(2 * time.Hour)}
+	want3 := setBuff(t, db, key, "精力", 70, 40, panel)
 	if want3.ConversationKey != key || want3.Name != "精力" || want3.Value != 40 {
 		t.Fatalf("UpdateBuff 精力 = %+v", want3)
 	}
-	otherBuff := setBuff(t, db, other, "心情", 30, store.BuffEvent{Source: store.BuffSourceAPI, Before: 60, Reason: "接口"})
+	otherBuff := setBuff(t, db, other, "心情", 60, 30, store.BuffEvent{Source: store.BuffSourceAPI, Reason: "接口"})
 	if otherBuff.UpdatedAt.IsZero() {
 		t.Fatalf("UpdateBuff with a zero UpdatedAt returned %+v, want it set to now", otherBuff)
 	}
-	keep := func(cur store.BuffValue, _ bool) (store.BuffValue, error) { return cur, nil }
+	keep := func(cur store.BuffValue, _ bool) (store.BuffValue, float64, error) { return cur, cur.Value, nil }
 	if _, err := db.UpdateBuff(ctx, key, "", panel, keep); err == nil {
 		t.Fatal("UpdateBuff without a name succeeded")
 	}
@@ -640,7 +643,7 @@ func TestBuffs_UpdateAndList(t *testing.T) {
 
 	wantEvents := []store.BuffEvent{
 		{ConversationKey: key, Name: "精力", Source: store.BuffSourcePanel, Before: 70, After: 40, Reason: "手动调整", CreatedAt: panel.CreatedAt},
-		{ConversationKey: key, Name: "心情", TaskID: "task_2", Source: store.BuffSourceModel, Before: 65, After: 72.5, Reason: "被夸了", CreatedAt: second.CreatedAt},
+		{ConversationKey: key, Name: "心情", TaskID: "task_2", Source: store.BuffSourceModel, Before: 63.25, After: 72.5, Reason: "被夸了", CreatedAt: second.CreatedAt},
 		{ConversationKey: key, Name: "心情", TaskID: "task_1", Source: store.BuffSourceModel, Before: 60, After: 65, Reason: "聊得开心", CreatedAt: at},
 	}
 	events := listBuffEvents(t, db, key, 10)
@@ -669,14 +672,15 @@ func TestBuffs_DuplicateTask(t *testing.T) {
 	ctx := context.Background()
 	key := privKey("20001")
 	at := time.Date(2026, 11, 14, 20, 0, 0, 0, time.UTC)
-	byTask := store.BuffEvent{TaskID: "task_1", Source: store.BuffSourceModel, Before: 60, Reason: "聊得开心", CreatedAt: at}
-	setBuff(t, db, key, "心情", 65, byTask)
+	byTask := store.BuffEvent{TaskID: "task_1", Source: store.BuffSourceModel, Reason: "聊得开心", CreatedAt: at}
+	setBuff(t, db, key, "心情", 60, 65, byTask)
 
 	called := false
-	_, err := db.UpdateBuff(ctx, key, "心情", byTask, func(cur store.BuffValue, _ bool) (store.BuffValue, error) {
+	_, err := db.UpdateBuff(ctx, key, "心情", byTask, func(cur store.BuffValue, _ bool) (store.BuffValue, float64, error) {
 		called = true
+		before := cur.Value
 		cur.Value = 70
-		return cur, nil
+		return cur, before, nil
 	})
 	if !errors.Is(err, store.ErrBuffDuplicate) {
 		t.Fatalf("second UpdateBuff of the task err = %v, want ErrBuffDuplicate", err)
@@ -691,10 +695,10 @@ func TestBuffs_DuplicateTask(t *testing.T) {
 		t.Fatalf("events after the duplicate = %+v, want one", got)
 	}
 
-	setBuff(t, db, key, "精力", 75, byTask)
-	panel := store.BuffEvent{Source: store.BuffSourcePanel, Before: 60, CreatedAt: at.Add(time.Minute)}
-	setBuff(t, db, key, "心情", 50, panel)
-	setBuff(t, db, key, "心情", 55, panel)
+	setBuff(t, db, key, "精力", 70, 75, byTask)
+	panel := store.BuffEvent{Source: store.BuffSourcePanel, CreatedAt: at.Add(time.Minute)}
+	setBuff(t, db, key, "心情", 65, 50, panel)
+	setBuff(t, db, key, "心情", 50, 55, panel)
 	if got := getBuffs(t, db, key); len(got) != 2 || got[0].Name != "心情" || got[0].Value != 55 || got[1].Name != "精力" || got[1].Value != 75 {
 		t.Fatalf("bars = %+v, want 心情 55 and 精力 75", got)
 	}
@@ -708,14 +712,14 @@ func TestBuffs_ApplyErrorRollsBack(t *testing.T) {
 	ctx := context.Background()
 	key := privKey("20001")
 	at := time.Date(2026, 11, 14, 20, 0, 0, 0, time.UTC)
-	setBuff(t, db, key, "心情", 65, store.BuffEvent{TaskID: "task_1", Source: store.BuffSourceModel, Before: 60, CreatedAt: at})
+	setBuff(t, db, key, "心情", 60, 65, store.BuffEvent{TaskID: "task_1", Source: store.BuffSourceModel, CreatedAt: at})
 
 	boom := errors.New("boom")
-	fail := func(cur store.BuffValue, _ bool) (store.BuffValue, error) {
+	fail := func(cur store.BuffValue, _ bool) (store.BuffValue, float64, error) {
 		cur.Value = 10
-		return cur, boom
+		return cur, 65, boom
 	}
-	ev := store.BuffEvent{TaskID: "task_2", Source: store.BuffSourceModel, Before: 60, Reason: "失败", CreatedAt: at.Add(time.Hour)}
+	ev := store.BuffEvent{TaskID: "task_2", Source: store.BuffSourceModel, Reason: "失败", CreatedAt: at.Add(time.Hour)}
 	if _, err := db.UpdateBuff(ctx, key, "心情", ev, fail); !errors.Is(err, boom) {
 		t.Fatalf("UpdateBuff with a failing apply err = %v, want boom", err)
 	}
@@ -728,7 +732,7 @@ func TestBuffs_ApplyErrorRollsBack(t *testing.T) {
 	if got := listBuffEvents(t, db, key, 10); len(got) != 1 || got[0].TaskID != "task_1" {
 		t.Fatalf("events after failing applies = %+v, want only task_1's", got)
 	}
-	if got := setBuff(t, db, key, "心情", 70, ev); got.Value != 70 {
+	if got := setBuff(t, db, key, "心情", 65, 70, ev); got.Value != 70 {
 		t.Fatalf("retry of the failed task = %+v, want 心情 70", got)
 	}
 }
@@ -739,12 +743,12 @@ func TestBuffs_Purge(t *testing.T) {
 	key, other := privKey("20001"), privKey("20002")
 	cutoff := time.Date(2026, 10, 15, 20, 0, 0, 0, time.UTC)
 	panel := func(at time.Time) store.BuffEvent {
-		return store.BuffEvent{Source: store.BuffSourcePanel, Before: 60, CreatedAt: at}
+		return store.BuffEvent{Source: store.BuffSourcePanel, CreatedAt: at}
 	}
-	setBuff(t, db, key, "心情", 50, panel(cutoff.Add(-time.Hour)))
-	setBuff(t, db, key, "心情", 55, panel(cutoff))
-	setBuff(t, db, key, "精力", 40, panel(cutoff.Add(time.Hour)))
-	setBuff(t, db, other, "心情", 30, panel(cutoff.Add(-2*time.Hour)))
+	setBuff(t, db, key, "心情", 60, 50, panel(cutoff.Add(-time.Hour)))
+	setBuff(t, db, key, "心情", 50, 55, panel(cutoff))
+	setBuff(t, db, key, "精力", 70, 40, panel(cutoff.Add(time.Hour)))
+	setBuff(t, db, other, "心情", 60, 30, panel(cutoff.Add(-2*time.Hour)))
 
 	n, err := db.PurgeBuffEvents(ctx, cutoff)
 	if err != nil || n != 2 {
