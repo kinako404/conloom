@@ -185,6 +185,23 @@ func TestOutputProtected_BlocksWordSplitByCQCode(t *testing.T) {
 	}
 }
 
+func TestOutputProtected_BlocksWordSplitAcrossReplyParts(t *testing.T) {
+	r := New(nil, Options{})
+	for i, w := range lexiconEntries(t) {
+		_, size := utf8.DecodeRuneInString(w)
+		if size == len(w) {
+			continue
+		}
+		for j, sep := range []string{"\n|||\n", "|||", "\n｜｜｜\n"} {
+			in := "好的" + w[:size] + sep + w[size:] + "。"
+			got := r.OutputProtected(in, basicPolicy())
+			if got.Verdict != VerdictBlock || got.Text != "" || !slices.Contains(got.Reasons, ReasonProtectedContent) {
+				t.Errorf("entry #%d split by part separator #%d not blocked: verdict=%q reasons=%v", i+1, j, got.Verdict, got.Reasons)
+			}
+		}
+	}
+}
+
 func TestOutputProtected_IgnoresPolicy(t *testing.T) {
 	r := New(nil, Options{})
 	w := lexiconEntries(t)[0]
