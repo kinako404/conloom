@@ -124,6 +124,8 @@ type Orchestrator struct {
 	sessions  chatSessions
 	lulls     lullTimers
 	joinPlans joinPlans
+	// partWakes notifies the adapters when later reply parts become due.
+	partWakes partWakes
 }
 
 // taskOwner is the one party in this process allowed to execute and complete
@@ -274,8 +276,8 @@ func (o *Orchestrator) cancelActive(ctx context.Context, convKey string) {
 	}
 }
 
-// Close stops the lull timers, background maintenance and the scheduler and
-// ends every session. Running tasks are cancelled but keep their stored
+// Close stops the lull timers, background maintenance, the scheduler and the
+// wake-ups of reply parts not due yet, and ends every session. Running tasks are cancelled but keep their stored
 // status, so Recover resumes them after a restart; tasks a user already
 // cancelled are still recorded as cancelled.
 func (o *Orchestrator) Close() {
@@ -288,6 +290,7 @@ func (o *Orchestrator) Close() {
 		o.waitLulls()
 		o.bgWG.Wait()
 		o.sched.Close()
+		o.partWakes.stop()
 		o.clearSessions()
 		o.joinPlans.clear()
 	})
@@ -1105,7 +1108,8 @@ func (o *Orchestrator) complete(ctx context.Context, task store.TaskRecord, stat
 }
 
 // record stores the task's final state and actions and notifies the bot's
-// adapter when there are actions. A meta without a trigger keeps the task's.
+// adapter when there are actions, and again as each later part of the reply
+// becomes due. A meta without a trigger keeps the task's.
 // A join plan the task did not use is dropped.
 func (o *Orchestrator) record(ctx context.Context, task store.TaskRecord, status string, meta conloomapi.TaskMeta, code string, actions []store.OutboxRecord) error {
 	o.joinPlans.take(task.ID)
@@ -1122,6 +1126,12 @@ func (o *Orchestrator) record(ctx context.Context, task store.TaskRecord, status
 	o.metrics.Tasks.WithLabelValues(status).Inc()
 	if len(actions) > 0 {
 		o.notifier.Notify(task.BotInstanceID)
+		now := o.now()
+		for _, a := range actions {
+			if d := a.NotBefore.Sub(now); d > 0 {
+				o.partWakes.after(d, func() { o.notifier.Notify(task.BotInstanceID) })
+			}
+		}
 	}
 	return nil
 }

@@ -89,9 +89,13 @@ func TestE2E_PrivateBurstGetsOneReply(t *testing.T) {
 	}
 }
 
+// partSlack is how late after it is due a reply part may be handed out.
+const partSlack = time.Second
+
 func TestE2E_PrivateReplyPartsArePaced(t *testing.T) {
-	// Parts 2 and 3 take over 2s to type, longer than the outbox's 2s recheck,
-	// so each is still pending right after the part before it arrives.
+	// Parts 2 and 3 take over 2s to type, so each is still pending right after
+	// the part before it arrives; the core wakes the long poll once it is due,
+	// well before the outbox's 2s recheck.
 	parts := []string{
 		"我刚到家",
 		"今天路上特别堵，公交车走走停停开了快一个小时",
@@ -115,8 +119,8 @@ func TestE2E_PrivateReplyPartsArePaced(t *testing.T) {
 			t.Fatalf("part %d handed out at %v right after part %d, want it held until %v: %+v", i+1, time.Now(), i, due, early)
 		}
 		a := e.drainOne()
-		if at := time.Now(); at.Before(due) {
-			t.Fatalf("part %d handed out at %v, before it was due at %v", i+1, at, due)
+		if at := time.Now(); at.Before(due) || at.After(due.Add(partSlack)) {
+			t.Fatalf("part %d handed out at %v, want it within %v after it was due at %v", i+1, at, partSlack, due)
 		}
 		got = append(got, a)
 	}

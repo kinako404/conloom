@@ -180,3 +180,37 @@ func TestPartsDirective(t *testing.T) {
 		t.Errorf("partsDirective(4) = %q, want %q", got, want)
 	}
 }
+
+func TestRunner_LaterPartsWakeTheAdapterWhenDue(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{short: answer("第一段\n|||\n第二段\n|||\n第三段"), configure: withMaxParts(3)})
+	start := time.Now()
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "你好", mentionBot)).TaskID)
+	if len(task.Actions) != 3 {
+		t.Fatalf("task = %+v, want three parts", task)
+	}
+	if n := env.notifier.count(testBot); n != 1 {
+		t.Fatalf("notifications once the reply was stored = %d, want 1", n)
+	}
+	// Parts 2 and 3 are due 1s and 2s after the reply was stored.
+	waitUntil(t, "part 2 to be due", func() bool { return env.notifier.count(testBot) == 2 })
+	if d := time.Since(start); d < 900*time.Millisecond {
+		t.Fatalf("part 2 notified after %v, before it was due", d)
+	}
+	waitUntil(t, "part 3 to be due", func() bool { return env.notifier.count(testBot) == 3 })
+	if d := time.Since(start); d < 1900*time.Millisecond {
+		t.Fatalf("part 3 notified after %v, before it was due", d)
+	}
+}
+
+func TestOrchestrator_CloseStopsPartWakeUps(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{short: answer("第一段\n|||\n第二段"), configure: withMaxParts(3)})
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "你好", mentionBot)).TaskID)
+	if len(task.Actions) != 2 {
+		t.Fatalf("task = %+v, want two parts", task)
+	}
+	env.o.Close()
+	time.Sleep(1500 * time.Millisecond)
+	if n := env.notifier.count(testBot); n != 1 {
+		t.Fatalf("notifications after Close = %d, want only the stored reply's", n)
+	}
+}
