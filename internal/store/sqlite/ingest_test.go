@@ -554,3 +554,30 @@ func TestIngest_AbandonReplyInSameTransaction(t *testing.T) {
 		t.Fatalf("events = %d, want 1", n)
 	}
 }
+
+func TestIngest_AbandonReplyRefusesExpiredHandedOutAction(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	leased := taskAction("a1", "task_1", store.OutboxExpired, now)
+	leased.Attempts = 1
+	insertActions(t, db, leased, taskAction("a2", "task_1", store.OutboxPending, now))
+	in := supersedingIngest("k1", "m2", "task_2")
+	in.AbandonReplyOf = "task_1"
+	if _, err := db.Ingest(ctx, in); !errors.Is(err, store.ErrReplyHandedOut) {
+		t.Fatalf("Ingest abandoning a reply whose part expired after a lease err = %v, want ErrReplyHandedOut", err)
+	}
+	if status, _ := outboxStatus(t, db, "a2"); status != store.OutboxPending {
+		t.Fatalf("a2 = %s, want pending", status)
+	}
+
+	// An action that expired without ever being leased was never handed out.
+	insertActions(t, db, taskAction("b1", "task_b", store.OutboxExpired, now), taskAction("b2", "task_b", store.OutboxPending, now))
+	in.AbandonReplyOf = "task_b"
+	if _, err := db.Ingest(ctx, in); err != nil {
+		t.Fatalf("Ingest abandoning a reply whose part expired unleased: %v", err)
+	}
+	if status, _ := outboxStatus(t, db, "b2"); status != store.OutboxCancelled {
+		t.Fatalf("b2 = %s, want cancelled", status)
+	}
+}

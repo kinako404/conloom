@@ -170,7 +170,7 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 1. **还没开始执行**（在等待，或等待已结束但还在排队）：并入这个任务，重新计时（不超过 `private_max_wait`）。
 2. **正在生成**（库里还没写出结果）：取代它（`supersede`，`orchestrator.go:570`）。新任务的触发消息是旧任务的全部触发消息加上这一条，与把旧任务记为 `cancelled` 在同一个事务里写入；旧任务的 context 被取消，它的 Runner 之后只会把任务再记一次 `cancelled`，不写任何动作。新任务重新等 `private_wait`。
 3. **结果已写出，但一条动作都还没发放**：同样取代，旧任务的全部动作在同一个事务里标成 `cancelled`（`abandonReply`，`internal/store/sqlite/outbox.go:159`），新任务带上旧任务的全部触发消息；审计记一条 `outbox.superseded`（含旧任务、被取消的条数和新任务）。
-4. **已经有动作发放过**：不取代。新任务只含这一条消息；新任务写入之后，旧任务还没发放的动作标成 `cancelled`（`cancelUnsentParts`，`orchestrator.go:662`；`CancelPendingActions`，`outbox.go:151`），也记 `outbox.superseded`。已发放的照常发送，ACK 后作为机器人的消息进入新任务的上下文。
+4. **已经有动作发放过**（租出过的都算，包括租出后没等到 ACK 就过期的）：不取代。新任务只含这一条消息；新任务写入之后，旧任务还没发放的动作标成 `cancelled`（`cancelUnsentParts`，`orchestrator.go:662`；`CancelPendingActions`，`outbox.go:151`），也记 `outbox.superseded`。已发放的照常发送，ACK 后作为机器人的消息进入新任务的上下文。
 5. **全部发出**：正常新建任务。
 
 取代和完成的竞态由同一把提交锁和事务收口：Runner 写结果（`complete`）和取代都要先拿到任务的提交锁；取代时库里任务已结束（`ErrTaskFinished`）就改按第 3 步作废它的动作，这时有动作已发放（`ErrReplyHandedOut`）或任务根本没有动作（跳过、被拦截）就改按第 4 步新建任务，所以同一批消息不会回复两次，也不会没人回。每次取代都会新建任务，按 3.4 扣一次每人限流；超出时这条消息只记录（`rate_limited`），旧任务不受影响，照常完成。被取消的动作 ACK 时仍保持 `cancelled`，不会写成机器人的消息。已被取消（`/stop`、`POST /tasks/{id}/cancel`）的任务不会被取代，它的消息也不会被带进新任务。私聊任务调用模型前，还会丢掉发送者被忘记（`/忘记我`、API 或面板）之前收到的触发消息，包括从被取代的任务带过来的；全部丢掉时任务记为跳过，不调用模型。私聊里的命令不进调度器：不并入任何任务，也不会触发带上全部消息重来的取代流程。`/stop`、`/忘记我`、`/pause` 处理前还会结束这个人的这一轮（`Scheduler.EndTurn`），之前的任务不再被并入或取代，之后的消息另起一个任务（`/stop` 和 `/pause` 本身还会取消任务，`/stop` 还会作废发送者上一条回复里还没发放的分条，见 3.5）；其他命令（如 `/help`）不结束这一轮，也不影响正在等待或进行的回复，之后的消息照常按上面的规则并入或取代。群聊不打断。

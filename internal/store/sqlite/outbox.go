@@ -163,11 +163,13 @@ func (db *DB) LastReplyTask(ctx context.Context, botID, convKey, actorID string)
 }
 
 // abandonReply cancels the task's pending actions at now unless one of its
-// actions was handed out, which gives store.ErrReplyHandedOut.
+// actions was handed out (leased, acked, or expired after being leased at
+// least once), which gives store.ErrReplyHandedOut.
 func abandonReply(ctx context.Context, tx *sql.Tx, taskID string, now time.Time) error {
 	var handedOut int
-	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_actions WHERE task_id = ? AND status IN (?, ?)`,
-		taskID, store.OutboxLeased, store.OutboxAcked).Scan(&handedOut)
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_actions
+		WHERE task_id = ? AND (status IN (?, ?) OR status = ? AND attempts > 0)`,
+		taskID, store.OutboxLeased, store.OutboxAcked, store.OutboxExpired).Scan(&handedOut)
 	if err != nil {
 		return err
 	}
