@@ -1,7 +1,7 @@
 package panel
 
 // writeRoutes registers the API that changes policies, personas and member
-// memory.
+// memory, and the panel chat's writes.
 func (s *Server) writeRoutes() {
 	s.api("PUT /panel/api/conversations/{key}/policy", s.putPolicy)
 	s.api("POST /panel/api/conversations/{key}/policy/restore", s.restorePolicy)
@@ -11,4 +11,7 @@ func (s *Server) writeRoutes() {
 	s.api("PUT /panel/api/conversations/{key}/memory/members/{user_id}", s.putMemberMemory)
 	s.api("DELETE /panel/api/conversations/{key}/memory/members/{user_id}", s.deleteMemberMemory)
 	s.api("POST /panel/api/conversations/{key}/memory/consolidate", s.consolidateMemory)
+	s.api("POST /panel/api/conversations/{key}/messages", s.postChatMessage)
+	s.api("POST /panel/api/chats", s.createChat)
+	s.api("DELETE /panel/api/conversations/{key}", s.deleteChat)
 }

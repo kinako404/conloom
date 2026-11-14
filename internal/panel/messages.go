@@ -13,7 +13,8 @@ import (
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
-// messageView is a stored message; SenderID is the sender's platform user ID.
+// messageView is a stored message; SenderID is the sender's platform user ID
+// and Channel is "panel" for messages written in or delivered to the panel.
 type messageView struct {
 	Seq        int64     `json:"seq"`
 	ID         string    `json:"id"`
@@ -23,12 +24,13 @@ type messageView struct {
 	FromBot    bool      `json:"from_bot"`
 	Text       string    `json:"text"`
 	ReplyTo    string    `json:"reply_to"`
+	Channel    string    `json:"channel"`
 }
 
 func newMessageView(m store.MessageRecord) messageView {
 	return messageView{
 		Seq: m.Seq, ID: m.ID, At: m.OccurredAt.UTC(), SenderID: m.PlatformUserID, SenderName: m.DisplayName,
-		FromBot: m.FromBot, Text: m.Text, ReplyTo: m.ReplyTo,
+		FromBot: m.FromBot, Text: m.Text, ReplyTo: m.ReplyTo, Channel: m.Channel,
 	}
 }
 

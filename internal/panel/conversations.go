@@ -27,6 +27,14 @@ type conversationView struct {
 	PersonaVersion         *int       `json:"persona_version"`
 }
 
+// botView is a configured bot, one a panel chat can be started with.
+type botView struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Platform string `json:"platform"`
+}
+
+// listConversations lists every stored conversation and the configured bots.
 func (s *Server) listConversations(w http.ResponseWriter, r *http.Request, _ *Session) {
 	stats, err := s.d.Store.ConversationStats(r.Context())
 	if err != nil {
@@ -42,9 +50,14 @@ func (s *Server) listConversations(w http.ResponseWriter, r *http.Request, _ *Se
 		}
 		out = append(out, v)
 	}
+	bots := make([]botView, 0, len(s.d.Config.Bots))
+	for _, b := range s.d.Config.Bots {
+		bots = append(bots, botView{ID: b.ID, Name: b.Name, Platform: b.Platform})
+	}
 	s.writeJSON(w, http.StatusOK, struct {
 		Conversations []conversationView `json:"conversations"`
-	}{out})
+		Bots          []botView          `json:"bots"`
+	}{out, bots})
 }
 
 func (s *Server) getConversation(w http.ResponseWriter, r *http.Request, _ *Session) {
