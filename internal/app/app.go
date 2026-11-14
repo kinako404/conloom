@@ -166,6 +166,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Now:       now,
 		Usage:     rec,
 	})
+	memory.WarnOutputReservation(cfg, logger)
 	sched := memory.NewScheduler(memory.SchedulerDeps{
 		Store:    st,
 		Policies: policies,

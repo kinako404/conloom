@@ -416,6 +416,8 @@ sudo journalctl -u conloom | grep 'panel listening'
 
 **升级**：先备份，再替换二进制并重启（先核心后适配器）。核心启动时自动按顺序应用新的表结构迁移，迁移只能前进、没有回滚脚本，所以回退到旧版本时要用升级前的备份。升级前请对照 [配置参考](configuration.md#群策略) 检查已移除的配置字段（例如 `proactive.contact_cooldown`），配置文件里残留未知字段会导致启动失败。流水表清理没有新增表结构迁移，旧二进制可以直接在同一个库上运行；但回退到没有流水表清理的版本时，要先从 `conloom.yaml` 里删掉 `runtime.ops_retention` 和 `runtime.audit_retention`。
 
+**升级到记忆字数上限可配置的版本**（`memory.summary_max_chars`、`note_max_chars`）：摘要和笔记的默认上限变长（群聊 1500 / 300 字、私聊 3000 / 1000 字），记忆整理的输出也跟着变长。升级时把 `long_context` 的 `reserved_output_tokens` 调到 8192 或以上：低于 8192（且大于 0）而默认策略开启了记忆时，启动日志会有一条 `long_context reserved_output_tokens is low for memory consolidation` 警告；整理时一个人的摘要加笔记放不下，就按比例缩短这次要求的字数（不低于 200 / 50 字），写入时也按缩短后的字数截断，并为这个会话记一条 `memory consolidation limits reduced …` 警告。调大输出预留并重启后恢复完整上限。已有的摘要和笔记不会立即变长，要经过之后的几次整理才写长。
+
 **回退到没有 Web 管理面板的旧版本**（没有迁移 0008、0009）：先从 `conloom.yaml` 里删掉整个 `panel` 段和 `runtime.usage_retention`，否则旧二进制因为未知字段启动失败。旧二进制会忽略 `model_calls`、`panel_sessions` 两张表，不需要用备份恢复；回退期间的模型调用不会记入用量，再升级回来后这段时间在用量页上是空白。
 
 **回退到没有面板聊天的旧版本**（没有迁移 0011，也就是 `messages`、`outbox_actions` 没有 `channel` 列的版本）：旧二进制不认识通道。面板触发、还没送达的回复会被它当成普通回复：接管的私聊里发到真实平台的用户那里，面板里新建的聊天（`panel_…`）则交给适配器（发不出去）。这包括发件箱里还没送达的动作，也包括还在排队、等待或生成中的任务——旧二进制启动时会恢复这些任务，写出的回复同样没有通道。按下面的步骤回退：

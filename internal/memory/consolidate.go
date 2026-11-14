@@ -70,6 +70,43 @@ func consPlannedOutput(members, summaryMax, noteMax int) int {
 	return summaryMax + consOutputFrame + members*(noteMax+consOutputPerMember)
 }
 
+// consFitLimits is the summary and note limits a batch asks for and stores
+// when the model may output outputBudget tokens: summaryMax and noteMax when
+// a batch of one member fits within consOutputShare of it (or the output is
+// unlimited, outputBudget 0), else both scaled by the same factor so that it
+// fits, but never below conloomapi.MinSummaryMaxChars and MinNoteMaxChars.
+// Smaller batches cannot help here: the summary is rewritten whole.
+func consFitLimits(outputBudget, summaryMax, noteMax int) (int, int) {
+	share := int(float64(outputBudget) * consOutputShare)
+	if outputBudget <= 0 || consPlannedOutput(1, summaryMax, noteMax) <= share {
+		return summaryMax, noteMax
+	}
+	room := share - consPlannedOutput(1, 0, 0)
+	scale := func(limit, floor int) int {
+		return min(limit, max(floor, limit*room/(summaryMax+noteMax)))
+	}
+	return scale(summaryMax, conloomapi.MinSummaryMaxChars), scale(noteMax, conloomapi.MinNoteMaxChars)
+}
+
+// RecommendedOutputTokens is the long model's reserved output that fits a
+// consolidation under the default limits of every conversation type.
+const RecommendedOutputTokens = 8192
+
+// WarnOutputReservation logs a warning when a default policy of cfg turns
+// memory on while the long model reserves fewer than RecommendedOutputTokens
+// for output (0, no limit, is fine); consolidations then ask for shorter
+// summaries and notes than their limits (see consFitLimits).
+func WarnOutputReservation(cfg *config.Config, log *slog.Logger) {
+	long, ok := cfg.ModelProfiles[string(router.RoleLong)]
+	reserved := long.Context.ReservedOutputTokens
+	if !ok || reserved <= 0 || reserved >= RecommendedOutputTokens ||
+		!cfg.DefaultGroupPolicy.Memory.Enabled && !cfg.PrivatePolicy().Memory.Enabled {
+		return
+	}
+	log.Warn("long_context reserved_output_tokens is low for memory consolidation; summaries and notes will be kept shorter than their limits",
+		"reserved_output_tokens", reserved, "recommended", RecommendedOutputTokens)
+}
+
 // consLimits are a conversation's reduced batch limits after truncated or
 // timed-out model calls; zero fields mean the defaults.
 type consLimits struct {
@@ -108,6 +145,9 @@ type Consolidator struct {
 	failures map[string]int
 	backoff  map[string]time.Time
 	limits   map[string]consLimits
+	// fitted holds, per conversation, the last limits consFitLimits reduced
+	// and warned about.
+	fitted map[string][3]int
 }
 
 func NewConsolidator(d ConsolidatorDeps) *Consolidator {
@@ -124,7 +164,7 @@ func NewConsolidator(d ConsolidatorDeps) *Consolidator {
 		d.Now = time.Now
 	}
 	return &Consolidator{d: d, admissionWait: consAdmissionWait,
-		failures: map[string]int{}, backoff: map[string]time.Time{}, limits: map[string]consLimits{}}
+		failures: map[string]int{}, backoff: map[string]time.Time{}, limits: map[string]consLimits{}, fitted: map[string][3]int{}}
 }
 
 // Run consolidates up to maxBatchesPerRun batches of the conversation's
@@ -251,6 +291,10 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 		return consOutcome{skipped: "long_unavailable"}, nil
 	}
 	p := d.Profile
+	if s, n := consFitLimits(d.MaxOutputTokens, style.summaryMax, style.noteMax); s != style.summaryMax || n != style.noteMax {
+		c.warnFitted(convKey, d.MaxOutputTokens, style, s, n)
+		style = style.withLimits(s, n)
+	}
 	in.BotName, in.Location, in.Unnamed = botName, c.d.Location, style.unnamed
 	in.BaseTokens, in.Budget, in.TokenFactor = base, d.PromptBudget, p.Config.TokenEstimateFactor
 	memberCap := consMemberCap(d.MaxOutputTokens, style.summaryMax, style.noteMax)
@@ -554,6 +598,24 @@ func (c *Consolidator) refreshGroup(ctx context.Context, g *store.GroupMemory) e
 		*g = stored
 	}
 	return nil
+}
+
+// warnFitted logs that the conversation's limits were reduced to summaryMax
+// and noteMax for an output reservation of reserved tokens, once for each
+// combination of the three.
+func (c *Consolidator) warnFitted(convKey string, reserved int, style consStyle, summaryMax, noteMax int) {
+	c.mu.Lock()
+	key := [3]int{reserved, style.summaryMax, style.noteMax}
+	seen := c.fitted[convKey] == key
+	c.fitted[convKey] = key
+	c.mu.Unlock()
+	if seen {
+		return
+	}
+	c.d.Logger.Warn("memory consolidation limits reduced to fit the long model's output reservation", "conversation", convKey,
+		"reserved_output_tokens", reserved, "summary_max_chars", style.summaryMax, "note_max_chars", style.noteMax,
+		"effective_summary_max_chars", summaryMax, "effective_note_max_chars", noteMax,
+		"recommended_reserved_output_tokens", RecommendedOutputTokens)
 }
 
 func (c *Consolidator) messageLimit(convKey string) int {

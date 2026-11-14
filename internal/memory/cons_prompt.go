@@ -107,10 +107,21 @@ func consRule9(private bool, summaryMax, noteMax int) string {
 
 // consStyle is how a conversation is consolidated: the system prompt, the
 // section labels, the name of a member without one and the storage limits of
-// its summary and notes, which the prompt asks the model to keep to.
+// its summary and notes, which the prompt asks the model to keep to. private
+// and rule6 are what the prompt was built from (see withLimits).
 type consStyle struct {
 	system, summaryLabel, membersLabel, unnamed string
 	summaryMax, noteMax                         int
+	private                                     bool
+	rule6                                       string
+}
+
+// withLimits is style with other summary and note limits, in its prompt and
+// for storage.
+func (style consStyle) withLimits(summaryMax, noteMax int) consStyle {
+	style.summaryMax, style.noteMax = summaryMax, noteMax
+	style.system = consSystemPrompt(style.private, style.rule6, summaryMax, noteMax)
+	return style
 }
 
 // consStyleFor is the consolidation style of convKey's conversation type in
@@ -127,7 +138,7 @@ func consStyleFor(convKey string) consStyle {
 func consStyleForPersona(convKey string, doc conloomapi.PersonaDoc, mp conloomapi.MemoryPolicy) consStyle {
 	t := convTypeOf(convKey)
 	private := t == conloomapi.ConvPrivate
-	style := consStyle{"", LabelSummary, LabelMembers, consUnnamedGroup, SummaryLimit(mp, t), NoteLimit(mp, t)}
+	style := consStyle{summaryLabel: LabelSummary, membersLabel: LabelMembers, unnamed: consUnnamedGroup, private: private}
 	rule6 := consProtectedRule6
 	if private {
 		style.summaryLabel, style.membersLabel, style.unnamed = LabelPrivateSummary, LabelPrivateMembers, consUnnamedPrivate
@@ -139,8 +150,8 @@ func consStyleForPersona(convKey string, doc conloomapi.PersonaDoc, mp conloomap
 			rule6 = "6. " + rules
 		}
 	}
-	style.system = consSystemPrompt(private, rule6, style.summaryMax, style.noteMax)
-	return style
+	style.rule6 = rule6
+	return style.withLimits(SummaryLimit(mp, t), NoteLimit(mp, t))
 }
 
 // promptMember is a member shown in the consolidation input; a nil Affinity
