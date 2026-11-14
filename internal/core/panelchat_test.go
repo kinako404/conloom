@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -656,6 +657,52 @@ func TestDeletePanelChat_DoesNotBlockOtherChats(t *testing.T) {
 	release()
 	if err := <-deleted; err != nil {
 		t.Fatalf("DeletePanelChat: %v", err)
+	}
+}
+
+func TestSubmitPanel_TakeoverIsNotTheUser(t *testing.T) {
+	env, clock := newWakeEnv(t, nil, []string{"status", "buff"}, nil)
+	ctx := context.Background()
+	requireOneReply(t, env, env.submit(t, env.event(conloomapi.ConvPrivate, privateUser, privateUser, "在吗", withName("小明"), clock.stamp)).TaskID)
+	clock.set(clock.now().Add(time.Hour))
+	env.appendPrivateLog(t, store.ProactivePrivateInitiate, clock.now())
+	clock.set(clock.now().Add(time.Hour))
+
+	// The panel takes over 小明's chat.
+	takeover := env.waitTask(t, env.panelResponse(t, env.submitPanel(t, privateConvKey, "admin", "今天过得怎么样")).TaskID)
+	if takeover.Status != conloomapi.TaskSucceeded {
+		t.Fatalf("takeover task = %+v", takeover)
+	}
+	panelChat, err := env.o.CreatePanelChat(ctx, testBot, "admin", "小红")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.waitTask(t, env.panelResponse(t, env.submitPanel(t, panelChat, "admin", "你好")).TaskID)
+
+	reqs := env.short.Requests()
+	if len(reqs) != 3 {
+		t.Fatalf("model requests = %d, want 3", len(reqs))
+	}
+	for i, c := range []struct {
+		what      string
+		setStatus bool
+	}{{"小明's message", true}, {"the takeover", false}, {"the panel chat", true}} {
+		got := offeredTools(reqs[i])
+		if slices.Contains(got, "set_status") != c.setStatus || !slices.Contains(got, "adjust_buff") {
+			t.Errorf("tools offered to %s = %v, want adjust_buff and set_status %v", c.what, got, c.setStatus)
+		}
+	}
+	if sys := requestMessages(t, reqs[1])[0]["content"].(string); strings.Contains(sys, "set_status") {
+		t.Errorf("takeover system prompt describes set_status:\n%s", sys)
+	}
+
+	// The takeover is not 小明 answering the bot's initiate.
+	st, err := env.o.privateProactiveStatus(ctx, privateConvKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.UnansweredLeft != 1 {
+		t.Errorf("unanswered left = %d, want 1 after a takeover", st.UnansweredLeft)
 	}
 }
 
