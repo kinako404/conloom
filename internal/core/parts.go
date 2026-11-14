@@ -21,14 +21,22 @@ const (
 // ellipsisTail holds the characters an ellipsis run takes along: more
 // ellipsis dots, closing quotes and brackets, and punctuation that ends the
 // pause, so no part starts with them.
-const ellipsisTail = "….。”’」』）)】》\"'？！?!，,、；;：:～~"
+const ellipsisTail = "…⋯.。”’」』）)】》？！?!，,、；;：:～~"
+
+// Within a line, no ellipsis inside these paired quotes and brackets splits
+// it; quoteClosers[i] closes quoteOpeners[i].
+const (
+	quoteOpeners = "“「『（【《"
+	quoteClosers = "”」』）】》"
+)
 
 // splitParts splits a reply into at most max parts. With a fenced code block
 // in the text, only lines that hold only partSeparator (and blanks) split it.
-// Otherwise those lines, every line break, and every ellipsis ("…", or three
-// or more "." or "。") with text both before and after it on its line split
-// it; the ellipsis and the punctuation right after it stay with the text
-// before. Parts are trimmed and empty ones dropped; those beyond max are
+// Otherwise those lines, every line break, and every ellipsis ("…", "⋯", or
+// three or more "." or "。") with text both before and after it on its line
+// split it, except inside paired CJK quotes or brackets, right before an ASCII
+// quote, or on a line with a backtick; the ellipsis and the punctuation right
+// after it stay with the text before. Parts are trimmed and empty ones dropped; those beyond max are
 // joined into the last one by what separated them: a newline for lines, the
 // spaces after an ellipsis. With max <= 1 the text is its only part,
 // unchanged.
@@ -97,25 +105,42 @@ func splitAtSeparators(text string, max int) []string {
 
 // splitAtEllipses splits a line right after each ellipsis and the
 // ellipsisTail characters following it, when there is text both before it
-// (since the previous split) and after it. The segments are not trimmed.
+// (since the previous split) and after it, the ellipsis is not inside paired
+// quotes or brackets and no ASCII quote follows. A line with a backtick is
+// not split. The segments are not trimmed.
 func splitAtEllipses(line string) []string {
+	if strings.Contains(line, "`") {
+		return []string{line}
+	}
 	var segs []string
-	start := 0
+	start, depth := 0, 0
+	track := func(r rune) {
+		switch {
+		case strings.ContainsRune(quoteOpeners, r):
+			depth++
+		case strings.ContainsRune(quoteClosers, r) && depth > 0:
+			depth--
+		}
+	}
 	for i := 0; i < len(line); {
 		if !ellipsisAt(line[i:]) {
-			_, w := utf8.DecodeRuneInString(line[i:])
+			r, w := utf8.DecodeRuneInString(line[i:])
+			track(r)
 			i += w
 			continue
 		}
+		quoted := depth > 0
 		end := i
 		for end < len(line) {
 			r, w := utf8.DecodeRuneInString(line[end:])
 			if !strings.ContainsRune(ellipsisTail, r) {
 				break
 			}
+			track(r)
 			end += w
 		}
-		if hasText(line[start:i]) && hasText(line[end:]) {
+		rest := line[end:]
+		if !quoted && !strings.HasPrefix(rest, `"`) && !strings.HasPrefix(rest, "'") && hasText(line[start:i]) && hasText(rest) {
 			segs = append(segs, line[start:end])
 			start = end
 		}
@@ -124,9 +149,10 @@ func splitAtEllipses(line string) []string {
 	return append(segs, line[start:])
 }
 
-// ellipsisAt reports whether s starts with an ellipsis: "…", "..." or "。。。".
+// ellipsisAt reports whether s starts with an ellipsis: "…", "⋯", "..." or
+// "。。。".
 func ellipsisAt(s string) bool {
-	return strings.HasPrefix(s, "…") || strings.HasPrefix(s, "...") || strings.HasPrefix(s, "。。。")
+	return strings.HasPrefix(s, "…") || strings.HasPrefix(s, "⋯") || strings.HasPrefix(s, "...") || strings.HasPrefix(s, "。。。")
 }
 
 // hasText reports whether s holds anything but spaces and punctuation.
