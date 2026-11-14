@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 var (
@@ -81,6 +83,28 @@ func TestValidate_Panel(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestValidateConfig_MinorTemplateAdult(t *testing.T) {
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	adult := conloomapi.DefaultPersona()
+	adult.Adult = true
+	cfg.PersonaTemplates["grownup"] = adult
+	minor := conloomapi.DefaultPersona()
+	minor.CharacterName, minor.Minor = "角色甲", true
+	cfg.PersonaTemplates["child"] = minor
+	if err := cfg.ValidateServe(); err != nil {
+		t.Fatalf("adult template and minor template: %v", err)
+	}
+	minor.Adult = true
+	cfg.PersonaTemplates["child"] = minor
+	err := cfg.ValidateServe()
+	if want := "persona_templates.child.adult: a minor persona cannot be adult"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("err = %v, want containing %q", err, want)
+	}
+	if err != nil && strings.Contains(err.Error(), "persona_templates.grownup") {
+		t.Errorf("err = %v, names the adult template", err)
 	}
 }
 

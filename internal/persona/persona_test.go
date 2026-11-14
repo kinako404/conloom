@@ -516,6 +516,74 @@ func TestService_SystemPromptNamesPlatformName(t *testing.T) {
 	}
 }
 
+func TestUpdate_RejectsMinorAdult(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	adult := conloomapi.DefaultPersona()
+	adult.Adult = true
+	minorAdult := testCharacter()
+	minorAdult.CharacterName, minorAdult.Minor, minorAdult.Adult = "角色甲", true, true
+	svc := NewService(st, map[string]conloomapi.PersonaDoc{
+		"child":   minorAdult,
+		"grownup": adult,
+	})
+	if _, err := svc.Current(ctx, testConvKey, "default"); err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+
+	stored := func(doc conloomapi.PersonaDoc) int {
+		t.Helper()
+		pv, err := st.AppendPersonaVersion(ctx, store.PersonaVersion{
+			ConversationKey: testConvKey, TemplateName: "default", Persona: doc,
+			Reason: "edited in the database", UpdatedBy: "system",
+		})
+		if err != nil {
+			t.Fatalf("AppendPersonaVersion: %v", err)
+		}
+		return pv.Version
+	}
+	minorAdultVersion := stored(minorAdult)
+	invalid := adult
+	invalid.Style.Warmth = 2
+	invalidVersion := stored(invalid)
+	if _, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Template: "default"}, "29999"); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	latest, err := st.LatestPersona(ctx, testConvKey)
+	if err != nil {
+		t.Fatalf("LatestPersona: %v", err)
+	}
+
+	const minorErr = "a minor persona cannot be adult"
+	for _, c := range []struct {
+		name string
+		put  conloomapi.PersonaPut
+		want string
+	}{
+		{"persona", conloomapi.PersonaPut{Persona: &minorAdult}, minorErr},
+		{"template", conloomapi.PersonaPut{Template: "child"}, minorErr},
+		{"rollback", conloomapi.PersonaPut{RollbackTo: &minorAdultVersion}, minorErr},
+		{"rollback to an invalid version", conloomapi.PersonaPut{RollbackTo: &invalidVersion}, "style.warmth"},
+	} {
+		_, err := svc.Update(ctx, testConvKey, "default", c.put, "29999")
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want ErrInvalid containing %q", c.name, err, c.want)
+		}
+	}
+	if after, _ := st.LatestPersona(ctx, testConvKey); after.Version != latest.Version {
+		t.Errorf("rejected updates appended versions: latest = %d, want %d", after.Version, latest.Version)
+	}
+
+	if pv, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Template: "grownup"}, "29999"); err != nil || !pv.Persona.Adult {
+		t.Errorf("adult template = %+v, %v; want accepted", pv, err)
+	}
+	minor := minorAdult
+	minor.Adult = false
+	if pv, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Persona: &minor}, "29999"); err != nil || !pv.Persona.Minor {
+		t.Errorf("minor persona = %+v, %v; want accepted", pv, err)
+	}
+}
+
 type auditRecorder struct {
 	store.Store
 	mu     sync.Mutex

@@ -20,9 +20,10 @@ import (
 // ErrInvalid wraps every persona validation failure.
 var ErrInvalid = errors.New("persona: invalid")
 
-// Validate checks p against conloomapi.PersonaDoc.Validate.
+// Validate checks p against conloomapi.PersonaDoc.Validate and
+// conloomapi.ValidateContent.
 func Validate(p conloomapi.PersonaDoc) error {
-	if err := p.Validate(); err != nil {
+	if err := errors.Join(p.Validate(), conloomapi.ValidateContent(p)); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	return nil
@@ -87,8 +88,9 @@ func (s *Service) TemplateNames() []string {
 // Update appends a version holding put.Persona (recorded with templateName),
 // the content and template of version put.RollbackTo, or a copy of template
 // put.Template (recorded as the version's template). Exactly one of them must
-// be set; an unknown template is ErrInvalid. It records a persona.update audit event; an audit failure is
-// returned together with the already stored version.
+// be set; an unknown template is ErrInvalid, and so is a resulting persona
+// that fails Validate. It records a persona.update audit event; an audit
+// failure is returned together with the already stored version.
 func (s *Service) Update(ctx context.Context, convKey, templateName string, put conloomapi.PersonaPut, by string) (store.PersonaVersion, error) {
 	set := 0
 	for _, ok := range []bool{put.Persona != nil, put.RollbackTo != nil, put.Template != ""} {
@@ -107,9 +109,6 @@ func (s *Service) Update(ctx context.Context, convKey, templateName string, put 
 		if !ok {
 			return store.PersonaVersion{}, fmt.Errorf("%w: unknown template %q", ErrInvalid, put.Template)
 		}
-		if err := Validate(doc); err != nil {
-			return store.PersonaVersion{}, err
-		}
 		next.Persona, next.TemplateName = doc, put.Template
 		if next.Reason == "" {
 			next.Reason = "template " + put.Template
@@ -124,10 +123,10 @@ func (s *Service) Update(ctx context.Context, convKey, templateName string, put 
 			next.Reason = fmt.Sprintf("rollback to v%d", *put.RollbackTo)
 		}
 	} else {
-		if err := Validate(*put.Persona); err != nil {
-			return store.PersonaVersion{}, err
-		}
 		next.Persona = *put.Persona
+	}
+	if err := Validate(next.Persona); err != nil {
+		return store.PersonaVersion{}, err
 	}
 	pv, err := s.st.AppendPersonaVersion(ctx, next)
 	if err != nil {
