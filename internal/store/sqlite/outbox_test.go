@@ -536,3 +536,53 @@ func TestMigration0010_ExistingActionsDeliverable(t *testing.T) {
 			got[0].NotBefore, got[0].Action.PartIndex, got[0].Action.PartCount)
 	}
 }
+
+func TestAckOutbox_CancelledActionStaysCancelled(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	insertActions(t, db, taskAction("a1", "task_1", store.OutboxPending, now))
+	if n, err := db.CancelPendingActions(ctx, "task_1", now); err != nil || n != 1 {
+		t.Fatalf("CancelPendingActions = %d, %v; want 1", n, err)
+	}
+	botMsg := &store.MessageRecord{
+		ID: "msg_p_a1", BotInstanceID: testBot, ConversationKey: testConvKey, Platform: testPlatform,
+		PlatformMessageID: "p_a1", ActorID: "bot", Text: "hi there", FromBot: true, OccurredAt: now, CreatedAt: now,
+	}
+	if already := ack(t, db, "a1", botMsg, now.Add(time.Second)); !already {
+		t.Fatal("ack of cancelled action alreadyAcked = false, want true")
+	}
+	o, err := db.GetOutbox(ctx, testBot, "a1")
+	if err != nil || o.Status != store.OutboxCancelled || o.PlatformMessageID != "" {
+		t.Fatalf("record after ack = %+v, %v; want cancelled without platform message", o, err)
+	}
+	if n := countRows(t, db, "messages"); n != 0 {
+		t.Fatalf("messages = %d, want 0", n)
+	}
+}
+
+func TestCancelPendingActions_NextTaskOfConversationLeased(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	insertActions(t, db,
+		taskAction("a1", "task_1", store.OutboxPending, now),
+		taskAction("a2", "task_1", store.OutboxPending, now),
+		taskAction("a3", "task_1", store.OutboxPending, now),
+	)
+	if ids := actionIDs(lease(t, db, 10, now)); !reflect.DeepEqual(ids, []string{"a1"}) {
+		t.Fatalf("lease = %v, want [a1]", ids)
+	}
+	ack(t, db, "a1", nil, now)
+	if n, err := db.CancelPendingActions(ctx, "task_1", now); err != nil || n != 2 {
+		t.Fatalf("CancelPendingActions = %d, %v; want 2", n, err)
+	}
+	insertActions(t, db, taskAction("b1", "task_2", store.OutboxPending, now))
+	got := lease(t, db, 10, now)
+	if ids := actionIDs(got); !reflect.DeepEqual(ids, []string{"b1"}) {
+		t.Fatalf("lease after cancel = %v, want [b1]", ids)
+	}
+	if got[0].ConversationKey != testConvKey || got[0].TaskID != "task_2" {
+		t.Fatalf("leased = %s/%s, want %s/task_2", got[0].ConversationKey, got[0].TaskID, testConvKey)
+	}
+}

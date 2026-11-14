@@ -79,15 +79,29 @@ type QueuedTask struct {
 // running tasks and, once held, for its sender's pause, and its merge window
 // still closes at MaxHold, but it is never dropped: past MaxHold it starts
 // once no task runs. Unlike Addressed it keeps the task's merge window.
+//
+// Interrupt marks a message that restarts its sender's turn. It merges into
+// the sender's newest not-yet-started task even after that task's merge
+// window closed. If the sender has no such task, it supersedes the sender's
+// newest running task that has not stored its result (see
+// AdmitPlan.Supersedes): that task's context is cancelled and a new task,
+// carrying its trigger messages and this one, waits for the sender's pause
+// again. A task created with Interrupt
+// takes zero Debounce and MaxMergeWindow as they are, not from the
+// SessionConfig.
 type MergeOptions struct {
 	Debounce, MaxMergeWindow time.Duration
 	Addressed                bool
 	Cooldown                 bool
 	MaxHold                  time.Duration
 	IgnoreCooldown           bool
+	Interrupt                bool
 }
 
 func (m MergeOptions) orConfig(cfg SessionConfig) MergeOptions {
+	if m.Interrupt {
+		return m
+	}
 	if m.Debounce == 0 {
 		m.Debounce = cfg.Debounce
 	}
@@ -110,12 +124,23 @@ const (
 	AdmitMergeOnly
 )
 
-// AdmitPlan tells persist what Admit is about to do. Both fields empty means
-// the message is only observed.
+// AdmitPlan tells persist what Admit is about to do. NewTaskID and
+// MergeIntoTaskID both empty means the message is only observed.
+//
+// Supersedes, with NewTaskID, names the running task the new task replaces
+// (see MergeOptions.Interrupt); the new task's trigger messages are that
+// task's followed by the message. persist returns ErrSupersedeRefused if that
+// task can no longer be superseded, e.g. it has already stored its result;
+// AdmitWith then calls persist again with a plain plan.
 type AdmitPlan struct {
 	NewTaskID       string
 	MergeIntoTaskID string
+	Supersedes      string
 }
+
+// ErrSupersedeRefused is returned by an AdmitWith persist function refusing
+// to supersede a task (see AdmitPlan).
+var ErrSupersedeRefused = errors.New("core: task cannot be superseded")
 
 type AdmitResult struct {
 	TaskID  string
@@ -158,6 +183,8 @@ type session struct {
 type runningTask struct {
 	task   QueuedTask
 	cancel context.CancelFunc
+	// settled is set once the task was superseded or refused to be.
+	settled bool
 }
 
 // NewScheduler returns a scheduler that executes tasks with run and reads
@@ -188,9 +215,10 @@ func (s *Scheduler) Admit(convKey, actorID, messageID string, mode AdmitMode, pe
 // if persist succeeds. A merge window is open while a not-yet-started task of
 // the same actor has not reached its ReadyAt, or is held, up to its MaxHold; a
 // merge keeps the merge window the task was created with, except as
-// opts.Addressed and MergeOptions.Cooldown describe. Creating a
-// task when MaxQueued tasks are already waiting returns ErrQueueFull without
-// calling persist.
+// opts.Addressed and MergeOptions.Cooldown describe. opts.Interrupt widens
+// merging and may supersede a running task (see MergeOptions.Interrupt).
+// Creating a task when MaxQueued tasks are already waiting returns
+// ErrQueueFull without calling persist.
 func (s *Scheduler) AdmitWith(convKey, actorID, messageID string, mode AdmitMode, opts MergeOptions, persist func(AdmitPlan) error) (AdmitResult, error) {
 	if s.isClosed() {
 		return AdmitResult{}, ErrSchedulerClosed
@@ -206,7 +234,7 @@ func (s *Scheduler) AdmitWith(convKey, actorID, messageID string, mode AdmitMode
 	defer sess.mu.Unlock()
 	now := time.Now()
 
-	if i := sess.openWindow(actorID, cfg, now); i >= 0 {
+	if i := sess.openWindow(actorID, cfg, now, opts.Interrupt); i >= 0 {
 		t := &sess.pending[i]
 		if err := persist(AdmitPlan{MergeIntoTaskID: t.TaskID}); err != nil {
 			return AdmitResult{}, err
@@ -246,6 +274,23 @@ func (s *Scheduler) AdmitWith(convKey, actorID, messageID string, mode AdmitMode
 		ReadyAt:           now.Add(m.Debounce),
 		merge:             m,
 		ignoreCooldown:    opts.IgnoreCooldown,
+	}
+	if rt := sess.supersedable(actorID, opts.Interrupt); rt != nil {
+		err := persist(AdmitPlan{NewTaskID: t.TaskID, Supersedes: rt.task.TaskID})
+		switch {
+		case err == nil:
+			rt.settled = true
+			rt.cancel()
+			t.TriggerMessageIDs = append(slices.Clone(rt.task.TriggerMessageIDs), messageID)
+			sess.pending = append(sess.pending, t)
+			sess.lastActivity = now
+			sess.signal()
+			return AdmitResult{TaskID: t.TaskID, Created: true}, nil
+		case errors.Is(err, ErrSupersedeRefused):
+			rt.settled = true
+		default:
+			return AdmitResult{}, err
+		}
 	}
 	if err := persist(AdmitPlan{NewTaskID: t.TaskID}); err != nil {
 		return AdmitResult{}, err
@@ -576,18 +621,33 @@ func (s *Scheduler) startLocked(sess *session, t QueuedTask) {
 
 // openWindow returns the index of actorID's most recent not-yet-started task
 // whose merge window is still open at now (before its ReadyAt, or while it is
-// held; never for a paced task past its MaxHold), or -1.
-func (sess *session) openWindow(actorID string, cfg SessionConfig, now time.Time) int {
+// held; never for a paced task past its MaxHold), or -1. With interrupt any
+// not-yet-started task of actorID qualifies.
+func (sess *session) openWindow(actorID string, cfg SessionConfig, now time.Time, interrupt bool) int {
 	for i := len(sess.pending) - 1; i >= 0; i-- {
 		t := sess.pending[i]
 		if t.ActorID != actorID || t.paced() && t.pastHold(now) {
 			continue
 		}
-		if now.Before(t.ReadyAt) || sess.heldLocked(t, cfg, now) {
+		if interrupt || now.Before(t.ReadyAt) || sess.heldLocked(t, cfg, now) {
 			return i
 		}
 	}
 	return -1
+}
+
+// supersedable returns, with interrupt, actorID's most recently started
+// running task that is not settled, or nil.
+func (sess *session) supersedable(actorID string, interrupt bool) *runningTask {
+	if !interrupt {
+		return nil
+	}
+	for i := len(sess.running) - 1; i >= 0; i-- {
+		if rt := sess.running[i]; rt.task.ActorID == actorID && !rt.settled {
+			return rt
+		}
+	}
+	return nil
 }
 
 func (sess *session) signal() {
