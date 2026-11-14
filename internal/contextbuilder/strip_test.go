@@ -1,6 +1,7 @@
 package contextbuilder
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -83,14 +84,31 @@ func TestStripTranscriptPrefix_EchoedStateBlock(t *testing.T) {
 		{"心情：不错哦", "心情：不错哦"},
 		{"心情：不错哦\n好呀", "心情：不错哦\n好呀"},
 		{"好呀\n" + block, "好呀\n" + block},
+		{header + "\n对了：明天几点见？", "对了：明天几点见？"},
+		{header + "\n心情：偏高\n对了：明天几点见？", "对了：明天几点见？"},
+	}
+	for _, names := range [][]string{{"开心!", "[心情]"}, {"[心情]", "开心!"}, {"a.b,c", "精力"}} {
+		odd := []autonomy.StateBar{
+			{Name: names[0], Description: "高=开心放松，低=低落烦躁", Value: 65},
+			{Name: names[1], Description: "高=有精神，低=累、困", Value: 30},
+		}
+		status := &autonomy.StateStatus{Activity: "看书", StartedAt: at(20, 10), UntilAt: at(20, 30)}
+		cases = append(cases,
+			struct{ in, want string }{autonomy.RenderState(nil, odd, shanghai) + "\n好呀", "好呀"},
+			struct{ in, want string }{autonomy.RenderState(status, odd, shanghai) + "\n好呀", "好呀"},
+		)
+	}
+	for _, v := range []float64{0, 19, 20, 39, 40, 59, 60, 79, 80, 100} {
+		one := []autonomy.StateBar{{Name: "心情", Value: v}}
+		cases = append(cases, struct{ in, want string }{autonomy.RenderState(nil, one, shanghai) + "\n好呀", "好呀"})
 	}
 	for _, c := range cases {
 		got := StripTranscriptPrefix(c.in, "织语")
 		if got != c.want {
 			t.Errorf("StripTranscriptPrefix(%q) = %q, want %q", c.in, got, c.want)
 		}
-		if strings.Contains(c.in, header) && !strings.HasPrefix(c.in, "好呀") &&
-			(strings.Contains(got, "偏高") || strings.Contains(got, "偏低") || strings.Contains(got, "这些只影响")) {
+		if strings.Contains(c.in, header) && !strings.HasPrefix(c.in, "好呀") && slices.ContainsFunc([]string{"很低", "偏低", "中等", "偏高", "很高", "这些只影响"},
+			func(s string) bool { return strings.Contains(got, s) }) {
 			t.Errorf("StripTranscriptPrefix(%q) left lines of the echoed block: %q", c.in, got)
 		}
 	}

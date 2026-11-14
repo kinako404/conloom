@@ -39,9 +39,10 @@ var (
 
 	stateBlockHeader = regexp.MustCompile(`^【你的状态[^\n]*(?:\n|$)`)
 	// stateBlockLine matches a line of the state block: the status
-	// "正在：…", a bar "名字：档位（说明）" (read as a memory block line) or the
-	// closing reminder starting "这些只影响".
-	stateBlockLine = blockLine(`正在[：:]|这些只影响|` + memoryLineStart)
+	// "正在：…", a bar "名字：档位…" (any bar name, which holds no
+	// whitespace, 【】 or colon, followed by one of the five bands) or the
+	// closing reminder starting "这些只影响". Other "短词：…" lines are kept.
+	stateBlockLine = blockLine(`正在[：:]|这些只影响|[^\s【】\n:：]{1,6}[：:](?:很低|偏低|中等|偏高|很高)`)
 )
 
 // memoryLineStart matches the start of a memory block line: the summary
