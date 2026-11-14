@@ -101,12 +101,13 @@ type ProactivePolicy struct {
 	Private PrivateProactivePolicy `json:"private,omitzero" yaml:"private,omitempty"`
 }
 
-// Levels of PrivateProactivePolicy.Level.
+// Levels of PrivateProactivePolicy.Level, the same words as a group's
+// ProactivePolicy.DefaultLevel.
 const (
-	PrivateLevelOff  = "off"
-	PrivateLevelLow  = "low"
-	PrivateLevelMid  = "mid"
-	PrivateLevelHigh = "high"
+	PrivateLevelOff  = ProactiveOff
+	PrivateLevelLow  = ProactiveLow
+	PrivateLevelMid  = ProactiveMid
+	PrivateLevelHigh = ProactiveHigh
 )
 
 // PrivateProactivePolicy sets how often the bot starts a private chat and when it stays quiet.
@@ -128,7 +129,8 @@ func (p PrivateProactivePolicy) EffectiveLevel() string {
 }
 
 // QuietMinutes returns the quiet hours as minutes of the day; start after end means they wrap
-// midnight. set is false when the quiet hours are empty (or invalid, which Validate rejects).
+// midnight. set is false unless both times are given and valid (Validate rejects only one, or
+// an invalid one).
 func (p PrivateProactivePolicy) QuietMinutes() (start, end int, set bool) {
 	start, okStart := parseClock(p.QuietStart)
 	end, okEnd := parseClock(p.QuietEnd)

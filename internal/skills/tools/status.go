@@ -37,7 +37,8 @@ const (
 
 // CleanActivity flattens s to one trimmed line, as the hidden state block
 // shows it: runs of white space, line breaks included, become one space;
-// other control characters and 【】 are dropped.
+// other control characters, format characters (zero-width and bidi controls)
+// and 【】 are dropped.
 func CleanActivity(s string) string {
 	s = strings.Map(func(r rune) rune {
 		switch {
@@ -45,7 +46,7 @@ func CleanActivity(s string) string {
 			return -1
 		case unicode.IsSpace(r):
 			return ' '
-		case unicode.IsControl(r):
+		case unicode.IsControl(r), unicode.Is(unicode.Cf, r):
 			return -1
 		}
 		return r

@@ -131,6 +131,10 @@ func TestPersonaBars_Effective(t *testing.T) {
 	if got := set.EffectiveBars(); !reflect.DeepEqual(got, set.Bars) {
 		t.Errorf("EffectiveBars = %+v, want the persona's bars %+v", got, set.Bars)
 	}
+	set.EffectiveBars()[0].Name = "改了"
+	if set.Bars[0].Name != "好奇" {
+		t.Errorf("persona's bars after changing EffectiveBars' result = %+v, want them unchanged", set.Bars)
+	}
 }
 
 func TestPersonaBars_JSONAndYAML(t *testing.T) {

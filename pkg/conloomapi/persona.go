@@ -132,10 +132,11 @@ func DefaultBars() []PersonaBar {
 	}
 }
 
-// EffectiveBars returns p's bars, or DefaultBars when p defines none.
+// EffectiveBars returns a copy of p's bars, or DefaultBars when p defines
+// none.
 func (p PersonaDoc) EffectiveBars() []PersonaBar {
 	if len(p.Bars) > 0 {
-		return p.Bars
+		return slices.Clone(p.Bars)
 	}
 	return DefaultBars()
 }

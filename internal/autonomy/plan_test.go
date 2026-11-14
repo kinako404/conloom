@@ -33,7 +33,7 @@ func TestPlanInitiate(t *testing.T) {
 					if got.Before(earliest) {
 						t.Fatalf("%s, last %v: PlanInitiate() = %v, before %v", level, last, got, earliest)
 					}
-					if !got.Before(earliest.Add(24*time.Hour + 15*time.Minute)) {
+					if !got.Before(earliest.Add(24 * time.Hour)) {
 						t.Fatalf("%s, last %v: PlanInitiate() = %v, more than a day after %v", level, last, got, earliest)
 					}
 					if DefaultQuiet.Contains(got, loc) {

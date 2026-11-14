@@ -169,6 +169,7 @@ func TestSetStatus_ActivityCleanedAndReviewed(t *testing.T) {
 	for _, c := range []struct{ args, want string }{
 		{`{"activity":"` + strings.Repeat("字", ActivityMaxRunes+1) + `","minutes":20}`, "在做什么（activity）超过 16 字，写短一点。"},
 		{`{"activity":"【】\n ","minutes":20}`, "需要写清在做什么（activity），1 到 16 字。"},
+		{`{"activity":"` + "\u200b\u200b" + `","minutes":20}`, "需要写清在做什么（activity），1 到 16 字。"},
 		{`{"activity":7,"minutes":20}`, "需要写清在做什么（activity），1 到 16 字。"},
 		{`{"minutes":20}`, "需要写清在做什么（activity），1 到 16 字。"},
 	} {
@@ -260,7 +261,8 @@ func TestCleanActivity(t *testing.T) {
 		"洗澡":              "洗澡",
 		"  【洗澡】 ":         "洗澡",
 		"看\r\n电影":         "看 电影",
-		"a\u0000b\u200bc": "ab\u200bc",
+		"a\u0000b\u200bc": "abc",
+		"\u202e洗澡\u2066":  "洗澡",
 		"\t\n":            "",
 	} {
 		if got := CleanActivity(in); got != want {

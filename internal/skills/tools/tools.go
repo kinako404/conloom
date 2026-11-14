@@ -68,7 +68,8 @@ func clock(inv skills.Invocation) (time.Time, *time.Location) {
 var noArguments = json.RawMessage(`{"type":"object","properties":{}}`)
 
 // shortResultRunes is the result limit (skills.ResultLimiter) of the tools
-// that answer with one sentence: remember, get_affinity and now.
+// that answer with one sentence: remember, get_affinity, now, set_status and
+// adjust_buff.
 const shortResultRunes = 100
 
 // memoryOn reports whether memory is in effect for convKey, as for the

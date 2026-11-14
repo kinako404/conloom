@@ -727,6 +727,45 @@ default_private_policy:
 	}
 }
 
+func TestLoad_PrivatePolicyProactivePrivate(t *testing.T) {
+	cfg := mustLoad(t, writeConfig(t, `default_private_policy:
+  proactive:
+    private:
+      level: high
+      quiet_start: "23:00"
+      quiet_end: "07:00"
+`))
+	if cfg.DefaultPrivatePolicy == nil {
+		t.Fatal("DefaultPrivatePolicy = nil, want the section")
+	}
+	want := conloomapi.PrivateProactivePolicy{Level: conloomapi.PrivateLevelHigh, QuietStart: "23:00", QuietEnd: "07:00"}
+	if got := cfg.PrivatePolicy().Proactive.Private; got != want {
+		t.Fatalf("proactive.private = %+v, want %+v", got, want)
+	}
+	if got, def := cfg.PrivatePolicy().Proactive.JoinMinMessages, conloomapi.DefaultGroupPolicy().Proactive.JoinMinMessages; got != def {
+		t.Errorf("proactive.join_min_messages = %d, want the built-in default %d", got, def)
+	}
+	if err := cfg.DefaultPrivatePolicy.Validate(); err != nil {
+		t.Fatalf("private defaults invalid: %v", err)
+	}
+	if got := cfg.DefaultGroupPolicy.Proactive.Private; got != (conloomapi.PrivateProactivePolicy{}) {
+		t.Errorf("group proactive.private = %+v, want empty", got)
+	}
+
+	cfg = mustLoad(t, writeConfig(t, `default_private_policy:
+  proactive:
+    private:
+      level: sometimes
+      quiet_start: "23:00"
+`))
+	err := cfg.ValidateServe()
+	for _, part := range []string{"default_private_policy.proactive.private.level", "default_private_policy.proactive.private.quiet_start"} {
+		if err == nil || !strings.Contains(err.Error(), part) {
+			t.Errorf("ValidateServe err = %v, want %q named", err, part)
+		}
+	}
+}
+
 func TestLoad_PrivatePolicyUnknownFieldRejected(t *testing.T) {
 	_, err := Load(writeConfig(t, "default_private_policy:\n  memroy:\n    enabled: true\n"))
 	if err == nil || !strings.Contains(err.Error(), "memroy") {
