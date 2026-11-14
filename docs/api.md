@@ -156,7 +156,7 @@
 - `status` 只在状态生效中（`until_at` 晚于现在）时给出，否则为 `null`。
 - `bars` 按会话当前人设的 `bars` 排列，人设没写 `bars` 时是默认的心情和精力；会话还没有人设版本时按将要使用的模板，查看不会生成人设版本。`value` 是回落到现在的值（四舍五入，没存过时是基准值），`band` 是它的档位词（很低、偏低、中等、偏高、很高）。人设里已经没有的条不列出。
 - `events` 是最近 50 次状态条变化，新的在前；`source` 为 `model`（模型调用 `adjust_buff`）、`panel` 或 `api`，`before`、`after` 四舍五入。人设里已经去掉的条，以前的变化照样列出。变化记录保留 30 天。
-- `proactive`：`enabled` 是策略的 `proactive.enabled`；`level` 是生效的档位（没设时为 `mid`）；`sent_today`、`daily_cap` 是今天（`server.timezone` 的自然日）已经主动发出的条数和档位的上限；`quiet_start`、`quiet_end` 是生效的免打扰时段，`quiet_inferred` 为 true 表示按对方的作息推算；`unanswered_left` 是对方再次发言前还能主动发几条；`timers` 是还没触发的定时，按时间排序，`kind` 为 `status_return`（回来说话）、`initiate`（主动找人）或 `follow_up`（追问）。
+- `proactive`：`enabled` 是策略的 `proactive.enabled`；`level` 是生效的档位（没设时为 `mid`）；`sent_today`、`daily_cap` 是今天（`server.timezone` 的自然日）已经主动发出的条数和档位的上限；`quiet_start`、`quiet_end` 是生效的免打扰时段，`quiet_inferred` 为 true 表示按对方的作息推算；`unanswered_left` 是对方再次发言前还能主动发几条（发出的回来说话也占一条，但不计入 `sent_today`）；`timers` 是还没触发的定时，按时间排序，`kind` 为 `status_return`（回来说话）、`initiate`（主动找人）或 `follow_up`（追问）。
 - 各个列表总是数组。`activity` 和 `reason` 是模型或管理员写的文字，请按纯文本显示。
 
 `PUT …/autonomy/buffs/{name}` 把一条状态条直接设成指定值，`{name}` 是 URL 编码的条名：
