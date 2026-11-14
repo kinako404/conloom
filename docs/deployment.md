@@ -471,6 +471,7 @@ sqlite3 <data_dir>/conloom.db 'DELETE FROM memory_chunks; DELETE FROM memory_chu
 |---|---|---|
 | `conloom_continuation_exits_total` | `reason`：`rule`、`model`、`limit`、`idle` | 在聊模式的退出次数：`rule` 为参与者规则退出，`model` 为连续跳过使会话结束，`limit` 为未点名回复达到上限使会话结束，`idle` 为超过保持时间无活动而结束 |
 | `conloom_proactive_total` | `result`：`evaluated`、`sent`、`skipped` | 加入群聊：`evaluated` 为通过检查、交给模型评估，`sent` 为实际发出，`skipped` 为模型放弃，或调用模型前 / 发出前重新检查时已不允许发出 |
+| `conloom_wake_total` | `kind`：`status_return`、`initiate`、`follow_up`；`result`：`sent`、`skipped`、`dropped`、`postponed`、`missed`、`cancelled` | 私聊里机器人自己发起的一轮：`sent` 为实际发出，`skipped` 为模型放弃、审查拦下、出错或发出前重新检查时已不允许，`cancelled` 为对方开口、`/stop` 等取消；`dropped`、`postponed`、`missed` 记定时到点时的丢弃、顺延和错过 |
 
 配置了 `panel` 段时，也可以在 [Web 管理面板](panel.md) 的概览页看实时状态、在用量页看按天统计的模型调用和 token（这部分存在库里，重启不丢）。面板和用量记录新增的指标见 [Web 管理面板：指标](panel.md#指标)。
 

@@ -15,7 +15,10 @@ import (
 )
 
 const (
-	TriggerProactive = conloomapi.TriggerProactive
+	TriggerProactive    = conloomapi.TriggerProactive
+	TriggerStatusReturn = conloomapi.TriggerStatusReturn
+	TriggerInitiate     = conloomapi.TriggerInitiate
+	TriggerFollowUp     = conloomapi.TriggerFollowUp
 
 	proactiveDirectiveTerms = 5
 	proactiveLogRetention   = 7 * 24 * time.Hour

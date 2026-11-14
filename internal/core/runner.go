@@ -47,8 +47,8 @@ var errEchoOnly = fmt.Errorf("%w: only the transcript format", openai.ErrEmptyOu
 // part separators). proactive is set for a proactive task none of whose
 // messages is addressed to the bot; turn for a continuation task none of whose
 // messages is; addressed for a task with a message that mentions or replies to
-// the bot. turnSession is the session a turn was reserved in before calling
-// the model.
+// the bot; wake for a task the bot starts itself in a private chat (isWake).
+// turnSession is the session a turn was reserved in before calling the model.
 type outcome struct {
 	status      string
 	code        string
@@ -57,6 +57,7 @@ type outcome struct {
 	proactive   bool
 	turn        bool
 	addressed   bool
+	wake        *wakeRun
 	turnSession *chatSession
 	// join is the plan of a join task.
 	join     joinPlan
@@ -136,11 +137,14 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 // A proactive task sends only a successful reply, and only if, re-checked
 // under the conversation's proactive lock, the user is still a target within
 // the send budget; otherwise it ends as skipped. A sent proactive reply is
-// recorded under the same lock.
+// recorded under the same lock. A wake task is finished by finishWake.
 func (o *Orchestrator) finish(ctx context.Context, task store.TaskRecord, out *outcome) (sent bool, err error) {
 	// Error copy only answers messages addressed to the bot.
-	if (out.proactive || out.turn) && out.status != conloomapi.TaskSucceeded {
+	if (out.proactive || out.turn || out.wake != nil) && out.status != conloomapi.TaskSucceeded {
 		out.text = ""
+	}
+	if out.wake != nil {
+		return o.finishWake(ctx, task, out)
 	}
 	if out.proactive && out.text != "" {
 		unlock := o.proactiveLocks.lock(task.ConversationKey)
@@ -178,11 +182,19 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		proactive: task.Meta.Trigger == TriggerProactive,
 		join:      plan,
 	}
+	if isWake(task.Meta.Trigger) {
+		out.wake = &wakeRun{kind: wakeKind(task.Meta.Trigger)}
+	}
 	fail := func(code, text string, err error) outcome {
 		if err != nil {
 			o.log.Warn("task failed", "task_id", task.ID, "error_code", code, "trace_id", out.meta.TraceID, "error", err)
 		}
 		out.status, out.code, out.text = conloomapi.TaskFailed, code, text
+		return out
+	}
+	skip := func(why string) outcome {
+		o.log.Info(why, "task_id", task.ID, "conversation", task.ConversationKey)
+		out.status, out.skipped, out.meta.ReviewResult = conloomapi.TaskSucceeded, true, reviewResultSkipped
 		return out
 	}
 
@@ -191,12 +203,21 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		return fail(conloomapi.CodeInternal, "", err)
 	}
 	out.conv = conv
-	triggers, err := o.st.GetMessages(ctx, task.BotInstanceID, task.TriggerMessageIDs)
-	if err != nil || len(triggers) == 0 {
-		return fail(conloomapi.CodeInternal, "", fmt.Errorf("load trigger messages: %v (found %d)", err, len(triggers)))
+	// A wake task has no trigger messages; its directive needs the persona's
+	// content mode (see below).
+	var triggers []store.MessageRecord
+	directive := ""
+	switch {
+	case out.wake == nil:
+		triggers, err = o.st.GetMessages(ctx, task.BotInstanceID, task.TriggerMessageIDs)
+		if err != nil || len(triggers) == 0 {
+			return fail(conloomapi.CodeInternal, "", fmt.Errorf("load trigger messages: %v (found %d)", err, len(triggers)))
+		}
+		out.triggers = triggers
+		directive = o.directive(ctx, task, triggers, plan)
+	case conv.Type != conloomapi.ConvPrivate:
+		return skip("wake task dropped: not a private chat")
 	}
-	out.triggers = triggers
-	directive := o.directive(ctx, task, triggers, plan)
 	switch task.Meta.Trigger {
 	case conloomapi.TriggerMention, conloomapi.TriggerReply:
 		out.addressed = true
@@ -212,9 +233,17 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 			o.log.Error("proactive check failed; not evaluating", "task_id", task.ID, "error", err)
 		}
 		if !ok {
-			o.log.Info("proactive evaluation dropped: no longer allowed", "task_id", task.ID, "conversation", task.ConversationKey)
-			out.status, out.skipped, out.meta.ReviewResult = conloomapi.TaskSucceeded, true, reviewResultSkipped
-			return out
+			return skip("proactive evaluation dropped: no longer allowed")
+		}
+	}
+	if out.wake != nil && out.wake.kind != store.TimerStatusReturn {
+		// As for a proactive task: check before any model call.
+		ok, err := o.wakeAllowed(ctx, task, out.wake.kind)
+		if err != nil {
+			o.log.Error("wake check failed; not evaluating", "task_id", task.ID, "error", err)
+		}
+		if !ok {
+			return skip("wake evaluation dropped: no longer allowed")
 		}
 	}
 	bot, ok := o.cfg.Bot(task.BotInstanceID)
@@ -232,9 +261,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		out.turnSession = o.reserveTurn(task.ConversationKey, task.ActorPlatformUserID, o.now(),
 			pol.Reply.ContinuationWindow.Duration, pol.Reply.MaxUnpromptedReplies)
 		if out.turnSession == nil {
-			o.log.Info("turn dropped: sender not in a conversation with room for a reply", "task_id", task.ID, "conversation", task.ConversationKey)
-			out.status, out.skipped, out.meta.ReviewResult = conloomapi.TaskSucceeded, true, reviewResultSkipped
-			return out
+			return skip("turn dropped: sender not in a conversation with room for a reply")
 		}
 	}
 	history, err := o.history(ctx, task.ConversationKey, pol.Context.MaxRecentMessages, triggers)
@@ -246,18 +273,20 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		speakerRows = o.privateSpeakerRow(ctx, task)
 		forgotten := speakerRows[task.ActorPlatformUserID].ForgottenAt
 		history = sinceForgotten(history, forgotten)
-		// A forget through the API or the panel does not end the sender's
-		// turn: messages carried from before it are dropped here too. They
-		// are compared by when they were received, which unlike the platform's
-		// time is never coarser than the forget's.
-		triggers = slices.DeleteFunc(slices.Clone(triggers), func(m store.MessageRecord) bool {
-			return !forgotten.IsZero() && m.CreatedAt.Before(forgotten)
-		})
-		out.triggers = triggers
-		if len(triggers) == 0 {
-			o.log.Info("turn dropped: all its messages were forgotten", "task_id", task.ID, "conversation", task.ConversationKey)
-			out.status, out.skipped, out.meta.ReviewResult = conloomapi.TaskSucceeded, true, reviewResultSkipped
-			return out
+		if out.wake != nil {
+			out.wake.forgotten = forgotten
+		} else {
+			// A forget through the API or the panel does not end the sender's
+			// turn: messages carried from before it are dropped here too. They
+			// are compared by when they were received, which unlike the platform's
+			// time is never coarser than the forget's.
+			triggers = slices.DeleteFunc(slices.Clone(triggers), func(m store.MessageRecord) bool {
+				return !forgotten.IsZero() && m.CreatedAt.Before(forgotten)
+			})
+			out.triggers = triggers
+			if len(triggers) == 0 {
+				return skip("turn dropped: all its messages were forgotten")
+			}
 		}
 	}
 	current := slices.Clone(triggers)
@@ -269,6 +298,19 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	system, err := o.personas.SystemPrompt(ctx, task.ConversationKey, bot.PersonaTemplate, bot.Name)
 	if err != nil {
 		return fail(conloomapi.CodeInternal, CopyUnavailable, err)
+	}
+	speakerName := ""
+	if len(triggers) > 0 {
+		speakerName = triggers[len(triggers)-1].DisplayName
+	}
+	if out.wake != nil {
+		out.wake.name = wakeName(history, speakerRows[task.ActorPlatformUserID])
+		speakerName = out.wake.name
+		var ok bool
+		if directive, ok = o.wakeDirective(ctx, task, out.wake, system.Mode, history); !ok {
+			out.status, out.skipped, out.meta.ReviewResult = conloomapi.TaskSucceeded, true, reviewResultSkipped
+			return out
+		}
 	}
 	targets := o.replyTargets(ctx, task, history, triggers)
 	if at := speakerRows[task.ActorPlatformUserID].ForgottenAt; !at.IsZero() {
@@ -287,7 +329,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		TokenFactor:      o.tokenFactor,
 		Location:         o.loc,
 		Directive:        directive,
-		Memory:           o.injectMemory(ctx, task, pol, triggers, targets, names, speakerRows),
+		Memory:           o.injectMemory(ctx, task, pol, speakerName, triggers, targets, names, speakerRows),
 	}
 	if conv.Type == conloomapi.ConvPrivate {
 		// The bars come from the persona version SystemPrompt rendered.
@@ -320,7 +362,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	out.meta.SelectedModelRole, out.meta.RouteReason = string(d.Profile.Role), d.Reason
 	// A reply to the bot made only of the transcript format fails like an
 	// empty model output; other tasks send nothing for it (see below).
-	direct := !out.proactive && !out.turn
+	direct := !out.proactive && !out.turn && out.wake == nil
 	// The configured name stays a known speaker: replies stored before a
 	// character was set may have echoed it.
 	speakers := append(in.SpeakerNames(), bot.Name)
@@ -533,10 +575,13 @@ func (o *Orchestrator) directive(ctx context.Context, task store.TaskRecord, tri
 	return CopyDirectiveContinuation(speaker(triggers))
 }
 
-// speaker names the sender of the newest trigger message for a directive.
+// speaker names the sender of the newest trigger message for a directive
+// (unnamedMember without one).
 func speaker(triggers []store.MessageRecord) string {
-	last := triggers[len(triggers)-1]
-	return directiveName(last.DisplayName)
+	if len(triggers) == 0 {
+		return directiveName("")
+	}
+	return directiveName(triggers[len(triggers)-1].DisplayName)
 }
 
 // partsDirective tells the model how many messages a reply may be split into

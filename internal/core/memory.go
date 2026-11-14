@@ -52,19 +52,23 @@ type injectPerson struct{ userID, name string }
 // (memory.WithoutRemembered); only the speaker's own note shows it. Tiers are
 // shown when the policy's affinity is on. The block is capped by
 // memoryBlockMaxRunes under the policy's max_context_tokens (see
-// memory.RenderBlock). targets and names
-// are the task's reply targets and mention names; known, when not nil, holds
-// a private sender's row already read. A read error is logged and leaves the
-// block out.
-func (o *Orchestrator) injectMemory(ctx context.Context, task store.TaskRecord, pol conloomapi.GroupPolicy,
+// memory.RenderBlock). speakerName is the speaker's display name; targets and
+// names are the task's reply targets and mention names; known, when not nil,
+// holds a private sender's row already read. A group task needs triggers; a
+// private one, such as a wake task, does not. A read error is logged and
+// leaves the block out.
+func (o *Orchestrator) injectMemory(ctx context.Context, task store.TaskRecord, pol conloomapi.GroupPolicy, speakerName string,
 	triggers []store.MessageRecord, targets map[string]store.MessageRecord, names map[string]string,
 	known map[string]store.MemberMemory) string {
-	if !pol.Memory.Enabled || !pol.Concurrency.AllowLongRequests || len(triggers) == 0 {
+	if !pol.Memory.Enabled || !pol.Concurrency.AllowLongRequests {
 		return ""
 	}
 	private := false
 	switch convType(task.ConversationKey) {
 	case conloomapi.ConvGroup:
+		if len(triggers) == 0 {
+			return ""
+		}
 	case conloomapi.ConvPrivate:
 		private = true
 	default:
@@ -75,7 +79,7 @@ func (o *Orchestrator) injectMemory(ctx context.Context, task store.TaskRecord, 
 		return ""
 	}
 	speaker := task.ActorPlatformUserID
-	people := []injectPerson{{speaker, injectName(triggers[len(triggers)-1].DisplayName, speaker)}}
+	people := []injectPerson{{speaker, injectName(speakerName, speaker)}}
 	if !private {
 		var err error
 		if people, err = o.injectPeople(ctx, task, triggers, targets, names); err != nil {
@@ -176,12 +180,13 @@ func injectName(name, userID string) string {
 
 // noteInteraction applies the affinity rules (memory.ApplyInteraction) to the
 // sender of a group task addressed to the bot, or of a private chat task,
-// whose reply was sent, when the policy has memory and affinity on. The day is the local date in o.loc; the
-// sender's display name is refreshed from the newest trigger. Errors are only
-// logged.
+// whose reply was sent, when the policy has memory and affinity on. A message
+// the bot starts itself (a wake task) is no interaction. The day is the local
+// date in o.loc; the sender's display name is refreshed from the newest
+// trigger. Errors are only logged.
 func (o *Orchestrator) noteInteraction(ctx context.Context, task store.TaskRecord, out outcome, sent bool) {
 	direct := out.conv.Type == conloomapi.ConvPrivate || out.conv.Type == conloomapi.ConvGroup && out.addressed
-	if !direct || !sent || out.status != conloomapi.TaskSucceeded || len(out.triggers) == 0 {
+	if !direct || !sent || out.status != conloomapi.TaskSucceeded || len(out.triggers) == 0 || isWake(task.Meta.Trigger) {
 		return
 	}
 	pv, err := o.policies.Current(ctx, task.ConversationKey)

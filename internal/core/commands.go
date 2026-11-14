@@ -166,14 +166,14 @@ func (o *Orchestrator) logPolicyAuditError(task store.TaskRecord, err error) {
 }
 
 // stop cancels the conversation's queued and running tasks started by the
-// command's sender, or every one of them when the sender is an admin. It also
-// cancels the parts of the sender's last reply not handed out yet (see
-// cancelStoredParts).
+// command's sender, or by the bot for them (wakeActor), or every one of them
+// when the sender is an admin. It also cancels the parts of the sender's last
+// reply not handed out yet (see cancelStoredParts).
 func (o *Orchestrator) stop(ctx context.Context, task store.TaskRecord, isAdmin bool) (string, error) {
 	active := o.sched.Active(task.ConversationKey)
 	var targets []QueuedTask
 	for _, t := range active {
-		if isAdmin || t.ActorID == task.ActorPlatformUserID {
+		if isAdmin || t.ActorID == task.ActorPlatformUserID || t.ActorID == wakeActor(task.ActorPlatformUserID) {
 			targets = append(targets, t)
 		}
 	}

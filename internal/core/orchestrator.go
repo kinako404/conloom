@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"sync"
@@ -139,6 +140,11 @@ type Orchestrator struct {
 	// partWakes tells the notifier (which wakes the adapters and the panel
 	// deliverer) when later reply parts become due.
 	partWakes partWakes
+	// speakers marks the private messages being accepted, during which no
+	// wake task starts (see fireTimer); rand, safe for concurrent use, places
+	// wake timers.
+	speakers speakers
+	rand     *rand.Rand
 
 	// panelLocks serialise SubmitPanel and DeletePanelChat per conversation;
 	// panelDeleteWait is how long DeletePanelChat waits for the chat's
@@ -189,6 +195,7 @@ func New(d Deps) (*Orchestrator, error) {
 		limiter:  NewRateLimiter(),
 		owners:   map[string]*taskOwner{},
 		ftsRetry: ftsBackfillRetry,
+		rand:     newLockedRand(),
 
 		panelDeleteWait: cancelWait,
 
@@ -451,11 +458,18 @@ func replay(rec store.EventRecord, hash string) (conloomapi.EventAccepted, bool,
 
 // submit decides and stores the event; a group message engaging the bot then
 // refreshes the sender's member record, and any stored group message restarts
-// the group's lull timer.
+// the group's lull timer. A private message that is not ignored first cancels
+// the chat's wake tasks (cancelWakes), and no wake task starts until it is
+// stored (see fireTimer).
 func (o *Orchestrator) submit(ctx context.Context, s *submission) (conloomapi.EventAccepted, error) {
 	d, pol, err := o.decide(ctx, s)
 	if err != nil {
 		return conloomapi.EventAccepted{}, err
+	}
+	if s.ev.Conversation.Type == conloomapi.ConvPrivate && d.Disposition != conloomapi.DispositionIgnore {
+		end := o.speakers.begin(s.convKey)
+		defer end()
+		o.cancelWakes(context.WithoutCancel(ctx), s.convKey, s.ev.Actor.PlatformUserID, wakeCancelUserMessage)
 	}
 	resp, err := o.dispatch(ctx, s, d, pol)
 	if err != nil {

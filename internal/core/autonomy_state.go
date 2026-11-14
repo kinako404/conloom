@@ -11,8 +11,12 @@ import (
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
-// skillBuff is the skill whose bot gets its hidden bars in private replies.
-const skillBuff = "buff"
+// skillBuff is the skill whose bot gets its hidden bars in private replies;
+// toolAdjustBuff is its tool, the only one a wake task offers.
+const (
+	skillBuff      = "buff"
+	toolAdjustBuff = "adjust_buff"
+)
 
 // stateBlock returns the hidden state block (autonomy.RenderState) of a
 // private task: the conversation's status while it lasts and, when the bot

@@ -75,6 +75,11 @@ const (
 	TriggerManual       = "manual"
 	TriggerContinuation = "continuation"
 	TriggerProactive    = "proactive"
+	// TriggerStatusReturn, TriggerInitiate and TriggerFollowUp are the
+	// triggers of the tasks the bot starts itself in a private chat.
+	TriggerStatusReturn = "status_return"
+	TriggerInitiate     = "initiate"
+	TriggerFollowUp     = "follow_up"
 )
 
 type Event struct {

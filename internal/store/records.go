@@ -153,10 +153,17 @@ type MemberRecord struct {
 const (
 	ProactiveEvaluated = "evaluated"
 	ProactiveSent      = "sent"
+	// ProactivePrivateInitiate and ProactivePrivateFollowUp record a message
+	// the bot started in a private chat, ProactivePrivateSkip one it chose not
+	// to send.
+	ProactivePrivateInitiate = "private_initiate"
+	ProactivePrivateFollowUp = "private_followup"
+	ProactivePrivateSkip     = "private_skip"
 )
 
-// ProactiveLogEntry records one proactive evaluation or sent reply. Kind is
-// one of the Proactive* constants.
+// ProactiveLogEntry records one proactive evaluation, sent reply or message
+// the bot started or skipped in a private chat. Kind is one of the Proactive*
+// constants.
 type ProactiveLogEntry struct {
 	ConversationKey string
 	PlatformUserID  string

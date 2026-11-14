@@ -18,6 +18,7 @@ type Metrics struct {
 	BreakerOpen       *prometheus.GaugeVec   // role
 	ContinuationExits *prometheus.CounterVec // reason: rule|model|limit|idle
 	Proactive         *prometheus.CounterVec // result: evaluated|sent|skipped
+	Wake              *prometheus.CounterVec // kind, result: sent|skipped|dropped|postponed|missed|cancelled
 
 	MemoryConsolidations       *prometheus.CounterVec // result: ok|error|skipped
 	MemoryConsolidationSeconds prometheus.Histogram
@@ -89,6 +90,10 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		Proactive: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "conloom_proactive_total", Help: "Proactive replies by result (evaluated|sent|skipped).",
 		}, []string{"result"}),
+		Wake: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "conloom_wake_total",
+			Help: "Private-chat wake timers and tasks by timer kind and result (sent|skipped|dropped|postponed|missed|cancelled).",
+		}, []string{"kind", "result"}),
 		MemoryConsolidations: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "conloom_memory_consolidations_total", Help: "Memory consolidation runs by result (ok|error|skipped).",
 		}, []string{"result"}),
@@ -136,7 +141,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.Events, m.Tasks, m.ModelLatency, m.ModelTokens, m.EstimateRatio,
 		m.QueueWait, m.QueueDepth, m.AdmissionRejects,
 		m.OutboxDelivered, m.OutboxRedelivered, m.OutboxExpired,
-		m.Review, m.BreakerOpen, m.ContinuationExits, m.Proactive,
+		m.Review, m.BreakerOpen, m.ContinuationExits, m.Proactive, m.Wake,
 		m.MemoryConsolidations, m.MemoryConsolidationSeconds, m.MemoryAffinityChanges,
 		m.SkillCalls,
 		m.SearchSeconds, m.FTSBackfillRemaining, m.EmbeddingRequests, m.EmbeddingBacklog,

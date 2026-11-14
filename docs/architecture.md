@@ -174,6 +174,7 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 - `/stop`：取消本群里发送者自己发起的任务，管理员可以取消全部。发送者最近一条已写出的回复（`LastReplyTask`）还没发放的动作也标成 `cancelled`（`cancelStoredParts`，`commands.go:202`），审计记一条 `outbox.stopped`（含任务和被取消的条数）；已发放的照常发送。管理员只作废自己的这条回复，不动别人的。
 - `/pause`（或策略并发改为 0）：结束在聊会话、停掉停顿计时器、取消所有活跃任务。
 - 私聊打断重来：回复开始后同一个人又发来消息，旧任务被取代，见 3.7。
+- 私聊里机器人自己发起的一轮（唤醒任务：`status_return`、`initiate`、`follow_up`）在调度器里用 actor `wake:<用户ID>`，所以对方的消息不会并进去，也不会取代它。对方发来任何不被忽略的消息时，`submit` 在处理它之前先取消这个会话里排队和执行中的唤醒任务，以及唤醒任务的回复里还没发放的动作（`cancelWakes`，审计 `wake.cancelled`，含任务、原因和被取消的条数；被取消的 `status_return` 同时结束状态），这条消息存好之前也不会再触发新的唤醒任务。唤醒任务写出回复时在同一把会话锁下复查，所以它要么在这里被作废，要么写出后在 `cancelWakes` 里被取消；只有已经交给适配器的分条来不及撤回。`/stop` 和重启后的恢复都认这个 actor。
 
 ### 3.6 重启恢复
 
@@ -611,6 +612,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | `breaker_open` | role |
 | `continuation_exits_total` | reason：rule / model / limit / idle |
 | `proactive_total` | result：evaluated / sent / skipped |
+| `wake_total` | kind：status_return / initiate / follow_up，result：sent / skipped / dropped / postponed / missed / cancelled（私聊里机器人自己发起的一轮） |
 | `memory_consolidations_total` | result：ok / error / skipped（被取消的整理不计） |
 | `memory_consolidation_seconds` | —（只记成功的整理） |
 | `memory_affinity_changes_total` | source：consolidate / rule / command / api |

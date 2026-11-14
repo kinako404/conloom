@@ -145,7 +145,7 @@ func (o *Orchestrator) recoverTask(ctx context.Context, t store.TaskRecord, now 
 	if r == recoverRequeued {
 		at := time.Now()
 		o.sched.Restore(QueuedTask{
-			TaskID: rec.ID, ConversationKey: rec.ConversationKey, ActorID: rec.ActorPlatformUserID,
+			TaskID: rec.ID, ConversationKey: rec.ConversationKey, ActorID: schedActor(rec),
 			TriggerMessageIDs: rec.TriggerMessageIDs, EnqueuedAt: at, ReadyAt: at,
 		})
 	}

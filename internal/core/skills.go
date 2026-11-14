@@ -81,19 +81,28 @@ type skillRun struct {
 
 // newSkillRun returns the skills of a private chat or a group message
 // addressed to the bot, or nil when the bot enables none for the
-// conversation's type or the task is a turn or a join.
+// conversation's type or the task is a turn or a join. A message the bot
+// starts itself (a wake task) gets only adjust_buff, of skillBuff: neither
+// set_status, so statuses do not chain, nor memory tools, which would take
+// old messages for a request.
 func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, conv store.ConversationRecord,
 	triggers []store.MessageRecord, out *outcome) *skillRun {
 	if o.skills == nil || len(bot.Skills) == 0 {
 		return nil
 	}
+	names := bot.Skills
 	switch {
+	case out.wake != nil && conv.Type == conloomapi.ConvPrivate:
+		names = slices.DeleteFunc(slices.Clone(names), func(s string) bool { return s != skillBuff })
 	case conv.Type == conloomapi.ConvPrivate && !out.proactive && !out.turn:
 	case conv.Type == conloomapi.ConvGroup && out.addressed:
 	default:
 		return nil
 	}
-	set := o.skills.For(bot.Skills, conv.Type)
+	set := o.skills.For(names, conv.Type)
+	if out.wake != nil {
+		set.Tools = slices.DeleteFunc(set.Tools, func(t skills.Tool) bool { return t.Spec().Name != toolAdjustBuff })
+	}
 	if set.Empty() {
 		return nil
 	}
@@ -109,13 +118,20 @@ func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, 
 	for i, m := range triggers {
 		ids[i] = m.ID
 	}
+	name := ""
+	switch {
+	case len(triggers) > 0:
+		name = triggers[len(triggers)-1].DisplayName
+	case out.wake != nil:
+		name = out.wake.name
+	}
 	run.inv = skills.Invocation{
 		TaskID:            task.ID,
 		BotInstanceID:     task.BotInstanceID,
 		ConversationKey:   task.ConversationKey,
 		ConversationType:  conv.Type,
 		PlatformUserID:    task.ActorPlatformUserID,
-		DisplayName:       triggers[len(triggers)-1].DisplayName,
+		DisplayName:       name,
 		TriggerMessageIDs: ids,
 		IsAdmin:           isAdmin(bot, conv.Platform, task.ActorPlatformUserID),
 		Location:          o.loc,
