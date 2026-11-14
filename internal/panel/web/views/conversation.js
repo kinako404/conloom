@@ -451,12 +451,36 @@ function revisionsTable(revisions) {
   ], revisions);
 }
 
+// INITIAL_AFFINITY is memory.InitialAffinity (internal/memory/affinity.go),
+// the value a member's affinity starts from.
+const INITIAL_AFFINITY = 20;
+
+// AFFINITY_QUICK are the quick affinity buttons: a label and the new value
+// computed from the current one.
+const AFFINITY_QUICK = [
+  ['-5', (v) => v - 5],
+  ['+5', (v) => v + 5],
+  ['+10', (v) => v + 10],
+  ['设为 100', () => 100],
+];
+
 function memberEditor(key, mem) {
   const note = h('textarea', { value: mem.note || '' });
   const affinity = h('input', { type: 'number', min: 0, max: 100, step: 1, value: mem.affinity ?? '' });
   const reason = h('input', { placeholder: '修改原因' });
   const msg = h('div');
   const save = h('button', { type: 'submit', class: 'primary' }, '保存');
+  const memberPath = convPath(key, 'memory', 'members', encodeURIComponent(mem.user_id));
+  const quick = AFFINITY_QUICK.map(([text, next]) => h('button', {
+    type: 'button',
+    onclick: (e) => {
+      const v = Math.min(Math.max(next(mem.affinity ?? INITIAL_AFFINITY), 0), 100);
+      if (v === mem.affinity) return fail(msg, `好感度已经是 ${v}`);
+      return write(msg, e.currentTarget,
+        () => put(memberPath, { affinity: v, reason: reason.value.trim() || `快捷调整 ${text}` }),
+        `已把 ${mem.name || mem.user_id} 的好感度调整为 ${v}`);
+    },
+  }, text));
   return h('form', {
     class: 'card',
     onsubmit: (e) => {
@@ -469,14 +493,13 @@ function memberEditor(key, mem) {
       }
       if (a !== '' && Number(a) !== mem.affinity) body.affinity = Number(a);
       if (!('note' in body) && !('affinity' in body)) return fail(msg, '没有修改');
-      return write(msg, save,
-        () => put(convPath(key, 'memory', 'members', encodeURIComponent(mem.user_id)), body),
-        `已更新 ${mem.name || mem.user_id}`);
+      return write(msg, save, () => put(memberPath, body), `已更新 ${mem.name || mem.user_id}`);
     },
   },
   h('h3', null, `编辑 ${mem.name || ''}（${mem.user_id}）`),
   field('备注', note, '写空清除备注'),
-  field('好感度', affinity, '0–100 的整数'),
+  field('好感度', h('span', { class: 'quick-adjust' }, affinity, quick),
+    `0–100 的整数；快捷按钮按已保存的值${mem.affinity == null ? `（未设置时从 ${INITIAL_AFFINITY} 起算）` : ''}调整并立即保存，只改好感度`),
   field('原因', reason),
   msg,
   h('div', { class: 'toolbar' }, save, h('button', { type: 'button', onclick: (e) => e.currentTarget.form.remove() }, '取消')));

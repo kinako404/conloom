@@ -4,8 +4,11 @@ import (
 	"io/fs"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/kinako404/conloom/internal/memory"
 )
 
 // assets returns the embedded files with one of exts, keyed by path.
@@ -131,5 +134,16 @@ func TestAssets_ImportsResolve(t *testing.T) {
 		if _, err := fs.Stat(FS, path.Clean(m[1])); err != nil {
 			t.Errorf("index.html references %q, which is not embedded", m[1])
 		}
+	}
+}
+
+func TestAssets_InitialAffinityMatchesMemory(t *testing.T) {
+	js := assets(t, ".js")["views/conversation.js"]
+	m := regexp.MustCompile(`const INITIAL_AFFINITY = (\d+);`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("views/conversation.js has no INITIAL_AFFINITY")
+	}
+	if want := strconv.Itoa(memory.InitialAffinity); m[1] != want {
+		t.Errorf("INITIAL_AFFINITY = %s, want memory.InitialAffinity %s", m[1], want)
 	}
 }
