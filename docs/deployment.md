@@ -376,7 +376,7 @@ sudo journalctl -u conloom | grep 'panel listening'
   | 数据 | 表 | 保留 |
   |---|---|---|
   | 已结束（成功、失败、取消）的任务，连同它们的发件箱动作 | `tasks`、`outbox_actions` | `runtime.ops_retention`（默认 30 天），且不短于 `idempotency_retention`；还有待投递或已租出动作的任务不删 |
-  | 已确认或已过期、所属任务已不存在的发件箱动作 | `outbox_actions` | 同上 |
+  | 已确认、已过期或已取消（私聊里被打断而作废的分条）、所属任务已不存在的发件箱动作 | `outbox_actions` | 同上 |
   | 审计记录 | `audit_events` | `runtime.audit_retention`（默认 90 天） |
   | 事件幂等记录（含被处理事件的原文） | `events` | `runtime.idempotency_retention`（默认 7 天） |
   | 主动搭话记录 | `proactive_log` | 7 天 |
@@ -417,6 +417,8 @@ sudo journalctl -u conloom | grep 'panel listening'
 **升级**：先备份，再替换二进制并重启（先核心后适配器）。核心启动时自动按顺序应用新的表结构迁移，迁移只能前进、没有回滚脚本，所以回退到旧版本时要用升级前的备份。升级前请对照 [配置参考](configuration.md#群策略) 检查已移除的配置字段（例如 `proactive.contact_cooldown`），配置文件里残留未知字段会导致启动失败。流水表清理没有新增表结构迁移，旧二进制可以直接在同一个库上运行；但回退到没有流水表清理的版本时，要先从 `conloom.yaml` 里删掉 `runtime.ops_retention` 和 `runtime.audit_retention`。
 
 **回退到没有 Web 管理面板的旧版本**（没有迁移 0008、0009）：先从 `conloom.yaml` 里删掉整个 `panel` 段和 `runtime.usage_retention`，否则旧二进制因为未知字段启动失败。旧二进制会忽略 `model_calls`、`panel_sessions` 两张表，不需要用备份恢复；回退期间的模型调用不会记入用量，再升级回来后这段时间在用量页上是空白。
+
+**回退到没有私聊节奏的旧版本**（没有迁移 0010，也就是没有分条发送和私聊等待的版本）：先从 `conloom.yaml` 里删掉 `reply.max_parts`、`reply.private_wait`、`reply.private_max_wait`（包括 `default_private_policy` 里的），否则旧二进制因为未知字段启动失败。旧二进制忽略 `outbox_actions` 的 `not_before` 列，回退时还没发出的分条会立即接连发出；已取消的动作它不会发放，会随所属任务一起被清理。存库的策略版本里这三个键会被旧二进制忽略，它写入的新版本（API、面板、`/pause` 等）不带这三个键，再升级回来后按默认值补齐，`max_parts` 变回默认策略里的值。
 
 **回退到没有长期检索的旧版本**（没有迁移 0006、0007，也就是没有关键词索引和语义检索的版本）：
 - **配置**：换回旧二进制之前，先从 `conloom.yaml` 里删掉 `runtime.ops_retention`、`runtime.audit_retention` 和整个 `embedding` 段。旧版本严格解析配置，遇到不认识的字段会直接启动失败。
