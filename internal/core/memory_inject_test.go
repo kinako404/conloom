@@ -400,3 +400,41 @@ func TestMemoryInject_BlockCappedToTheReplyBudget(t *testing.T) {
 		}
 	}
 }
+
+func TestMemoryBlockMaxRunes_FollowsTheConversationContextCap(t *testing.T) {
+	short := config.ModelProfile{Context: config.ContextLimits{NativeWindow: 3000, ConfiguredWindow: 3000,
+		SoftInputBudget: 2000, ReservedOutputTokens: 256, SafetyMarginTokens: 64}}
+	profiles := map[string]config.ModelProfile{"short_context": short}
+	for _, c := range []struct{ groupCap, want int }{{0, 600}, {100000, 600}, {1500, 354}, {300, 1}} {
+		if got := memoryBlockMaxRunes(profiles, 1, c.groupCap); got != c.want {
+			t.Errorf("memoryBlockMaxRunes(max_context_tokens %d) = %d, want %d", c.groupCap, got, c.want)
+		}
+	}
+	if got := memoryBlockMaxRunes(profiles, 2, 0); got != 300 {
+		t.Errorf("with token factor 2 = %d, want 300", got)
+	}
+	if got := memoryBlockMaxRunes(map[string]config.ModelProfile{}, 1, 1500); got != 0 {
+		t.Errorf("without profiles = %d, want 0 (uncapped)", got)
+	}
+}
+
+func TestMemoryInject_BlockCapFollowsMaxContextTokens(t *testing.T) {
+	clock := newInjectClock(injectMorning)
+	configure := injectConfig(true)
+	env := newTestOrchestrator(t, testOpts{now: clock.now, configure: func(c *config.Config) {
+		configure(c)
+		c.DefaultGroupPolicy.Context.MaxContextTokens = 1800
+	}})
+	env.injectSeed(t, testConvKey, strings.Repeat("很早以前在聊天气。", 300)+"最新约好周六去看展。",
+		store.MemberMemory{PlatformUserID: "20001", Note: "喜欢猫", Affinity: injectAffinity(52)})
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "周末去哪", withName("小明"), clock.stamp, mentionBot)).TaskID)
+	if task.Status != conloomapi.TaskSucceeded || env.short.Calls() != 1 {
+		t.Fatalf("task = %+v, short calls %d", task, env.short.Calls())
+	}
+	block, _, _ := strings.Cut(lastContent(env.short.Requests()[0]), "\n\n【当前消息")
+	short := env.cfg.ModelProfiles["short_context"].Context
+	limit := int(float64(1800-short.ReservedOutputTokens-short.SafetyMarginTokens) * injectBlockShare)
+	if n := utf8.RuneCountInString(block); n > limit || !strings.Contains(block, "最新约好周六去看展。") {
+		t.Fatalf("block = %d runes, want at most %d under max_context_tokens 1800 with the newest summary end:\n%s", n, limit, block)
+	}
+}

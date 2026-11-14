@@ -416,7 +416,7 @@ sudo journalctl -u conloom | grep 'panel listening'
 
 **升级**：先备份，再替换二进制并重启（先核心后适配器）。核心启动时自动按顺序应用新的表结构迁移，迁移只能前进、没有回滚脚本，所以回退到旧版本时要用升级前的备份。升级前请对照 [配置参考](configuration.md#群策略) 检查已移除的配置字段（例如 `proactive.contact_cooldown`），配置文件里残留未知字段会导致启动失败。流水表清理没有新增表结构迁移，旧二进制可以直接在同一个库上运行；但回退到没有流水表清理的版本时，要先从 `conloom.yaml` 里删掉 `runtime.ops_retention` 和 `runtime.audit_retention`。
 
-**升级到记忆字数上限可配置的版本**（`memory.summary_max_chars`、`note_max_chars`）：摘要和笔记的默认上限变长（群聊 1500 / 300 字、私聊 3000 / 1000 字），记忆整理的输出也跟着变长。升级时把 `long_context` 的 `reserved_output_tokens` 调到 8192 或以上：低于 8192（且大于 0）而默认策略开启了记忆时，启动日志会有一条 `long_context reserved_output_tokens is low for memory consolidation` 警告；整理时一个人的摘要加笔记放不下，就按比例缩短这次要求的字数（不低于 200 / 50 字），写入时也按缩短后的字数截断，并为这个会话记一条 `memory consolidation limits reduced …` 警告。调大输出预留并重启后恢复完整上限。已有的摘要和笔记不会立即变长，要经过之后的几次整理才写长。回复时带上的记忆块不超过短模型 `soft_input_budget` 的 30%，摘要太长时只带最新的一段，所以写长的记忆不会挤掉近期历史（见 [架构 5.5 节](architecture.md#55-记忆和好感度)）。
+**升级到记忆字数上限可配置的版本**（`memory.summary_max_chars`、`note_max_chars`）：摘要和笔记的默认上限变长（群聊 1500 / 300 字、私聊 3000 / 1000 字），记忆整理的输出也跟着变长。升级时把 `long_context` 的 `reserved_output_tokens` 调到 8192 或以上：低于 8192（且大于 0）而默认策略开启了记忆时，启动日志会有一条 `long_context reserved_output_tokens is low for memory consolidation` 警告；整理时一个人的摘要加笔记放不下，就按比例缩短这次提示词要求的字数（不低于 200 / 50 字；写入时仍按策略的上限截断，已有的较长笔记不会被截短），并为这个会话记一条 `memory consolidation limits reduced …` 警告。调大输出预留并重启后恢复完整上限。已有的摘要和笔记不会立即变长，要经过之后的几次整理才写长。回复时带上的记忆块不超过短模型输入预算（`soft_input_budget`，会话设了 `context.max_context_tokens` 时取两者算出的较小值）的 30%，摘要太长时只带最新的一段，所以写长的记忆不会挤掉近期历史（见 [架构 5.5 节](architecture.md#55-记忆和好感度)）。
 
 **回退到没有 Web 管理面板的旧版本**（没有迁移 0008、0009）：先从 `conloom.yaml` 里删掉整个 `panel` 段和 `runtime.usage_retention`，否则旧二进制因为未知字段启动失败。旧二进制会忽略 `model_calls`、`panel_sessions` 两张表，不需要用备份恢复；回退期间的模型调用不会记入用量，再升级回来后这段时间在用量页上是空白。
 

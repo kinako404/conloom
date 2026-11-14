@@ -22,9 +22,12 @@ const injectMaxOthers = 2
 const injectBlockShare = 0.3
 
 // memoryBlockMaxRunes caps the memory block at injectBlockShare of the short
-// model's soft input budget (the long model's without a short one), counted
-// as runes of factor tokens each; 0, uncapped, without either.
-func memoryBlockMaxRunes(profiles map[string]config.ModelProfile, factor float64) int {
+// model's input budget (the long model's without a short one): the smaller
+// of its soft input budget and its largest prompt under the conversation's
+// max_context_tokens groupCap (router.EffectiveLimits), counted as runes of
+// factor tokens each. It is 0, uncapped, without either model, and at least
+// 1, which leaves the block out, when the budget is gone.
+func memoryBlockMaxRunes(profiles map[string]config.ModelProfile, factor float64, groupCap int) int {
 	p, ok := profiles[string(router.RoleShort)]
 	if !ok {
 		p, ok = profiles[string(router.RoleLong)]
@@ -32,7 +35,9 @@ func memoryBlockMaxRunes(profiles map[string]config.ModelProfile, factor float64
 	if !ok || p.Context.SoftInputBudget <= 0 {
 		return 0
 	}
-	return max(1, int(float64(p.Context.SoftInputBudget)*injectBlockShare/factor))
+	_, maxPrompt := router.EffectiveLimits(p.Context, groupCap)
+	budget := min(p.Context.SoftInputBudget, maxPrompt)
+	return max(1, int(float64(budget)*injectBlockShare/factor))
 }
 
 // injectPerson is a member whose memory may be shown, with the name to show.
@@ -45,8 +50,9 @@ type injectPerson struct{ userID, name string }
 // (memory.RenderPrivateBlock) the conversation summary and only the speaker's
 // note. Others' notes leave out what they asked the bot to remember
 // (memory.WithoutRemembered); only the speaker's own note shows it. Tiers are
-// shown when the policy's affinity is on. The block is capped at
-// o.memoryBlockMax runes (see memory.RenderBlock). targets and names
+// shown when the policy's affinity is on. The block is capped by
+// memoryBlockMaxRunes under the policy's max_context_tokens (see
+// memory.RenderBlock). targets and names
 // are the task's reply targets and mention names; known, when not nil, holds
 // a private sender's row already read. A read error is logged and leaves the
 // block out.
@@ -106,10 +112,11 @@ func (o *Orchestrator) injectMemory(ctx context.Context, task store.TaskRecord, 
 		}
 		entries = append(entries, e)
 	}
+	limit := memoryBlockMaxRunes(o.cfg.ModelProfiles, o.tokenFactor, pol.Context.MaxContextTokens)
 	if private {
-		return memory.RenderPrivateBlock(summary, entries[0], o.memoryBlockMax)
+		return memory.RenderPrivateBlock(summary, entries[0], limit)
 	}
-	return memory.RenderBlock(summary, entries, o.memoryBlockMax)
+	return memory.RenderBlock(summary, entries, limit)
 }
 
 // injectPeople returns the task's speaker, then the member the current
