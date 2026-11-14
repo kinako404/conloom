@@ -39,6 +39,16 @@ func (q Quiet) Contains(t time.Time, loc *time.Location) bool {
 	return m >= q.Start || m < q.End
 }
 
+// EndAfter returns the first end of q in loc after t.
+func (q Quiet) EndAfter(t time.Time, loc *time.Location) time.Time {
+	l := t.In(loc)
+	end := time.Date(l.Year(), l.Month(), l.Day(), 0, q.End, 0, 0, loc)
+	if !end.After(t) {
+		end = time.Date(l.Year(), l.Month(), l.Day()+1, 0, q.End, 0, 0, loc)
+	}
+	return end
+}
+
 // String formats q as "00:30–08:00".
 func (q Quiet) String() string {
 	return fmt.Sprintf("%02d:%02d–%02d:%02d", q.Start/60, q.Start%60, q.End/60, q.End%60)

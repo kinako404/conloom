@@ -75,6 +75,30 @@ func TestQuiet_String(t *testing.T) {
 	}
 }
 
+func TestQuiet_EndAfter(t *testing.T) {
+	loc := shanghai(t)
+	at := func(d, h, m int) time.Time { return time.Date(2026, 11, d, h, m, 0, 0, loc) }
+	wrap := Quiet{Start: 23 * 60, End: 7 * 60}
+	tests := []struct {
+		name string
+		q    Quiet
+		t    time.Time
+		want time.Time
+	}{
+		{"default inside", DefaultQuiet, at(14, 2, 0), at(14, 8, 0)},
+		{"default at its end", DefaultQuiet, at(14, 8, 0), at(15, 8, 0)},
+		{"default before", DefaultQuiet, at(14, 0, 10), at(14, 8, 0)},
+		{"wrap before midnight", wrap, at(14, 23, 30), at(15, 7, 0)},
+		{"wrap after midnight", wrap, at(15, 1, 0), at(15, 7, 0)},
+		{"utc input", DefaultQuiet, time.Date(2026, 11, 13, 18, 0, 0, 0, time.UTC), at(14, 8, 0)},
+	}
+	for _, tt := range tests {
+		if got := tt.q.EndAfter(tt.t, loc); !got.Equal(tt.want) {
+			t.Errorf("%s: EndAfter(%v) = %v, want %v", tt.name, tt.t, got.In(loc), tt.want)
+		}
+	}
+}
+
 func TestHistOf(t *testing.T) {
 	loc := shanghai(t)
 	times := []time.Time{

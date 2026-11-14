@@ -76,6 +76,10 @@ func (db *DB) CountProactive(ctx context.Context, convKey, userID, kind string, 
 	return n, err
 }
 
+func (db *DB) DeleteProactiveLog(ctx context.Context, convKey, taskID string) (int, error) {
+	return execCount(ctx, db.w, `DELETE FROM proactive_log WHERE conversation_key = ? AND task_id = ?`, convKey, taskID)
+}
+
 func (db *DB) PurgeProactiveLog(ctx context.Context, before time.Time) (int, error) {
 	res, err := db.w.ExecContext(ctx, `DELETE FROM proactive_log WHERE created_at < ?`, fmtTime(before))
 	if err != nil {

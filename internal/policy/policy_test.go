@@ -647,3 +647,60 @@ func TestPolicy_ForgetDropsCachedVersion(t *testing.T) {
 		t.Error("Forget dropped another conversation's policy")
 	}
 }
+
+func TestPolicy_SetPrivateLevel(t *testing.T) {
+	ctx := context.Background()
+	rec := &auditRecorder{Store: newTestStore(t)}
+	svc := NewService(rec, conloomapi.DefaultGroupPolicy())
+	var calls []string
+	svc.OnChange(func(convKey string) { calls = append(calls, convKey) })
+	privKey := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "private_20001")
+
+	if _, err := svc.Pause(ctx, privKey, "29999"); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	pv, changed, err := svc.SetPrivateLevel(ctx, privKey, conloomapi.PrivateLevelHigh, "command:20001")
+	if err != nil || !changed || pv.Version != 2 {
+		t.Fatalf("SetPrivateLevel(high) = %+v, %v, %v; want version 2", pv, changed, err)
+	}
+	want := withConcurrency(conloomapi.DefaultGroupPolicy(), 0)
+	want.Proactive.Private.Level = conloomapi.PrivateLevelHigh
+	if !reflect.DeepEqual(pv.Policy, want) || pv.UpdatedBy != "command:20001" {
+		t.Fatalf("policy = %+v, want paused with private level high", pv.Policy)
+	}
+	if cur, err := svc.Current(ctx, privKey); err != nil || cur.Version != 2 || cur.Policy.Proactive.Private.Level != conloomapi.PrivateLevelHigh {
+		t.Fatalf("Current = %+v, %v", cur, err)
+	}
+
+	again, changed, err := svc.SetPrivateLevel(ctx, privKey, conloomapi.PrivateLevelHigh, "command:20001")
+	if err != nil || changed || again.Version != 2 {
+		t.Fatalf("second SetPrivateLevel(high) = %+v, %v, %v; want unchanged version 2", again, changed, err)
+	}
+	off, changed, err := svc.SetPrivateLevel(ctx, privKey, conloomapi.PrivateLevelOff, "command:20001")
+	if err != nil || !changed || off.Version != 3 || off.Policy.Proactive.Private.Level != conloomapi.PrivateLevelOff {
+		t.Fatalf("SetPrivateLevel(off) = %+v, %v, %v", off, changed, err)
+	}
+
+	for _, c := range []struct {
+		name, key, level string
+	}{
+		{"unknown level", privKey, "medium"},
+		{"group conversation", testConvKey, conloomapi.PrivateLevelLow},
+	} {
+		if pv, changed, err := svc.SetPrivateLevel(ctx, c.key, c.level, "command:20001"); !errors.Is(err, ErrInvalid) || changed || pv.Version != 0 {
+			t.Errorf("%s: SetPrivateLevel = %+v, %v, %v; want ErrInvalid", c.name, pv, changed, err)
+		}
+	}
+	if cur, _ := svc.Current(ctx, privKey); cur.Version != 3 {
+		t.Fatalf("version after refused changes = %d, want 3", cur.Version)
+	}
+
+	events := rec.all()
+	if len(events) != 3 || events[1].Kind != "policy.update" || events[1].Actor != "command:20001" ||
+		!strings.Contains(events[1].Detail, `"action":"private_level_high"`) || !strings.Contains(events[2].Detail, "private_level_off") {
+		t.Fatalf("audit events = %+v, want pause and two private level changes", events)
+	}
+	if want := []string{privKey, privKey, privKey}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("OnChange calls = %v, want %v", calls, want)
+	}
+}

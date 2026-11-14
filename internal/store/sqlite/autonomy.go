@@ -200,11 +200,18 @@ func (db *DB) PostponeTimer(ctx context.Context, ref store.TimerRef, dueAt time.
 	return n > 0, nil
 }
 
+func (db *DB) DeleteTimer(ctx context.Context, ref store.TimerRef) (bool, error) {
+	n, err := deleteTimer(ctx, db.w, ref)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // fireTimer deletes the timer ref names; one cancelled, re-armed or
 // postponed since gives store.ErrTimerGone.
 func fireTimer(ctx context.Context, tx *sql.Tx, ref store.TimerRef) error {
-	n, err := execCount(ctx, tx, `DELETE FROM conversation_timers WHERE conversation_key = ? AND kind = ? AND due_at = ?`,
-		ref.ConversationKey, string(ref.Kind), fmtTime(ref.DueAt))
+	n, err := deleteTimer(ctx, tx, ref)
 	if err != nil {
 		return err
 	}
@@ -212,6 +219,13 @@ func fireTimer(ctx context.Context, tx *sql.Tx, ref store.TimerRef) error {
 		return store.ErrTimerGone
 	}
 	return nil
+}
+
+// deleteTimer deletes the timer ref names, if it is still armed for
+// ref.DueAt, and returns how many rows it deleted.
+func deleteTimer(ctx context.Context, e execer, ref store.TimerRef) (int, error) {
+	return execCount(ctx, e, `DELETE FROM conversation_timers WHERE conversation_key = ? AND kind = ? AND due_at = ?`,
+		ref.ConversationKey, string(ref.Kind), fmtTime(ref.DueAt))
 }
 
 func (db *DB) GetBuffs(ctx context.Context, convKey string) ([]store.BuffValue, error) {

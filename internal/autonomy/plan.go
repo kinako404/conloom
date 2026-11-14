@@ -103,11 +103,7 @@ func PlanFollowUp(now time.Time, q Quiet, loc *time.Location, r *rand.Rand) time
 	if !q.Contains(t, loc) {
 		return t
 	}
-	l := t.In(loc)
-	end := time.Date(l.Year(), l.Month(), l.Day(), 0, q.End, 0, 0, loc)
-	if !end.After(t) {
-		end = time.Date(l.Year(), l.Month(), l.Day()+1, 0, q.End, 0, 0, loc)
-	}
+	end := q.EndAfter(t, loc)
 	if jittered := end.Add(time.Duration(r.IntN(quietEndJitterMinutes)) * time.Minute); !q.Contains(jittered, loc) {
 		return jittered
 	}

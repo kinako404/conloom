@@ -335,6 +335,52 @@ func TestTimers_Cancel(t *testing.T) {
 	}
 }
 
+func TestTimers_DeleteOnlyIfUnchanged(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	key, other := privKey("20001"), privKey("20002")
+	due := now.Add(time.Hour)
+	armTimers(t, db,
+		testTimer(key, store.TimerInitiate, due),
+		testTimer(key, store.TimerFollowUp, due),
+		testTimer(other, store.TimerInitiate, due),
+	)
+	ref := store.TimerRef{ConversationKey: key, Kind: store.TimerInitiate, DueAt: due}
+
+	for _, stale := range []store.TimerRef{
+		{ConversationKey: key, Kind: store.TimerInitiate, DueAt: due.Add(time.Minute)},
+		{ConversationKey: key, Kind: store.TimerStatusReturn, DueAt: due},
+		{ConversationKey: privKey("20003"), Kind: store.TimerInitiate, DueAt: due},
+	} {
+		if ok, err := db.DeleteTimer(ctx, stale); err != nil || ok {
+			t.Fatalf("DeleteTimer(%+v) = %v, %v; want false", stale, ok, err)
+		}
+	}
+	if n := len(listTimers(t, db, key)); n != 2 {
+		t.Fatalf("timers after stale deletes = %d, want 2", n)
+	}
+
+	rearmed := due.Add(3 * time.Hour)
+	armTimers(t, db, testTimer(key, store.TimerInitiate, rearmed))
+	if ok, err := db.DeleteTimer(ctx, ref); err != nil || ok {
+		t.Fatalf("DeleteTimer of a re-armed timer = %v, %v; want false", ok, err)
+	}
+	ref.DueAt = rearmed
+	if ok, err := db.DeleteTimer(ctx, ref); err != nil || !ok {
+		t.Fatalf("DeleteTimer = %v, %v; want true", ok, err)
+	}
+	if kinds := timerKinds(listTimers(t, db, key)); !reflect.DeepEqual(kinds, []store.TimerKind{store.TimerFollowUp}) {
+		t.Fatalf("timers left = %v, want only the follow-up", kinds)
+	}
+	if kinds := timerKinds(listTimers(t, db, other)); !reflect.DeepEqual(kinds, []store.TimerKind{store.TimerInitiate}) {
+		t.Fatalf("other conversation's timers = %v, want its initiate kept", kinds)
+	}
+	if ok, err := db.DeleteTimer(ctx, ref); err != nil || ok {
+		t.Fatalf("second DeleteTimer = %v, %v; want false", ok, err)
+	}
+}
+
 // timerIngest is the ingest of a fired timer: an internal event and a task
 // without trigger messages.
 func timerIngest(eventKey, taskID string, ref store.TimerRef) store.Ingest {

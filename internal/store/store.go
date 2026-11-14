@@ -111,6 +111,9 @@ type Store interface {
 	// CountProactive counts kind entries created at or after since; an empty
 	// userID counts every user in the conversation.
 	CountProactive(ctx context.Context, convKey, userID, kind string, since time.Time) (int, error)
+	// DeleteProactiveLog deletes the conversation's entries recorded for
+	// taskID and returns how many it deleted.
+	DeleteProactiveLog(ctx context.Context, convKey, taskID string) (int, error)
 	PurgeProactiveLog(ctx context.Context, before time.Time) (int, error)
 	// GetGroupMemory returns ErrNotFound when the conversation has no memory row.
 	GetGroupMemory(ctx context.Context, convKey string) (GroupMemory, error)
@@ -202,6 +205,9 @@ type Store interface {
 	// whether it did; a timer cancelled, re-armed or postponed since is left as
 	// it is.
 	PostponeTimer(ctx context.Context, ref TimerRef, dueAt time.Time) (bool, error)
+	// DeleteTimer deletes the timer ref names and reports whether it did; a
+	// timer cancelled, re-armed or postponed since is left as it is.
+	DeleteTimer(ctx context.Context, ref TimerRef) (bool, error)
 	// UserMessageTimes returns when the conversation's newest up to limit
 	// member (not bot) messages occurred at or after since, newest first (none
 	// when limit <= 0). It looks at no more than the conversation's newest

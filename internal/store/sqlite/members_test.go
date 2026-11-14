@@ -260,3 +260,33 @@ func TestProactiveLog_Purge(t *testing.T) {
 		t.Fatalf("remaining sent = %d, %v; want 1", n, err)
 	}
 }
+
+func TestProactiveLog_DeleteTask(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	base := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+	for _, e := range []store.ProactiveLogEntry{
+		{ConversationKey: testConvKey, PlatformUserID: "20001", Kind: store.ProactivePrivateInitiate, TaskID: "task_a", CreatedAt: base},
+		{ConversationKey: testConvKey, PlatformUserID: "20001", Kind: store.ProactivePrivateSkip, TaskID: "task_b", CreatedAt: base},
+		{ConversationKey: testConvKeyB, PlatformUserID: "20001", Kind: store.ProactivePrivateInitiate, TaskID: "task_a", CreatedAt: base},
+	} {
+		if err := db.AppendProactiveLog(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := db.DeleteProactiveLog(ctx, testConvKey, "task_a"); err != nil || n != 1 {
+		t.Fatalf("DeleteProactiveLog = %d, %v; want 1", n, err)
+	}
+	if n, err := db.CountProactive(ctx, testConvKey, "", store.ProactivePrivateInitiate, time.Time{}); err != nil || n != 0 {
+		t.Fatalf("initiates left = %d, %v; want 0", n, err)
+	}
+	if n, err := db.CountProactive(ctx, testConvKey, "", store.ProactivePrivateSkip, time.Time{}); err != nil || n != 1 {
+		t.Fatalf("skips left = %d, %v; want the other task's 1", n, err)
+	}
+	if n, err := db.CountProactive(ctx, testConvKeyB, "", store.ProactivePrivateInitiate, time.Time{}); err != nil || n != 1 {
+		t.Fatalf("other conversation's initiates = %d, %v; want 1", n, err)
+	}
+	if n, err := db.DeleteProactiveLog(ctx, testConvKey, "task_a"); err != nil || n != 0 {
+		t.Fatalf("second DeleteProactiveLog = %d, %v; want 0", n, err)
+	}
+}

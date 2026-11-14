@@ -191,6 +191,32 @@ func (s *Service) SetProactiveEnabled(ctx context.Context, convKey string, on bo
 	return pv, changed && pv.Version != 0, err
 }
 
+// SetPrivateLevel sets how often the bot starts the private chat, changing
+// only proactive.private.level of the current policy under the service lock,
+// as SetProactiveEnabled does. level must be a PrivateLevel* value (empty for
+// the default) and convKey a private chat's, or ErrInvalid is returned. changed reports whether a new
+// version was stored; setting the current level stores nothing and returns the
+// current version.
+func (s *Service) SetPrivateLevel(ctx context.Context, convKey, level, by string) (pv store.PolicyVersion, changed bool, err error) {
+	if parts := strings.SplitN(convKey, ":", 4); len(parts) != 4 || parts[2] != conloomapi.ConvPrivate {
+		return store.PolicyVersion{}, false, fmt.Errorf("%w: proactive.private.level applies to private conversations only", ErrInvalid)
+	}
+	action := "private_level_" + level
+	pv, err = s.change(ctx, convKey, by, action, func(cur store.PolicyVersion) (conloomapi.GroupPolicy, string, bool, error) {
+		if cur.Policy.Proactive.Private.Level == level {
+			return cur.Policy, "", false, nil
+		}
+		p := cur.Policy
+		p.Proactive.Private.Level = level
+		if err := Validate(p); err != nil {
+			return conloomapi.GroupPolicy{}, "", false, err
+		}
+		changed = true
+		return p, action, true, nil
+	})
+	return pv, changed && pv.Version != 0, err
+}
+
 // change appends the policy produced by next unless it reports no change (returning the current
 // version) or an error (returning no version), then invalidates the
 // cache, records a policy.update audit event and notifies OnChange callbacks. An audit failure is
