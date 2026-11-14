@@ -537,7 +537,7 @@ func partsDirective(maxParts int) string {
 	if maxParts <= 1 {
 		return "回复只发一条消息。"
 	}
-	return fmt.Sprintf("回复可以像聊天那样分成 1 到 %d 条短消息，条与条之间用单独一行的 %s 分隔；不需要分时就只发一条。", maxParts, partSeparator)
+	return fmt.Sprintf("回复可以像聊天那样分成 1 到 %d 条短消息，每条单独占一行（只有 %s 的一行也表示分隔）；一条就够时不要分。", maxParts, partSeparator)
 }
 
 // call builds the context for the routed profile and calls the model. With

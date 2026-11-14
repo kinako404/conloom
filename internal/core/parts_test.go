@@ -23,11 +23,40 @@ func TestSplitParts(t *testing.T) {
 		{"over max of two", "一\n|||\n二\n|||\n三", 2, []string{"一", "二\n三"}},
 		{"empty parts dropped", "|||\n一\n|||\n\n|||\n  \n|||\n二\n|||", 5, []string{"一", "二"}},
 		{"only separators", "|||\n|||", 3, nil},
-		{"no separator", "  只有一段\n两行  ", 3, []string{"只有一段\n两行"}},
+		{"line breaks split", "  只有一段\n两行  ", 3, []string{"只有一段", "两行"}},
 		{"separator with spaces", "一 \n  |||\t\n 二\r\n|||\r\n三", 3, []string{"一", "二", "三"}},
 		{"inline separator kept", "一 ||| 二", 3, []string{"一 ||| 二"}},
-		{"multi-line part", "一行\n二行\n|||\n三行", 3, []string{"一行\n二行", "三行"}},
+		{"lines and separators", "一行\n二行\n|||\n三行", 3, []string{"一行", "二行", "三行"}},
+		{"blank lines dropped", "\n一行\n\n \r\n二行\n\n", 3, []string{"一行", "二行"}},
+		{"two lines", "好的。我这就去。\n你先坐一会儿吧。", 3, []string{"好的。我这就去。", "你先坐一会儿吧。"}},
+		{"leading ellipsis kept", "……我知道了。", 3, []string{"……我知道了。"}},
+		{"leading ellipsis after spaces kept", "  ……我知道了。\n好", 3, []string{"……我知道了。", "好"}},
+		{"mid-line ellipsis", "唔？……一直这么穿。穿多了不方便。\n你要是受不了，我可以披件外套。", 3,
+			[]string{"唔？……", "一直这么穿。穿多了不方便。", "你要是受不了，我可以披件外套。"}},
+		{"trailing ellipsis kept", "我想想……\n算了……", 3, []string{"我想想……", "算了……"}},
+		{"trailing ellipsis with closer kept", "他说“再等等……”", 3, []string{"他说“再等等……”"}},
+		{"single ellipsis char", "嗯…好吧", 3, []string{"嗯…", "好吧"}},
+		{"ascii dots", "wait... what?", 3, []string{"wait...", "what?"}},
+		{"long ascii dots", "嗯......好", 3, []string{"嗯......", "好"}},
+		{"two dots no split", "1..2 和 3.5", 3, []string{"1..2 和 3.5"}},
+		{"full stops", "嗯。。。好吧", 3, []string{"嗯。。。", "好吧"}},
+		{"two full stops no split", "嗯。。好吧", 3, []string{"嗯。。好吧"}},
+		{"closing quote stays", "他说“再等等……”然后就走了", 3, []string{"他说“再等等……”", "然后就走了"}},
+		{"closing brackets stay", "（叹气……）』好吧", 3, []string{"（叹气……）』", "好吧"}},
+		{"ascii closing quote stays", `他说"等等..."然后走了`, 3, []string{`他说"等等..."`, "然后走了"}},
+		{"question mark stays", "唔……？你说什么", 3, []string{"唔……？", "你说什么"}},
+		{"several ellipses", "一……二……三", 3, []string{"一……", "二……", "三"}},
+		{"ellipsis then spaces", "嗯……  好吧", 3, []string{"嗯……", "好吧"}},
+		{"punctuation only before", "？……好吧", 3, []string{"？……好吧"}},
+		{"ellipsis only after", "嗯…… ……", 3, []string{"嗯…… ……"}},
+		{"over max keeps separators", "一……二\n三\n四……五\n六", 3, []string{"一……", "二", "三\n四……五\n六"}},
+		{"over max keeps spaces after ellipsis", "a\nb\nc... d", 2, []string{"a", "b\nc... d"}},
+		{"over max after blank lines", "一\n二\n\n三", 2, []string{"一", "二\n三"}},
+		{"code block splits only at separators", "看这个……\n```\nfoo()\nbar()\n```\n|||\n好了…对吧", 3,
+			[]string{"看这个……\n```\nfoo()\nbar()\n```", "好了…对吧"}},
+		{"code block without separator", "```\na\n\nb\n```", 3, []string{"```\na\n\nb\n```"}},
 		{"max one keeps whole text", "一\n|||\n二", 1, []string{"一\n|||\n二"}},
+		{"max one keeps lines and ellipses", " 一……二\n三 ", 1, []string{" 一……二\n三 "}},
 		{"max zero keeps whole text", "一\n|||\n二", 0, []string{"一\n|||\n二"}},
 	}
 	for _, tt := range tests {
@@ -175,7 +204,7 @@ func TestPartsDirective(t *testing.T) {
 	if got := partsDirective(1); got != "回复只发一条消息。" {
 		t.Errorf("partsDirective(1) = %q", got)
 	}
-	want := "回复可以像聊天那样分成 1 到 4 条短消息，条与条之间用单独一行的 ||| 分隔；不需要分时就只发一条。"
+	want := "回复可以像聊天那样分成 1 到 4 条短消息，每条单独占一行（只有 ||| 的一行也表示分隔）；一条就够时不要分。"
 	if got := partsDirective(4); got != want {
 		t.Errorf("partsDirective(4) = %q, want %q", got, want)
 	}
