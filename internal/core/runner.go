@@ -289,6 +289,14 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		Directive:        directive,
 		Memory:           o.injectMemory(ctx, task, pol, triggers, targets, names, speakerRows),
 	}
+	if conv.Type == conloomapi.ConvPrivate {
+		// The bars come from the persona version SystemPrompt rendered.
+		if pv, err := o.personas.Current(ctx, task.ConversationKey, bot.PersonaTemplate); err != nil {
+			o.logStateError(task, err)
+		} else {
+			in.State = o.stateBlock(ctx, task, bot, pv.Persona)
+		}
+	}
 	run := o.newSkillRun(task, bot, conv, triggers, &out)
 	if run != nil {
 		in.SystemPrompt += "\n\n" + run.set.Section
