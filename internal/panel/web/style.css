@@ -190,7 +190,7 @@ input[type=checkbox] { width: 16px; height: 16px; vertical-align: middle; }
 
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
 .toolbar .spacer { flex: 1; }
-.quick-adjust { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.quick-adjust { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px; }
 
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 12px 0 16px; flex-wrap: wrap; }
 .tabs a { padding: 6px 14px; color: var(--text); border-bottom: 2px solid transparent; }

@@ -473,12 +473,22 @@ function memberEditor(key, mem) {
   const memberPath = convPath(key, 'memory', 'members', encodeURIComponent(mem.user_id));
   const quick = AFFINITY_QUICK.map(([text, next]) => h('button', {
     type: 'button',
-    onclick: (e) => {
+    onclick: async () => {
       const v = Math.min(Math.max(next(mem.affinity ?? INITIAL_AFFINITY), 0), 100);
-      if (v === mem.affinity) return fail(msg, `好感度已经是 ${v}`);
-      return write(msg, e.currentTarget,
-        () => put(memberPath, { affinity: v, reason: reason.value.trim() || `快捷调整 ${text}` }),
-        `已把 ${mem.name || mem.user_id} 的好感度调整为 ${v}`);
+      if (v === mem.affinity) {
+        mount(msg, h('div', { class: 'notice' }, `好感度已经是 ${v}`));
+        return;
+      }
+      const dirty = note.value !== (mem.note || '') || affinity.value.trim() !== String(mem.affinity ?? '');
+      if (dirty && !confirm('备注或好感度有未保存的修改，快捷按钮只保存好感度，这些修改会丢失。继续吗？')) return;
+      for (const b of quick) b.disabled = true;
+      try {
+        await write(msg, null,
+          () => put(memberPath, { affinity: v, reason: reason.value.trim() || `快捷调整 ${text}` }),
+          `已把 ${mem.name || mem.user_id} 的好感度调整为 ${v}`);
+      } finally {
+        for (const b of quick) b.disabled = false;
+      }
     },
   }, text));
   return h('form', {
@@ -498,8 +508,10 @@ function memberEditor(key, mem) {
   },
   h('h3', null, `编辑 ${mem.name || ''}（${mem.user_id}）`),
   field('备注', note, '写空清除备注'),
-  field('好感度', h('span', { class: 'quick-adjust' }, affinity, quick),
-    `0–100 的整数；快捷按钮按已保存的值${mem.affinity == null ? `（未设置时从 ${INITIAL_AFFINITY} 起算）` : ''}调整并立即保存，只改好感度`),
+  field('好感度', affinity, '0–100 的整数'),
+  h('div', { class: 'quick-adjust', role: 'group', 'aria-label': '快捷调整好感度' }, quick,
+    h('span', { class: 'hint' },
+      `按已保存的值${mem.affinity == null ? `（未设置时从 ${INITIAL_AFFINITY} 起算）` : ''}调整并立即保存，只改好感度`)),
   field('原因', reason),
   msg,
   h('div', { class: 'toolbar' }, save, h('button', { type: 'button', onclick: (e) => e.currentTarget.form.remove() }, '取消')));
