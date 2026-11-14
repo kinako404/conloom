@@ -95,11 +95,8 @@ func (s *Server) getChat(w http.ResponseWriter, r *http.Request, _ *Session) {
 			return
 		}
 	}
-	msgs, err := s.d.Store.MessagesAfter(r.Context(), conv.Key, after, maxChatMessages)
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
+	// typing is read before the messages: a reply delivered in between then
+	// shows next to a stale indicator rather than neither showing.
 	typing := chat.Busy(conv.Key)
 	if !typing {
 		pending, err := s.d.Store.PendingPanelActions(r.Context(), conv.Key)
@@ -108,6 +105,11 @@ func (s *Server) getChat(w http.ResponseWriter, r *http.Request, _ *Session) {
 			return
 		}
 		typing = pending > 0
+	}
+	msgs, err := s.d.Store.MessagesAfter(r.Context(), conv.Key, after, maxChatMessages)
+	if err != nil {
+		s.fail(w, r, err)
+		return
 	}
 	out := make([]messageView, 0, len(msgs))
 	for _, m := range msgs {

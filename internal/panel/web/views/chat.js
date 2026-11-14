@@ -31,6 +31,8 @@ export async function chatTab({ key, signal }) {
   const send = h('button', { type: 'submit', class: 'primary' }, '发送');
   let after = 0;
 
+  // add appends the rows not shown yet and reports whether there were any;
+  // stick scrolls them into view even when the user has scrolled up.
   const add = (rows, stick) => {
     const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
     let added = false;
@@ -41,6 +43,7 @@ export async function chatTab({ key, signal }) {
       added = true;
     }
     if (added && (stick || atBottom)) log.scrollTop = log.scrollHeight;
+    return added;
   };
 
   const first = await get(convPath(key, 'messages'), { limit: HISTORY }, signal);
@@ -65,8 +68,7 @@ export async function chatTab({ key, signal }) {
     try {
       const res = await get(convPath(key, 'chat'), { after }, signal);
       const rows = res.messages || [];
-      add(rows, stick);
-      stick = false;
+      if (add(rows, stick)) stick = false;
       typing.hidden = !res.typing;
       mount(pollError);
       if (rows.length >= PAGE) next = 0;

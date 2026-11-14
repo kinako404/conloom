@@ -94,7 +94,7 @@ panel:
 两种用法的共同点：
 
 - 消息和平台发来的消息走同一套流程：输入审查、限流、私聊的等待节奏都照常生效。消息长度 1 到 2000 字，只能在私聊里发，群聊返回 400。
-- 从面板发出的消息记为 `panel` 通道，带“面板”标记。由它触发的回复也走 `panel` 通道：只在面板里显示，不会发到原平台，适配器拉取发件箱时也拿不到。之后从原平台发来的消息照常在原平台回复，上下文里包括在面板里聊过的内容。
+- 从面板发出的消息记为 `panel` 通道，带“面板”标记。由它触发的回复也走 `panel` 通道：只在面板里显示，不会发到原平台，适配器拉取发件箱时也拿不到。之后从原平台发来的消息照常在原平台回复，上下文里包括在面板里聊过的内容。面板消息和平台消息在等待期间合并成同一个任务时，以最新一条消息定通道：平台消息之后紧接着在面板里发一句，这次回复就只出现在面板里。
 - “聊天”标签打开时显示最近 50 条消息，之后每 1.5 秒拉一次新消息，离开页面就停止。bot 自己的消息在左，用户的在右。会话有排队中或运行中的任务，或者面板通道还有没送达的分条时，显示“对方正在输入…”。
 - 回车发送，Shift+回车换行。发送失败时显示服务端返回的错误，输入框里的内容保留。
 
@@ -178,8 +178,8 @@ panel:
 | `GET conversations` | 全部会话 `conversations`，以及配置里的 bot 列表 `bots`（`id`、`name`、`platform`，“新建聊天”从这里选） |
 | `GET conversations/{key}` | 单个会话 |
 | `GET conversations/{key}/messages?before=&limit=` | 浏览消息，按 `seq` 游标翻页。每条消息带 `channel`：`panel` 表示从面板发出或送到面板，平台上的消息为空字符串 |
-| `GET conversations/{key}/chat?after=` | 面板聊天的增量拉取：`seq` 大于 `after`（默认 0）的消息，从旧到新，每次最多 200 条，格式同消息浏览；`typing` 为 true 表示会话有排队中或运行中的任务，或面板通道还有没送达的分条；`next_after` 是下一次的 `after`（没有新消息时等于本次的 `after`） |
 | `GET conversations/{key}/messages?q=&from=&to=&offset=&limit=` | 检索消息，按 `offset` 翻页，响应里的 `next_offset` 是下一页 |
+| `GET conversations/{key}/chat?after=` | 面板聊天的增量拉取：`seq` 大于 `after`（默认 0）的消息，从旧到新，每次最多 200 条，格式同消息浏览；`typing` 为 true 表示会话有排队中或运行中的任务，或面板通道还有没送达的分条；`next_after` 是下一次的 `after`（没有新消息时等于本次的 `after`） |
 | `GET conversations/{key}/policy` | 当前策略和历史版本 |
 | `GET conversations/{key}/persona` | 当前人设、历史版本、可用模板；还没有人设时给出将要使用的模板，不写库。`minor` 是当前人设（没有时是该模板）的 `minor`，`content_mode` 是它在私聊里的内容模式（`open` 或 `protected`），与会话本身是群聊还是私聊无关 |
 | `GET conversations/{key}/memory` | 与 `GET /api/v1/conversations/{id}/memory` 相同 |
