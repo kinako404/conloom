@@ -6,13 +6,15 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 const (
 	consReasonMaxRunes = 200
 	// consRawMaxRunes only guards against runaway output; storage limits are
 	// applied by consResolveRefs after codes are replaced.
-	consRawMaxRunes = 4000
+	consRawMaxRunes = conloomapi.MaxSummaryMaxChars
 )
 
 var errConsNoJSON = errors.New("model output has no JSON object")

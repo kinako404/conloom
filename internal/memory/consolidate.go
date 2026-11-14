@@ -39,13 +39,14 @@ const (
 	consLeaseSlack    = 10 * time.Second
 )
 
-// A batch's output is planned as consOutputBase tokens for the summary plus
-// consOutputPerMember per member, within consOutputShare of the long model's
-// reserved output.
+// A batch's output is planned at one token per character: the summary at its
+// limit plus consOutputFrame tokens of JSON, and each member's note at its
+// limit plus consOutputPerMember tokens for the ref, delta and reason, within
+// consOutputShare of the long model's reserved output.
 const (
 	consOutputShare     = 0.7
-	consOutputBase      = 800
-	consOutputPerMember = 260
+	consOutputFrame     = 100
+	consOutputPerMember = 60
 )
 
 // Failure categories stored as GroupMemory.LastError.
@@ -56,10 +57,17 @@ const (
 	consErrTruncated = "output_truncated"
 )
 
-// consMemberCap is how many members a batch may show for a model that may
-// output outputBudget tokens: at least 1.
-func consMemberCap(outputBudget int) int {
-	return max(consMinBatchMembers, (int(float64(outputBudget)*consOutputShare)-consOutputBase)/consOutputPerMember)
+// consMemberCap is how many members a batch may show, at least 1, for a
+// model that may output outputBudget tokens when the summary may be
+// summaryMax and each note noteMax characters long.
+func consMemberCap(outputBudget, summaryMax, noteMax int) int {
+	room := int(float64(outputBudget)*consOutputShare) - consPlannedOutput(0, summaryMax, noteMax)
+	return max(consMinBatchMembers, room/(noteMax+consOutputPerMember))
+}
+
+// consPlannedOutput is the output planned for a batch of members members.
+func consPlannedOutput(members, summaryMax, noteMax int) int {
+	return summaryMax + consOutputFrame + members*(noteMax+consOutputPerMember)
 }
 
 // consLimits are a conversation's reduced batch limits after truncated or
@@ -172,7 +180,7 @@ func (c *Consolidator) run(ctx context.Context, convKey string, manual bool) (Re
 	if err != nil {
 		return Result{}, 0, err
 	}
-	style := consStyleForPersona(convKey, doc)
+	style := consStyleForPersona(convKey, doc, mp)
 
 	var res Result
 	promptTokens := 0
@@ -245,7 +253,7 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 	p := d.Profile
 	in.BotName, in.Location, in.Unnamed = botName, c.d.Location, style.unnamed
 	in.BaseTokens, in.Budget, in.TokenFactor = base, d.PromptBudget, p.Config.TokenEstimateFactor
-	memberCap := consMemberCap(d.MaxOutputTokens)
+	memberCap := consMemberCap(d.MaxOutputTokens, style.summaryMax, style.noteMax)
 	in.MaxMembers = c.memberLimit(convKey, memberCap)
 	b := consPlanBatch(in)
 	now := c.d.Now()

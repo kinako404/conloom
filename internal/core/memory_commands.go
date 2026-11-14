@@ -66,7 +66,7 @@ func (o *Orchestrator) memCmd(ctx context.Context, task store.TaskRecord, isAdmi
 		}
 		return o.memCmdAffinity(ctx, task)
 	case "记住", "remember":
-		return o.memCmdRemember(ctx, task, args, triggers, pol.Review)
+		return o.memCmdRemember(ctx, task, args, triggers, pol)
 	}
 	fields := strings.Fields(strings.ToLower(args))
 	switch {
@@ -205,14 +205,14 @@ func (o *Orchestrator) memCmdSetAffinity(ctx context.Context, task store.TaskRec
 // memCmdRemember remembers what the sender asked (memory.Remember) and
 // answers with the copy for its outcome.
 func (o *Orchestrator) memCmdRemember(ctx context.Context, task store.TaskRecord, args string, triggers []store.MessageRecord,
-	pol conloomapi.ReviewPolicy) (string, error) {
+	pol conloomapi.GroupPolicy) (string, error) {
 	name := ""
 	if len(triggers) > 0 {
 		name = triggers[len(triggers)-1].DisplayName
 	}
 	status, err := memory.Remember(ctx, memory.RememberDeps{Store: o.st, Reviewer: o.reviewer, Metrics: o.metrics},
 		memory.RememberRequest{ConversationKey: task.ConversationKey, UserID: task.ActorPlatformUserID,
-			DisplayName: name, Content: args, Review: pol})
+			DisplayName: name, Content: args, Review: pol.Review, Memory: pol.Memory})
 	if err != nil {
 		return "", err
 	}

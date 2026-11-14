@@ -303,7 +303,7 @@ func TestMemoryAPI_PutValidation(t *testing.T) {
 	s.accept(t, adapterToken, s.event("20001", "大家好"))
 	path := memoryPath + "/members/20001"
 	for name, body := range map[string]any{
-		"note of 201 runes": conloomapi.MemberMemoryPut{Note: strPtr(strings.Repeat("字", 201))},
+		"note of 301 runes": conloomapi.MemberMemoryPut{Note: strPtr(strings.Repeat("字", memory.NoteMaxRunes+1))},
 		"affinity 101":      conloomapi.MemberMemoryPut{Affinity: intPtr(101)},
 		"affinity -1":       conloomapi.MemberMemoryPut{Affinity: intPtr(-1)},
 		"empty object":      `{}`,

@@ -555,15 +555,17 @@ func TestDefaultGroupPolicyMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `"memory":{"enabled":false,"affinity":true,"consolidate_every":150,"consolidate_interval":"6h0m0s","consolidate_min":20,"backlog":1000}`; !strings.Contains(string(b), want) {
+	if want := `"memory":{"enabled":false,"affinity":true,"consolidate_every":150,"consolidate_interval":"6h0m0s","consolidate_min":20,"backlog":1000,"summary_max_chars":0,"note_max_chars":0}`; !strings.Contains(string(b), want) {
 		t.Fatalf("json %s missing %s", b, want)
 	}
 	var y GroupPolicy
-	src := "memory:\n  enabled: true\n  affinity: false\n  consolidate_every: 300\n  consolidate_interval: 12h\n  backlog: 0\n"
+	src := "memory:\n  enabled: true\n  affinity: false\n  consolidate_every: 300\n  consolidate_interval: 12h\n  backlog: 0\n" +
+		"  summary_max_chars: 2500\n  note_max_chars: 600\n"
 	if err := yaml.Unmarshal([]byte(src), &y); err != nil {
 		t.Fatal(err)
 	}
-	if want := (MemoryPolicy{Enabled: true, ConsolidateEvery: 300, ConsolidateInterval: Duration{12 * time.Hour}}); y.Memory != want {
+	if want := (MemoryPolicy{Enabled: true, ConsolidateEvery: 300, ConsolidateInterval: Duration{12 * time.Hour},
+		SummaryMaxChars: 2500, NoteMaxChars: 600}); y.Memory != want {
 		t.Fatalf("yaml memory = %+v, want %+v", y.Memory, want)
 	}
 }
@@ -592,6 +594,18 @@ func TestValidateMemory_Bounds(t *testing.T) {
 		{"min 2000 ok", func(m *MemoryPolicy) { m.ConsolidateMin = 2000 }, ""},
 		{"min 2001", func(m *MemoryPolicy) { m.ConsolidateMin = 2001 }, "memory.consolidate_min must be in [1, 2000]"},
 		{"zero section", func(m *MemoryPolicy) { *m = MemoryPolicy{} }, "memory.consolidate_every"},
+		{"summary 0 ok", func(m *MemoryPolicy) { m.SummaryMaxChars = 0 }, ""},
+		{"summary -1", func(m *MemoryPolicy) { m.SummaryMaxChars = -1 }, "memory.summary_max_chars must be 0 or in [200, 8000]"},
+		{"summary 199", func(m *MemoryPolicy) { m.SummaryMaxChars = 199 }, "memory.summary_max_chars must be 0 or in [200, 8000]"},
+		{"summary 200 ok", func(m *MemoryPolicy) { m.SummaryMaxChars = 200 }, ""},
+		{"summary 8000 ok", func(m *MemoryPolicy) { m.SummaryMaxChars = 8000 }, ""},
+		{"summary 8001", func(m *MemoryPolicy) { m.SummaryMaxChars = 8001 }, "memory.summary_max_chars must be 0 or in [200, 8000]"},
+		{"note 0 ok", func(m *MemoryPolicy) { m.NoteMaxChars = 0 }, ""},
+		{"note -1", func(m *MemoryPolicy) { m.NoteMaxChars = -1 }, "memory.note_max_chars must be 0 or in [50, 2000]"},
+		{"note 49", func(m *MemoryPolicy) { m.NoteMaxChars = 49 }, "memory.note_max_chars must be 0 or in [50, 2000]"},
+		{"note 50 ok", func(m *MemoryPolicy) { m.NoteMaxChars = 50 }, ""},
+		{"note 2000 ok", func(m *MemoryPolicy) { m.NoteMaxChars = 2000 }, ""},
+		{"note 2001", func(m *MemoryPolicy) { m.NoteMaxChars = 2001 }, "memory.note_max_chars must be 0 or in [50, 2000]"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -608,6 +622,22 @@ func TestValidateMemory_Bounds(t *testing.T) {
 				t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestWithDefaultsKeepsZeroMemoryLimits(t *testing.T) {
+	def := DefaultGroupPolicy()
+	def.Memory.SummaryMaxChars, def.Memory.NoteMaxChars = 1500, 300
+	var stored GroupPolicy
+	if err := json.Unmarshal([]byte(`{"memory":{"enabled":true,"affinity":true,"consolidate_every":150,"consolidate_interval":"6h0m0s","consolidate_min":20,"backlog":1000}}`), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if m := stored.WithDefaults(def).Memory; m.SummaryMaxChars != 0 || m.NoteMaxChars != 0 {
+		t.Fatalf("stored memory without limits = %d/%d after WithDefaults, want 0/0 (the conversation type's default)", m.SummaryMaxChars, m.NoteMaxChars)
+	}
+	stored.Memory.SummaryMaxChars, stored.Memory.NoteMaxChars = 2500, 600
+	if m := stored.WithDefaults(def).Memory; m.SummaryMaxChars != 2500 || m.NoteMaxChars != 600 {
+		t.Fatalf("stored limits = %d/%d after WithDefaults, want 2500/600", m.SummaryMaxChars, m.NoteMaxChars)
 	}
 }
 

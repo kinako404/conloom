@@ -267,9 +267,19 @@ func TestConsolidate_SplitsBatchesByBudget(t *testing.T) {
 }
 
 func TestConsMemberCap(t *testing.T) {
-	for out, want := range map[int]int{0: 1, 1000: 1, 1900: 2, 2300: 3, 4096: 7} {
-		if got := consMemberCap(out); got != want {
-			t.Errorf("consMemberCap(%d) = %d, want %d", out, got, want)
+	for _, c := range []struct{ out, summary, note, want int }{
+		{0, 1500, 300, 1}, {2000, 1500, 300, 1}, {3400, 1500, 300, 2}, {4096, 1500, 300, 3}, {8192, 1500, 300, 11},
+		{4096, 3000, 1000, 1}, {8192, 3000, 1000, 2}, {8192, 8000, 2000, 1}, {4096, 400, 80, 16},
+	} {
+		if got := consMemberCap(c.out, c.summary, c.note); got != c.want {
+			t.Errorf("consMemberCap(%d, %d, %d) = %d, want %d", c.out, c.summary, c.note, got, c.want)
+		}
+	}
+	for _, c := range []struct{ summary, note int }{{1500, 300}, {3000, 1000}} {
+		n := consMemberCap(8192, c.summary, c.note)
+		if planned := consPlannedOutput(n, c.summary, c.note); float64(planned) > 8192*consOutputShare || planned < c.summary+c.note {
+			t.Errorf("%d members with a %d-character summary and %d-character notes plan %d tokens, want within %v of 8192",
+				n, c.summary, c.note, planned, consOutputShare)
 		}
 	}
 }
@@ -307,7 +317,7 @@ func TestConsPlanBatch_CutsAtMemberCap(t *testing.T) {
 }
 
 func TestConsolidate_OutputBudgetSplitsManyMembers(t *testing.T) {
-	e := newConsEnv(t, consOpts{reservedOutput: 1900})
+	e := newConsEnv(t, consOpts{reservedOutput: 3400})
 	e.add(t,
 		e.msg("20001", "小明", "早", consAt(0)),
 		e.msg("20002", "小红", "早啊", consAt(1)),
@@ -341,11 +351,11 @@ func consRoundRobin(t *testing.T, e *consEnv, n int) []store.MessageRecord {
 }
 
 func TestConsolidate_TruncatedOutputShrinksNextBatch(t *testing.T) {
-	e := newConsEnv(t, consOpts{reservedOutput: 2300})
+	e := newConsEnv(t, consOpts{reservedOutput: 4096})
 	consRoundRobin(t, e, 30)
 	e.long.setReply(func(int, openai.ChatRequest) (openai.ChatResponse, error) {
 		return openai.ChatResponse{Content: `{"group_summary":"S","members":[{"ref":"P1","note":"写到一半`, Model: "fake-long",
-			FinishReason: "length", CompletionTokens: 2300}, nil
+			FinishReason: "length", CompletionTokens: 4096}, nil
 	})
 	if _, err := e.c.Run(context.Background(), testConvKey, false); err == nil {
 		t.Fatal("Run: want an error for truncated output")
@@ -357,7 +367,7 @@ func TestConsolidate_TruncatedOutputShrinksNextBatch(t *testing.T) {
 		t.Fatalf("group = %+v, want cursor 0 and %s", g, consErrTruncated)
 	}
 	logs := e.logs.String()
-	for _, want := range []string{"finish_reason=length", "completion_tokens=2300"} {
+	for _, want := range []string{"finish_reason=length", "completion_tokens=4096"} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("failure log lacks %q:\n%s", want, logs)
 		}

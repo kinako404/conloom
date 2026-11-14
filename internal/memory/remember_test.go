@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/kinako404/conloom/internal/review"
 	"github.com/kinako404/conloom/internal/store"
@@ -218,5 +219,23 @@ func TestRemember_TrimsToTheConversationLimit(t *testing.T) {
 	}
 	if m := getMember(t, st, testPrivateKey, "20001"); m.Note != AppendRemembered(old, content, PrivateNoteMaxRunes) {
 		t.Fatalf("note = %q", m.Note)
+	}
+}
+
+func TestRemember_UsesThePolicyNoteLimit(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	old := strings.Repeat(strings.Repeat("甲", 30)+"。", 4)
+	putMember(t, st, store.MemberMemory{ConversationKey: testConvKey, PlatformUserID: "20001", Note: old})
+	content := strings.Repeat("乙", RememberMaxRunes)
+	got, err := Remember(ctx, RememberDeps{Store: st, Reviewer: review.New(nil, review.Options{})}, RememberRequest{
+		ConversationKey: testConvKey, UserID: "20001", Content: content, Memory: conloomapi.MemoryPolicy{NoteMaxChars: 120},
+	})
+	if err != nil || got != Remembered {
+		t.Fatalf("Remember = %v, %v", got, err)
+	}
+	m := getMember(t, st, testConvKey, "20001")
+	if m.Note != AppendRemembered(old, content, 120) || utf8.RuneCountInString(m.Note) > 120 {
+		t.Fatalf("note = %q (%d runes), want it within note_max_chars 120", m.Note, utf8.RuneCountInString(m.Note))
 	}
 }

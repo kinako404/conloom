@@ -23,8 +23,8 @@ func TestParseOutput_ClampsAndTruncates(t *testing.T) {
 		}
 	}
 
-	long := `{"group_summary":"` + strings.Repeat("摘", 5000) + `","members":[
-		{"ref":"P1","note":"` + strings.Repeat("记", 250) + `","affinity_delta":9,"reason":"` + strings.Repeat("因", 250) + `"},
+	long := `{"group_summary":"` + strings.Repeat("摘", 9000) + `","members":[
+		{"ref":"P1","note":"` + strings.Repeat("记", 350) + `","affinity_delta":9,"reason":"` + strings.Repeat("因", 250) + `"},
 		{"ref":"P2","affinity_delta":-9},
 		{"ref":"P3","affinity_delta":1.6},
 		{"ref":"P4","affinity_delta":"很多"},
@@ -43,8 +43,8 @@ func TestParseOutput_ClampsAndTruncates(t *testing.T) {
 		t.Fatalf("members = %+v, want 6 (duplicate P1 dropped, unknown P9 kept)", out.Members)
 	}
 	first := out.Members[0]
-	if first.Ref != "P1" || utf8.RuneCountInString(first.Note) != 250 || utf8.RuneCountInString(first.Reason) != 250 || first.Delta != 3 {
-		t.Errorf("P1 = note %d runes, reason %d runes, delta %d; want 250, 250 (not cut yet), 3 (first P1 wins)",
+	if first.Ref != "P1" || utf8.RuneCountInString(first.Note) != 350 || utf8.RuneCountInString(first.Reason) != 250 || first.Delta != 3 {
+		t.Errorf("P1 = note %d runes, reason %d runes, delta %d; want 350, 250 (not cut yet), 3 (first P1 wins)",
 			utf8.RuneCountInString(first.Note), utf8.RuneCountInString(first.Reason), first.Delta)
 	}
 	stored := consResolveRefs(out, nil, nil, SummaryMaxRunes, NoteMaxRunes)
@@ -150,13 +150,13 @@ func TestConsReplaceRefs_LeavesCodesSeenInTheInput(t *testing.T) {
 
 func TestConsResolveRefs_TruncatesAfterReplacing(t *testing.T) {
 	names := map[string]string{"P1": "名字很长的小明同学"}
-	note := strings.Repeat("猫", 180) + "。" + strings.Repeat("P1、", 9)
-	summary := strings.Repeat("狗", 790) + "。" + "P1、P1"
+	note := strings.Repeat("猫", 280) + "。" + strings.Repeat("P1、", 9)
+	summary := strings.Repeat("狗", 1490) + "。" + "P1、P1"
 	out := consResolveRefs(modelOutput{Summary: summary, Members: []modelMember{
 		{Ref: "P1", Note: note, Reason: "P1 很友善"},
 		{Ref: "P9", Note: "P1 和 P9"},
 	}}, names, nil, SummaryMaxRunes, NoteMaxRunes)
-	if want := strings.Repeat("猫", 180) + "。"; out.Members[0].Note != want {
+	if want := strings.Repeat("猫", 280) + "。"; out.Members[0].Note != want {
 		t.Errorf("note = %q (%d runes), want cut at the sentence end", out.Members[0].Note, utf8.RuneCountInString(out.Members[0].Note))
 	}
 	if n := utf8.RuneCountInString(out.Summary); n > SummaryMaxRunes || strings.Contains(out.Summary, "P1") {

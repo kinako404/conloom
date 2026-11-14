@@ -145,7 +145,8 @@ func (t *rememberTool) Call(ctx context.Context, inv skills.Invocation, args jso
 	}
 	status, err := memory.Remember(ctx, memory.RememberDeps{Store: t.d.Store, Reviewer: t.d.Reviewer, Metrics: t.d.Metrics},
 		memory.RememberRequest{ConversationKey: inv.ConversationKey, UserID: inv.PlatformUserID,
-			DisplayName: inv.DisplayName, Content: content, Review: pv.Policy.Review, Reason: memory.ReasonRememberTool})
+			DisplayName: inv.DisplayName, Content: content, Review: pv.Policy.Review, Memory: pv.Policy.Memory,
+			Reason: memory.ReasonRememberTool})
 	if err != nil {
 		return "", err
 	}

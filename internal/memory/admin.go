@@ -99,9 +99,10 @@ func (a *Admin) View(ctx context.Context, conv store.ConversationRecord) (conloo
 }
 
 // EditMember sets userID's note, affinity or both in conv, creating the
-// member's row if needed. The note is trimmed and limited by NoteLimit, the
-// affinity must be in [0, 100] and at least one of them must be given;
-// otherwise the error wraps ErrInvalid. Changes are recorded as revisions from
+// member's row if needed. The note is trimmed and limited by NoteLimit under
+// the conversation's current memory policy, the affinity must be in [0, 100]
+// and at least one of them must be given; otherwise the error wraps
+// ErrInvalid. Changes are recorded as revisions from
 // source, counted as affinity changes from source and audited as
 // "memory.update" by actor. It returns the member as stored; a failed audit
 // is returned, wrapping ErrAudit, together with the member.
@@ -113,7 +114,11 @@ func (a *Admin) EditMember(ctx context.Context, conv store.ConversationRecord, u
 	var note string
 	if put.Note != nil {
 		note = strings.TrimSpace(*put.Note)
-		if limit, n := NoteLimit(conv.Type), utf8.RuneCountInString(note); n > limit {
+		pv, err := a.d.Policies.Current(ctx, conv.Key)
+		if err != nil {
+			return conloomapi.MemberMemoryState{}, err
+		}
+		if limit, n := NoteLimit(pv.Policy.Memory, conv.Type), utf8.RuneCountInString(note); n > limit {
 			return conloomapi.MemberMemoryState{}, fmt.Errorf("%w: note must be at most %d characters, got %d", ErrInvalid, limit, n)
 		}
 	}

@@ -29,7 +29,19 @@ type MemoryPolicy struct {
 	// ConsolidateInterval has passed.
 	ConsolidateMin int `json:"consolidate_min" yaml:"consolidate_min"`
 	Backlog        int `json:"backlog" yaml:"backlog"`
+	// SummaryMaxChars and NoteMaxChars limit the summary and each member's
+	// note, in characters; 0 means the default of the conversation's type.
+	SummaryMaxChars int `json:"summary_max_chars" yaml:"summary_max_chars"`
+	NoteMaxChars    int `json:"note_max_chars" yaml:"note_max_chars"`
 }
+
+// Bounds of a non-zero MemoryPolicy.SummaryMaxChars and NoteMaxChars.
+const (
+	MinSummaryMaxChars = 200
+	MaxSummaryMaxChars = 8000
+	MinNoteMaxChars    = 50
+	MaxNoteMaxChars    = 2000
+)
 
 func DefaultMemoryPolicy() MemoryPolicy {
 	return MemoryPolicy{
@@ -296,6 +308,8 @@ func DefaultGroupPolicy() GroupPolicy {
 // and each turn-taking, quote, max_parts and join setting that is zero (missing from policies
 // stored before it existed; zero is never valid for them) taken from def. Zero is a valid
 // private_wait, so private_wait and private_max_wait are taken from def only when both are zero.
+// Memory's summary_max_chars and note_max_chars are never taken from def: their zero means the
+// default of the conversation's type.
 func (p GroupPolicy) WithDefaults(def GroupPolicy) GroupPolicy {
 	if p.Proactive == (ProactivePolicy{}) {
 		p.Proactive = def.Proactive
@@ -466,6 +480,12 @@ func (p GroupPolicy) Validate() error {
 	}
 	if m.Backlog < 0 || m.Backlog > 5000 {
 		fail("memory.backlog must be in [0, 5000], got %d", m.Backlog)
+	}
+	if v := m.SummaryMaxChars; v != 0 && (v < MinSummaryMaxChars || v > MaxSummaryMaxChars) {
+		fail("memory.summary_max_chars must be 0 or in [%d, %d], got %d", MinSummaryMaxChars, MaxSummaryMaxChars, v)
+	}
+	if v := m.NoteMaxChars; v != 0 && (v < MinNoteMaxChars || v > MaxNoteMaxChars) {
+		fail("memory.note_max_chars must be 0 or in [%d, %d], got %d", MinNoteMaxChars, MaxNoteMaxChars, v)
 	}
 	if m.Enabled && !c.AllowLongRequests {
 		fail("memory.enabled requires concurrency.allow_long_requests")

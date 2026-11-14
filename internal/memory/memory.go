@@ -36,26 +36,36 @@ const (
 // /好感度 设|+n|-n, which overrides the affinity rules.
 const ReasonAffinityCommand = "affinity_command"
 
-// Storage limits of private conversations, where the bot talks to one person
-// and can remember more about them; groups use SummaryMaxRunes and
-// NoteMaxRunes.
+// Default storage limits, in runes, of a private conversation's summary and
+// note, where the bot talks to one person and can remember more about them;
+// groups default to SummaryMaxRunes and NoteMaxRunes. A conversation's
+// memory policy may set its own (see SummaryLimit and NoteLimit).
 const (
-	PrivateSummaryMaxRunes = 1200
-	PrivateNoteMaxRunes    = 500
+	PrivateSummaryMaxRunes = 3000
+	PrivateNoteMaxRunes    = 1000
 )
 
-// SummaryLimit is the summary length limit, in runes, of conversations of
-// convType.
-func SummaryLimit(convType string) int {
-	if convType == conloomapi.ConvPrivate {
+// SummaryLimit is the summary length limit, in runes, of a conversation of
+// convType under memory policy pol: pol's summary_max_chars, or the default
+// of convType when it is 0.
+func SummaryLimit(pol conloomapi.MemoryPolicy, convType string) int {
+	switch {
+	case pol.SummaryMaxChars > 0:
+		return pol.SummaryMaxChars
+	case convType == conloomapi.ConvPrivate:
 		return PrivateSummaryMaxRunes
 	}
 	return SummaryMaxRunes
 }
 
-// NoteLimit is the note length limit, in runes, of conversations of convType.
-func NoteLimit(convType string) int {
-	if convType == conloomapi.ConvPrivate {
+// NoteLimit is the note length limit, in runes, of a conversation of
+// convType under memory policy pol: pol's note_max_chars, or the default of
+// convType when it is 0.
+func NoteLimit(pol conloomapi.MemoryPolicy, convType string) int {
+	switch {
+	case pol.NoteMaxChars > 0:
+		return pol.NoteMaxChars
+	case convType == conloomapi.ConvPrivate:
 		return PrivateNoteMaxRunes
 	}
 	return NoteMaxRunes

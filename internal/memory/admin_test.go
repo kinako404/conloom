@@ -94,7 +94,7 @@ func TestAdmin_EditMember_ValidatesLikeAPI(t *testing.T) {
 	}{
 		"neither field": {conloomapi.MemberMemoryPut{Reason: "x"}, "at least one of note and affinity is required"},
 		"note too long": {conloomapi.MemberMemoryPut{Note: strPtr(strings.Repeat("字", NoteMaxRunes+1))},
-			"note must be at most 200 characters, got 201"},
+			"note must be at most 300 characters, got 301"},
 		"affinity 101": {conloomapi.MemberMemoryPut{Affinity: intPtr(101)}, "affinity must be in [0, 100], got 101"},
 		"affinity -1":  {conloomapi.MemberMemoryPut{Affinity: intPtr(-1)}, "affinity must be in [0, 100], got -1"},
 	} {
@@ -119,6 +119,25 @@ func TestAdmin_EditMember_ValidatesLikeAPI(t *testing.T) {
 	long := strings.Repeat("记", PrivateNoteMaxRunes)
 	if _, err := e.admin.EditMember(ctx, private, "20001", conloomapi.MemberMemoryPut{Note: &long}, store.RevisionPanel, "panel:admin"); err != nil {
 		t.Fatalf("private note of %d runes: %v", PrivateNoteMaxRunes, err)
+	}
+}
+
+func TestAdmin_EditMember_UsesThePolicyNoteLimit(t *testing.T) {
+	e := newAdminEnv(t)
+	ctx := context.Background()
+	pol := conloomapi.DefaultGroupPolicy()
+	pol.Memory.NoteMaxChars = 80
+	if _, err := e.admin.d.Policies.Update(ctx, adminConv.Key, conloomapi.PolicyPut{Policy: pol, MemoryPresent: true}, "test"); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	over := strings.Repeat("字", 81)
+	if _, err := e.admin.EditMember(ctx, adminConv, "20001", conloomapi.MemberMemoryPut{Note: &over}, store.RevisionPanel, "panel:admin"); !errors.Is(err, ErrInvalid) ||
+		!strings.Contains(err.Error(), "note must be at most 80 characters, got 81") {
+		t.Fatalf("81-rune note under note_max_chars 80: err = %v", err)
+	}
+	fits := strings.Repeat("字", 80)
+	if _, err := e.admin.EditMember(ctx, adminConv, "20001", conloomapi.MemberMemoryPut{Note: &fits}, store.RevisionPanel, "panel:admin"); err != nil {
+		t.Fatalf("80-rune note: %v", err)
 	}
 }
 

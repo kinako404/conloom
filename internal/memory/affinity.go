@@ -14,8 +14,10 @@ const (
 	DailyLossCap    = 10
 	DecayGraceDays  = 14
 	DecayStepDays   = 7
-	NoteMaxRunes    = 200
-	SummaryMaxRunes = 800
+	// NoteMaxRunes and SummaryMaxRunes are a group's default note and
+	// summary limits (see NoteLimit and SummaryLimit).
+	NoteMaxRunes    = 300
+	SummaryMaxRunes = 1500
 )
 
 // TierName names the affinity tier shown to the reply model instead of the number.

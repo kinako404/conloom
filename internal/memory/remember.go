@@ -196,12 +196,14 @@ type RememberDeps struct {
 }
 
 // RememberRequest is one thing a member asked the bot to remember in a
-// conversation; Review is the conversation's review policy and Reason the
+// conversation; Review and Memory are the conversation's review and memory
+// policies (Memory sets the note limit, see NoteLimit) and Reason the
 // revision's reason, ReasonRemember when empty.
 type RememberRequest struct {
 	ConversationKey, UserID, DisplayName string
 	Content                              string
 	Review                               conloomapi.ReviewPolicy
+	Memory                               conloomapi.MemoryPolicy
 	Reason                               string
 }
 
@@ -232,7 +234,7 @@ func Remember(ctx context.Context, d RememberDeps, req RememberRequest) (Remembe
 		return RememberBlocked, nil
 	}
 	reason := cmp.Or(req.Reason, ReasonRemember)
-	limit := NoteLimit(convTypeOf(req.ConversationKey))
+	limit := NoteLimit(req.Memory, convTypeOf(req.ConversationKey))
 	_, err := UpdateMember(ctx, d.Store, req.ConversationKey, req.UserID, store.RevisionCommand,
 		func(m *store.MemberMemory) (string, bool) {
 			m.Note = AppendRemembered(m.Note, content, limit)

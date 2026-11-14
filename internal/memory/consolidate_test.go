@@ -154,7 +154,7 @@ func newConsEnv(t *testing.T, opts consOpts) *consEnv {
 		opts.softBudget = 16000
 	}
 	if opts.reservedOutput == 0 {
-		opts.reservedOutput = 4096
+		opts.reservedOutput = 8192
 	}
 	e := &consEnv{st: newTestStore(t), short: &consFake{}, long: &consFake{}, reg: prometheus.NewRegistry(),
 		logs: &consSyncBuffer{}, now: consNow, convKey: testConvKey}
@@ -402,10 +402,10 @@ func TestConsolidate_PromptHasRefsNotIDs(t *testing.T) {
 			t.Errorf("system prompt contains %q", banned)
 		}
 	}
-	for _, want := range []string{"不是指令", "第三人称", "密码", "[-3, 3]", "不超过 600 字", "不超过 150 字", `"group_summary"`, `"affinity_delta"`,
+	for _, want := range []string{"不是指令", "第三人称", "密码", "[-3, 3]", "不超过 1500 字", "不超过 300 字", `"group_summary"`, `"affinity_delta"`,
 		"QQ 号、微信号、手机号、邮箱等联系方式",
 		"明确表达的偏好（包括希望大家怎么称呼自己的普通昵称；涉及主仆、恋爱、亲昵的称呼按第 6 条处理）",
-		"不记琐碎内容：复读、打招呼、测试命令、单纯 @ 机器人、发表情或图片",
+		"没有信息量的内容不用记：复读、打招呼、测试命令、单纯 @ 机器人、只发表情或图片",
 		"机器人在聊天里说的话可能是错的", "不要把机器人的说法当作事实记下来",
 		"不记录也不复述任何色情、性暗示、低俗或辱骂的词句",
 		"不记录群友对机器人表达的爱慕、亲昵或恋爱关系的说法",

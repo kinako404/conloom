@@ -142,10 +142,13 @@ async function policyTab({ key, conv, signal }) {
 
   const proactive = h('input', { type: 'checkbox', checked: !!(p.proactive || {}).enabled });
   const memory = h('input', { type: 'checkbox', checked: !!(p.memory || {}).enabled });
+  const summaryMax = h('input', { type: 'number', min: 0, max: 8000, step: 1, value: (p.memory || {}).summary_max_chars ?? 0 });
+  const noteMax = h('input', { type: 'number', min: 0, max: 2000, step: 1, value: (p.memory || {}).note_max_chars ?? 0 });
   const recent = h('input', { type: 'number', min: 0, max: 500, step: 1, value: (p.context || {}).max_recent_messages ?? '' });
   const reply = p.reply || {};
   const maxParts = h('input', { type: 'number', min: 1, max: 5, step: 1, value: reply.max_parts ?? '' });
   const isPrivate = conv.type === 'private';
+  const [summaryDefault, noteDefault] = isPrivate ? [3000, 1000] : [1500, 300];
   const privateWait = h('input', { value: reply.private_wait || '', placeholder: '6s' });
   const privateMaxWait = h('input', { value: reply.private_max_wait || '', placeholder: '20s' });
   const reason = h('input', { placeholder: '修改原因' });
@@ -158,9 +161,13 @@ async function policyTab({ key, conv, signal }) {
       if (recent.value.trim() === '' || !Number.isInteger(n)) return fail(msg, '历史条数必须是整数');
       const parts = Number(maxParts.value);
       if (maxParts.value.trim() === '' || !Number.isInteger(parts)) return fail(msg, '分条上限必须是整数');
+      const summaryChars = Number(summaryMax.value);
+      if (summaryMax.value.trim() === '' || !Number.isInteger(summaryChars)) return fail(msg, '摘要字数上限必须是整数');
+      const noteChars = Number(noteMax.value);
+      if (noteMax.value.trim() === '' || !Number.isInteger(noteChars)) return fail(msg, '笔记字数上限必须是整数');
       const policy = structuredClone(p);
       policy.proactive = { ...policy.proactive, enabled: proactive.checked };
-      policy.memory = { ...policy.memory, enabled: memory.checked };
+      policy.memory = { ...policy.memory, enabled: memory.checked, summary_max_chars: summaryChars, note_max_chars: noteChars };
       policy.context = { ...policy.context, max_recent_messages: n };
       policy.reply = { ...policy.reply, max_parts: parts };
       if (isPrivate) {
@@ -178,6 +185,9 @@ async function policyTab({ key, conv, signal }) {
     h('label', { class: 'field inline' }, memory, '记忆'),
     field('历史条数', recent, '每次回复带上的最近消息数，0–500'),
     field('分条上限', maxParts, '一次回复最多分成几条消息发出，1–5；1 表示不分条')),
+  h('div', { class: 'form-grid' },
+    field('摘要字数上限', summaryMax, `记忆摘要最多多少字，200–8000；0 表示用默认值（本会话 ${summaryDefault}）`),
+    field('笔记字数上限', noteMax, `每人的记忆笔记最多多少字，50–2000；0 表示用默认值（本会话 ${noteDefault}）`)),
   isPrivate ? h('div', { class: 'form-grid' },
     field('私聊等待', privateWait, '对方停顿多久才开始回复，0–60s'),
     field('私聊最长等待', privateMaxWait, '从开始等待起最多等多久，打断重来时重新计算，私聊等待–2m；两项都填 0 表示用默认值')) : null,
