@@ -23,8 +23,8 @@ const (
 // pause, so no part starts with them.
 const ellipsisTail = "…⋯.。”’」』）)】》？！?!，,、；;：:～~"
 
-// Within a line, no ellipsis inside these paired quotes and brackets splits
-// it; quoteClosers[i] closes quoteOpeners[i].
+// Within a line, no ellipsis inside these quotes and brackets splits it. Each
+// opener raises the depth and any closer lowers it, whatever opened it.
 const (
 	quoteOpeners = "“「『（【《"
 	quoteClosers = "”」』）】》"
@@ -36,10 +36,10 @@ const (
 // three or more "." or "。") with text both before and after it on its line
 // split it, except inside paired CJK quotes or brackets, right before an ASCII
 // quote, or on a line with a backtick; the ellipsis and the punctuation right
-// after it stay with the text before. Parts are trimmed and empty ones dropped; those beyond max are
-// joined into the last one by what separated them: a newline for lines, the
-// spaces after an ellipsis. With max <= 1 the text is its only part,
-// unchanged.
+// after it stay with the text before. Parts are trimmed and empty ones
+// dropped; those beyond max are joined into the last one by what separated
+// them: a newline for lines, the spaces after an ellipsis. With max <= 1 the
+// text is its only part, unchanged.
 func splitParts(text string, max int) []string {
 	if max <= 1 {
 		return []string{text}
@@ -155,10 +155,11 @@ func ellipsisAt(s string) bool {
 	return strings.HasPrefix(s, "…") || strings.HasPrefix(s, "⋯") || strings.HasPrefix(s, "...") || strings.HasPrefix(s, "。。。")
 }
 
-// hasText reports whether s holds anything but spaces and punctuation.
+// hasText reports whether s holds anything but spaces, punctuation and
+// ellipses.
 func hasText(s string) bool {
 	return strings.ContainsFunc(s, func(r rune) bool {
-		return !unicode.IsSpace(r) && !unicode.IsPunct(r) && r != '~' && r != '～'
+		return !unicode.IsSpace(r) && !unicode.IsPunct(r) && r != '⋯' && r != '~' && r != '～'
 	})
 }
 
