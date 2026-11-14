@@ -107,8 +107,10 @@ type Orchestrator struct {
 	sched       *Scheduler
 	limiter     *RateLimiter
 	tokenFactor float64
-	actionTTL   time.Duration
-	staleAfter  time.Duration
+	// memoryBlockMax caps the memory block, in runes; 0 leaves it uncapped.
+	memoryBlockMax int
+	actionTTL      time.Duration
+	staleAfter     time.Duration
 	// ftsRetry is the first wait after a failed keyword index backfill.
 	ftsRetry time.Duration
 
@@ -212,6 +214,7 @@ func New(d Deps) (*Orchestrator, error) {
 	o.memAdmin = memory.NewAdmin(memory.AdminDeps{Store: o.st, Policies: o.policies, Metrics: o.metrics,
 		Now: func() time.Time { return o.now() }})
 	o.tokenFactor = maxTokenFactor(o.cfg.ModelProfiles)
+	o.memoryBlockMax = memoryBlockMaxRunes(o.cfg.ModelProfiles, o.tokenFactor)
 	o.actionTTL = o.cfg.Runtime.ActionTTL.Duration
 	if o.actionTTL <= 0 {
 		o.actionTTL = defaultActionTTL

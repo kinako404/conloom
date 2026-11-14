@@ -62,7 +62,7 @@ func TestMemoryInject_PrivateChatBlock(t *testing.T) {
 	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 {
 		t.Fatalf("task = %+v", task)
 	}
-	block := memory.RenderPrivateBlock("私聊里聊过猫", memory.BlockEntry{Name: "小明", Tier: "熟悉", Note: "喜欢猫"})
+	block := memory.RenderPrivateBlock("私聊里聊过猫", memory.BlockEntry{Name: "小明", Tier: "熟悉", Note: "喜欢猫"}, 0)
 	last := lastContent(env.short.Requests()[0])
 	if !strings.HasPrefix(last, block+"\n\n") {
 		t.Fatalf("last user message = %q, want it to start with the private block", last)

@@ -292,15 +292,15 @@ func TestConsolidate_PolicyLimitsShapePromptAndStorage(t *testing.T) {
 }
 
 func TestRenderPrivateBlock(t *testing.T) {
-	got := RenderPrivateBlock("在聊钢琴\n和猫", BlockEntry{Name: "小明", Tier: "熟悉", Note: "在学钢琴"})
+	got := RenderPrivateBlock("在聊钢琴\n和猫", BlockEntry{Name: "小明", Tier: "熟悉", Note: "在学钢琴"}, 0)
 	want := blockTestHeader + "\n你们最近聊过：在聊钢琴 和猫\n小明（熟悉）：在学钢琴\n" + blockTestFooter
 	if got != want {
 		t.Fatalf("RenderPrivateBlock =\n%s\nwant\n%s", got, want)
 	}
-	if got := RenderPrivateBlock("", BlockEntry{Name: "小明"}); got != "" {
+	if got := RenderPrivateBlock("", BlockEntry{Name: "小明"}, 0); got != "" {
 		t.Fatalf("empty private block = %q", got)
 	}
-	if got := RenderPrivateBlock("", BlockEntry{Name: "小明", Note: "在学钢琴"}); got != blockTestHeader+"\n小明：在学钢琴\n"+blockTestFooter {
+	if got := RenderPrivateBlock("", BlockEntry{Name: "小明", Note: "在学钢琴"}, 0); got != blockTestHeader+"\n小明：在学钢琴\n"+blockTestFooter {
 		t.Fatalf("private block without summary = %q", got)
 	}
 }

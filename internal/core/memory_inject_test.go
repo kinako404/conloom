@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/memory"
@@ -128,7 +129,7 @@ func TestMemoryInject_BlockBeforeRecentMessages(t *testing.T) {
 	block := memory.RenderBlock("最近在聊猫", []memory.BlockEntry{
 		{Name: "小明", Tier: "熟悉", Note: "喜欢猫"},
 		{Name: "小红", Note: "养了狗"},
-	})
+	}, 0)
 	last := lastContent(on)
 	if !strings.HasPrefix(last, block+"\n\n【近期消息") {
 		t.Fatalf("last user message = %q, want it to start with the block and then the recent messages", last)
@@ -372,5 +373,30 @@ func TestAffinity_OffOrDisabledNoChange(t *testing.T) {
 				t.Fatalf("member rows = %+v, want none", rows)
 			}
 		})
+	}
+}
+
+func TestMemoryInject_BlockCappedToTheReplyBudget(t *testing.T) {
+	clock := newInjectClock(injectMorning)
+	env := newTestOrchestrator(t, testOpts{now: clock.now, configure: injectConfig(true)})
+	summary := strings.Repeat("很早以前在聊天气。", 300) + "最新约好周六去看展。"
+	env.injectSeed(t, testConvKey, summary,
+		store.MemberMemory{PlatformUserID: "20001", Note: strings.Repeat("喜欢猫", 60), Affinity: injectAffinity(52)})
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "周末去哪", withName("小明"), clock.stamp, mentionBot)).TaskID)
+	if task.Status != conloomapi.TaskSucceeded || env.short.Calls() != 1 || env.long.Calls() != 0 {
+		t.Fatalf("task = %+v, short calls %d, long calls %d; want the reply on the short model", task, env.short.Calls(), env.long.Calls())
+	}
+	block, _, ok := strings.Cut(lastContent(env.short.Requests()[0]), "\n\n【当前消息")
+	if !ok || !strings.HasPrefix(block, injectBlockHeader) {
+		t.Fatalf("last user message does not start with the block: %q", block)
+	}
+	limit := int(float64(env.cfg.ModelProfiles["short_context"].Context.SoftInputBudget) * injectBlockShare)
+	if n := utf8.RuneCountInString(block); n > limit {
+		t.Fatalf("block = %d runes, over %d", n, limit)
+	}
+	for _, want := range []string{"群里最近：…", "最新约好周六去看展。", "小明（熟悉）：" + strings.Repeat("喜欢猫", 60)} {
+		if !strings.Contains(block, want) {
+			t.Errorf("block lacks %q:\n%s", want, block)
+		}
 	}
 }

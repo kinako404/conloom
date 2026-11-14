@@ -266,7 +266,7 @@ func TestMemoryBlockEchoIsStripped(t *testing.T) {
 	block := memory.RenderBlock("大家在聊猫", []memory.BlockEntry{
 		{Name: "小明", Tier: "认识", Note: "喜欢猫"},
 		{Name: "小红", Tier: "熟悉", Note: "养了一只橘猫"},
-	})
+	}, 0)
 	if got := contextbuilder.StripTranscriptPrefix(block+"\n\n好的呀", "织语"); got != "好的呀" {
 		t.Errorf("echoed memory block stripped to %q, want %q", got, "好的呀")
 	}

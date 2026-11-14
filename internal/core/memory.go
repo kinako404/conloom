@@ -5,7 +5,9 @@ import (
 	"errors"
 	"slices"
 
+	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/memory"
+	"github.com/kinako404/conloom/internal/router"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -13,6 +15,25 @@ import (
 // injectMaxOthers bounds the members besides the speaker shown in the memory
 // block.
 const injectMaxOthers = 2
+
+// injectBlockShare is the share of the reply model's soft input budget the
+// memory block may take, so that long summaries and notes still leave room
+// for the recent history.
+const injectBlockShare = 0.3
+
+// memoryBlockMaxRunes caps the memory block at injectBlockShare of the short
+// model's soft input budget (the long model's without a short one), counted
+// as runes of factor tokens each; 0, uncapped, without either.
+func memoryBlockMaxRunes(profiles map[string]config.ModelProfile, factor float64) int {
+	p, ok := profiles[string(router.RoleShort)]
+	if !ok {
+		p, ok = profiles[string(router.RoleLong)]
+	}
+	if !ok || p.Context.SoftInputBudget <= 0 {
+		return 0
+	}
+	return max(1, int(float64(p.Context.SoftInputBudget)*injectBlockShare/factor))
+}
 
 // injectPerson is a member whose memory may be shown, with the name to show.
 type injectPerson struct{ userID, name string }
@@ -24,7 +45,8 @@ type injectPerson struct{ userID, name string }
 // (memory.RenderPrivateBlock) the conversation summary and only the speaker's
 // note. Others' notes leave out what they asked the bot to remember
 // (memory.WithoutRemembered); only the speaker's own note shows it. Tiers are
-// shown when the policy's affinity is on. targets and names
+// shown when the policy's affinity is on. The block is capped at
+// o.memoryBlockMax runes (see memory.RenderBlock). targets and names
 // are the task's reply targets and mention names; known, when not nil, holds
 // a private sender's row already read. A read error is logged and leaves the
 // block out.
@@ -85,9 +107,9 @@ func (o *Orchestrator) injectMemory(ctx context.Context, task store.TaskRecord, 
 		entries = append(entries, e)
 	}
 	if private {
-		return memory.RenderPrivateBlock(summary, entries[0])
+		return memory.RenderPrivateBlock(summary, entries[0], o.memoryBlockMax)
 	}
-	return memory.RenderBlock(summary, entries)
+	return memory.RenderBlock(summary, entries, o.memoryBlockMax)
 }
 
 // injectPeople returns the task's speaker, then the member the current
