@@ -13,7 +13,9 @@ import (
 // PersonaDoc is a persona. CharacterName, Description, SpeakingStyle and
 // Examples are optional; a set CharacterName is the bot's name in the
 // conversation. Adult, unless Minor is also set, makes ContentOpen possible
-// (see ModeFor); ContentRules and MemoryRules only take effect in it.
+// (see ModeFor); ContentRules and MemoryRules only take effect in it. Bars,
+// also optional, define the hidden bars of private chats (see EffectiveBars);
+// they never enter the system prompt.
 type PersonaDoc struct {
 	PersonaName     string           `json:"persona_name" yaml:"persona_name"`
 	TemplateVersion int              `json:"template_version" yaml:"template_version"`
@@ -27,6 +29,7 @@ type PersonaDoc struct {
 	Minor           bool             `json:"minor,omitempty" yaml:"minor,omitempty"`
 	ContentRules    string           `json:"content_rules,omitempty" yaml:"content_rules,omitempty"`
 	MemoryRules     string           `json:"memory_rules,omitempty" yaml:"memory_rules,omitempty"`
+	Bars            []PersonaBar     `json:"bars,omitempty" yaml:"bars,omitempty"`
 }
 
 // PersonaExample is one example exchange: a member's message and the reply.
@@ -35,15 +38,34 @@ type PersonaExample struct {
 	Reply string `json:"reply" yaml:"reply"`
 }
 
+// PersonaBar is a hidden bar of private chats: a value in [0, 100] that
+// decays toward Baseline, halving its distance every HalfLife. Description
+// tells the model what high and low values mean.
+type PersonaBar struct {
+	Name        string   `json:"name" yaml:"name"`
+	Baseline    int      `json:"baseline" yaml:"baseline"`
+	HalfLife    Duration `json:"half_life" yaml:"half_life"`
+	Description string   `json:"description,omitempty" yaml:"description,omitempty"`
+}
+
 // Persona text limits, counted in runes.
 const (
-	MaxCharacterNameRunes = 20
-	MaxDescriptionRunes   = 2000
-	MaxSpeakingStyleRunes = 1000
-	MaxPersonaExamples    = 8
-	MaxExampleRunes       = 200
-	MaxContentRulesRunes  = 2000
-	MaxMemoryRulesRunes   = 1000
+	MaxCharacterNameRunes  = 20
+	MaxDescriptionRunes    = 2000
+	MaxSpeakingStyleRunes  = 1000
+	MaxPersonaExamples     = 8
+	MaxExampleRunes        = 200
+	MaxContentRulesRunes   = 2000
+	MaxMemoryRulesRunes    = 1000
+	MaxPersonaBars         = 4
+	MaxBarNameRunes        = 6
+	MaxBarDescriptionRunes = 40
+)
+
+// Bounds of PersonaBar.HalfLife.
+const (
+	MinBarHalfLife = 30 * time.Minute
+	MaxBarHalfLife = 7 * 24 * time.Hour
 )
 
 type PersonaStyle struct {
@@ -102,6 +124,22 @@ func DefaultPersona() PersonaDoc {
 	}
 }
 
+// DefaultBars returns the bars of a persona that defines none.
+func DefaultBars() []PersonaBar {
+	return []PersonaBar{
+		{Name: "心情", Baseline: 60, HalfLife: Duration{6 * time.Hour}, Description: "高=开心放松，低=低落烦躁"},
+		{Name: "精力", Baseline: 70, HalfLife: Duration{4 * time.Hour}, Description: "高=有精神，低=累、困"},
+	}
+}
+
+// EffectiveBars returns p's bars, or DefaultBars when p defines none.
+func (p PersonaDoc) EffectiveBars() []PersonaBar {
+	if len(p.Bars) > 0 {
+		return p.Bars
+	}
+	return DefaultBars()
+}
+
 // breaksName reports whether r must not appear in a character name: a line or
 // paragraph separator, another control character, or a zero-width character.
 func breaksName(r rune) bool {
@@ -110,6 +148,16 @@ func breaksName(r rune) bool {
 		return true
 	}
 	return unicode.IsControl(r)
+}
+
+// breaksBarName reports whether r must not appear in a bar name: whitespace,
+// a character breaksName rejects, a lenticular bracket or a colon.
+func breaksBarName(r rune) bool {
+	switch r {
+	case '【', '】', '：', ':':
+		return true
+	}
+	return unicode.IsSpace(r) || breaksName(r)
 }
 
 // Validate reports every rule violation, each prefixed with its snake_case field path.
@@ -172,6 +220,34 @@ func (p PersonaDoc) Validate() error {
 			}
 			maxRunes(path, f.text, MaxExampleRunes)
 		}
+	}
+	if n := len(p.Bars); n > MaxPersonaBars {
+		fail("bars must have at most %d items, got %d", MaxPersonaBars, n)
+	}
+	seen := make(map[string]int, len(p.Bars))
+	for i, bar := range p.Bars {
+		path := fmt.Sprintf("bars[%d]", i)
+		switch n := utf8.RuneCountInString(bar.Name); {
+		case n == 0:
+			fail("%s.name must not be empty", path)
+		case n > MaxBarNameRunes:
+			fail("%s.name must be at most %d characters, got %d", path, MaxBarNameRunes, n)
+		}
+		if strings.ContainsFunc(bar.Name, breaksBarName) {
+			fail("%s.name must not contain whitespace, control or zero-width characters, 【, 】 or colons", path)
+		}
+		if j, dup := seen[bar.Name]; dup {
+			fail("%s.name duplicates bars[%d].name %q", path, j, bar.Name)
+		} else if bar.Name != "" {
+			seen[bar.Name] = i
+		}
+		if bar.Baseline < 0 || bar.Baseline > 100 {
+			fail("%s.baseline must be in [0, 100], got %d", path, bar.Baseline)
+		}
+		if h := bar.HalfLife.Duration; h < MinBarHalfLife || h > MaxBarHalfLife {
+			fail("%s.half_life must be in [30m, 168h], got %s", path, h)
+		}
+		maxRunes(path+".description", bar.Description, MaxBarDescriptionRunes)
 	}
 	return errors.Join(errs...)
 }

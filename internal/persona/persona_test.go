@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/internal/store/sqlite"
@@ -586,6 +587,57 @@ func TestService_SystemPromptContentByMode(t *testing.T) {
 				t.Errorf("prompt has protectionRules = %v, want %v", got, wantProt)
 			}
 		})
+	}
+}
+
+func TestSystemPrompt_BarsNotRendered(t *testing.T) {
+	ctx := context.Background()
+	privateKey := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "20001")
+	bars := []conloomapi.PersonaBar{
+		{Name: "心情", Baseline: 60, HalfLife: conloomapi.Duration{Duration: 6 * time.Hour}, Description: "高=开心放松，低=低落烦躁"},
+		{Name: "好奇", Baseline: 40, HalfLife: conloomapi.Duration{Duration: 12 * time.Hour}},
+	}
+	legacy := conloomapi.DefaultPersona()
+	legacy.Bars = bars
+	if got := Render(legacy); got != legacyDefaultRender {
+		t.Errorf("Render(DefaultPersona with bars) =\n%q\nwant the legacy render", got)
+	}
+	adult := testCharacter()
+	adult.Description = "苔灯是海边小镇的灯塔看守，已经成年，做事认真。"
+	adult.Adult, adult.ContentRules = true, testContentRules
+	for _, base := range []conloomapi.PersonaDoc{conloomapi.DefaultPersona(), testCharacter(), adult} {
+		withBars := base
+		withBars.Bars = bars
+		if got, want := Render(withBars), Render(base); got != want {
+			t.Errorf("%s: Render with bars =\n%s\nwant\n%s", base.PersonaName, got, want)
+		}
+		for _, key := range []string{testConvKey, privateKey} {
+			plain := NewService(newTestStore(t), map[string]conloomapi.PersonaDoc{"t": base})
+			barred := NewService(newTestStore(t), map[string]conloomapi.PersonaDoc{"t": withBars})
+			want, err := plain.SystemPrompt(ctx, key, "t", "织语")
+			if err != nil {
+				t.Fatalf("SystemPrompt without bars: %v", err)
+			}
+			got, err := barred.SystemPrompt(ctx, key, "t", "织语")
+			if err != nil {
+				t.Fatalf("SystemPrompt with bars: %v", err)
+			}
+			if got != want {
+				t.Errorf("%s in %s: prompt with bars =\n%+v\nwant\n%+v", base.PersonaName, key, got, want)
+			}
+			for _, b := range bars {
+				if strings.Contains(got.Text, b.Name) || (b.Description != "" && strings.Contains(got.Text, b.Description)) {
+					t.Errorf("%s in %s: prompt mentions bar %q: %q", base.PersonaName, key, b.Name, got.Text)
+				}
+			}
+			pv, err := barred.Current(ctx, key, "t")
+			if err != nil {
+				t.Fatalf("Current: %v", err)
+			}
+			if !reflect.DeepEqual(pv.Persona.Bars, bars) {
+				t.Errorf("stored bars = %+v, want %+v", pv.Persona.Bars, bars)
+			}
+		}
 	}
 }
 

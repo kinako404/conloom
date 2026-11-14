@@ -213,6 +213,18 @@ persona_templates:
     #   （开放模式下加入回复提示词的内容规则，由部署者自行编写。）
     # memory_rules: |
     #   （开放模式下替换记忆整理第 6 条的规则，由部署者自行编写。）
+    # 私聊的隐藏状态条（见 docs/configuration.md 的“状态条”），最多 4 条，不进系统提示。
+    # 省略时使用默认的“心情”和“精力”两条。name 1~6 字且不重复，baseline 0~100，
+    # half_life 30m~168h，description ≤40（可省略）。
+    # bars:
+    #   - name: 心情
+    #     baseline: 60
+    #     half_life: 6h
+    #     description: 高=开心放松，低=低落烦躁
+    #   - name: 好奇
+    #     baseline: 50
+    #     half_life: 12h
+    #     description: 高=想多问多聊，低=没什么兴趣
 
 # 默认群策略：新群的初始策略；通过 API 或命令修改后存库并版本化，库内版本优先。
 default_group_policy:
