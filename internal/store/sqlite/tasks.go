@@ -49,6 +49,23 @@ func appendTrigger(ctx context.Context, tx *sql.Tx, botID, taskID, messageID str
 	return err
 }
 
+// cancelUnfinishedTask stores the queued or running task as cancelled; a
+// finished one gives store.ErrTaskFinished.
+func cancelUnfinishedTask(ctx context.Context, tx *sql.Tx, botID, taskID string) error {
+	var status string
+	err := tx.QueryRowContext(ctx, `SELECT status FROM tasks WHERE bot_instance_id = ? AND id = ?`,
+		botID, taskID).Scan(&status)
+	if err != nil {
+		return notFound(err)
+	}
+	if status != conloomapi.TaskQueued && status != conloomapi.TaskRunning {
+		return store.ErrTaskFinished
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE tasks SET status = ?, error_code = ?, updated_at = ? WHERE id = ?`,
+		conloomapi.TaskCancelled, conloomapi.CodeTaskCancelled, fmtTime(time.Now()), taskID)
+	return err
+}
+
 func scanTask(row scanner) (store.TaskRecord, error) {
 	var t store.TaskRecord
 	var triggers, meta, occurred, created, updated string

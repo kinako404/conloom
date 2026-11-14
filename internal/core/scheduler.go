@@ -47,8 +47,8 @@ type QueuedTask struct {
 	// addressed is set once a message addressed to the bot merged into the
 	// task; deferred once it was first held (and reported to onHold);
 	// ignoreCooldown once a message with MergeOptions.IgnoreCooldown created
-	// or merged into it.
-	addressed, deferred, ignoreCooldown bool
+	// or merged into it; closed once its actor's turn ended (see EndTurn).
+	addressed, deferred, ignoreCooldown, closed bool
 	// merge is the merge window the task was created with; zero fields (as
 	// in restored tasks) follow the conversation's SessionConfig.
 	merge MergeOptions
@@ -82,11 +82,12 @@ type QueuedTask struct {
 //
 // Interrupt marks a message that restarts its sender's turn. It merges into
 // the sender's newest not-yet-started task even after that task's merge
-// window closed. If the sender has no such task, it supersedes the sender's
-// newest running task that has not stored its result (see
-// AdmitPlan.Supersedes): that task's context is cancelled and a new task,
-// carrying its trigger messages and this one, waits for the sender's pause
-// again. A task created with Interrupt
+// window closed. If the sender has no such task, it may supersede the
+// sender's newest running task or, without one, their last finished task
+// created with Interrupt (see AdmitPlan.Supersedes), each at most once:
+// persist decides whether that is still possible. If it is, a running task's
+// context is cancelled, and a new task, carrying the superseded task's trigger
+// messages and this one, waits for the sender's pause again. A task created with Interrupt
 // takes zero Debounce and MaxMergeWindow as they are, not from the
 // SessionConfig.
 type MergeOptions struct {
@@ -127,10 +128,10 @@ const (
 // AdmitPlan tells persist what Admit is about to do. NewTaskID and
 // MergeIntoTaskID both empty means the message is only observed.
 //
-// Supersedes, with NewTaskID, names the running task the new task replaces
-// (see MergeOptions.Interrupt); the new task's trigger messages are that
-// task's followed by the message. persist returns ErrSupersedeRefused if that
-// task can no longer be superseded, e.g. it has already stored its result;
+// Supersedes, with NewTaskID, names the running or finished task the new task
+// replaces (see MergeOptions.Interrupt); the new task's trigger messages are
+// that task's followed by the message. persist returns ErrSupersedeRefused if
+// that task can no longer be superseded, e.g. its reply was handed out;
 // AdmitWith then calls persist again with a plain plan.
 type AdmitPlan struct {
 	NewTaskID       string
@@ -172,10 +173,13 @@ type session struct {
 	key  string
 	wake chan struct{}
 
-	mu           sync.Mutex
-	dead         bool
-	pending      []QueuedTask
-	running      []*runningTask
+	mu      sync.Mutex
+	dead    bool
+	pending []QueuedTask
+	running []*runningTask
+	// finished holds each actor's last finished task created with
+	// MergeOptions.Interrupt that was not settled.
+	finished     map[string]*runningTask
 	lastFinish   time.Time
 	lastActivity time.Time
 }
@@ -315,7 +319,7 @@ func (s *Scheduler) Restore(t QueuedTask) {
 }
 
 // Cancel removes a not-yet-started task or cancels the context of a running
-// one. It reports whether the task was found.
+// one, which is then never superseded. It reports whether the task was found.
 func (s *Scheduler) Cancel(convKey, taskID string) bool {
 	sess := s.lockSession(convKey, false)
 	if sess == nil {
@@ -331,11 +335,33 @@ func (s *Scheduler) Cancel(convKey, taskID string) bool {
 	}
 	for _, rt := range sess.running {
 		if rt.task.TaskID == taskID {
+			rt.settled = true
 			rt.cancel()
 			return true
 		}
 	}
 	return false
+}
+
+// EndTurn ends actorID's turn in the conversation: later messages neither
+// merge into the actor's tasks created before it nor supersede them.
+func (s *Scheduler) EndTurn(convKey, actorID string) {
+	sess := s.lockSession(convKey, false)
+	if sess == nil {
+		return
+	}
+	defer sess.mu.Unlock()
+	for i := range sess.pending {
+		if t := &sess.pending[i]; t.ActorID == actorID {
+			t.closed = true
+		}
+	}
+	for _, rt := range sess.running {
+		if rt.task.ActorID == actorID {
+			rt.settled = true
+		}
+	}
+	delete(sess.finished, actorID)
 }
 
 // Active returns the conversation's unfinished tasks: running ones in start
@@ -612,6 +638,12 @@ func (s *Scheduler) startLocked(sess *session, t QueuedTask) {
 		now := time.Now()
 		sess.mu.Lock()
 		sess.running = slices.DeleteFunc(sess.running, func(r *runningTask) bool { return r == rt })
+		if t.merge.Interrupt && !rt.settled {
+			if sess.finished == nil {
+				sess.finished = map[string]*runningTask{}
+			}
+			sess.finished[t.ActorID] = rt
+		}
 		sess.lastFinish = now
 		sess.lastActivity = now
 		sess.mu.Unlock()
@@ -626,7 +658,7 @@ func (s *Scheduler) startLocked(sess *session, t QueuedTask) {
 func (sess *session) openWindow(actorID string, cfg SessionConfig, now time.Time, interrupt bool) int {
 	for i := len(sess.pending) - 1; i >= 0; i-- {
 		t := sess.pending[i]
-		if t.ActorID != actorID || t.paced() && t.pastHold(now) {
+		if t.ActorID != actorID || t.closed || t.paced() && t.pastHold(now) {
 			continue
 		}
 		if interrupt || now.Before(t.ReadyAt) || sess.heldLocked(t, cfg, now) {
@@ -637,7 +669,8 @@ func (sess *session) openWindow(actorID string, cfg SessionConfig, now time.Time
 }
 
 // supersedable returns, with interrupt, actorID's most recently started
-// running task that is not settled, or nil.
+// running task that is not settled or, without one, their last finished task
+// if it is not settled; otherwise nil.
 func (sess *session) supersedable(actorID string, interrupt bool) *runningTask {
 	if !interrupt {
 		return nil
@@ -646,6 +679,9 @@ func (sess *session) supersedable(actorID string, interrupt bool) *runningTask {
 		if rt := sess.running[i]; rt.task.ActorID == actorID && !rt.settled {
 			return rt
 		}
+	}
+	if rt := sess.finished[actorID]; rt != nil && !rt.settled {
+		return rt
 	}
 	return nil
 }

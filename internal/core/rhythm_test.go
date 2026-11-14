@@ -117,6 +117,39 @@ func supersededAudits(t *testing.T, env *testEnv) []store.AuditEvent {
 	return events
 }
 
+// requireSupersededAudit checks that the only outbox.superseded audit says
+// cancelled actions of taskID were cancelled for the new task by.
+func requireSupersededAudit(t *testing.T, env *testEnv, taskID, by string, cancelled int) {
+	t.Helper()
+	audits := supersededAudits(t, env)
+	if len(audits) != 1 {
+		t.Fatalf("outbox.superseded audits = %+v, want 1", audits)
+	}
+	var detail struct {
+		TaskID       string `json:"task_id"`
+		Cancelled    int    `json:"cancelled"`
+		SupersededBy string `json:"superseded_by"`
+	}
+	err := json.Unmarshal([]byte(audits[0].Detail), &detail)
+	if err != nil || detail.TaskID != taskID || detail.Cancelled != cancelled || detail.SupersededBy != by {
+		t.Fatalf("audit detail = %s (%v), want task %s cancelled %d superseded by %s", audits[0].Detail, err, taskID, cancelled, by)
+	}
+}
+
+// liveActions counts the actions of taskIDs that are not cancelled.
+func liveActions(t *testing.T, env *testEnv, taskIDs ...string) int {
+	t.Helper()
+	n := 0
+	for _, id := range taskIDs {
+		for _, a := range env.getTask(t, id).Actions {
+			if outboxStatusOf(t, env, a.ActionID) != store.OutboxCancelled {
+				n++
+			}
+		}
+	}
+	return n
+}
+
 func TestPrivate_BurstWithinPauseIsOneTurn(t *testing.T) {
 	env := newPrivateEnv(t, 250*time.Millisecond, nil, func(c *config.Config) {
 		c.DefaultGroupPolicy.Reply.UserRateLimitPerMinute = 1
@@ -161,9 +194,7 @@ func TestPrivate_BurstWithinPauseIsOneTurn(t *testing.T) {
 
 func TestPrivate_FollowUpDuringGenerationRestartsTurn(t *testing.T) {
 	model := newGatedModel()
-	env := newPrivateEnv(t, 30*time.Millisecond, model.handle, func(c *config.Config) {
-		c.DefaultGroupPolicy.Reply.UserRateLimitPerMinute = 1
-	})
+	env := newPrivateEnv(t, 30*time.Millisecond, model.handle, nil)
 	t.Cleanup(model.open)
 	ev1 := env.privateEvent("讲个故事吧")
 	first := env.submit(t, ev1)
@@ -183,8 +214,35 @@ func TestPrivate_FollowUpDuringGenerationRestartsTurn(t *testing.T) {
 	if !strings.Contains(content, "讲个故事吧") || !strings.Contains(content, "要关于猫的") {
 		t.Fatalf("restarted turn's current message = %q, want both messages", content)
 	}
-	if got := env.hooks.completed(first.TaskID); !slices.Contains(got, conloomapi.TaskCancelled) || slices.Contains(got, conloomapi.TaskSucceeded) {
+	if got := env.hooks.completed(first.TaskID); slices.Contains(got, conloomapi.TaskSucceeded) {
 		t.Fatalf("superseded task completions = %v", got)
+	}
+	if n := liveActions(t, env, first.TaskID, second.TaskID); n != 1 {
+		t.Fatalf("replies = %d, want 1", n)
+	}
+}
+
+func TestPrivate_RateLimitedFollowUpLeavesRunningTurn(t *testing.T) {
+	model := newGatedModel()
+	env := newPrivateEnv(t, 30*time.Millisecond, model.handle, func(c *config.Config) {
+		c.DefaultGroupPolicy.Reply.UserRateLimitPerMinute = 1
+	})
+	t.Cleanup(model.open)
+	ev1 := env.privateEvent("讲个故事吧")
+	first := env.submit(t, ev1)
+	waitUntil(t, "model called", func() bool { return env.short.Calls() == 1 })
+
+	requireObserved(t, env, env.privateEvent("要关于猫的"), conloomapi.SuppressedRateLimited)
+	if task := env.getTask(t, first.TaskID); task.Status != conloomapi.TaskRunning {
+		t.Fatalf("running turn after a rate-limited follow-up = %+v", task)
+	}
+	model.open()
+	requireOneReply(t, env, first.TaskID)
+	if got := storedTriggers(t, env, first.TaskID); !slices.Equal(got, []string{ev1.Message.ID}) {
+		t.Fatalf("turn triggers = %v", got)
+	}
+	if audits := supersededAudits(t, env); len(audits) != 0 {
+		t.Fatalf("audits = %+v, want none", audits)
 	}
 }
 
@@ -263,17 +321,7 @@ func TestPrivate_FollowUpCancelsUnsentParts(t *testing.T) {
 	if st := outboxStatusOf(t, env, reply.Actions[0].ActionID); st != store.OutboxAcked {
 		t.Fatalf("sent part = %s, want acked", st)
 	}
-	audits := supersededAudits(t, env)
-	if len(audits) != 1 {
-		t.Fatalf("outbox.superseded audits = %+v, want 1", audits)
-	}
-	var detail struct {
-		TaskID    string `json:"task_id"`
-		Cancelled int    `json:"cancelled"`
-	}
-	if err := json.Unmarshal([]byte(audits[0].Detail), &detail); err != nil || detail.TaskID != first.TaskID || detail.Cancelled != 2 {
-		t.Fatalf("audit detail = %s (%v), want task %s cancelled 2", audits[0].Detail, err, first.TaskID)
-	}
+	requireSupersededAudit(t, env, first.TaskID, second.TaskID, 2)
 
 	requireOneReply(t, env, second.TaskID)
 	if got := storedTriggers(t, env, second.TaskID); !slices.Equal(got, []string{ev.Message.ID}) {
@@ -291,7 +339,65 @@ func TestPrivate_FollowUpCancelsUnsentParts(t *testing.T) {
 	}
 }
 
-func TestPrivate_FollowUpWhileReplyIsStoredStartsNewTurn(t *testing.T) {
+func TestPrivate_FollowUpAfterLeasedPartKeepsIt(t *testing.T) {
+	env := newPrivateEnv(t, 30*time.Millisecond, nil, nil)
+	first := env.submit(t, env.privateEvent("推荐一本书"))
+	reply := requireOneReply(t, env, first.TaskID)
+	part2, part3 := splitReply(t, env, first.TaskID)
+	leased, err := env.st.LeaseOutbox(context.Background(), testBot, 10, time.Now().UTC(), time.Minute)
+	if err != nil || len(leased) != 1 || leased[0].Action.ActionID != reply.Actions[0].ActionID {
+		t.Fatalf("leased = %+v, %v", leased, err)
+	}
+
+	// The first part is leased but not acked yet: it counts as sent.
+	ev := env.privateEvent("换一本吧")
+	second := env.submit(t, ev)
+	if second.Disposition != conloomapi.DispositionReply || second.TaskID == first.TaskID {
+		t.Fatalf("follow-up response = %+v", second)
+	}
+	for id, want := range map[string]string{
+		reply.Actions[0].ActionID: store.OutboxLeased, part2: store.OutboxCancelled, part3: store.OutboxCancelled,
+	} {
+		if st := outboxStatusOf(t, env, id); st != want {
+			t.Fatalf("part %s = %s, want %s", id, st, want)
+		}
+	}
+	requireSupersededAudit(t, env, first.TaskID, second.TaskID, 2)
+	requireOneReply(t, env, second.TaskID)
+	if got := storedTriggers(t, env, second.TaskID); !slices.Equal(got, []string{ev.Message.ID}) {
+		t.Fatalf("new turn triggers = %v, want only the follow-up", got)
+	}
+}
+
+func TestPrivate_FollowUpAfterUnsentReplyAbandonsIt(t *testing.T) {
+	env := newPrivateEnv(t, 30*time.Millisecond, nil, nil)
+	ev1 := env.privateEvent("推荐一本书")
+	first := env.submit(t, ev1)
+	reply := requireOneReply(t, env, first.TaskID)
+	part2, part3 := splitReply(t, env, first.TaskID)
+
+	ev2 := env.privateEvent("要科幻的")
+	second := env.submit(t, ev2)
+	if second.Disposition != conloomapi.DispositionReply || second.TaskID == first.TaskID {
+		t.Fatalf("follow-up response = %+v", second)
+	}
+	for _, id := range []string{reply.Actions[0].ActionID, part2, part3} {
+		if st := outboxStatusOf(t, env, id); st != store.OutboxCancelled {
+			t.Fatalf("part %s = %s, want cancelled", id, st)
+		}
+	}
+	requireSupersededAudit(t, env, first.TaskID, second.TaskID, 3)
+	requireOneReply(t, env, second.TaskID)
+	if got, want := storedTriggers(t, env, second.TaskID), []string{ev1.Message.ID, ev2.Message.ID}; !slices.Equal(got, want) {
+		t.Fatalf("new turn triggers = %v, want %v", got, want)
+	}
+	content := lastUserMessage(t, env, 1)
+	if !strings.Contains(content, "推荐一本书") || !strings.Contains(content, "要科幻的") {
+		t.Fatalf("new turn's current message = %q, want both messages", content)
+	}
+}
+
+func TestPrivate_FollowUpWhileReplyIsStoredAbandonsIt(t *testing.T) {
 	env := newPrivateEnv(t, 30*time.Millisecond, nil, nil)
 	entered, release := env.blockFirstCompletion(t, func(c store.TaskCompletion) bool { return len(c.Actions) > 0 })
 	ev1 := env.privateEvent("早上好")
@@ -325,25 +431,23 @@ func TestPrivate_FollowUpWhileReplyIsStoredStartsNewTurn(t *testing.T) {
 		t.Fatalf("follow-up response = %+v, %v", r.resp, r.err)
 	}
 
-	reply := requireOneReply(t, env, first.TaskID)
-	requireOneReply(t, env, r.resp.TaskID)
+	// The stored reply was not handed out: it is abandoned, and the new turn
+	// answers both messages.
+	reply := env.waitTask(t, first.TaskID)
+	if len(reply.Actions) != 1 || outboxStatusOf(t, env, reply.Actions[0].ActionID) != store.OutboxCancelled {
+		t.Fatalf("first reply = %+v, want its action cancelled", reply)
+	}
 	if got := env.hooks.completed(first.TaskID); !slices.Equal(got, []string{conloomapi.TaskSucceeded}) {
 		t.Fatalf("first task completions = %v, want [succeeded]", got)
 	}
-	if got := storedTriggers(t, env, first.TaskID); !slices.Equal(got, []string{ev1.Message.ID}) {
-		t.Fatalf("first task triggers = %v", got)
+	requireOneReply(t, env, r.resp.TaskID)
+	if got, want := storedTriggers(t, env, r.resp.TaskID), []string{ev1.Message.ID, ev2.Message.ID}; !slices.Equal(got, want) {
+		t.Fatalf("new turn triggers = %v, want %v", got, want)
 	}
-	if got := storedTriggers(t, env, r.resp.TaskID); !slices.Equal(got, []string{ev2.Message.ID}) {
-		t.Fatalf("new turn triggers = %v, want only the follow-up", got)
+	if n := liveActions(t, env, first.TaskID, r.resp.TaskID); n != 1 {
+		t.Fatalf("replies = %d, want 1", n)
 	}
-	// None of the first reply went out yet: it is kept whole, so the first
-	// message is still answered.
-	if st := outboxStatusOf(t, env, reply.Actions[0].ActionID); st != store.OutboxPending {
-		t.Fatalf("first reply = %s, want pending", st)
-	}
-	if audits := supersededAudits(t, env); len(audits) != 0 {
-		t.Fatalf("audits = %+v, want none", audits)
-	}
+	requireSupersededAudit(t, env, first.TaskID, r.resp.TaskID, 1)
 }
 
 func TestPrivate_FollowUpBeforeReplyIsStoredSupersedesIt(t *testing.T) {
@@ -598,4 +702,115 @@ func TestScheduler_InterruptZeroDebounceStartsAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec.waitStarted(t)
+}
+
+func TestScheduler_InterruptSupersedesFinishedTaskOnce(t *testing.T) {
+	rec := newSchedRecorder()
+	s := newTestScheduler(t, rec.run, fixedCfg(SessionConfig{MaxConcurrent: 1, MaxQueued: 10}))
+	record := func(plans *[]AdmitPlan) func(AdmitPlan) error {
+		return func(p AdmitPlan) error {
+			*plans = append(*plans, p)
+			return nil
+		}
+	}
+
+	r1, err := s.AdmitWith("private:20001", "20001", "m1", AdmitNew, interruptOpts, nopPersist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.waitFinished(t, 1)
+	var plans []AdmitPlan
+	r2, err := s.AdmitWith("private:20001", "20001", "m2", AdmitNew, interruptOpts, record(&plans))
+	if err != nil || !slices.Equal(plans, []AdmitPlan{{NewTaskID: r2.TaskID, Supersedes: r1.TaskID}}) {
+		t.Fatalf("admit after the task finished = %+v, %v, plans %+v", r2, err, plans)
+	}
+	if runs := rec.waitFinished(t, 2); !slices.Equal(runs[1].task.TriggerMessageIDs, []string{"m1", "m2"}) {
+		t.Fatalf("second run = %+v, want [m1 m2]", runs[1])
+	}
+
+	// The superseded task is not offered again; the newest finished one is.
+	plans = nil
+	r3, err := s.AdmitWith("private:20001", "20001", "m3", AdmitNew, interruptOpts, record(&plans))
+	if err != nil || !slices.Equal(plans, []AdmitPlan{{NewTaskID: r3.TaskID, Supersedes: r2.TaskID}}) {
+		t.Fatalf("third admit = %+v, %v, plans %+v", r3, err, plans)
+	}
+	rec.waitFinished(t, 3)
+
+	// Tasks created without Interrupt are not remembered.
+	if _, err := s.AdmitWith("private:20002", "20002", "n1", AdmitNew, MergeOptions{Debounce: time.Millisecond}, nopPersist); err != nil {
+		t.Fatal(err)
+	}
+	rec.waitFinished(t, 4)
+	plans = nil
+	if _, err := s.AdmitWith("private:20002", "20002", "n2", AdmitNew, interruptOpts, record(&plans)); err != nil || len(plans) != 1 || plans[0].Supersedes != "" {
+		t.Fatalf("admit after a plain task = %v, plans %+v", err, plans)
+	}
+}
+
+func TestPrivate_CommandEndsTurn(t *testing.T) {
+	env := newPrivateEnv(t, 30*time.Millisecond, nil, nil)
+	admin := func(text string) conloomapi.Event {
+		return env.event(conloomapi.ConvPrivate, "29999", "29999", text)
+	}
+	first := env.submit(t, admin("推荐一本书"))
+	reply := requireOneReply(t, env, first.TaskID)
+	if got := env.submit(t, admin("/help")); got.TaskID == "" || got.TaskID == first.TaskID {
+		t.Fatalf("/help response = %+v", got)
+	}
+	ev := admin("换一本吧")
+	second := env.submit(t, ev)
+	if second.Disposition != conloomapi.DispositionReply || second.TaskID == first.TaskID {
+		t.Fatalf("message after the command = %+v", second)
+	}
+	requireOneReply(t, env, second.TaskID)
+	if got := storedTriggers(t, env, second.TaskID); !slices.Equal(got, []string{ev.Message.ID}) {
+		t.Fatalf("turn after the command = %v, want only its message", got)
+	}
+	if st := outboxStatusOf(t, env, reply.Actions[0].ActionID); st != store.OutboxPending {
+		t.Fatalf("reply before the command = %s, want pending", st)
+	}
+}
+
+func TestScheduler_EndTurnAndCancelStopSuperseding(t *testing.T) {
+	rec := newSchedRecorder()
+	rec.hold = make(chan struct{})
+	t.Cleanup(func() { close(rec.hold) })
+	s := newTestScheduler(t, rec.run, fixedCfg(SessionConfig{MaxConcurrent: 1, MaxQueued: 10}))
+	noSupersede := func(p AdmitPlan) error {
+		if p.Supersedes != "" || p.MergeIntoTaskID != "" {
+			t.Errorf("plan = %+v, want a plain new task", p)
+		}
+		return nil
+	}
+
+	r1, err := s.AdmitWith("private:20001", "20001", "m1", AdmitNew, interruptOpts, nopPersist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.waitStarted(t)
+	if !s.Cancel("private:20001", r1.TaskID) {
+		t.Fatal("Cancel found no task")
+	}
+	r2, err := s.AdmitWith("private:20001", "20001", "m2", AdmitNew, MergeOptions{Debounce: time.Hour, Interrupt: true}, noSupersede)
+	if err != nil || !r2.Created {
+		t.Fatalf("admit after Cancel = %+v, %v", r2, err)
+	}
+
+	// r2 waits; ending the turn closes it to merges.
+	s.EndTurn("private:20001", "20001")
+	r3, err := s.AdmitWith("private:20001", "20001", "m3", AdmitNew, interruptOpts, noSupersede)
+	if err != nil || !r3.Created || r3.TaskID == r2.TaskID {
+		t.Fatalf("admit after EndTurn = %+v, %v", r3, err)
+	}
+
+	// A running task is not superseded after EndTurn either.
+	if _, err := s.AdmitWith("private:20002", "20002", "n1", AdmitNew, interruptOpts, nopPersist); err != nil {
+		t.Fatal(err)
+	}
+	for rec.waitStarted(t).ActorID != "20002" {
+	}
+	s.EndTurn("private:20002", "20002")
+	if _, err := s.AdmitWith("private:20002", "20002", "n2", AdmitNew, interruptOpts, noSupersede); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -20,6 +20,10 @@ type MessageHit struct {
 var (
 	ErrNotFound         = errors.New("store: not found")
 	ErrDuplicateMessage = errors.New("store: duplicate platform message")
+	// ErrTaskFinished and ErrReplyHandedOut refuse an Ingest (see
+	// Ingest.CancelTaskID and Ingest.AbandonReplyOf).
+	ErrTaskFinished   = errors.New("store: task already finished")
+	ErrReplyHandedOut = errors.New("store: reply already handed out")
 )
 
 // ConversationKey returns the canonical "bot:platform:type:id" key of a conversation.

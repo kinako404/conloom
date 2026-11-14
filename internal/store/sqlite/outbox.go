@@ -153,3 +153,20 @@ func (db *DB) CancelPendingActions(ctx context.Context, taskID string, now time.
 		WHERE task_id = ? AND status = ?`,
 		store.OutboxCancelled, fmtTime(now), taskID, store.OutboxPending)
 }
+
+// abandonReply cancels the task's pending actions at now unless one of its
+// actions was handed out, which gives store.ErrReplyHandedOut.
+func abandonReply(ctx context.Context, tx *sql.Tx, taskID string, now time.Time) error {
+	var handedOut int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_actions WHERE task_id = ? AND status IN (?, ?)`,
+		taskID, store.OutboxLeased, store.OutboxAcked).Scan(&handedOut)
+	if err != nil {
+		return err
+	}
+	if handedOut > 0 {
+		return store.ErrReplyHandedOut
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE outbox_actions SET status = ?, acked_at = ? WHERE task_id = ? AND status = ?`,
+		store.OutboxCancelled, fmtTime(now), taskID, store.OutboxPending)
+	return err
+}

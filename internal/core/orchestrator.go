@@ -113,9 +113,6 @@ type Orchestrator struct {
 
 	mu     sync.Mutex
 	owners map[string]*taskOwner
-	// lastReplies maps a private conversation to its newest reply task
-	// that stored actions (see cancelUnsentParts).
-	lastReplies map[string]string
 
 	// memberLocks serialise read-modify-writes of a member row;
 	// proactiveLocks serialise a conversation's proactive budget checks with
@@ -168,10 +165,9 @@ func New(d Deps) (*Orchestrator, error) {
 		st: d.Store, router: d.Router, adm: d.Admission, personas: d.Personas, policies: d.Policies,
 		reviewer: d.Reviewer, notifier: d.Notifier, metrics: d.Metrics, log: d.Logger, cfg: d.Config,
 		loc: d.Location, now: d.Now, memTrigger: d.MemoryTrigger, skills: d.Skills, usage: d.Usage,
-		limiter:     NewRateLimiter(),
-		owners:      map[string]*taskOwner{},
-		lastReplies: map[string]string{},
-		ftsRetry:    ftsBackfillRetry,
+		limiter:  NewRateLimiter(),
+		owners:   map[string]*taskOwner{},
+		ftsRetry: ftsBackfillRetry,
 
 		cleanupBatch: defaultCleanupBatch, cleanupMaxBatches: defaultCleanupMaxBatches,
 	}
@@ -455,6 +451,11 @@ func (o *Orchestrator) dispatch(ctx context.Context, s *submission, d Decision, 
 		}
 		return resp, o.ingest(ctx, store.Ingest{Event: evRec})
 	case d.Command != "":
+		if s.ev.Conversation.Type == conloomapi.ConvPrivate {
+			// The messages before a command, such as /stop or /忘记我, are
+			// never carried into a later turn.
+			o.sched.EndTurn(s.convKey, s.ev.Actor.PlatformUserID)
+		}
 		if !s.isAdmin {
 			if reason := o.withheld(s, pol); reason != "" {
 				return o.observeOnly(ctx, s, reason)
@@ -527,11 +528,14 @@ func (o *Orchestrator) submitTurn(ctx context.Context, s *submission, pol conloo
 // not-yet-started task absorbs it, or else a new task starts once they paused
 // for the policy's private wait, at most its private maximum wait after the
 // task was created. A message arriving while the sender's reply is being
-// generated supersedes that task instead, and the new task carries that
-// task's messages too (see MergeOptions.Interrupt and supersede); one
-// arriving after a reply was stored cancels the reply's parts not handed out
-// yet (see cancelUnsentParts). Only a task that supersedes none spends one of
-// the sender's rate-limit hits.
+// generated, or after it was stored but before any of it was handed out,
+// abandons that reply: the new task carries the replaced task's messages too
+// (see MergeOptions.Interrupt and supersede). One arriving after part of the
+// reply was handed out cancels the parts not handed out yet (see
+// cancelUnsentParts). A command ends the sender's turn (see
+// Scheduler.EndTurn). Only a new task, superseding or not, spends one of the
+// sender's rate-limit hits; a sender over the limit is only observed, and
+// their running task goes on.
 func (o *Orchestrator) submitPrivate(ctx context.Context, s *submission, trigger string, pol conloomapi.GroupPolicy) (conloomapi.EventAccepted, error) {
 	if pol.Concurrency.MaxInteractiveRequests == 0 {
 		return o.observeOnly(ctx, s, conloomapi.SuppressedPaused)
@@ -554,13 +558,15 @@ func (o *Orchestrator) submitPrivate(ctx context.Context, s *submission, trigger
 // errSuperseded stops a runner whose task was superseded (see supersede).
 var errSuperseded = errors.New("core: task superseded")
 
-// supersede stores s's message with plan's new task, which replaces the
-// running task plan.Supersedes: its trigger messages are the replaced task's
-// followed by s's message, and the replaced task is stored as cancelled,
-// without any action. The replaced task's runner stores nothing after that
-// (see complete), and a runner not started yet finds the task finished. If
-// the replaced task's result is already stored, or another party is
-// finishing it, supersede stores nothing and returns ErrSupersedeRefused.
+// supersede stores s's message with plan's new task, which replaces the task
+// plan.Supersedes: the new task's trigger messages are the replaced task's
+// followed by s's message. In the same transaction, a replaced task that has
+// not stored its result is stored as cancelled, without any action; its
+// runner stores nothing after that (see complete), and a runner not started
+// yet finds the task finished. Otherwise all the actions of its reply are
+// cancelled, and audited as outbox.superseded. If part of that reply was
+// handed out, the task has no actions, or another party is finishing it,
+// supersede stores nothing and returns ErrSupersedeRefused.
 func (o *Orchestrator) supersede(ctx context.Context, s *submission, trigger string, plan AdmitPlan) (conloomapi.EventAccepted, error) {
 	o.mu.Lock()
 	ow, owned := o.owners[plan.Supersedes]
@@ -578,15 +584,9 @@ func (o *Orchestrator) supersede(ctx context.Context, s *submission, trigger str
 	}
 	ow.commit.Lock()
 	defer ow.commit.Unlock()
-	if ow.committed {
-		return conloomapi.EventAccepted{}, ErrSupersedeRefused
-	}
 	old, err := o.st.GetTask(ctx, s.botID, plan.Supersedes)
 	if err != nil {
 		return conloomapi.EventAccepted{}, err
-	}
-	if taskFinished(old.Status) {
-		return conloomapi.EventAccepted{}, ErrSupersedeRefused
 	}
 	resp := conloomapi.EventAccepted{
 		EventID: s.ev.EventID, Disposition: conloomapi.DispositionReply, TaskID: plan.NewTaskID, Status: conloomapi.TaskQueued,
@@ -598,65 +598,93 @@ func (o *Orchestrator) supersede(ctx context.Context, s *submission, trigger str
 	task := s.task(plan.NewTaskID, "", trigger)
 	task.TriggerMessageIDs = append(slices.Clone(old.TriggerMessageIDs), s.ev.Message.ID)
 	in.NewTask = &task
-	if err := o.ingest(ctx, in); err != nil {
+	if !ow.committed && !taskFinished(old.Status) {
+		in.CancelTaskID = old.ID
+		err := o.ingest(ctx, in)
+		if err == nil {
+			ow.superseded = true
+			o.mu.Lock()
+			ow.cancelled = true
+			o.mu.Unlock()
+			o.joinPlans.take(old.ID)
+			o.metrics.Tasks.WithLabelValues(conloomapi.TaskCancelled).Inc()
+			o.log.Info("task superseded", "conversation", s.convKey, "task_id", old.ID, "superseded_by", plan.NewTaskID)
+			return resp, nil
+		}
+		if !errors.Is(err, store.ErrTaskFinished) {
+			return conloomapi.EventAccepted{}, err
+		}
+		in.CancelTaskID = ""
+	}
+	pending, err := o.pendingActions(ctx, s.botID, old.ID)
+	if err != nil {
 		return conloomapi.EventAccepted{}, err
 	}
-	ow.superseded = true
-	o.mu.Lock()
-	ow.cancelled = true
-	o.mu.Unlock()
-	// A failure is logged; a runner stores the cancellation again.
-	_ = o.record(ctx, old, conloomapi.TaskCancelled, old.Meta, conloomapi.CodeTaskCancelled, nil)
-	o.log.Info("task superseded", "conversation", s.convKey, "task_id", old.ID, "superseded_by", plan.NewTaskID)
+	if pending < 0 {
+		return conloomapi.EventAccepted{}, ErrSupersedeRefused
+	}
+	in.AbandonReplyOf = old.ID
+	err = o.ingest(ctx, in)
+	if errors.Is(err, store.ErrReplyHandedOut) {
+		return conloomapi.EventAccepted{}, ErrSupersedeRefused
+	}
+	if err != nil {
+		return conloomapi.EventAccepted{}, err
+	}
+	o.log.Info("reply abandoned", "conversation", s.convKey, "task_id", old.ID, "superseded_by", plan.NewTaskID, "cancelled", pending)
+	o.auditSuperseded(ctx, s, old.ID, plan.NewTaskID, pending)
 	return resp, nil
 }
 
-// cancelUnsentParts cancels the parts of the private conversation's newest
-// stored reply that were not handed out yet, and audits them as
-// outbox.superseded, once the reply's first part was handed out. A reply none
-// of whose parts was handed out is left whole, so the messages it answers are
-// not dropped.
-func (o *Orchestrator) cancelUnsentParts(ctx context.Context, botID, convKey string) {
-	o.mu.Lock()
-	taskID := o.lastReplies[convKey]
-	delete(o.lastReplies, convKey)
-	o.mu.Unlock()
-	if taskID == "" {
-		return
-	}
+// pendingActions counts the task's pending actions, or returns -1 if it has
+// no actions.
+func (o *Orchestrator) pendingActions(ctx context.Context, botID, taskID string) (int, error) {
 	actions, err := o.st.ActionsForTask(ctx, taskID)
-	if err != nil || len(actions) < 2 {
+	if err != nil || len(actions) == 0 {
+		return -1, err
+	}
+	n := 0
+	for _, a := range actions {
+		rec, err := o.st.GetOutbox(ctx, botID, a.ActionID)
 		if err != nil {
-			o.log.Error("load reply parts failed", "task_id", taskID, "error", err)
+			return 0, err
 		}
+		if rec.Status == store.OutboxPending {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// cancelUnsentParts cancels the pending actions of the reply of taskID,
+// which superseding by the new task newTaskID was refused, and audits them as
+// outbox.superseded.
+func (o *Orchestrator) cancelUnsentParts(ctx context.Context, s *submission, taskID, newTaskID string) {
+	n, err := o.st.CancelPendingActions(ctx, taskID, o.now().UTC())
+	if err != nil {
+		o.log.Error("cancel unsent reply parts failed", "task_id", taskID, "error", err)
 		return
 	}
-	first, err := o.st.GetOutbox(ctx, botID, actions[0].ActionID)
-	if err != nil || first.Status == store.OutboxPending {
-		if err != nil {
-			o.log.Error("load first reply part failed", "task_id", taskID, "error", err)
-		}
-		return
+	if n > 0 {
+		o.log.Info("unsent reply parts cancelled", "conversation", s.convKey, "task_id", taskID, "superseded_by", newTaskID, "cancelled", n)
+		o.auditSuperseded(ctx, s, taskID, newTaskID, n)
 	}
-	now := o.now().UTC()
-	n, err := o.st.CancelPendingActions(ctx, taskID, now)
-	if err != nil || n == 0 {
-		if err != nil {
-			o.log.Error("cancel unsent reply parts failed", "task_id", taskID, "error", err)
-		}
-		return
-	}
-	o.log.Info("unsent reply parts cancelled", "conversation", convKey, "task_id", taskID, "cancelled", n)
+}
+
+// auditSuperseded records that the given number of actions of taskID's
+// reply were cancelled because the new task newTaskID superseded it.
+func (o *Orchestrator) auditSuperseded(ctx context.Context, s *submission, taskID, newTaskID string, cancelled int) {
 	detail, _ := json.Marshal(struct {
-		TaskID    string `json:"task_id"`
-		Cancelled int    `json:"cancelled"`
-	}{taskID, n})
-	err = o.st.InsertAudit(ctx, store.AuditEvent{
-		ID: ids.New("aud"), BotInstanceID: botID, Kind: "outbox.superseded", Actor: "system",
-		Target: convKey, Detail: string(detail), CreatedAt: now,
+		TaskID       string `json:"task_id"`
+		Cancelled    int    `json:"cancelled"`
+		SupersededBy string `json:"superseded_by"`
+	}{taskID, cancelled, newTaskID})
+	err := o.st.InsertAudit(ctx, store.AuditEvent{
+		ID: ids.New("aud"), BotInstanceID: s.botID, Kind: "outbox.superseded", Actor: "system",
+		Target: s.convKey, Detail: string(detail), CreatedAt: o.now().UTC(),
 	})
 	if err != nil {
-		o.log.Error("audit cancelled reply parts failed", "task_id", taskID, "error", err)
+		o.log.Error("audit superseded reply failed", "task_id", taskID, "error", err)
 	}
 }
 
@@ -768,21 +796,29 @@ func (o *Orchestrator) admit(ctx context.Context, s *submission, mode AdmitMode,
 }
 
 // admitWith is admit with the merge window opts for a new task. A non-nil
-// allowNew is asked before a new task that supersedes none is stored; if it
-// refuses, nothing is stored and admitWith returns errRateLimited. With
-// opts.Interrupt a new task may supersede a running one (see supersede), and
-// one that does not cancels the unsent parts of the newest reply (see
-// cancelUnsentParts).
+// allowNew is asked once before a new task is stored or a task superseded;
+// if it refuses, nothing is stored and admitWith returns errRateLimited. With
+// opts.Interrupt a new task may supersede another (see supersede); if that is
+// refused, the other task's unsent reply parts are cancelled once the new
+// task is stored (see cancelUnsentParts).
 func (o *Orchestrator) admitWith(ctx context.Context, s *submission, mode AdmitMode, trigger string, opts MergeOptions, allowNew func() bool) (conloomapi.EventAccepted, error) {
 	var resp conloomapi.EventAccepted
+	var allowed bool
+	var refused string
 	_, err := o.sched.AdmitWith(s.convKey, s.ev.Actor.PlatformUserID, s.ev.Message.ID, mode, opts, func(plan AdmitPlan) error {
+		if plan.NewTaskID != "" && allowNew != nil && !allowed {
+			if !allowNew() {
+				return errRateLimited
+			}
+			allowed = true
+		}
 		if plan.Supersedes != "" {
 			var err error
 			resp, err = o.supersede(ctx, s, trigger, plan)
+			if errors.Is(err, ErrSupersedeRefused) {
+				refused = plan.Supersedes
+			}
 			return err
-		}
-		if plan.NewTaskID != "" && allowNew != nil && !allowNew() {
-			return errRateLimited
 		}
 		resp = conloomapi.EventAccepted{EventID: s.ev.EventID, Disposition: conloomapi.DispositionObserve}
 		var task *store.TaskRecord
@@ -804,8 +840,8 @@ func (o *Orchestrator) admitWith(ctx context.Context, s *submission, mode AdmitM
 		if err := o.ingest(ctx, in); err != nil {
 			return err
 		}
-		if task != nil && opts.Interrupt {
-			o.cancelUnsentParts(ctx, s.botID, s.convKey)
+		if task != nil && refused != "" {
+			o.cancelUnsentParts(ctx, s, refused, task.ID)
 		}
 		return nil
 	})
@@ -1026,8 +1062,7 @@ func taskFinished(status string) bool {
 
 // complete stores the task's final state and actions with record. A runner
 // whose task was superseded stores it as cancelled again, without actions,
-// and gets errSuperseded; one that stores actions of a private conversation
-// makes them the conversation's newest reply (see cancelUnsentParts).
+// and gets errSuperseded.
 func (o *Orchestrator) complete(ctx context.Context, task store.TaskRecord, status string, meta conloomapi.TaskMeta, code string, actions []store.OutboxRecord) error {
 	o.mu.Lock()
 	ow := o.owners[task.ID]
@@ -1054,11 +1089,6 @@ func (o *Orchestrator) complete(ctx context.Context, task store.TaskRecord, stat
 		return err
 	}
 	ow.committed = true
-	if len(actions) > 0 && convType(task.ConversationKey) == conloomapi.ConvPrivate {
-		o.mu.Lock()
-		o.lastReplies[task.ConversationKey] = task.ID
-		o.mu.Unlock()
-	}
 	return nil
 }
 
