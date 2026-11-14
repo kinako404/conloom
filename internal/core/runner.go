@@ -43,11 +43,12 @@ var errEchoOnly = fmt.Errorf("%w: only the transcript format", openai.ErrEmptyOu
 
 // outcome is the result of executing a reply task. An empty text means no
 // action is sent; skipped means the model answered SkipMarker (or, for a task
-// not addressed to the bot, only echoed the transcript format). proactive is
-// set for a proactive task none of whose messages is addressed to the bot;
-// turn for a continuation task none of whose messages is; addressed for a
-// task with a message that mentions or replies to the bot. turnSession is the
-// session a turn was reserved in before calling the model.
+// not addressed to the bot, only echoed the transcript format, or wrote only
+// part separators). proactive is set for a proactive task none of whose
+// messages is addressed to the bot; turn for a continuation task none of whose
+// messages is; addressed for a task with a message that mentions or replies to
+// the bot. turnSession is the session a turn was reserved in before calling
+// the model.
 type outcome struct {
 	status      string
 	code        string
@@ -62,6 +63,9 @@ type outcome struct {
 	meta     conloomapi.TaskMeta
 	conv     store.ConversationRecord
 	triggers []store.MessageRecord
+	// maxParts is how many parts a model reply in text is split into (see
+	// splitParts); zero for any other text, which is sent whole.
+	maxParts int
 	// skillCalls counts the task's tool calls by tool.
 	skillCalls map[string]int
 }
@@ -152,7 +156,7 @@ func (o *Orchestrator) finish(ctx context.Context, task store.TaskRecord, out *o
 	}
 	var actions []store.OutboxRecord
 	if out.text != "" {
-		actions = append(actions, o.newAction(ctx, task, out.conv, out.triggers, out.text))
+		actions = o.newActions(ctx, task, out.conv, out.triggers, splitParts(out.text, out.maxParts))
 	}
 	if err := o.complete(ctx, task, out.status, out.meta, out.code, actions); err != nil {
 		return false, err
@@ -258,7 +262,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	}
 	names := o.mentionNames(ctx, task, history, triggers)
 	in := contextbuilder.Input{
-		SystemPrompt:     system.Text,
+		SystemPrompt:     system.Text + "\n\n" + partsDirective(pol.Reply.MaxParts),
 		ConversationType: conv.Type,
 		History:          history,
 		Current:          current,
@@ -347,8 +351,14 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		o.auditBlocked(task, res.Reasons)
 		return out
 	}
+	if len(splitParts(res.Text, pol.Reply.MaxParts)) == 0 {
+		o.log.Info("model output held only empty parts; not sending", "task_id", task.ID, "output_len", len(resp.Content))
+		out.meta.ReviewResult = reviewResultSkipped
+		out.skipped = true
+		return out
+	}
 	out.meta.ReviewResult = res.Verdict
-	out.text = res.Text
+	out.text, out.maxParts = res.Text, pol.Reply.MaxParts
 	return out
 }
 
@@ -499,6 +509,15 @@ func (o *Orchestrator) directive(ctx context.Context, task store.TaskRecord, tri
 func speaker(triggers []store.MessageRecord) string {
 	last := triggers[len(triggers)-1]
 	return directiveName(last.DisplayName)
+}
+
+// partsDirective tells the model how many messages a reply may be split into
+// (see splitParts); it is appended to the system prompt.
+func partsDirective(maxParts int) string {
+	if maxParts <= 1 {
+		return "回复只发一条消息。"
+	}
+	return fmt.Sprintf("回复可以像聊天那样分成 1 到 %d 条短消息，条与条之间用单独一行的 %s 分隔；不需要分时就只发一条。", maxParts, partSeparator)
 }
 
 // call builds the context for the routed profile and calls the model. With

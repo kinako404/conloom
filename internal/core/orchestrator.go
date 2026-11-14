@@ -906,6 +906,33 @@ func (o *Orchestrator) newAction(ctx context.Context, task store.TaskRecord, con
 	}
 }
 
+// newActions builds one text message action per part of a reply, in order.
+// Only the first part may quote (see newAction). Parts of a reply with more
+// than one carry their index and count, and each later part is not sent
+// before partDelay of every part ahead of it has passed since the first was
+// built; it expires a full action TTL after that.
+func (o *Orchestrator) newActions(ctx context.Context, task store.TaskRecord, conv store.ConversationRecord, triggers []store.MessageRecord, parts []string) []store.OutboxRecord {
+	if len(parts) == 1 {
+		return []store.OutboxRecord{o.newAction(ctx, task, conv, triggers, parts[0])}
+	}
+	recs := make([]store.OutboxRecord, 0, len(parts))
+	var at time.Time
+	for i, part := range parts {
+		var rec store.OutboxRecord
+		if i == 0 {
+			rec = o.newAction(ctx, task, conv, triggers, part)
+			at = rec.CreatedAt
+		} else {
+			rec = o.newAction(ctx, task, conv, nil, part)
+			rec.NotBefore, rec.ExpiresAt = at, at.Add(o.actionTTL)
+		}
+		rec.Action.PartIndex, rec.Action.PartCount = i+1, len(parts)
+		at = at.Add(partDelay(part))
+		recs = append(recs, rec)
+	}
+	return recs
+}
+
 const (
 	// quoteMaxAge is the trigger age after which an auto-mode reply quotes it.
 	quoteMaxAge = time.Minute
