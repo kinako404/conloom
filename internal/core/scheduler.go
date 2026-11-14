@@ -187,7 +187,9 @@ type session struct {
 type runningTask struct {
 	task   QueuedTask
 	cancel context.CancelFunc
-	// settled is set once the task was superseded or refused to be.
+	// settled is set once the task was superseded or refused to be, was
+	// cancelled (see Cancel), or its actor's turn ended (see EndTurn), also
+	// before it started: a settled task is never superseded.
 	settled bool
 }
 
@@ -628,7 +630,7 @@ func (sess *session) heldLocked(t QueuedTask, cfg SessionConfig, now time.Time) 
 
 func (s *Scheduler) startLocked(sess *session, t QueuedTask) {
 	ctx, cancel := context.WithCancel(s.ctx)
-	rt := &runningTask{task: t, cancel: cancel}
+	rt := &runningTask{task: t, cancel: cancel, settled: t.closed}
 	sess.running = append(sess.running, rt)
 	s.wg.Add(1)
 	go func() {

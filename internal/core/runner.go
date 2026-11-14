@@ -244,7 +244,21 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	var speakerRows map[string]store.MemberMemory
 	if conv.Type == conloomapi.ConvPrivate {
 		speakerRows = o.privateSpeakerRow(ctx, task)
-		history = sinceForgotten(history, speakerRows[task.ActorPlatformUserID].ForgottenAt)
+		forgotten := speakerRows[task.ActorPlatformUserID].ForgottenAt
+		history = sinceForgotten(history, forgotten)
+		// A forget through the API or the panel does not end the sender's
+		// turn: messages carried from before it are dropped here too. They
+		// are compared by when they were received, which unlike the platform's
+		// time is never coarser than the forget's.
+		triggers = slices.DeleteFunc(slices.Clone(triggers), func(m store.MessageRecord) bool {
+			return !forgotten.IsZero() && m.CreatedAt.Before(forgotten)
+		})
+		out.triggers = triggers
+		if len(triggers) == 0 {
+			o.log.Info("turn dropped: all its messages were forgotten", "task_id", task.ID, "conversation", task.ConversationKey)
+			out.status, out.skipped, out.meta.ReviewResult = conloomapi.TaskSucceeded, true, reviewResultSkipped
+			return out
+		}
 	}
 	current := slices.Clone(triggers)
 	for i := range current {

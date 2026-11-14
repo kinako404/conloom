@@ -451,9 +451,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, s *submission, d Decision, 
 		}
 		return resp, o.ingest(ctx, store.Ingest{Event: evRec})
 	case d.Command != "":
-		if s.ev.Conversation.Type == conloomapi.ConvPrivate {
-			// The messages before a command, such as /stop or /忘记我, are
-			// never carried into a later turn.
+		if s.ev.Conversation.Type == conloomapi.ConvPrivate && endsTurn(d.Command) {
 			o.sched.EndTurn(s.convKey, s.ev.Actor.PlatformUserID)
 		}
 		if !s.isAdmin {
@@ -487,6 +485,18 @@ func (o *Orchestrator) dispatch(ctx context.Context, s *submission, d Decision, 
 	default:
 		return o.admit(ctx, s, AdmitMergeOnly, "")
 	}
+}
+
+// endsTurn reports whether a private command ends its sender's turn (see
+// Scheduler.EndTurn): /stop, /pause and /忘记我 do, so the messages before
+// them are never carried into a later turn; other commands leave the turn
+// open.
+func endsTurn(command string) bool {
+	switch command {
+	case "stop", "pause", "忘记我", "forgetme":
+		return true
+	}
+	return false
 }
 
 // errRateLimited stops a new turn of a sender over the per-user rate limit.
@@ -532,10 +542,11 @@ func (o *Orchestrator) submitTurn(ctx context.Context, s *submission, pol conloo
 // abandons that reply: the new task carries the replaced task's messages too
 // (see MergeOptions.Interrupt and supersede). One arriving after part of the
 // reply was handed out cancels the parts not handed out yet (see
-// cancelUnsentParts). A command ends the sender's turn (see
-// Scheduler.EndTurn). Only a new task, superseding or not, spends one of the
-// sender's rate-limit hits; a sender over the limit is only observed, and
-// their running task goes on.
+// cancelUnsentParts). /stop, /pause and /忘记我 end the sender's turn (see
+// endsTurn); other commands leave it open, so a message after /help still
+// carries the messages before it. Only a new task, superseding or not, spends
+// one of the sender's rate-limit hits; a sender over the limit is only
+// observed, and their running task goes on.
 func (o *Orchestrator) submitPrivate(ctx context.Context, s *submission, trigger string, pol conloomapi.GroupPolicy) (conloomapi.EventAccepted, error) {
 	if pol.Concurrency.MaxInteractiveRequests == 0 {
 		return o.observeOnly(ctx, s, conloomapi.SuppressedPaused)
@@ -565,12 +576,13 @@ var errSuperseded = errors.New("core: task superseded")
 // runner stores nothing after that (see complete), and a runner not started
 // yet finds the task finished. Otherwise all the actions of its reply are
 // cancelled, and audited as outbox.superseded. If part of that reply was
-// handed out, the task has no actions, or another party is finishing it,
-// supersede stores nothing and returns ErrSupersedeRefused.
+// handed out, the task has no actions, it was cancelled, or another party is
+// finishing it, supersede stores nothing and returns ErrSupersedeRefused, so
+// a cancelled task's messages are never carried.
 func (o *Orchestrator) supersede(ctx context.Context, s *submission, trigger string, plan AdmitPlan) (conloomapi.EventAccepted, error) {
 	o.mu.Lock()
 	ow, owned := o.owners[plan.Supersedes]
-	if owned && !ow.runner {
+	if owned && (!ow.runner || ow.cancelled) {
 		o.mu.Unlock()
 		return conloomapi.EventAccepted{}, ErrSupersedeRefused
 	}

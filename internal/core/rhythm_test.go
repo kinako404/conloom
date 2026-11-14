@@ -498,6 +498,80 @@ func TestPrivate_FollowUpBeforeReplyIsStoredSupersedesIt(t *testing.T) {
 	}
 }
 
+func TestPrivate_CancelledTaskIsNotSuperseded(t *testing.T) {
+	model := newGatedModel()
+	env := newPrivateEnv(t, 30*time.Millisecond, model.handle, nil)
+	t.Cleanup(model.open)
+	first := env.submit(t, env.privateEvent("讲个故事吧"))
+	waitUntil(t, "model called", func() bool { return env.short.Calls() == 1 })
+
+	// A cancellation has flagged the runner but not reached the scheduler yet
+	// (see cancel).
+	env.o.mu.Lock()
+	env.o.owners[first.TaskID].cancelled = true
+	env.o.mu.Unlock()
+	ev := env.privateEvent("要关于猫的")
+	second := env.submit(t, ev)
+	if second.Disposition != conloomapi.DispositionReply || second.TaskID == first.TaskID {
+		t.Fatalf("follow-up response = %+v", second)
+	}
+	if got := storedTriggers(t, env, second.TaskID); !slices.Equal(got, []string{ev.Message.ID}) {
+		t.Fatalf("new turn triggers = %v, want only the follow-up", got)
+	}
+	env.o.sched.Cancel(privateConvKey, first.TaskID)
+	model.open()
+	requireCancelledWithoutActions(t, env, first.TaskID)
+	requireOneReply(t, env, second.TaskID)
+	if audits := supersededAudits(t, env); len(audits) != 0 {
+		t.Fatalf("audits = %+v, want none", audits)
+	}
+}
+
+// forgetPrivateUser forgets privateUser the way the API and the panel do,
+// without a command and so without ending their turn.
+func forgetPrivateUser(t *testing.T, env *testEnv) {
+	t.Helper()
+	time.Sleep(5 * time.Millisecond)
+	if err := env.st.ForgetMember(context.Background(), privateConvKey, privateUser, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+}
+
+func TestPrivate_CarriedMessagesBeforeForgetAreDropped(t *testing.T) {
+	env := newPrivateEnv(t, 30*time.Millisecond, nil, nil)
+	first := env.submit(t, env.privateEvent("我偷偷喜欢甜食"))
+	requireOneReply(t, env, first.TaskID)
+	waitUntil(t, "runner to finish", func() bool { return len(env.o.sched.Active(privateConvKey)) == 0 })
+	forgetPrivateUser(t, env)
+
+	second := env.submit(t, env.privateEvent("还记得我吗"))
+	if second.Disposition != conloomapi.DispositionReply || second.TaskID == first.TaskID {
+		t.Fatalf("message after the forget = %+v", second)
+	}
+	requireOneReply(t, env, second.TaskID)
+	b, err := json.Marshal(env.short.Requests()[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content := lastUserMessage(t, env, 1); !strings.Contains(content, "还记得我吗") || strings.Contains(string(b), "甜食") {
+		t.Fatalf("request after the forget = %s, want only the new message", b)
+	}
+}
+
+func TestPrivate_TurnForgottenBeforeItStartsIsSkipped(t *testing.T) {
+	env := newPrivateEnv(t, 300*time.Millisecond, nil, nil)
+	first := env.submit(t, env.privateEvent("我偷偷喜欢甜食"))
+	forgetPrivateUser(t, env)
+	task := env.waitTask(t, first.TaskID)
+	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 0 || task.Meta.ReviewResult != reviewResultSkipped {
+		t.Fatalf("forgotten turn = %+v, want skipped without actions", task)
+	}
+	if n := env.short.Calls(); n != 0 {
+		t.Fatalf("model calls = %d, want 0", n)
+	}
+}
+
 func TestPrivate_CommandsNeitherMergeNorCancel(t *testing.T) {
 	model := newGatedModel()
 	env := newPrivateEnv(t, 200*time.Millisecond, model.handle, nil)
@@ -747,15 +821,47 @@ func TestScheduler_InterruptSupersedesFinishedTaskOnce(t *testing.T) {
 	}
 }
 
-func TestPrivate_CommandEndsTurn(t *testing.T) {
+func TestPrivate_HelpKeepsTurn(t *testing.T) {
 	env := newPrivateEnv(t, 30*time.Millisecond, nil, nil)
 	admin := func(text string) conloomapi.Event {
 		return env.event(conloomapi.ConvPrivate, "29999", "29999", text)
 	}
-	first := env.submit(t, admin("推荐一本书"))
+	adminKey := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, conloomapi.ConvPrivate+"_29999")
+	ev1 := admin("推荐一本书")
+	first := env.submit(t, ev1)
 	reply := requireOneReply(t, env, first.TaskID)
+	waitUntil(t, "runner to finish", func() bool { return len(env.o.sched.Active(adminKey)) == 0 })
 	if got := env.submit(t, admin("/help")); got.TaskID == "" || got.TaskID == first.TaskID {
 		t.Fatalf("/help response = %+v", got)
+	}
+	ev2 := admin("要科幻的")
+	second := env.submit(t, ev2)
+	if second.Disposition != conloomapi.DispositionReply || second.TaskID == first.TaskID {
+		t.Fatalf("message after /help = %+v", second)
+	}
+	requireOneReply(t, env, second.TaskID)
+	if got, want := storedTriggers(t, env, second.TaskID), []string{ev1.Message.ID, ev2.Message.ID}; !slices.Equal(got, want) {
+		t.Fatalf("turn after /help = %v, want %v", got, want)
+	}
+	if st := outboxStatusOf(t, env, reply.Actions[0].ActionID); st != store.OutboxCancelled {
+		t.Fatalf("reply before /help = %s, want cancelled", st)
+	}
+	if n := liveActions(t, env, first.TaskID, second.TaskID); n != 1 {
+		t.Fatalf("replies = %d, want 1", n)
+	}
+}
+
+func TestPrivate_ForgetMeEndsTurn(t *testing.T) {
+	env := newPrivateEnv(t, 30*time.Millisecond, nil, nil)
+	admin := func(text string) conloomapi.Event {
+		return env.event(conloomapi.ConvPrivate, "29999", "29999", text)
+	}
+	adminKey := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, conloomapi.ConvPrivate+"_29999")
+	first := env.submit(t, admin("推荐一本书"))
+	reply := requireOneReply(t, env, first.TaskID)
+	waitUntil(t, "runner to finish", func() bool { return len(env.o.sched.Active(adminKey)) == 0 })
+	if got := env.submit(t, admin("/忘记我")); got.TaskID == "" || got.TaskID == first.TaskID {
+		t.Fatalf("/忘记我 response = %+v", got)
 	}
 	ev := admin("换一本吧")
 	second := env.submit(t, ev)
@@ -768,6 +874,34 @@ func TestPrivate_CommandEndsTurn(t *testing.T) {
 	}
 	if st := outboxStatusOf(t, env, reply.Actions[0].ActionID); st != store.OutboxPending {
 		t.Fatalf("reply before the command = %s, want pending", st)
+	}
+}
+
+func TestScheduler_TaskClosedBeforeStartIsNeverSuperseded(t *testing.T) {
+	rec := newSchedRecorder()
+	rec.hold = make(chan struct{})
+	s := newTestScheduler(t, rec.run, fixedCfg(SessionConfig{MaxConcurrent: 1, MaxQueued: 10}))
+	opts := MergeOptions{Debounce: 200 * time.Millisecond, MaxMergeWindow: time.Second, Interrupt: true}
+
+	r1, err := s.AdmitWith("private:20001", "20001", "m1", AdmitNew, opts, nopPersist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.EndTurn("private:20001", "20001")
+	if started := rec.waitStarted(t); started.TaskID != r1.TaskID {
+		t.Fatalf("started = %+v, want %s", started, r1.TaskID)
+	}
+	var plans []AdmitPlan
+	r2, err := s.AdmitWith("private:20001", "20001", "m2", AdmitNew, opts, func(p AdmitPlan) error {
+		plans = append(plans, p)
+		return nil
+	})
+	if err != nil || !slices.Equal(plans, []AdmitPlan{{NewTaskID: r2.TaskID}}) {
+		t.Fatalf("admit while the closed task runs = %+v, %v, plans %+v", r2, err, plans)
+	}
+	close(rec.hold)
+	if next := rec.waitStarted(t); next.TaskID != r2.TaskID || !slices.Equal(next.TriggerMessageIDs, []string{"m2"}) {
+		t.Fatalf("next started = %+v, want %s with [m2]", next, r2.TaskID)
 	}
 }
 
