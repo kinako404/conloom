@@ -6,8 +6,12 @@ import { reportDays } from './usage.js';
 
 const POLL_MS = 10000;
 
-function stat(k, v, bad) {
-  return h('div', { class: bad ? 'stat bad' : 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v));
+function stat(k, v, bad, exact) {
+  return h('div', { class: bad ? 'stat bad' : 'stat', title: exact }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v));
+}
+
+function tokenStat(k, n) {
+  return stat(k, fmtCompact(n), false, fmtInt(n));
 }
 
 function orDash(v, none) {
@@ -24,9 +28,9 @@ function renderOverview(o) {
     h('div', { class: 'cards' },
       stat('调用次数', fmtInt(t.calls)),
       stat('失败', fmtInt(t.errors), t.errors > 0),
-      stat('提示 token', fmtInt(t.prompt_tokens)),
-      stat('回复 token', fmtInt(t.completion_tokens)),
-      stat('思考 token', fmtInt(t.reasoning_tokens))),
+      tokenStat('提示 token', t.prompt_tokens),
+      tokenStat('回复 token', t.completion_tokens),
+      tokenStat('思考 token', t.reasoning_tokens)),
     h('div', { class: 'cols' },
       h('section', { class: 'card' },
         h('h2', null, '实时状态'),

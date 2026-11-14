@@ -30,12 +30,13 @@ export function fmtInt(n) {
   return Number.isFinite(x) ? x.toLocaleString('zh-CN') : String(n);
 }
 
-// fmtCompact shortens large numbers with 万 and 亿.
+// fmtCompact shortens large numbers with K, M and B.
 export function fmtCompact(n) {
   const x = Number(n) || 0;
-  const a = Math.abs(x);
-  if (a >= 1e8) return trim(x / 1e8) + '亿';
-  if (a >= 1e4) return trim(x / 1e4) + '万';
+  for (const [size, unit] of [[1e9, 'B'], [1e6, 'M'], [1e3, 'K']]) {
+    const r = Math.round((x / size) * 10) / 10;
+    if (Math.abs(r) >= 1) return String(r) + unit;
+  }
   return trim(x);
 }
 
