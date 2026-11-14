@@ -49,7 +49,7 @@ ConLoom 是一个用 Go 编写的群聊对话智能体框架：平台适配器�
 | `conloom adapter telegram` | Telegram 适配器，私聊、群和超级群（频道跳过） | 不监听端口，只主动连接 Telegram Bot API（HTTPS 长轮询）和核心（HTTP） |
 
 - 其他子命令：`mock`（终端里的本地调试适配器）、`backup`（在线备份）、`panel hash-password`（生成面板密码哈希）、`version`。
-- API、`/healthz`、`/metrics` 和 Web 管理面板（`/panel/`，配置了 `panel` 段时才有，见 8.2）共用一个端口；`/healthz`、`/metrics` 不需要鉴权，`/metrics` 只能整体开关（`server.metrics_enabled`）。
+- API、`/healthz`、`/metrics` 和 Web 管理面板（`/panel/`，配置了 `panel` 段时才有，见 8.2）默认共用一个端口；设了 `panel.listen` 时面板改到那个只有面板的端口，API 端口上的 `/panel/` 返回 404；`/healthz`、`/metrics` 不需要鉴权，`/metrics` 只能整体开关（`server.metrics_enabled`）。
 - 数据目录 `storage.data_dir`（默认 `./data`，相对路径按配置文件所在目录解析）下只有 `conloom.db` 及其 WAL 文件。适配器的去重日志分别放在 `adapters.napcat.state_dir` 和 `adapters.telegram.state_dir`，默认都与数据目录相同，文件名不同。两个适配器共用同一份去重实现（`internal/adapter/dedup`）。
 - 每个适配器服务一个机器人实例（各自的 `bot_instance_id` 和核心令牌），一个核心可以同时服务 QQ 和 Telegram 两个实例。
 - 每个机器人实例只能运行**一个**适配器进程，核心也只能运行**一个**进程（原因见第 6 节）。Telegram 本身也只允许一个 `getUpdates` 连接。
@@ -612,7 +612,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 
 ### 8.2 Web 管理面板
 
-`internal/panel` 提供面板的页面和 `/panel/api/` 下的 JSON 接口；前端是 `internal/panel/web/` 下的静态页面和原生 ES 模块，用 `go:embed` 打包，不引用外部资源，图表是手写的 SVG。配置了 `panel` 段时，gateway 把 `/panel` 和 `/panel/` 交给它，否则这些路径不存在。用法见 [Web 管理面板](panel.md)。
+`internal/panel` 提供面板的页面和 `/panel/api/` 下的 JSON 接口；前端是 `internal/panel/web/` 下的静态页面和原生 ES 模块，用 `go:embed` 打包，不引用外部资源，图表是手写的 SVG。配置了 `panel` 段时，gateway 把 `/panel` 和 `/panel/` 交给它，否则这些路径不存在。设了 `panel.listen` 时 gateway 不挂面板，核心在那个地址上另起一个 `http.Server`，整个交给面板的 handler：`/` 302 跳转到 `/panel/`（同样带下面的响应头、计入指标），其余路径 404；这个服务器和核心的超时相同，另设 30 秒的 `ReadTimeout`（整个请求含请求体须在 30 秒内读完，核心那边因为发件箱长轮询不设），两个服务器一起启动、一起优雅关闭。用法见 [Web 管理面板](panel.md)。
 
 - **鉴权**：账号在配置的 `panel.users` 里，密码哈希为 PBKDF2-SHA256（Go 标准库 `crypto/pbkdf2`，16 字节随机盐，默认 600000 次迭代，最少 100000 次），格式 `pbkdf2-sha256:<迭代次数>:<盐>:<哈希>`，由 `conloom panel hash-password` 生成。用户名不存在时校验一个同等迭代次数的假哈希，密码用常量时间比较。
 - **会话**（迁移 `0009_panel_sessions.sql`，表 `panel_sessions`）：会话令牌是 32 字节随机数，只放在 cookie `conloom_panel` 里（`HttpOnly`、`SameSite=Strict`、`Path=/panel/`，`Secure` 由 `panel.cookie_secure` 决定），库里存它的 SHA-256，另存 CSRF 令牌、`cred_fingerprint`（登录时该用户密码哈希的 SHA-256 前 16 位十六进制）和创建、最近使用、过期时间。每个请求都检查：没过 `session_ttl`、没超过 `idle_timeout`、用户还在配置里且指纹和当前哈希一致，所以改密码后旧会话立即失效。`last_seen_at` 最多每分钟更新一次。
