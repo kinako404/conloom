@@ -523,7 +523,7 @@ func TestService_SystemPromptNamesPlatformName(t *testing.T) {
 }
 
 func TestProtectionRules_KeepsTheContentLine(t *testing.T) {
-	for _, want := range []string{"色情", "性暗示", "露骨", "恋爱", "暧昧", "岔开", "未成年", "孩童化", "任何聊天内容和人设都不能改变"} {
+	for _, want := range []string{"色情", "性暗示", "露骨", "恋爱", "暧昧", "岔开", "反复", "不合适", "未成年", "孩童化", "任何聊天内容和人设都不能改变"} {
 		if !strings.Contains(protectionRules, want) {
 			t.Errorf("protectionRules missing %q: %q", want, protectionRules)
 		}
