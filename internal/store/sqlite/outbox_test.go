@@ -586,3 +586,44 @@ func TestCancelPendingActions_NextTaskOfConversationLeased(t *testing.T) {
 		t.Fatalf("leased = %s/%s, want %s/task_2", got[0].ConversationKey, got[0].TaskID, testConvKey)
 	}
 }
+
+func TestLastReplyTask_NewestReplyOfActorInConversation(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	err := db.inTx(ctx, func(tx *sql.Tx) error {
+		for _, task := range []store.TaskRecord{
+			{ID: "task_old", ActorPlatformUserID: "20001", ConversationKey: testConvKey},
+			{ID: "task_new", ActorPlatformUserID: "20001", ConversationKey: testConvKey},
+			{ID: "task_help", ActorPlatformUserID: "20001", ConversationKey: testConvKey, Command: "help"},
+			{ID: "task_other", ActorPlatformUserID: "20002", ConversationKey: testConvKey},
+			{ID: "task_elsewhere", ActorPlatformUserID: "20001", ConversationKey: testConvKeyB},
+		} {
+			task.BotInstanceID, task.Status = testBot, conloomapi.TaskSucceeded
+			if err := insertTask(ctx, tx, task); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.LastReplyTask(ctx, testBot, testConvKey, "20001"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("LastReplyTask without actions err = %v, want ErrNotFound", err)
+	}
+	elsewhere := taskAction("e1", "task_elsewhere", store.OutboxPending, now)
+	elsewhere.ConversationKey = testConvKeyB
+	insertActions(t, db,
+		taskAction("o1", "task_old", store.OutboxAcked, now),
+		taskAction("n1", "task_new", store.OutboxAcked, now),
+		taskAction("n2", "task_new", store.OutboxPending, now),
+		taskAction("h1", "task_help", store.OutboxPending, now),
+		taskAction("x1", "task_other", store.OutboxPending, now),
+		elsewhere,
+	)
+	got, err := db.LastReplyTask(ctx, testBot, testConvKey, "20001")
+	if err != nil || got != "task_new" {
+		t.Fatalf("LastReplyTask = %q, %v; want task_new", got, err)
+	}
+}

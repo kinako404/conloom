@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -164,25 +166,62 @@ func (o *Orchestrator) logPolicyAuditError(task store.TaskRecord, err error) {
 }
 
 // stop cancels the conversation's queued and running tasks started by the
-// command's sender, or every one of them when the sender is an admin.
+// command's sender, or every one of them when the sender is an admin. It also
+// cancels the parts of the sender's last reply not handed out yet (see
+// cancelStoredParts).
 func (o *Orchestrator) stop(ctx context.Context, task store.TaskRecord, isAdmin bool) (string, error) {
 	active := o.sched.Active(task.ConversationKey)
-	if len(active) == 0 {
-		return CopyStopNothing, nil
-	}
 	var targets []QueuedTask
 	for _, t := range active {
 		if isAdmin || t.ActorID == task.ActorPlatformUserID {
 			targets = append(targets, t)
 		}
 	}
-	if len(targets) == 0 {
-		return CopyStopForbidden, nil
-	}
 	for _, t := range targets {
 		if _, err := o.cancel(ctx, task.BotInstanceID, t.ConversationKey, t.TaskID); err != nil {
 			return "", err
 		}
 	}
-	return CopyStopDone, nil
+	parts, err := o.cancelStoredParts(ctx, task)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case len(targets) > 0 || parts > 0:
+		return CopyStopDone, nil
+	case len(active) > 0:
+		return CopyStopForbidden, nil
+	}
+	return CopyStopNothing, nil
+}
+
+// cancelStoredParts cancels the actions not handed out yet of the command
+// sender's last reply in the conversation (see store.LastReplyTask), such as
+// the later parts of a reply split into several messages, and audits them as
+// outbox.stopped. It returns how many it cancelled.
+func (o *Orchestrator) cancelStoredParts(ctx context.Context, task store.TaskRecord) (int, error) {
+	last, err := o.st.LastReplyTask(ctx, task.BotInstanceID, task.ConversationKey, task.ActorPlatformUserID)
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	n, err := o.st.CancelPendingActions(ctx, last, o.now().UTC())
+	if err != nil || n == 0 {
+		return n, err
+	}
+	o.log.Info("stored reply parts stopped", "conversation", task.ConversationKey, "task_id", last, "cancelled", n)
+	detail, _ := json.Marshal(struct {
+		TaskID    string `json:"task_id"`
+		Cancelled int    `json:"cancelled"`
+	}{last, n})
+	err = o.st.InsertAudit(ctx, store.AuditEvent{
+		ID: ids.New("aud"), BotInstanceID: task.BotInstanceID, Kind: "outbox.stopped", Actor: "command:" + task.ActorPlatformUserID,
+		Target: task.ConversationKey, Detail: string(detail), CreatedAt: o.now().UTC(),
+	})
+	if err != nil {
+		o.log.Error("audit stopped reply parts failed", "task_id", last, "error", err)
+	}
+	return n, nil
 }

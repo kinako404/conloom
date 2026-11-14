@@ -572,6 +572,50 @@ func TestPrivate_TurnForgottenBeforeItStartsIsSkipped(t *testing.T) {
 	}
 }
 
+func TestPrivate_StopCancelsStoredParts(t *testing.T) {
+	env := newPrivateEnv(t, 30*time.Millisecond, answer("第一段\n|||\n第二段\n|||\n第三段"), withMaxParts(3))
+	first := env.submit(t, env.privateEvent("讲个故事吧"))
+	reply := env.waitTask(t, first.TaskID)
+	if reply.Status != conloomapi.TaskSucceeded || len(reply.Actions) != 3 {
+		t.Fatalf("reply = %+v, want three parts", reply)
+	}
+	deliverFirstPart(t, env, reply.Actions[0].ActionID)
+
+	if got := env.privateCommand(t, privateUser, "/stop"); got != CopyStopDone {
+		t.Fatalf("/stop = %q, want %q", got, CopyStopDone)
+	}
+	for _, a := range reply.Actions[1:] {
+		if st := outboxStatusOf(t, env, a.ActionID); st != store.OutboxCancelled {
+			t.Fatalf("part %d = %s, want cancelled", a.PartIndex, st)
+		}
+	}
+	if st := outboxStatusOf(t, env, reply.Actions[0].ActionID); st != store.OutboxAcked {
+		t.Fatalf("sent part = %s, want acked", st)
+	}
+	// Only /stop's own reply is left to hand out, even once every part is due.
+	leased, err := env.st.LeaseOutbox(context.Background(), testBot, 10, time.Now().Add(time.Minute).UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range leased {
+		if a.TaskID == first.TaskID {
+			t.Fatalf("leased %+v after /stop", a.Action)
+		}
+	}
+	events, err := env.st.ListAudit(context.Background(), store.AuditFilter{Kind: "outbox.stopped", BotInstanceID: testBot, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || !strings.Contains(events[0].Detail, `"task_id":"`+first.TaskID+`"`) || !strings.Contains(events[0].Detail, `"cancelled":2`) {
+		t.Fatalf("outbox.stopped audits = %+v", events)
+	}
+
+	// With nothing left to stop, /stop says so.
+	if got := env.privateCommand(t, privateUser, "/stop"); got != CopyStopNothing {
+		t.Fatalf("second /stop = %q, want %q", got, CopyStopNothing)
+	}
+}
+
 func TestPrivate_CommandsNeitherMergeNorCancel(t *testing.T) {
 	model := newGatedModel()
 	env := newPrivateEnv(t, 200*time.Millisecond, model.handle, nil)

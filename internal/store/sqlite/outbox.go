@@ -154,6 +154,14 @@ func (db *DB) CancelPendingActions(ctx context.Context, taskID string, now time.
 		store.OutboxCancelled, fmtTime(now), taskID, store.OutboxPending)
 }
 
+func (db *DB) LastReplyTask(ctx context.Context, botID, convKey, actorID string) (string, error) {
+	var taskID string
+	err := db.r.QueryRowContext(ctx, `SELECT o.task_id FROM outbox_actions o JOIN tasks t ON t.id = o.task_id
+		WHERE o.bot_instance_id = ? AND o.conversation_key = ? AND t.actor_platform_user_id = ? AND t.command = ''
+		ORDER BY o.seq DESC LIMIT 1`, botID, convKey, actorID).Scan(&taskID)
+	return taskID, notFound(err)
+}
+
 // abandonReply cancels the task's pending actions at now unless one of its
 // actions was handed out, which gives store.ErrReplyHandedOut.
 func abandonReply(ctx context.Context, tx *sql.Tx, taskID string, now time.Time) error {

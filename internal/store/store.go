@@ -65,6 +65,10 @@ type Store interface {
 	// actions cancelled and returns how many it marked. Leased and finished
 	// actions are left as they are.
 	CancelPendingActions(ctx context.Context, taskID string, now time.Time) (int, error)
+	// LastReplyTask returns the ID of the reply task (not a command) of
+	// actorID whose actions were stored last in the conversation, or
+	// ErrNotFound if no such task has actions.
+	LastReplyTask(ctx context.Context, botID, convKey, actorID string) (string, error)
 	// PurgeFinishedTasks deletes, in one transaction, up to limit tasks that
 	// are succeeded, failed or cancelled and were last updated before before,
 	// together with all their outbox actions. A task with a pending or leased
