@@ -161,7 +161,7 @@ CancelPendingActions(ctx context.Context, taskID string, now time.Time) (int, er
 - 在 core 之后、人设渲染之前插入：保护模式插入 `protectionRules` 常量，开放模式插入 `ContentRules`（为空就不插）；
 - 缓存键加上模式。
 
-`protectionRules` 由实施者撰写，意思不能弱于原第 6 条加某未成年角色人设里的底线：不参与色情、性暗示、露骨内容和恋爱暧昧；用角色的方式岔开话题；面对未成年或孩童化角色时尤其如此。
+`protectionRules` 由实施者撰写，意思不能弱于原第 6 条加部署者本地配置中未成年模板里的底线：不参与色情、性暗示、露骨内容和恋爱暧昧；用角色的方式岔开话题；面对未成年或孩童化角色时尤其如此。
 
 - [ ] **测试**：
   - 保护模式的提示词包含 `protectionRules`，不包含 `ContentRules`；
@@ -324,9 +324,9 @@ func partDelay(part string) time.Duration
 2. 部署。
 3. 线上配置：
    - `default_private_policy.reply.max_parts: 3`；
-   - 成年模板 模板加上 `adult: true`，规则字段留空；未成年模板、孩童化模板 模板加上 `minor: true`，并在已有会话上重新套用模板，让库里的版本也带上这个标记。
+   - 部署者选定的成年角色模板加上 `adult: true`，规则字段留空；部署者本地配置中的未成年模板加上 `minor: true`，并在已有会话上重新套用模板，让库里的版本也带上这个标记。
 4. 重启。
 5. 实测：
-   - 面板显示某未成年角色会话是未成年、保护模式；
+   - 面板显示使用未成年模板的会话是未成年、保护模式；
    - 私聊连发三句只回复一次，并且分条发出、中间有"正在输入"；
    - 中途补话会放弃当前回复，重新组织。
