@@ -449,6 +449,41 @@ func TestUserMessageTimes(t *testing.T) {
 	}
 }
 
+func TestUserMessageTimes_LooksAtNewestFourTimesLimit(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	key := privKey("20001")
+	base := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
+	var msgs []store.MessageRecord
+	for _, ago := range []time.Duration{3 * time.Hour, 2 * time.Hour, time.Hour} {
+		m := memMessage(key, "user_20001", "20001", false)
+		m.OccurredAt = base.Add(-ago)
+		msgs = append(msgs, m)
+	}
+	for i := range 10 {
+		m := memMessage(key, "bot_30001", "30001", true)
+		m.OccurredAt = base.Add(time.Duration(i) * time.Minute)
+		msgs = append(msgs, m)
+	}
+	memInsertMessages(t, db, msgs...)
+	for _, tc := range []struct {
+		limit int
+		want  []time.Time
+	}{
+		{2, nil},
+		{3, []time.Time{base.Add(-time.Hour), base.Add(-2 * time.Hour)}},
+		{4, []time.Time{base.Add(-time.Hour), base.Add(-2 * time.Hour), base.Add(-3 * time.Hour)}},
+	} {
+		got, err := db.UserMessageTimes(ctx, key, time.Time{}, tc.limit)
+		if err != nil {
+			t.Fatalf("UserMessageTimes limit %d: %v", tc.limit, err)
+		}
+		if !slices.EqualFunc(got, tc.want, time.Time.Equal) {
+			t.Errorf("limit %d (newest %d messages) = %v, want %v", tc.limit, 4*tc.limit, got, tc.want)
+		}
+	}
+}
+
 func TestForgetPrivate_ClearsAutonomy(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()

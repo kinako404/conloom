@@ -202,7 +202,9 @@ type Store interface {
 	PostponeTimer(ctx context.Context, ref TimerRef, dueAt time.Time) (bool, error)
 	// UserMessageTimes returns when the conversation's newest up to limit
 	// member (not bot) messages occurred at or after since, newest first (none
-	// when limit <= 0).
+	// when limit <= 0). It looks at no more than the conversation's newest
+	// 4×limit messages, bot messages included, so fewer may be returned even
+	// when older member messages would match.
 	UserMessageTimes(ctx context.Context, convKey string, since time.Time, limit int) ([]time.Time, error)
 	// DeleteConversation deletes everything stored under convKey (messages and their
 	// keyword index rows, tasks, outbox actions, personas, policies, members, memory,
