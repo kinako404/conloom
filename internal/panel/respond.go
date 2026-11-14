@@ -27,7 +27,8 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // writeError logs the failure with the request's trace ID (at error level for
-// 5xx) and writes the error body. 429 and 503 are marked retryable.
+// 5xx) and writes the error body. 429, 503 and CHAT_BUSY are marked
+// retryable.
 func (s *Server) writeError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
 	s.respondError(w, r, status, code, message, nil)
 }
@@ -50,7 +51,8 @@ func (s *Server) respondError(w http.ResponseWriter, r *http.Request, status int
 	s.log.Log(r.Context(), level, "panel request failed", attrs...)
 	s.writeJSON(w, status, conloomapi.ErrorResponse{Error: conloomapi.ErrorBody{
 		Code: code, Message: message, TraceID: traceID(r.Context()),
-		Retryable: status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable,
+		Retryable: status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable ||
+			code == conloomapi.CodeChatBusy,
 	}})
 }
 

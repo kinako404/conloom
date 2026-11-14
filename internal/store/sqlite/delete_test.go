@@ -437,4 +437,17 @@ func TestDeleteConversation_UserRows(t *testing.T) {
 	if !userExists(t, db, testPlatform, "20004") {
 		t.Error("platform user of another conversation was deleted")
 	}
+
+	db = newTestDB(t)
+	x = seedConversation(t, db, testPlatform, "conv_x", "", "20003", "20005")
+	seedConversation(t, db, testPlatform, "conv_y", "", "20005")
+	if err := db.DeleteConversation(ctx, x.key); err != nil {
+		t.Fatalf("DeleteConversation: %v", err)
+	}
+	if userExists(t, db, testPlatform, "20003") {
+		t.Error("platform user only in the deleted conversation is kept")
+	}
+	if !userExists(t, db, testPlatform, "20005") {
+		t.Error("platform user who also wrote in another conversation was deleted")
+	}
 }

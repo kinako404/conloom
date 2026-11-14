@@ -100,6 +100,10 @@ panel:
 
 面板里新建的聊天详情页有“删除这个聊天”按钮，确认后删除这个会话键下的全部数据（消息、任务、动作、记忆、人设、策略等），只保留用量统计（`model_calls`）和审计记录。平台上的会话不能在面板里删除。
 
+- 删除前先取消这个聊天里排队和正在生成的任务，最多等 5 秒让它们停下；没停下时什么都不删，返回 409 `CHAT_BUSY`（`retryable: true`），稍后重试即可。
+- 被 bot 忽略的消息不存正文、也没有任务，只留一条事件记录，删除时认不出它属于这个聊天；这些记录留到事件的保留期（`runtime.idempotency_retention`）满了由清理任务删除。
+- 用量统计（`model_calls`）和审计记录按设计保留，分别到 `runtime.usage_retention`、`runtime.audit_retention` 到期清理。
+
 ### 面板上的修改
 
 面板上的修改和 Bearer API、聊天命令走同一套代码，校验规则、字数上限、好感度范围完全一致，校验失败时原样显示服务端返回的错误。
@@ -200,9 +204,9 @@ panel:
 | `PUT conversations/{key}/memory/members/{user_id}` | 改备注或好感度，规则同 API |
 | `DELETE conversations/{key}/memory/members/{user_id}` | 忘记该成员，返回 204 |
 | `POST conversations/{key}/memory/consolidate` | 触发一次整理，返回 202 |
-| `POST conversations/{key}/messages` | 面板聊天发消息，请求 `{"text"}`，返回 202 `{"message_id"}`。只限私聊；群聊、文本为空或超过 2000 字、接管的会话还没有用户消息时返回 400 |
+| `POST conversations/{key}/messages` | 面板聊天发消息，请求 `{"text"}`，返回 202 `{"message_id"}`。只限私聊；群聊、文本为空或超过 2000 字、接管的会话还没有用户消息、bot 不回复这个发言人（私聊白名单不允许）时返回 400 |
 | `POST chats` | 新建面板聊天，请求 `{"bot_instance_id","display_name"}`，返回 201 `{"key"}`；bot 没有配置时返回 404 |
-| `DELETE conversations/{key}` | 删除面板聊天，返回 204；不是 `panel` 平台的会话返回 400 |
+| `DELETE conversations/{key}` | 删除面板聊天，返回 204；不是 `panel` 平台的会话返回 400；聊天里被取消的任务 5 秒内没停下时返回 409 `CHAT_BUSY`，可以重试 |
 
 ## 指标
 

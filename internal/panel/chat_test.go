@@ -18,13 +18,14 @@ import (
 
 // fakeChat is a ChatService over the harness's store: SubmitPanel records
 // the call and answers submitErr, CreatePanelChat stores a panel
-// conversation of a configured bot, DeletePanelChat deletes panel
-// conversations only, and Busy answers busy.
+// conversation of a configured bot, DeletePanelChat answers deleteErr or
+// deletes panel conversations only, and Busy answers busy.
 type fakeChat struct {
 	h *storeHarness
 
 	mu        sync.Mutex
 	submitErr error
+	deleteErr error
 	submitted []string // convKey|panelUser|text
 	created   []string // botID|panelUser|displayName
 	deleted   []string
@@ -60,6 +61,9 @@ func (f *fakeChat) CreatePanelChat(_ context.Context, botID, panelUser, displayN
 func (f *fakeChat) DeletePanelChat(ctx context.Context, convKey string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
 	conv, err := f.h.db.GetConversationByKey(ctx, convKey)
 	if err != nil {
 		return err
@@ -87,6 +91,12 @@ func (f *fakeChat) setSubmitErr(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.submitErr = err
+}
+
+func (f *fakeChat) setDeleteErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleteErr = err
 }
 
 func (f *fakeChat) calls() (submitted, created, deleted []string) {
@@ -203,6 +213,7 @@ func TestChat_PostMessage(t *testing.T) {
 		{core.ErrBadText, http.StatusBadRequest, conloomapi.CodeInvalidEvent},
 		{fmt.Errorf("submit: %w", core.ErrNoUserYet), http.StatusBadRequest, conloomapi.CodeInvalidEvent},
 		{core.ErrNotPanelChat, http.StatusBadRequest, conloomapi.CodeInvalidEvent},
+		{core.ErrNotAllowed, http.StatusBadRequest, conloomapi.CodeInvalidEvent},
 		{store.ErrNotFound, http.StatusNotFound, conloomapi.CodeNotFound},
 		{errors.New("disk full"), http.StatusInternalServerError, conloomapi.CodeInternal},
 	} {
@@ -378,6 +389,28 @@ func TestChat_CreateAndDelete(t *testing.T) {
 		t.Fatalf("deleted = %q", d)
 	}
 	checkChatAudit(t, h.audits("panel.chat.delete"), created.Key, "删掉我")
+}
+
+func TestChat_DeleteWhileTasksStop(t *testing.T) {
+	h, chat := newChatHarness(t)
+	key, err := chat.CreatePanelChat(context.Background(), dataBot, testUser, "小明")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat.setDeleteErr(fmt.Errorf("delete: %w", core.ErrChatBusy))
+	body := errorBody(t, h.write(http.MethodDelete, convPath(key), nil), http.StatusConflict, conloomapi.CodeChatBusy)
+	if body.Message != "the chat's cancelled tasks are still stopping; try again" || !body.Retryable {
+		t.Errorf("error = %+v, want the reason, retryable", body)
+	}
+	if n := len(h.audits("panel.chat.delete")); n != 0 {
+		t.Fatalf("panel.chat.delete audits = %d after a refused delete, want 0", n)
+	}
+	h.getJSON(convPath(key), nil)
+
+	chat.setDeleteErr(nil)
+	if w := h.write(http.MethodDelete, convPath(key), nil); w.Code != http.StatusNoContent {
+		t.Fatalf("retry: status %d, body %s", w.Code, w.Body)
+	}
 }
 
 func TestChat_ConversationsListBots(t *testing.T) {

@@ -50,6 +50,10 @@ type Options struct {
 	// EmbeddingInterval is how often semantic search embeds new chunks,
 	// every minute when 0.
 	EmbeddingInterval time.Duration
+	// PanelDeliveryInterval is how often the panel chat delivery looks for
+	// due replies besides being woken when they become due, every second
+	// when 0.
+	PanelDeliveryInterval time.Duration
 
 	Version, Commit string
 	StartedAt       time.Time
@@ -68,6 +72,8 @@ type App struct {
 	handler http.Handler
 	// panelSite is the panel on its own listener, nil without panel.listen.
 	panelSite http.Handler
+	// panelOut delivers the actions of the panel channel.
+	panelOut *outbox.PanelDeliverer
 	// indexer and vectors are semantic search, both nil without an
 	// embedding section in the config.
 	indexer *vector.Indexer
@@ -140,6 +146,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	personas := persona.NewService(st, cfg.PersonaTemplates)
 	policies := policy.NewService(st, cfg.DefaultGroupPolicy).WithPrivateDefaults(cfg.PrivatePolicy())
 	ob := outbox.New(st, outbox.Config{Lease: cfg.Runtime.OutboxLease.Duration}, metrics, now)
+	panelOut := outbox.NewPanelDeliverer(ob, st, opts.PanelDeliveryInterval, now, logger)
 	rec := usage.NewRecorder(st, usage.RecorderOptions{Metrics: metrics, Logger: logger})
 	fail := func(err error) (*App, error) {
 		_ = rec.Close(ctx)
@@ -197,7 +204,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Personas:      personas,
 		Policies:      policies,
 		Reviewer:      reviewer,
-		Notifier:      ob,
+		Notifier:      core.Notifiers{ob, panelOut},
 		Metrics:       metrics,
 		Logger:        logger,
 		Config:        cfg,
@@ -233,6 +240,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 			Version:     opts.Version,
 			Commit:      opts.Commit,
 			StartedAt:   opts.StartedAt,
+			Chat:        orch,
 		}).Handler()
 		if cfg.Panel.Listen != "" {
 			panelSite, panelHandler = panelHandler, nil
@@ -253,7 +261,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Presence:     presence,
 		Panel:        panelHandler,
 	})
-	return &App{st: st, orch: orch, sched: sched, usage: rec, handler: gw.Handler(), panelSite: panelSite,
+	return &App{st: st, orch: orch, panelOut: panelOut, sched: sched, usage: rec, handler: gw.Handler(), panelSite: panelSite,
 		indexer: indexer, vectors: vectors, logger: logger, usageFlushTimeout: usageFlushTimeout}, nil
 }
 
@@ -283,14 +291,15 @@ func (a *App) PanelHandler() http.Handler { return a.panelSite }
 func (a *App) VectorSearcher() search.VectorSearcher { return a.vectors }
 
 // Start recovers tasks left unfinished by a previous process and starts
-// background maintenance, including memory consolidation and, with an
-// embedding section in the config, embedding new chunks. It must be called
-// once, before the API serves traffic; later calls return
-// core.ErrAlreadyRecovered.
+// delivering panel chat replies and background maintenance, including memory
+// consolidation and, with an embedding section in the config, embedding new
+// chunks. It must be called once, before the API serves traffic; later calls
+// return core.ErrAlreadyRecovered.
 func (a *App) Start(ctx context.Context) error {
 	if err := a.orch.Recover(ctx); err != nil {
 		return err
 	}
+	a.panelOut.Start()
 	a.sched.Start()
 	if a.indexer != nil {
 		a.indexer.Start()
@@ -298,10 +307,11 @@ func (a *App) Start(ctx context.Context) error {
 	return nil
 }
 
-// Close stops memory consolidation, embedding and the orchestrator, writes the
-// queued model calls and closes the database, returning the database's error.
-// Model calls not written within 5s are lost with a warning, like any other
-// failed usage write. Further calls return the first result.
+// Close stops memory consolidation, embedding, the orchestrator and then the
+// panel chat delivery, writes the queued model calls and closes the database,
+// returning the database's error. Model calls not written within 5s are lost
+// with a warning, like any other failed usage write. Further calls return the
+// first result.
 func (a *App) Close() error {
 	a.closeOnce.Do(func() {
 		a.sched.Close()
@@ -309,6 +319,7 @@ func (a *App) Close() error {
 			a.indexer.Close()
 		}
 		a.orch.Close()
+		a.panelOut.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), a.usageFlushTimeout)
 		defer cancel()
 		if err := a.usage.Close(ctx); err != nil {
