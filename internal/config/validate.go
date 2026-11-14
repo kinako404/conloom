@@ -231,7 +231,11 @@ func (c *Config) ValidateServe() error {
 	}
 
 	for _, name := range slices.Sorted(maps.Keys(c.PersonaTemplates)) {
-		p.nested("persona_templates."+name, c.PersonaTemplates[name].Validate())
+		doc := c.PersonaTemplates[name]
+		p.nested("persona_templates."+name, doc.Validate())
+		if err := conloomapi.ValidateContent(doc); err != nil {
+			p.addf("persona_templates."+name+".adult", "%v", err)
+		}
 	}
 	p.nested("default_group_policy", c.DefaultGroupPolicy.Validate())
 	if c.DefaultPrivatePolicy != nil {

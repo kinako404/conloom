@@ -12,7 +12,8 @@ import (
 
 // PersonaDoc is a persona. CharacterName, Description, SpeakingStyle and
 // Examples are optional; a set CharacterName is the bot's name in the
-// conversation.
+// conversation. Adult, unless Minor is also set, makes ContentOpen possible
+// (see ModeFor); ContentRules and MemoryRules only take effect in it.
 type PersonaDoc struct {
 	PersonaName     string           `json:"persona_name" yaml:"persona_name"`
 	TemplateVersion int              `json:"template_version" yaml:"template_version"`
@@ -22,6 +23,10 @@ type PersonaDoc struct {
 	Description     string           `json:"description,omitempty" yaml:"description,omitempty"`
 	SpeakingStyle   string           `json:"speaking_style,omitempty" yaml:"speaking_style,omitempty"`
 	Examples        []PersonaExample `json:"examples,omitempty" yaml:"examples,omitempty"`
+	Adult           bool             `json:"adult,omitempty" yaml:"adult,omitempty"`
+	Minor           bool             `json:"minor,omitempty" yaml:"minor,omitempty"`
+	ContentRules    string           `json:"content_rules,omitempty" yaml:"content_rules,omitempty"`
+	MemoryRules     string           `json:"memory_rules,omitempty" yaml:"memory_rules,omitempty"`
 }
 
 // PersonaExample is one example exchange: a member's message and the reply.
@@ -37,6 +42,8 @@ const (
 	MaxSpeakingStyleRunes = 1000
 	MaxPersonaExamples    = 8
 	MaxExampleRunes       = 200
+	MaxContentRulesRunes  = 2000
+	MaxMemoryRulesRunes   = 1000
 )
 
 type PersonaStyle struct {
@@ -151,6 +158,8 @@ func (p PersonaDoc) Validate() error {
 	}
 	maxRunes("description", p.Description, MaxDescriptionRunes)
 	maxRunes("speaking_style", p.SpeakingStyle, MaxSpeakingStyleRunes)
+	maxRunes("content_rules", p.ContentRules, MaxContentRulesRunes)
+	maxRunes("memory_rules", p.MemoryRules, MaxMemoryRulesRunes)
 	if n := len(p.Examples); n > MaxPersonaExamples {
 		fail("examples must have at most %d items, got %d", MaxPersonaExamples, n)
 	}
