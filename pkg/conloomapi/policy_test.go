@@ -732,3 +732,161 @@ func TestTaskMetaTrigger(t *testing.T) {
 		t.Fatalf("empty meta = %s", b)
 	}
 }
+
+func TestDefaultGroupPolicyRhythmFields(t *testing.T) {
+	r := DefaultGroupPolicy().Reply
+	if r.MaxParts != 1 || r.PrivateWait.Duration != 6*time.Second || r.PrivateMaxWait.Duration != 20*time.Second {
+		t.Fatalf("reply = %+v", r)
+	}
+	b, err := json.Marshal(DefaultGroupPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"max_parts":1`, `"private_wait":"6s"`, `"private_max_wait":"20s"`} {
+		if !strings.Contains(string(b), key) {
+			t.Errorf("json %s missing %s", b, key)
+		}
+	}
+	src := `
+reply:
+  max_parts: 3
+  private_wait: 2s
+  private_max_wait: 30s
+`
+	var y GroupPolicy
+	if err := yaml.Unmarshal([]byte(src), &y); err != nil {
+		t.Fatal(err)
+	}
+	if y.Reply.MaxParts != 3 || y.Reply.PrivateWait.Duration != 2*time.Second || y.Reply.PrivateMaxWait.Duration != 30*time.Second {
+		t.Errorf("yaml reply = %+v", y.Reply)
+	}
+}
+
+func TestWithDefaultsFillsRhythmFields(t *testing.T) {
+	def := DefaultGroupPolicy()
+	def.Reply.MaxParts = 3
+	def.Reply.PrivateWait = Duration{4 * time.Second}
+	def.Reply.PrivateMaxWait = Duration{30 * time.Second}
+
+	stored := DefaultGroupPolicy()
+	stored.Reply.TurnGap = Duration{2 * time.Second}
+	raw, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"max_parts", "private_wait", "private_max_wait"} {
+		delete(doc["reply"], k)
+	}
+	legacy, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(legacy), "max_parts") || strings.Contains(string(legacy), "private_") {
+		t.Fatalf("legacy json still has new fields: %s", legacy)
+	}
+	var p GroupPolicy
+	if err := json.Unmarshal(legacy, &p); err != nil {
+		t.Fatal(err)
+	}
+	got := p.WithDefaults(def)
+	want := stored
+	want.Reply.MaxParts = 3
+	want.Reply.PrivateWait = def.Reply.PrivateWait
+	want.Reply.PrivateMaxWait = def.Reply.PrivateMaxWait
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy read back = %+v\nwant %+v", got.Reply, want.Reply)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("filled legacy policy invalid: %v", err)
+	}
+	if got := p.WithDefaults(DefaultGroupPolicy()); got.Reply.MaxParts != 1 {
+		t.Fatalf("legacy max_parts = %d, want 1", got.Reply.MaxParts)
+	}
+
+	custom := DefaultGroupPolicy()
+	custom.Reply.MaxParts = 5
+	custom.Reply.PrivateWait = Duration{10 * time.Second}
+	custom.Reply.PrivateMaxWait = Duration{time.Minute}
+	if got := custom.WithDefaults(def); !reflect.DeepEqual(got, custom) {
+		t.Fatalf("set fields changed: got %+v", got.Reply)
+	}
+
+	noWait := DefaultGroupPolicy()
+	noWait.Reply.PrivateWait = Duration{0}
+	noWait.Reply.PrivateMaxWait = Duration{5 * time.Second}
+	if got := noWait.WithDefaults(def); got.Reply.PrivateWait.Duration != 0 || got.Reply.PrivateMaxWait.Duration != 5*time.Second {
+		t.Fatalf("explicit zero private_wait replaced: %+v", got.Reply)
+	}
+
+	badMax := DefaultGroupPolicy()
+	badMax.Reply.PrivateWait = Duration{10 * time.Second}
+	badMax.Reply.PrivateMaxWait = Duration{0}
+	got = badMax.WithDefaults(def)
+	if got.Reply.PrivateWait.Duration != 10*time.Second || got.Reply.PrivateMaxWait.Duration != 0 {
+		t.Fatalf("partly set private waits changed: %+v", got.Reply)
+	}
+	if err := got.Validate(); err == nil || !strings.Contains(err.Error(), "reply.private_max_wait") {
+		t.Fatalf("err = %v, want reply.private_max_wait", err)
+	}
+
+	negative := DefaultGroupPolicy()
+	negative.Reply.MaxParts = -1
+	if got := negative.WithDefaults(def); got.Reply.MaxParts != -1 {
+		t.Fatalf("negative max_parts replaced: %d", got.Reply.MaxParts)
+	}
+}
+
+func TestValidateRhythmFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*GroupPolicy)
+		wantErr string
+	}{
+		{"max_parts 0", func(p *GroupPolicy) { p.Reply.MaxParts = 0 }, "reply.max_parts"},
+		{"max_parts 1 ok", func(p *GroupPolicy) { p.Reply.MaxParts = 1 }, ""},
+		{"max_parts 5 ok", func(p *GroupPolicy) { p.Reply.MaxParts = 5 }, ""},
+		{"max_parts 6", func(p *GroupPolicy) { p.Reply.MaxParts = 6 }, "reply.max_parts"},
+
+		{"private_wait negative", func(p *GroupPolicy) { p.Reply.PrivateWait = Duration{-time.Nanosecond} }, "reply.private_wait"},
+		{"private_wait 0 ok", func(p *GroupPolicy) { p.Reply.PrivateWait = Duration{0} }, ""},
+		{"private_wait 60s ok", func(p *GroupPolicy) {
+			p.Reply.PrivateWait = Duration{time.Minute}
+			p.Reply.PrivateMaxWait = Duration{time.Minute}
+		}, ""},
+		{"private_wait 61s", func(p *GroupPolicy) {
+			p.Reply.PrivateWait = Duration{61 * time.Second}
+			p.Reply.PrivateMaxWait = Duration{2 * time.Minute}
+		}, "reply.private_wait"},
+
+		{"private_max_wait equals wait ok", func(p *GroupPolicy) { p.Reply.PrivateMaxWait = p.Reply.PrivateWait }, ""},
+		{"private_max_wait 2m ok", func(p *GroupPolicy) { p.Reply.PrivateMaxWait = Duration{2 * time.Minute} }, ""},
+		{"private_max_wait below wait", func(p *GroupPolicy) {
+			p.Reply.PrivateMaxWait = Duration{p.Reply.PrivateWait.Duration - time.Millisecond}
+		}, "reply.private_max_wait"},
+		{"private_max_wait over 2m", func(p *GroupPolicy) { p.Reply.PrivateMaxWait = Duration{2*time.Minute + time.Second} }, "reply.private_max_wait"},
+		{"private waits both 0 ok", func(p *GroupPolicy) {
+			p.Reply.PrivateWait = Duration{0}
+			p.Reply.PrivateMaxWait = Duration{0}
+		}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := DefaultGroupPolicy()
+			tt.mutate(&p)
+			err := p.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
