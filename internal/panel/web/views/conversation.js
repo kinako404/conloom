@@ -233,6 +233,7 @@ const STYLE = [
   ['proactivity', '主动'],
 ];
 const MAX_EXAMPLES = 8;
+const CONTENT_MODE = { open: '开放（open）', protected: '保护（protected）' };
 
 function personaForm(key, doc) {
   const base = structuredClone(doc || {});
@@ -250,6 +251,18 @@ function personaForm(key, doc) {
   const followup = select(FOLLOWUP, behavior.ask_followup_questions);
   const technical = select(TECHNICAL, behavior.technical_explanations);
   const memes = h('input', { type: 'checkbox', checked: !!behavior.allow_memes });
+  const minor = h('input', { type: 'checkbox', checked: !!base.minor });
+  const adult = h('input', { type: 'checkbox', checked: !!base.adult });
+  const adultNote = h('span', { class: 'hint' }, '未成年角色不能设为成年人设');
+  const syncAdult = () => {
+    if (minor.checked) adult.checked = false;
+    adult.disabled = minor.checked;
+    adultNote.hidden = !minor.checked;
+  };
+  minor.addEventListener('change', syncAdult);
+  syncAdult();
+  const contentRules = h('textarea', { value: base.content_rules || '' });
+  const memoryRules = h('textarea', { value: base.memory_rules || '' });
 
   const examples = h('div');
   const exampleInputs = new WeakMap();
@@ -304,6 +317,10 @@ function personaForm(key, doc) {
       persona.character_name = characterName.value;
       persona.description = description.value;
       persona.speaking_style = speakingStyle.value;
+      persona.minor = minor.checked;
+      persona.adult = adult.checked;
+      persona.content_rules = contentRules.value;
+      persona.memory_rules = memoryRules.value;
       persona.examples = [...examples.children].map((row) => {
         const ex = exampleInputs.get(row);
         return { user: ex.user.value, reply: ex.reply.value };
@@ -325,6 +342,13 @@ function personaForm(key, doc) {
     field('追问', followup),
     field('技术解释', technical),
     h('label', { class: 'field inline' }, memes, '允许玩梗')),
+  h('h3', null, '内容尺度'),
+  h('p', { class: 'hint' }, '只有成年、非未成年的人设在私聊里是开放模式，下面两项规则只在开放模式生效；其余情况都是保护模式，使用内置的保护规则，不能通过配置去掉。'),
+  h('div', { class: 'form-grid' },
+    h('label', { class: 'field inline' }, minor, '未成年角色'),
+    h('label', { class: 'field inline' }, adult, '成年人设', adultNote)),
+  field('内容规则（仅成年人设、私聊生效）', contentRules, '可选，最多 2000 字；开放模式下加入回复提示词，为空则不加'),
+  field('记忆规则（仅成年人设、私聊生效）', memoryRules, '可选，最多 1000 字；开放模式下替换记忆整理的第 6 条，为空则省略该条'),
   h('h3', null, `示例对话（最多 ${MAX_EXAMPLES} 条，每条最多 200 字）`),
   examples,
   h('div', { class: 'toolbar' }, addButton),
@@ -366,9 +390,11 @@ async function personaTab({ key, signal }) {
     h('section', { class: 'card' },
       cur
         ? [h('h2', null, `当前人设：第 ${cur.version} 版`),
-          kv([['模板', cur.template || '—'], ['修改人', cur.updated_by || '—'], ['原因', cur.reason || '—'], ['时间', fmtTime(cur.created_at)]])]
+          kv([['模板', cur.template || '—'], ['修改人', cur.updated_by || '—'], ['原因', cur.reason || '—'], ['时间', fmtTime(cur.created_at)],
+            ['私聊内容模式', label(CONTENT_MODE, res.content_mode)]])]
         : [h('h2', null, '尚未生成人设'),
-          h('p', null, `将使用模板 ${res.pending_template || 'default'}。下面是该模板的内容，保存后写入第 1 版。`)],
+          h('p', null, `将使用模板 ${res.pending_template || 'default'}。下面是该模板的内容，保存后写入第 1 版。`),
+          kv([['私聊内容模式', label(CONTENT_MODE, res.content_mode)]])],
       templates.length ? [h('h3', null, '套用模板'), tplForm, tplMsg] : null),
     h('section', { class: 'card' }, h('h2', null, '编辑人设'), personaForm(key, cur ? cur.persona : res.template_doc)),
     h('section', { class: 'card' },

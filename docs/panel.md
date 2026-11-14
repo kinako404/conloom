@@ -72,6 +72,8 @@ panel:
   - **消息**：按时间倒序浏览；也可以输入关键词检索，规则和 `recall` 的关键词检索相同（任一词命中，按相关度排序，同分时新的在前），可以限定日期。
   - **策略**：常用字段做成了表单（主动发言、记忆、历史条数），另有“高级：JSON 编辑”可以整份替换；暂停、恢复；历史版本列表，可以把任一版本恢复为新版本。
   - **人设**：编辑人设的各个字段、套用配置里的模板、回滚到历史版本。会话还没有人设时只显示“尚未生成”和将要使用的模板，查看不会生成第 1 版。
+    - “内容尺度”一栏有“未成年角色”和“成年人设”两个开关，以及“内容规则”“记忆规则”两个文本框，对应人设的 `minor`、`adult`、`content_rules`、`memory_rules`。勾选“未成年角色”后，“成年人设”会被取消并且不可用；服务端同样拒绝两者同时为真。两段规则只在开放模式（成年、非未成年、私聊）下生效，规则见 [配置：内容模式](configuration.md#内容模式)。
+    - 页面顶部显示“私聊内容模式”：当前人设（还没有人设时是将要使用的模板）放在私聊里会是开放还是保护模式。群聊不论人设如何都是保护模式。
   - **记忆**：摘要、整理进度和最近的错误，成员的备注和好感度，可以修改备注或好感度、忘记某个成员、立即整理一次，也可以查看某个成员（或摘要）的修订记录。这里的数据和 Bearer API 的 `GET /api/v1/conversations/{id}/memory` 完全相同：被忘记的成员没有备注和好感度，不会出现在列表里。
   - **任务**：这个会话的任务。
 - **任务**：全部任务，可以按状态、bot、会话筛选；任务详情里有 meta、生成的动作，以及这个任务的每次模型调用。任务受 `runtime.ops_retention`（默认 30 天）清理，更早的查不到。
@@ -159,7 +161,7 @@ panel:
 | `GET conversations/{key}/messages?before=&limit=` | 浏览消息，按 `seq` 游标翻页 |
 | `GET conversations/{key}/messages?q=&from=&to=&offset=&limit=` | 检索消息，按 `offset` 翻页，响应里的 `next_offset` 是下一页 |
 | `GET conversations/{key}/policy` | 当前策略和历史版本 |
-| `GET conversations/{key}/persona` | 当前人设、历史版本、可用模板；还没有人设时给出将要使用的模板，不写库 |
+| `GET conversations/{key}/persona` | 当前人设、历史版本、可用模板；还没有人设时给出将要使用的模板，不写库。`minor` 是当前人设（没有时是该模板）的 `minor`，`content_mode` 是它在私聊里的内容模式（`open` 或 `protected`），与会话本身是群聊还是私聊无关 |
 | `GET conversations/{key}/memory` | 与 `GET /api/v1/conversations/{id}/memory` 相同 |
 | `GET conversations/{key}/memory/revisions?user_id=` | 某成员的修订记录，不传 `user_id` 时是摘要的 |
 | `GET tasks?status=&bot=&conversation=&before=&limit=` | 任务列表 |

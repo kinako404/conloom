@@ -203,6 +203,16 @@ persona_templates:
         reply: 想要轻松点的，还是能让人想点事情的？轻松的话，散文集就很合适，读几篇就能放下。
       - user: 你是机器人吗
         reply: 是的，我是 AI，在这儿陪大家聊聊天。
+    # 内容尺度（见 docs/configuration.md 的“内容模式”）：默认是保护模式，群聊永远是保护模式。
+    # 只有 adult: true、未标 minor、而且是私聊时才是开放模式，content_rules（≤2000）和
+    # memory_rules（≤1000）只在开放模式下生效。未成年或孩童化的角色标 minor: true，
+    # 它不能与 adult: true 同时设置。下面两段规则是占位文字，由部署者按需自行编写。
+    adult: false
+    minor: false
+    content_rules: |
+      （开放模式下加入回复提示词的内容规则，由部署者自行编写。）
+    memory_rules: |
+      （开放模式下替换记忆整理第 6 条的规则，由部署者自行编写。）
 
 # 默认群策略：新群的初始策略；通过 API 或命令修改后存库并版本化，库内版本优先。
 default_group_policy:

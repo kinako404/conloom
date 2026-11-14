@@ -31,6 +31,44 @@ type personaResp struct {
 	TemplateDoc     *conloomapi.PersonaDoc `json:"template_doc"`
 	Versions        []personaVersionResp   `json:"versions"`
 	Templates       []string               `json:"templates"`
+	Minor           bool                   `json:"minor"`
+	ContentMode     conloomapi.ContentMode `json:"content_mode"`
+}
+
+func TestPersona_MinorAndContentMode(t *testing.T) {
+	dh := newDataHarness(t)
+	ctx := context.Background()
+	group := dh.seedConv("qq", conloomapi.ConvGroup, "10001")
+	path := convPath(group.Key, "persona")
+
+	var got personaResp
+	raw := dh.getJSON(path, &got)
+	if got.Minor || got.ContentMode != conloomapi.ContentProtected ||
+		!bytes.Contains(raw, []byte(`"minor":false`)) || !bytes.Contains(raw, []byte(`"content_mode":"protected"`)) {
+		t.Errorf("pending template: minor %v content_mode %q, want false protected (body %s)", got.Minor, got.ContentMode, raw)
+	}
+
+	adult := lighthousePersona()
+	adult.Adult = true
+	if _, err := dh.personas.Update(ctx, group.Key, "lighthouse", conloomapi.PersonaPut{Persona: &adult}, "panel:admin"); err != nil {
+		t.Fatal(err)
+	}
+	got = personaResp{}
+	dh.getJSON(path, &got)
+	if got.Minor || got.ContentMode != conloomapi.ContentOpen {
+		t.Errorf("adult persona in a group: minor %v content_mode %q, want false open (computed as a private chat)", got.Minor, got.ContentMode)
+	}
+
+	minor := lighthousePersona()
+	minor.Minor = true
+	if _, err := dh.personas.Update(ctx, group.Key, "lighthouse", conloomapi.PersonaPut{Persona: &minor}, "panel:admin"); err != nil {
+		t.Fatal(err)
+	}
+	got = personaResp{}
+	dh.getJSON(path, &got)
+	if !got.Minor || got.ContentMode != conloomapi.ContentProtected {
+		t.Errorf("minor persona: minor %v content_mode %q, want true protected", got.Minor, got.ContentMode)
+	}
 }
 
 func TestPersona_ReadOnlyWhenMissing(t *testing.T) {
