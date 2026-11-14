@@ -485,9 +485,9 @@ func privateAllowed(bot config.BotConfig, platform, userID string) bool {
 // wakeAllowed reports whether the bot may still start the private chat of an
 // initiate or follow-up task: proactive replies are on, the private level is
 // not off, the chat is not paused and its user may still chat privately; the
-// bot started fewer messages today than the level's daily cap; and it
-// started none since the user's last message before an initiate, exactly one
-// (the initiate) before a follow-up.
+// bot started fewer messages today than the level's daily cap; and the
+// messages it sent since the user's last one leave room for kind
+// (unansweredAllows).
 func (o *Orchestrator) wakeAllowed(ctx context.Context, task store.TaskRecord, kind store.TimerKind) (bool, error) {
 	pv, err := o.policies.Current(ctx, task.ConversationKey)
 	if err != nil {
@@ -502,15 +502,24 @@ func (o *Orchestrator) wakeAllowed(ctx context.Context, task store.TaskRecord, k
 	if err != nil || today >= limit {
 		return false, err
 	}
-	n, err := o.unanswered(ctx, task.ConversationKey)
+	started, total, err := o.unanswered(ctx, task.ConversationKey)
 	if err != nil {
 		return false, err
 	}
+	return unansweredAllows(kind, started, total), nil
+}
+
+// unansweredAllows reports whether, after started initiates and follow-ups
+// and total messages in all (status returns too, see unanswered) since the
+// user's last message, the bot may start one of kind: total is below
+// autonomy.MaxUnanswered, and it started none before an initiate, exactly one
+// (the initiate) before a follow-up.
+func unansweredAllows(kind store.TimerKind, started, total int) bool {
 	want := 0
 	if kind == store.TimerFollowUp {
 		want = 1
 	}
-	return n == want, nil
+	return started == want && total < autonomy.MaxUnanswered
 }
 
 // mayStart reports whether pol lets bot start messages in the private chat of
@@ -536,15 +545,25 @@ func (o *Orchestrator) privateStarted(ctx context.Context, convKey string, since
 	return total, nil
 }
 
-// unanswered counts the messages the bot started in the private chat since
-// the user's last message; all those still logged when none of the chat's
-// newest messages is the user's (see store.UserMessageTimes).
-func (o *Orchestrator) unanswered(ctx context.Context, convKey string) (int, error) {
+// unanswered counts the messages the bot sent in the private chat on its own
+// since the user's last message: started, the initiates and follow-ups, and
+// total, those and the status returns, which count toward
+// autonomy.MaxUnanswered but not toward the daily cap. It counts all those
+// still logged when none of the chat's newest messages is the user's (see
+// store.UserMessageTimes).
+func (o *Orchestrator) unanswered(ctx context.Context, convKey string) (started, total int, err error) {
 	since, _, err := o.lastUserMessage(ctx, convKey)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return o.privateStarted(ctx, convKey, since)
+	if started, err = o.privateStarted(ctx, convKey, since); err != nil {
+		return 0, 0, err
+	}
+	returns, err := o.st.CountProactive(ctx, convKey, "", store.ProactivePrivateReturn, since)
+	if err != nil {
+		return 0, 0, err
+	}
+	return started, started + returns, nil
 }
 
 // lastUserMessage returns when the private chat's user sent their newest
@@ -680,8 +699,10 @@ func (o *Orchestrator) withholdWake(ctx context.Context, task store.TaskRecord, 
 // cancelled is logged as skipped, and an initiate is planned again
 // (replanInitiate, after the lock is released); a status return ends the
 // status it returned from, if it is still the conversation's, and once sent
-// plans the next initiate again with the level's gap counted from now
-// (replanAfter), as its message is not stored until it is delivered.
+// is logged as such outside panel chats (which never start messages, so it
+// limits nothing there) and plans the next initiate again with the level's
+// gap counted from now (replanAfter), as its message is not stored until it
+// is delivered.
 func (o *Orchestrator) finishWake(ctx context.Context, task store.TaskRecord, out *outcome) (sent bool, err error) {
 	replan := false
 	var spoke time.Time
@@ -719,6 +740,14 @@ func (o *Orchestrator) finishWake(ctx context.Context, task store.TaskRecord, ou
 				o.log.Error("end status after its return failed", "task_id", task.ID, "error", err)
 			}
 		}
+		if sent && convPlatform(task.ConversationKey) != store.PlatformPanel {
+			if err := o.st.AppendProactiveLog(ctx, store.ProactiveLogEntry{
+				ConversationKey: task.ConversationKey, PlatformUserID: task.ActorPlatformUserID, Kind: store.ProactivePrivateReturn,
+				TaskID: task.ID, CreatedAt: o.now().UTC(),
+			}); err != nil {
+				o.log.Error("record status return failed", "task_id", task.ID, "error", err)
+			}
+		}
 		if sent {
 			replan, spoke = true, o.now()
 		}
@@ -750,17 +779,18 @@ func (o *Orchestrator) finishWake(ctx context.Context, task store.TaskRecord, ou
 
 // armFollowUp arms the follow-up of an initiate task just sent, at
 // autonomy.PlanFollowUp outside the chat's quiet hours, unless the bot
-// already started autonomy.MaxUnanswered messages since the user's last one.
+// already sent autonomy.MaxUnanswered messages on its own since the user's
+// last one (unanswered: a status return before the initiate counts).
 func (o *Orchestrator) armFollowUp(ctx context.Context, task store.TaskRecord, w *wakeRun) {
 	fail := func(err error) {
 		o.log.Error("arm follow-up failed", "task_id", task.ID, "conversation", task.ConversationKey, "error", err)
 	}
-	n, err := o.unanswered(ctx, task.ConversationKey)
+	_, total, err := o.unanswered(ctx, task.ConversationKey)
 	if err != nil {
 		fail(err)
 		return
 	}
-	if n >= autonomy.MaxUnanswered {
+	if total >= autonomy.MaxUnanswered {
 		return
 	}
 	anchor, err := o.newestSeq(ctx, task.ConversationKey)

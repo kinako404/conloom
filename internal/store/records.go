@@ -155,10 +155,11 @@ const (
 	ProactiveSent      = "sent"
 	// ProactivePrivateInitiate and ProactivePrivateFollowUp record a message
 	// the bot started in a private chat, ProactivePrivateSkip one it chose not
-	// to send.
+	// to send, ProactivePrivateReturn a message it sent when a status ended.
 	ProactivePrivateInitiate = "private_initiate"
 	ProactivePrivateFollowUp = "private_followup"
 	ProactivePrivateSkip     = "private_skip"
+	ProactivePrivateReturn   = "private_return"
 )
 
 // ProactiveLogEntry records one proactive evaluation, sent reply or message

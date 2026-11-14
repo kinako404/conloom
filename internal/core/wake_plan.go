@@ -57,8 +57,9 @@ func (o *Orchestrator) replanAfter(ctx context.Context, convKey string, spoke ti
 
 // nextInitiate returns the initiate to arm in the private chat convKey, or
 // nil with the reason none is: the chat is gone or was started in the panel;
-// the bot may not start messages in it (mayStart); it already started
-// autonomy.MaxUnanswered messages since the user's last one, or one, whose
+// the bot may not start messages in it (mayStart); it already sent
+// autonomy.MaxUnanswered messages on its own since the user's last one
+// (unanswered, status returns included), or started an initiate, whose
 // follow-up is then kept (keepFollowUp); the user wrote nothing within
 // proactiveLogRetention, the time started messages stay logged, or since they
 // were forgotten; or autonomy.PlanInitiate finds no time. The plan counts the
@@ -85,12 +86,12 @@ func (o *Orchestrator) nextInitiate(ctx context.Context, convKey string, spoke t
 	if !o.mayStart(pol, conv.BotInstanceID, conv.Platform, user) {
 		return nil, false, "not_allowed", nil
 	}
-	switch n, err := o.unanswered(ctx, convKey); {
+	switch started, total, err := o.unanswered(ctx, convKey); {
 	case err != nil:
 		return nil, false, "", err
-	case n >= autonomy.MaxUnanswered:
+	case total >= autonomy.MaxUnanswered:
 		return nil, false, "unanswered", nil
-	case n > 0:
+	case started > 0:
 		return nil, true, "follow_up", nil
 	}
 	rows, err := o.st.GetMemberMemories(ctx, convKey, []string{user})
@@ -176,7 +177,7 @@ func (o *Orchestrator) privateProactiveStatus(ctx context.Context, convKey strin
 	if err != nil {
 		return conloomapi.AutonomyProactive{}, err
 	}
-	n, err := o.unanswered(ctx, convKey)
+	_, n, err := o.unanswered(ctx, convKey)
 	if err != nil {
 		return conloomapi.AutonomyProactive{}, err
 	}

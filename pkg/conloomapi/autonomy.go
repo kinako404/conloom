@@ -48,8 +48,9 @@ type AutonomyBarEvent struct {
 // proactive replies are on, the effective private level, how many messages
 // the bot started today out of the level's daily cap, the quiet hours in
 // effect ("HH:MM" in server.timezone; QuietInferred when computed from the
-// user's messages), how many more messages it may start before the user
-// writes again, and the chat's pending timers ordered by DueAt.
+// user's messages), how many more messages it may send on its own before the
+// user writes again (a sent status return uses one up but does not count
+// toward the daily cap), and the chat's pending timers ordered by DueAt.
 type AutonomyProactive struct {
 	Enabled        bool            `json:"enabled"`
 	Level          string          `json:"level"`

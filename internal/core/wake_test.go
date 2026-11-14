@@ -277,6 +277,89 @@ func TestWake_StatusReturnReplansFromItsMessage(t *testing.T) {
 	}
 }
 
+func TestWake_StatusReturnCountsAsUnanswered(t *testing.T) {
+	env, clock := newWakeEnv(t, nil, nil, func(c *config.Config) {
+		c.DefaultGroupPolicy.Proactive.Private.Level = conloomapi.PrivateLevelLow
+	})
+	env.o.rand = rand.New(firstSource{})
+	ctx := context.Background()
+	env.seedPrivateMessage(t, clock, "我去洗个澡")
+	until := clock.now().Add(20 * time.Minute)
+	timer := env.setWakeStatus(t, "洗澡", clock.now(), until)
+	clock.set(until)
+	if task := env.fireWake(t, timer); len(task.Actions) != 1 {
+		t.Fatalf("status return = %+v, want it sent", task)
+	}
+	if got := env.privateLog(t, store.ProactivePrivateReturn); got != 1 {
+		t.Errorf("private_return entries = %d, want 1", got)
+	}
+	st, err := env.o.privateProactiveStatus(ctx, privateConvKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.SentToday != 0 || st.UnansweredLeft != 1 {
+		t.Errorf("after the return: sent today %d, unanswered left %d; want 0 and 1", st.SentToday, st.UnansweredLeft)
+	}
+
+	// The return alone still lets the bot start the chat, even with 低's
+	// daily cap of 1.
+	initiate := env.onlyInitiate(t)
+	clock.set(initiate.DueAt)
+	env.o.pollWakes(ctx)
+	id, ok := env.wakeTaskID(t, initiate)
+	if !ok {
+		t.Fatal("the initiate after the return stored no task")
+	}
+	if task := env.waitWake(t, id); len(task.Actions) != 1 {
+		t.Fatalf("initiate = %+v, want it sent", task)
+	}
+	// The return and the initiate use up the unanswered limit: no follow-up.
+	if timers := env.privateTimers(t); len(timers) != 0 {
+		t.Fatalf("timers = %+v, want no follow-up", timers)
+	}
+}
+
+func TestWake_PanelChatStatusReturnNotCounted(t *testing.T) {
+	env, clock := newWakeEnv(t, nil, nil, nil)
+	ctx := context.Background()
+	key, err := env.o.CreatePanelChat(ctx, testBot, "admin", "小红")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.waitTask(t, env.panelResponse(t, env.submitPanel(t, key, "admin", "我去洗个澡")).TaskID)
+	waitUntil(t, "the panel reply's runner", func() bool { return !env.o.sched.Busy(key) })
+	until := clock.now()
+	timer := store.ConversationTimer{ConversationKey: key, Kind: store.TimerStatusReturn, BotInstanceID: testBot,
+		PlatformUserID: panelActorID("admin"), DueAt: until}
+	if err := env.st.SetStatus(ctx, store.ConversationStatus{ConversationKey: key, Activity: "洗澡", TaskID: "task_seed",
+		StartedAt: until.Add(-20 * time.Minute), UntilAt: until}, &timer); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.o.fireTimer(ctx, timer); err != nil {
+		t.Fatalf("fireTimer: %v", err)
+	}
+	id, ok := env.wakeTaskID(t, timer)
+	if !ok {
+		t.Fatal("the status return stored no task")
+	}
+	task := env.waitTask(t, id)
+	if len(task.Actions) != 1 {
+		t.Fatalf("status return = %+v, want it sent", task)
+	}
+	wantChannels(t, "panel chat status return", env.actionChannels(t, task), store.ChannelPanel)
+	waitUntil(t, "the status return's runner", func() bool { return !env.o.sched.Busy(key) })
+	if n, err := env.st.CountProactive(ctx, key, "", store.ProactivePrivateReturn, time.Time{}); err != nil || n != 0 {
+		t.Fatalf("private_return entries = %d, %v; want none in a panel chat", n, err)
+	}
+	st, err := env.o.privateProactiveStatus(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.UnansweredLeft != 2 {
+		t.Errorf("unanswered left = %d, want 2 in a panel chat", st.UnansweredLeft)
+	}
+}
+
 func TestWake_StatusReturnWithoutStatusIsSkipped(t *testing.T) {
 	env, clock := newWakeEnv(t, nil, nil, nil)
 	env.seedPrivateMessage(t, clock, "我去洗个澡")

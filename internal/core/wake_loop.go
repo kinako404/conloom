@@ -142,12 +142,12 @@ func (o *Orchestrator) dueStart(ctx context.Context, t store.ConversationTimer) 
 // from); the chat must have no status still lasting (else an initiate is
 // planned again, after the status, and a follow-up dropped); now must be
 // outside its quiet hours and today below the daily cap (else an initiate is
-// planned again and a follow-up moved by followUpAgain); the bot must have
-// started no message since the user's last
-// one before an initiate, exactly one before a follow-up (else drop); the
-// user must not have written since t was armed (else drop); and the chat must
-// have no queued or running task and the user's newest message must be
-// private_max_wait old (else postpone by wakeBusyDelay).
+// planned again and a follow-up moved by followUpAgain); the messages the bot
+// sent on its own since the user's last one must leave room for t
+// (unansweredAllows, else drop); the user must not have written since t was
+// armed (else drop); and the chat must have no queued or running task and the
+// user's newest message must be private_max_wait old (else postpone by
+// wakeBusyDelay).
 func (o *Orchestrator) checkStart(ctx context.Context, t store.ConversationTimer, now time.Time) (wakeVerdict, error) {
 	drop := func(reason string) (wakeVerdict, error) { return wakeVerdict{act: wakeDrop, reason: reason}, nil }
 	key := t.ConversationKey
@@ -213,15 +213,11 @@ func (o *Orchestrator) checkStart(ctx context.Context, t store.ConversationTimer
 		return wakeVerdict{act: wakeMove, reason: reason, at: o.followUpAgain(now, q, atCap)}, nil
 	}
 
-	n, err := o.unanswered(ctx, key)
+	started, total, err := o.unanswered(ctx, key)
 	if err != nil {
 		return wakeVerdict{}, err
 	}
-	want := 0
-	if t.Kind == store.TimerFollowUp {
-		want = 1
-	}
-	if n != want {
+	if !unansweredAllows(t.Kind, started, total) {
 		return drop("unanswered")
 	}
 	msgs, err := o.st.RecentMessages(ctx, key, wakeRecentScan)
