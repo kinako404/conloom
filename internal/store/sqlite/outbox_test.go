@@ -3,7 +3,9 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -378,5 +380,159 @@ func TestMigrations_OutboxTaskIndex(t *testing.T) {
 	}
 	if detail != "SEARCH outbox_actions USING INDEX outbox_actions_task (task_id=?)" {
 		t.Fatalf("query plan = %q, want search using outbox_actions_task", detail)
+	}
+}
+
+func TestLeaseOutbox_NotBeforeBlocksHeadOnly(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+	a1 := convAction("a1", testConvKey, now)
+	a1.NotBefore = now.Add(2 * time.Second)
+	a1.Action.PartIndex, a1.Action.PartCount = 2, 3
+	insertActions(t, db, a1, convAction("a2", testConvKey, now), convAction("b1", testConvKeyB, now))
+
+	if ids := actionIDs(lease(t, db, 10, now)); !reflect.DeepEqual(ids, []string{"b1"}) {
+		t.Fatalf("lease before a1 is due = %v, want [b1]", ids)
+	}
+	ack(t, db, "b1", nil, now)
+	if ids := actionIDs(lease(t, db, 10, now.Add(time.Second))); len(ids) != 0 {
+		t.Fatalf("lease while a1 not due = %v, want none", ids)
+	}
+	for _, id := range []string{"a1", "a2"} {
+		if status, attempts := outboxStatus(t, db, id); status != store.OutboxPending || attempts != 0 {
+			t.Fatalf("%s = %s/%d, want pending/0", id, status, attempts)
+		}
+	}
+	got := lease(t, db, 10, now.Add(2*time.Second))
+	if ids := actionIDs(got); !reflect.DeepEqual(ids, []string{"a1"}) {
+		t.Fatalf("lease when a1 is due = %v, want [a1]", ids)
+	}
+	if !got[0].NotBefore.Equal(a1.NotBefore) || got[0].Action.PartIndex != 2 || got[0].Action.PartCount != 3 {
+		t.Fatalf("leased a1 = not_before %v, part %d/%d; want %v, 2/3",
+			got[0].NotBefore, got[0].Action.PartIndex, got[0].Action.PartCount, a1.NotBefore)
+	}
+	ack(t, db, "a1", nil, now.Add(2*time.Second))
+	if ids := actionIDs(lease(t, db, 10, now.Add(2*time.Second))); !reflect.DeepEqual(ids, []string{"a2"}) {
+		t.Fatalf("lease after ack a1 = %v, want [a2]", ids)
+	}
+}
+
+func TestCancelPendingActions(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	insertActions(t, db,
+		taskAction("a0", "task_1", store.OutboxAcked, now),
+		taskAction("a1", "task_1", store.OutboxPending, now),
+		taskAction("a2", "task_1", store.OutboxPending, now),
+		taskAction("a3", "task_1", store.OutboxPending, now),
+		convAction("b1", testConvKeyB, now),
+	)
+	if ids := actionIDs(lease(t, db, 10, now)); !reflect.DeepEqual(ids, []string{"a1", "b1"}) {
+		t.Fatalf("lease = %v, want [a1 b1]", ids)
+	}
+	other := taskAction("c1", "task_2", store.OutboxPending, now)
+	other.ConversationKey = store.ConversationKey(testBot, testPlatform, conloomapi.ConvGroup, "conv_10003")
+	insertActions(t, db, other)
+
+	cancelAt := now.Add(time.Second)
+	n, err := db.CancelPendingActions(ctx, "task_1", cancelAt)
+	if err != nil || n != 2 {
+		t.Fatalf("CancelPendingActions = %d, %v; want 2", n, err)
+	}
+	for id, want := range map[string]string{
+		"a0": store.OutboxAcked,
+		"a1": store.OutboxLeased,
+		"a2": store.OutboxCancelled,
+		"a3": store.OutboxCancelled,
+		"b1": store.OutboxLeased,
+		"c1": store.OutboxPending,
+	} {
+		if status, _ := outboxStatus(t, db, id); status != want {
+			t.Fatalf("%s = %s, want %s", id, status, want)
+		}
+	}
+	var closedAt string
+	if err := db.r.QueryRow(`SELECT acked_at FROM outbox_actions WHERE action_id = ?`, "a2").Scan(&closedAt); err != nil ||
+		closedAt != fmtTime(cancelAt) {
+		t.Fatalf("a2 acked_at = %q, %v; want %q", closedAt, err, fmtTime(cancelAt))
+	}
+
+	ack(t, db, "a1", nil, now)
+	if ids := actionIDs(lease(t, db, 10, now)); !reflect.DeepEqual(ids, []string{"c1"}) {
+		t.Fatalf("lease after cancel = %v, want [c1]", ids)
+	}
+	if ids := actionIDs(lease(t, db, 10, now.Add(time.Hour))); len(ids) != 0 {
+		t.Fatalf("later lease = %v, want none", ids)
+	}
+	if n, err := db.CancelPendingActions(ctx, "task_1", cancelAt); err != nil || n != 0 {
+		t.Fatalf("second CancelPendingActions = %d, %v; want 0", n, err)
+	}
+}
+
+func TestPurgeOutbox_IncludesCancelled(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	old, cutoff := now.Add(-40*day), now.Add(-30*day)
+	kept := seedOldTask(t, db, "1", conloomapi.TaskCancelled, now)
+	insertActions(t, db,
+		taskAction("orphan_cancelled", "task_gone", store.OutboxCancelled, old),
+		taskAction("recent_cancelled", "task_gone", store.OutboxCancelled, now.Add(-29*day)),
+		taskAction("with_task_cancelled", kept, store.OutboxCancelled, old),
+	)
+	if n, err := db.PurgeOutbox(ctx, cutoff, 10); err != nil || n != 1 {
+		t.Fatalf("PurgeOutbox = %d, %v; want 1", n, err)
+	}
+	if actionExists(t, db, "orphan_cancelled") {
+		t.Error("orphan_cancelled kept, want deleted")
+	}
+	for _, id := range []string{"recent_cancelled", "with_task_cancelled"} {
+		if !actionExists(t, db, id) {
+			t.Errorf("action %s deleted, want kept", id)
+		}
+	}
+}
+
+func TestMigration0010_ExistingActionsDeliverable(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "conloom.db")
+	old, err := open(ctx, path, migrationsUpTo(t, 9))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	payload, err := json.Marshal(testAction("a1", now).Action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.w.Exec(`INSERT INTO outbox_actions (action_id, bot_instance_id, conversation_key, task_id, platform,
+		status, payload, lease_until, attempts, platform_message_id, created_at, expires_at, acked_at)
+		VALUES (?, ?, ?, 'task_1', ?, ?, ?, ?, 0, '', ?, ?, '')`,
+		"a1", testBot, testConvKey, testPlatform, store.OutboxPending, string(payload),
+		fmtTime(time.Time{}), fmtTime(now), fmtTime(now.Add(10*time.Minute))); err != nil {
+		t.Fatalf("raw insert: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var notBefore string
+	if err := db.r.QueryRow(`SELECT not_before FROM outbox_actions WHERE action_id = 'a1'`).Scan(&notBefore); err != nil ||
+		notBefore != "" {
+		t.Fatalf("migrated not_before = %q, %v; want empty", notBefore, err)
+	}
+	got := lease(t, db, 10, now)
+	if ids := actionIDs(got); !reflect.DeepEqual(ids, []string{"a1"}) {
+		t.Fatalf("lease = %v, want [a1]", ids)
+	}
+	if !got[0].NotBefore.IsZero() || got[0].Action.PartIndex != 0 || got[0].Action.PartCount != 0 {
+		t.Fatalf("migrated action = not_before %v, part %d/%d; want zero",
+			got[0].NotBefore, got[0].Action.PartIndex, got[0].Action.PartCount)
 	}
 }

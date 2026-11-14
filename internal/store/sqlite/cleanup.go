@@ -44,10 +44,10 @@ func (db *DB) PurgeOutbox(ctx context.Context, before time.Time, limit int) (int
 	}
 	return execCount(ctx, db.w, `DELETE FROM outbox_actions WHERE seq IN (
 		SELECT seq FROM outbox_actions o
-		WHERE o.status IN (?, ?) AND o.created_at < ?
+		WHERE o.status IN (?, ?, ?) AND o.created_at < ?
 		AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = o.task_id)
 		LIMIT ?)`,
-		store.OutboxAcked, store.OutboxExpired, fmtTime(before), limit)
+		store.OutboxAcked, store.OutboxExpired, store.OutboxCancelled, fmtTime(before), limit)
 }
 
 func (db *DB) PurgeAudit(ctx context.Context, before time.Time, limit int) (int, error) {

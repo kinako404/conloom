@@ -137,9 +137,9 @@ func TestMigration0005_OnlyAddsTables(t *testing.T) {
 	if err := old.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	db, err := Open(context.Background(), path)
+	db, err := open(context.Background(), path, migrationsUpTo(t, 5))
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
 	after := tableInfos(t, db.r)

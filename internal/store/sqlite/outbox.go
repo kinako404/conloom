@@ -11,13 +11,13 @@ import (
 )
 
 const outboxCols = `seq, bot_instance_id, conversation_key, task_id, platform, status, payload,
-	lease_until, attempts, platform_message_id, created_at, expires_at`
+	lease_until, attempts, platform_message_id, created_at, expires_at, not_before`
 
 func scanOutbox(row scanner) (store.OutboxRecord, error) {
 	var o store.OutboxRecord
-	var payload, leaseUntil, created, expires string
+	var payload, leaseUntil, created, expires, notBefore string
 	err := row.Scan(&o.Seq, &o.BotInstanceID, &o.ConversationKey, &o.TaskID, &o.Platform, &o.Status, &payload,
-		&leaseUntil, &o.Attempts, &o.PlatformMessageID, &created, &expires)
+		&leaseUntil, &o.Attempts, &o.PlatformMessageID, &created, &expires, &notBefore)
 	if err != nil {
 		return o, notFound(err)
 	}
@@ -30,12 +30,17 @@ func scanOutbox(row scanner) (store.OutboxRecord, error) {
 	if o.CreatedAt, err = parseTime(created); err != nil {
 		return o, err
 	}
-	o.ExpiresAt, err = parseTime(expires)
+	if o.ExpiresAt, err = parseTime(expires); err != nil {
+		return o, err
+	}
+	o.NotBefore, err = parseTime(notBefore)
 	return o, err
 }
 
 // LeaseOutbox hands out, per conversation, the oldest live action if it is
 // pending or its lease has run out, and marks the handed-out actions leased.
+// An oldest action whose not_before is still ahead holds back the rest of its
+// conversation, but not other conversations.
 func (db *DB) LeaseOutbox(ctx context.Context, botID string, limit int, now time.Time, lease time.Duration) ([]store.OutboxRecord, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -50,9 +55,9 @@ func (db *DB) LeaseOutbox(ctx context.Context, botID string, limit int, now time
 				SELECT MIN(seq) FROM outbox_actions
 				WHERE bot_instance_id = ? AND status IN (?, ?) AND expires_at > ?
 				GROUP BY conversation_key)
-			AND (status = ? OR lease_until < ?)
+			AND (status = ? OR lease_until < ?) AND not_before <= ?
 			ORDER BY seq LIMIT ?`,
-			botID, store.OutboxPending, store.OutboxLeased, nowStr, store.OutboxPending, nowStr, limit)
+			botID, store.OutboxPending, store.OutboxLeased, nowStr, store.OutboxPending, nowStr, nowStr, limit)
 		if err != nil {
 			return err
 		}
@@ -137,4 +142,13 @@ func (db *DB) ExpireOutbox(ctx context.Context, now time.Time) (int, error) {
 	}
 	n, err := res.RowsAffected()
 	return int(n), err
+}
+
+// CancelPendingActions marks the task's pending actions cancelled and records
+// now as their closing time in acked_at. Leased and finished actions are left
+// as they are.
+func (db *DB) CancelPendingActions(ctx context.Context, taskID string, now time.Time) (int, error) {
+	return execCount(ctx, db.w, `UPDATE outbox_actions SET status = ?, acked_at = ?
+		WHERE task_id = ? AND status = ?`,
+		store.OutboxCancelled, fmtTime(now), taskID, store.OutboxPending)
 }
