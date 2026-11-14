@@ -1,14 +1,24 @@
 import { h, mount, empty, table, field, errorBox } from '../lib/dom.js';
 import { get, post, isAbort } from '../lib/api.js';
 import { go, href } from '../lib/router.js';
-import { fmtTime, fmtInt, label, CONV_TYPE } from '../lib/format.js';
+import { fmtTime, fmtInt, label, CONV_TYPE, PRIVATE_LEVEL } from '../lib/format.js';
+
+// proactiveBadge shows whether the bot speaks unprompted: in a private chat
+// the level it starts the chat at, off when the switch or the level is off.
+function proactiveBadge(c) {
+  if (c.type === 'private') {
+    const on = c.proactive_enabled && c.proactive_level !== 'off';
+    return h('span', { class: on ? 'badge on' : 'badge off' }, on ? `主动：${label(PRIVATE_LEVEL, c.proactive_level)}` : '主动关');
+  }
+  return h('span', { class: c.proactive_enabled ? 'badge on' : 'badge off' }, c.proactive_enabled ? '主动发言开' : '主动发言关');
+}
 
 // statusBadges shows whether a conversation is paused and whether proactive
 // replies and memory are on.
 export function statusBadges(c) {
   return h('span', { class: 'badges' },
     c.paused ? h('span', { class: 'badge bad' }, '已暂停') : h('span', { class: 'badge on' }, '运行中'),
-    h('span', { class: c.proactive_enabled ? 'badge on' : 'badge off' }, c.proactive_enabled ? '主动发言开' : '主动发言关'),
+    proactiveBadge(c),
     h('span', { class: c.memory_enabled ? 'badge on' : 'badge off' }, c.memory_enabled ? '记忆开' : '记忆关'));
 }
 

@@ -1,10 +1,11 @@
 import { h, mount, errorBox, loading, empty, table, kv, field, paged } from '../lib/dom.js';
 import { get, post, put, del, convPath, isAbort } from '../lib/api.js';
 import { go, href, withQuery } from '../lib/router.js';
-import { fmtTime, fmtInt, pretty, label, CONV_TYPE } from '../lib/format.js';
+import { fmtTime, fmtInt, pretty, label, CONV_TYPE, PRIVATE_LEVEL } from '../lib/format.js';
 import { statusBadges, personaLabel } from './conversations.js';
 import { taskList } from './tasks.js';
 import { chatTab } from './chat.js';
+import { autonomyTab } from './autonomy.js';
 
 const TABS = [
   ['chat', '聊天'],
@@ -12,8 +13,12 @@ const TABS = [
   ['policy', '策略'],
   ['persona', '人设'],
   ['memory', '记忆'],
+  ['autonomy', '自主'],
   ['tasks', '任务'],
 ];
+
+// PRIVATE_TABS need a private conversation: chatting and the hidden state.
+const PRIVATE_TABS = new Set(['chat', 'autonomy']);
 
 // flash is a success message shown once after a write reloads the page.
 let flash = '';
@@ -109,6 +114,12 @@ function messagesTab({ key, query, signal }) {
 
 // ---- policy ----
 
+// PRIVATE_LEVEL_CHOICES are proactive.private.level's choices; empty is mid.
+const PRIVATE_LEVEL_CHOICES = { '': '留空（按中）', ...PRIVATE_LEVEL };
+
+// CLOCK is the HH:MM form of quiet hours.
+const CLOCK = /^\d{2}:\d{2}$/;
+
 async function policyTab({ key, conv, signal }) {
   const res = await get(convPath(key, 'policy'), null, signal);
   const cur = res.current;
@@ -152,6 +163,10 @@ async function policyTab({ key, conv, signal }) {
   const limitHint = (range, def, cur) => `${range}；0 表示用本会话类型的默认值（${def ?? '—'}），当前生效 ${cur ?? '—'}`;
   const privateWait = h('input', { value: reply.private_wait || '', placeholder: '6s' });
   const privateMaxWait = h('input', { value: reply.private_max_wait || '', placeholder: '20s' });
+  const initiative = (p.proactive || {}).private || {};
+  const level = select(PRIVATE_LEVEL_CHOICES, initiative.level || '');
+  const quietStart = h('input', { value: initiative.quiet_start || '', placeholder: '23:00' });
+  const quietEnd = h('input', { value: initiative.quiet_end || '', placeholder: '07:00' });
   const reason = h('input', { placeholder: '修改原因' });
   const msg = h('div');
   const save = h('button', { type: 'submit', class: 'primary' }, '保存');
@@ -177,6 +192,11 @@ async function policyTab({ key, conv, signal }) {
         if (wait === '' || maxWait === '') return fail(msg, '私聊等待时间不能为空，写成 6s、500ms、1m 这样的时长');
         policy.reply.private_wait = wait;
         policy.reply.private_max_wait = maxWait;
+        const start = quietStart.value.trim();
+        const end = quietEnd.value.trim();
+        if ((start === '') !== (end === '')) return fail(msg, '免打扰时段的开始和结束要么都填，要么都留空');
+        if (start !== '' && !(CLOCK.test(start) && CLOCK.test(end))) return fail(msg, '免打扰时段写成 23:00 这样的两位数时间');
+        policy.proactive.private = { ...policy.proactive.private, level: level.value, quiet_start: start, quiet_end: end };
       }
       return write(msg, save, () => put(convPath(key, 'policy'), { policy, reason: reason.value.trim() }), '策略已保存');
     },
@@ -192,6 +212,10 @@ async function policyTab({ key, conv, signal }) {
   isPrivate ? h('div', { class: 'form-grid' },
     field('私聊等待', privateWait, '对方停顿多久才开始回复，0–60s'),
     field('私聊最长等待', privateMaxWait, '从开始等待起最多等多久，打断重来时重新计算，私聊等待–2m；两项都填 0 表示用默认值')) : null,
+  isPrivate ? h('div', { class: 'form-grid' },
+    field('主动找人档位', level, '关：不主动找人；低、中、高：每天最多发起 1、2、4 条，距上一条消息至少 8、4、2 小时。要打开“主动发言”才会发'),
+    field('免打扰开始', quietStart, 'HH:MM，按服务器时区，可以跨午夜'),
+    field('免打扰结束', quietEnd, '两项都留空时按对方的作息推算，消息不够时用 00:30–08:00')) : null,
   field('原因', reason),
   msg, save);
 
@@ -267,6 +291,67 @@ const STYLE = [
 ];
 const MAX_EXAMPLES = 8;
 const CONTENT_MODE = { open: '开放（open）', protected: '保护（protected）' };
+// MAX_BARS is conloomapi.MaxPersonaBars, the most bars a persona has.
+const MAX_BARS = 4;
+
+// shortDuration drops the zero minutes and seconds of a Go duration, "6h0m0s"
+// becoming "6h".
+function shortDuration(v) {
+  return String(v || '').replace(/([hm])0s$/, '$1').replace(/h0m$/, 'h');
+}
+
+// barsEditor edits a persona's bars, one row each, at most MAX_BARS. read
+// returns {bars}, keeping fields the rows do not show, or {error}.
+function barsEditor(bars) {
+  const list = h('div');
+  const inputs = new WeakMap();
+  const add = h('button', { type: 'button' }, '添加状态条');
+  const updateAdd = () => {
+    add.disabled = list.children.length >= MAX_BARS;
+  };
+  const addBar = (bar) => {
+    const name = h('input', { value: bar.name || '' });
+    const baseline = h('input', { type: 'number', min: 0, max: 100, step: 1, value: bar.baseline ?? '' });
+    const halfLife = h('input', { value: shortDuration(bar.half_life), placeholder: '6h' });
+    const description = h('input', { value: bar.description || '' });
+    const row = h('div', { class: 'card' },
+      h('div', { class: 'form-grid' },
+        field('名称', name, '1–6 字，不能重复，不含空白、【】和冒号'),
+        field('基准', baseline, '0–100 的整数，数值会逐渐回到这里'),
+        field('半衰期', halfLife, '30m–168h，如 6h、90m'),
+        field('说明', description, '可选，最多 40 字，如“高=有精神，低=累、困”')),
+      h('button', {
+        type: 'button',
+        class: 'danger',
+        onclick: () => {
+          row.remove();
+          updateAdd();
+        },
+      }, '删除状态条'));
+    inputs.set(row, { bar, name, baseline, halfLife, description });
+    list.appendChild(row);
+    updateAdd();
+  };
+  add.addEventListener('click', () => addBar({}));
+  for (const bar of bars || []) addBar(bar);
+  const read = () => {
+    const out = [];
+    for (const [i, row] of [...list.children].entries()) {
+      const r = inputs.get(row);
+      const baseline = Number(r.baseline.value);
+      if (r.baseline.value.trim() === '' || !Number.isInteger(baseline)) return { error: `第 ${i + 1} 条状态条的基准必须是整数` };
+      out.push({
+        ...r.bar,
+        name: r.name.value.trim(),
+        baseline,
+        half_life: r.halfLife.value.trim(),
+        description: r.description.value.trim(),
+      });
+    }
+    return { bars: out };
+  };
+  return { el: [list, h('div', { class: 'toolbar' }, add)], read };
+}
 
 function personaForm(key, doc) {
   const base = structuredClone(doc || {});
@@ -322,6 +407,7 @@ function personaForm(key, doc) {
   };
   addButton.addEventListener('click', () => addExample({}));
   for (const ex of base.examples || []) addExample(ex);
+  const bars = barsEditor(base.bars);
 
   const reason = h('input', { placeholder: '修改原因' });
   const msg = h('div');
@@ -331,6 +417,8 @@ function personaForm(key, doc) {
       e.preventDefault();
       const tv = Number(templateVersion.value);
       if (templateVersion.value.trim() === '' || !Number.isInteger(tv)) return fail(msg, '模板版本必须是整数');
+      const barRows = bars.read();
+      if (barRows.error) return fail(msg, barRows.error);
       const persona = base;
       persona.persona_name = name.value;
       persona.template_version = tv;
@@ -358,6 +446,8 @@ function personaForm(key, doc) {
         const ex = exampleInputs.get(row);
         return { user: ex.user.value, reply: ex.reply.value };
       });
+      if (barRows.bars.length) persona.bars = barRows.bars;
+      else delete persona.bars;
       return write(msg, save, () => put(convPath(key, 'persona'), { persona, reason: reason.value.trim() }), '人设已保存');
     },
   },
@@ -385,6 +475,9 @@ function personaForm(key, doc) {
   h('h3', null, `示例对话（最多 ${MAX_EXAMPLES} 条，每条最多 200 字）`),
   examples,
   h('div', { class: 'toolbar' }, addButton),
+  h('h3', null, `状态条（最多 ${MAX_BARS} 条）`),
+  h('p', { class: 'hint' }, '私聊里只有 bot 自己知道的数值（0–100），只影响语气和想不想多聊，不进系统提示；bot 启用了 buff 技能才生效。一条都不写时用默认的心情和精力。'),
+  bars.el,
   field('原因', reason),
   msg, save);
 }
@@ -625,15 +718,16 @@ const TAB_VIEWS = {
   policy: policyTab,
   persona: personaTab,
   memory: memoryTab,
+  autonomy: (ctx) => autonomyTab({ ...ctx, write }),
   tasks: tasksTab,
 };
 
 // PANEL is the platform of conversations held in the panel (store.PlatformPanel).
 const PANEL = 'panel';
 
-// tabsOf are the conversation's tabs: chatting needs a private conversation.
+// tabsOf are the conversation's tabs, PRIVATE_TABS only in a private one.
 function tabsOf(c) {
-  return TABS.filter(([t]) => t !== 'chat' || c.type === 'private');
+  return TABS.filter(([t]) => !PRIVATE_TABS.has(t) || c.type === 'private');
 }
 
 // deleteChat is the button that deletes a panel chat after confirmation.

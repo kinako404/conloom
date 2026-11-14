@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/kinako404/conloom/internal/memory"
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 // assets returns the embedded files with one of exts, keyed by path.
@@ -41,7 +42,7 @@ func TestAssets_PlannedFilesPresent(t *testing.T) {
 		"index.html", "style.css", "app.js",
 		"lib/api.js", "lib/router.js", "lib/dom.js", "lib/chart.js", "lib/format.js",
 		"views/login.js", "views/overview.js", "views/usage.js", "views/conversations.js",
-		"views/conversation.js", "views/chat.js", "views/tasks.js", "views/audit.js", "views/config.js",
+		"views/conversation.js", "views/chat.js", "views/autonomy.js", "views/tasks.js", "views/audit.js", "views/config.js",
 	} {
 		if _, err := fs.Stat(FS, name); err != nil {
 			t.Errorf("%s: %v", name, err)
@@ -145,5 +146,16 @@ func TestAssets_InitialAffinityMatchesMemory(t *testing.T) {
 	}
 	if want := strconv.Itoa(memory.InitialAffinity); m[1] != want {
 		t.Errorf("INITIAL_AFFINITY = %s, want memory.InitialAffinity %s", m[1], want)
+	}
+}
+
+func TestAssets_MaxBarsMatchesPersona(t *testing.T) {
+	js := assets(t, ".js")["views/conversation.js"]
+	m := regexp.MustCompile(`const MAX_BARS = (\d+);`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("views/conversation.js has no MAX_BARS")
+	}
+	if want := strconv.Itoa(conloomapi.MaxPersonaBars); m[1] != want {
+		t.Errorf("MAX_BARS = %s, want conloomapi.MaxPersonaBars %s", m[1], want)
 	}
 }

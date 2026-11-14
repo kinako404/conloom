@@ -112,3 +112,12 @@ export const CONV_TYPE = {
   group: '群聊',
   private: '私聊',
 };
+
+// PRIVATE_LEVEL are the levels of proactive.private.level, how often the bot
+// starts a private chat.
+export const PRIVATE_LEVEL = {
+  off: '关',
+  low: '低',
+  mid: '中',
+  high: '高',
+};

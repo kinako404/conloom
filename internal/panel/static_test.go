@@ -13,8 +13,27 @@ import (
 
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/obs"
+	"github.com/kinako404/conloom/internal/panel/web"
 	"github.com/kinako404/conloom/internal/store"
 )
+
+// staticHandler is a panel serving assets, with no data behind its API.
+func staticHandler(t *testing.T, assets fs.FS) http.Handler {
+	t.Helper()
+	srv := New(Deps{
+		Config: &config.Config{Panel: &config.PanelConfig{
+			Users:       []config.PanelUser{{Name: testUser, PasswordHash: testHash(t)}},
+			SessionTTL:  dur(config.DefaultPanelSessionTTL),
+			IdleTimeout: dur(config.DefaultPanelIdleTimeout),
+		}},
+		Sessions: &fakeSessions{m: map[string]store.PanelSession{}},
+		Audit:    &fakeAudit{},
+		Assets:   assets,
+		Metrics:  obs.NewMetrics(prometheus.NewRegistry()),
+		Now:      func() time.Time { return time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC) },
+	})
+	return srv.Handler()
+}
 
 func TestStatic_ServesIndexAndRedirects(t *testing.T) {
 	root := fstest.MapFS{
@@ -29,19 +48,7 @@ func TestStatic_ServesIndexAndRedirects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(Deps{
-		Config: &config.Config{Panel: &config.PanelConfig{
-			Users:       []config.PanelUser{{Name: testUser, PasswordHash: testHash(t)}},
-			SessionTTL:  dur(config.DefaultPanelSessionTTL),
-			IdleTimeout: dur(config.DefaultPanelIdleTimeout),
-		}},
-		Sessions: &fakeSessions{m: map[string]store.PanelSession{}},
-		Audit:    &fakeAudit{},
-		Assets:   assets,
-		Metrics:  obs.NewMetrics(prometheus.NewRegistry()),
-		Now:      func() time.Time { return time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC) },
-	})
-	h := srv.Handler()
+	h := staticHandler(t, assets)
 	get := func(target string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
@@ -95,5 +102,24 @@ func TestStatic_ServesIndexAndRedirects(t *testing.T) {
 	h.ServeHTTP(rec, r)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST /panel/app.js: %d, want 405", rec.Code)
+	}
+}
+
+func TestStatic_ServesAutonomyView(t *testing.T) {
+	h := staticHandler(t, web.FS)
+	get := func(target string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+		return w
+	}
+	w := get("/panel/views/autonomy.js")
+	if ct := w.Header().Get("Content-Type"); w.Code != http.StatusOK || !strings.Contains(ct, "javascript") {
+		t.Fatalf("/panel/views/autonomy.js: %d Content-Type %q", w.Code, ct)
+	}
+	if !strings.Contains(w.Body.String(), "export async function autonomyTab(") {
+		t.Error("/panel/views/autonomy.js does not export autonomyTab")
+	}
+	if w = get("/panel/views/conversation.js"); !strings.Contains(w.Body.String(), "from './autonomy.js'") {
+		t.Errorf("/panel/views/conversation.js: %d, does not import ./autonomy.js", w.Code)
 	}
 }
