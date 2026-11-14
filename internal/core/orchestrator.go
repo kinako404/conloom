@@ -19,6 +19,7 @@ import (
 	"github.com/kinako404/conloom/internal/admission"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/ids"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/internal/policy"
@@ -89,6 +90,7 @@ type Orchestrator struct {
 	now      func() time.Time
 
 	memTrigger MemoryTrigger
+	memAdmin   *memory.Admin
 	skills     *skills.Registry
 	usage      *usage.Recorder
 
@@ -188,6 +190,8 @@ func New(d Deps) (*Orchestrator, error) {
 	if o.now == nil {
 		o.now = time.Now
 	}
+	o.memAdmin = memory.NewAdmin(memory.AdminDeps{Store: o.st, Policies: o.policies, Metrics: o.metrics,
+		Now: func() time.Time { return o.now() }})
 	o.tokenFactor = maxTokenFactor(o.cfg.ModelProfiles)
 	o.actionTTL = o.cfg.Runtime.ActionTTL.Duration
 	if o.actionTTL <= 0 {

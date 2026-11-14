@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/kinako404/conloom/internal/memory"
@@ -35,6 +36,7 @@ func memCopyFor(private bool) memCopy {
 // memCmd runs the memory commands /好感度, /记忆, /记住 and /忘记我 (and their
 // English forms) in a group or a private chat. /忘记我 works whether or not
 // memory is on; the others need it on, and /好感度 also needs affinity.
+// Admins can set their own affinity with /好感度 设 n, +n or -n.
 // /记忆 摘要 shows the summary: to anyone in a private chat, only to admins in
 // a group, where /记忆 群 does the same. Admins can also start a
 // consolidation (/记忆 整理, refused while the conversation is paused).
@@ -58,6 +60,9 @@ func (o *Orchestrator) memCmd(ctx context.Context, task store.TaskRecord, isAdmi
 	case "好感度", "affinity":
 		if !pol.Memory.Affinity {
 			return cp.affinityOff, nil
+		}
+		if args != "" {
+			return o.memCmdSetAffinity(ctx, task, isAdmin, args)
 		}
 		return o.memCmdAffinity(ctx, task)
 	case "记住", "remember":
@@ -111,13 +116,20 @@ func (o *Orchestrator) memCmdMember(ctx context.Context, task store.TaskRecord) 
 	return got[task.ActorPlatformUserID], nil
 }
 
-func (o *Orchestrator) memCmdAffinity(ctx context.Context, task store.TaskRecord) (string, error) {
+func (o *Orchestrator) memCmdBotName(ctx context.Context, task store.TaskRecord) (string, error) {
 	bot, _ := o.cfg.Bot(task.BotInstanceID)
 	pv, err := o.personas.Current(ctx, task.ConversationKey, bot.PersonaTemplate)
 	if err != nil {
 		return "", err
 	}
-	name := persona.BotName(pv.Persona, bot.Name)
+	return persona.BotName(pv.Persona, bot.Name), nil
+}
+
+func (o *Orchestrator) memCmdAffinity(ctx context.Context, task store.TaskRecord) (string, error) {
+	name, err := o.memCmdBotName(ctx, task)
+	if err != nil {
+		return "", err
+	}
 	m, err := o.memCmdMember(ctx, task)
 	if err != nil {
 		return "", err
@@ -126,6 +138,64 @@ func (o *Orchestrator) memCmdAffinity(ctx context.Context, task store.TaskRecord
 		return CopyAffinityNone(name), nil
 	}
 	return CopyAffinity(name, memory.TierName(*m.Affinity), *m.Affinity), nil
+}
+
+// memCmdSetAffinity lets an admin override their own affinity in the
+// conversation: "设 n" / "set n" sets it to n in [0, 100], "+n" / "-n" moves
+// it, clamped to [0, 100], from the current value or, without one, from
+// memory.InitialAffinity. Daily caps and run deltas do not apply. The change
+// goes through memory.Admin.EditMember as a command revision audited by the
+// sender. Other arguments get the usage.
+func (o *Orchestrator) memCmdSetAffinity(ctx context.Context, task store.TaskRecord, isAdmin bool, args string) (string, error) {
+	fields := strings.Fields(args)
+	var num string
+	set := false
+	switch {
+	case len(fields) == 2 && (fields[0] == "设" || strings.ToLower(fields[0]) == "set"):
+		num, set = fields[1], true
+	case len(fields) == 1 && (strings.HasPrefix(fields[0], "+") || strings.HasPrefix(fields[0], "-")):
+		num = fields[0]
+	default:
+		return CopyAffinityUsage, nil
+	}
+	if !isAdmin {
+		return CopyAdminOnly, nil
+	}
+	n, err := strconv.Atoi(num)
+	if err != nil || set && memory.Clamp(n) != n {
+		return CopyAffinityUsage, nil
+	}
+	if !set {
+		m, err := o.memCmdMember(ctx, task)
+		if err != nil {
+			return "", err
+		}
+		base := memory.InitialAffinity
+		if m.Affinity != nil {
+			base = *m.Affinity
+		}
+		n = memory.Clamp(base + n)
+	}
+	conv, err := o.conversation(ctx, task.ConversationKey)
+	if err != nil {
+		return "", err
+	}
+	put := conloomapi.MemberMemoryPut{Affinity: &n, Reason: memory.ReasonAffinityCommand}
+	got, err := o.memAdmin.EditMember(ctx, conv, task.ActorPlatformUserID, put, store.RevisionCommand,
+		"command:"+task.ActorPlatformUserID)
+	if errors.Is(err, memory.ErrAudit) {
+		o.log.Error("affinity changed but audit failed", "task_id", task.ID, "conversation", task.ConversationKey, "error", err)
+	} else if err != nil {
+		return "", err
+	}
+	if got.Affinity != nil {
+		n = *got.Affinity
+	}
+	name, err := o.memCmdBotName(ctx, task)
+	if err != nil {
+		return "", err
+	}
+	return CopyAffinityAdjusted(name, memory.TierName(n), n), nil
 }
 
 // memCmdRemember remembers what the sender asked (memory.Remember) and

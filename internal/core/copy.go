@@ -63,6 +63,7 @@ const (
 	CopyMemoryPaused        = "群里暂停中，现在不会整理记忆。管理员发送 /resume 恢复后再整理。"
 	CopyMemoryNoSummary     = "还没有群聊摘要。"
 	CopyMemoryUsage         = "用法：/记忆 查看我记得的关于你的事；/记住 <内容> 让我记住一件事；/好感度 查看好感度；/忘记我 清空你的记忆；管理员：/记忆 整理，/记忆 群（或 /记忆 摘要）。"
+	CopyAffinityUsage       = "用法：/好感度 查看好感度；管理员：/好感度 设 <0-100>，/好感度 +<数值>，/好感度 -<数值> 直接调整自己的好感度。"
 
 	CopyMemoryDisabledPrivate  = "我们的私聊没有开启记忆。"
 	CopyAffinityOffPrivate     = "我们的私聊没有开启好感度。"
@@ -82,6 +83,12 @@ const (
 // and the value out of 100.
 func CopyAffinity(name, tier string, v int) string {
 	return name + "对你的好感：" + tier + "（" + strconv.Itoa(v) + "/100）"
+}
+
+// CopyAffinityAdjusted tells an admin that /好感度 set how name, the bot,
+// feels about them to tier and v.
+func CopyAffinityAdjusted(name, tier string, v int) string {
+	return "好感度已调整：" + name + "对你的好感 " + tier + "（" + strconv.Itoa(v) + "/100）"
 }
 
 // CopyAffinityNone tells a member without an affinity that name, the bot,

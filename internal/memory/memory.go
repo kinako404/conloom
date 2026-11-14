@@ -32,6 +32,10 @@ const (
 	ReasonDecay            = "decay"
 )
 
+// ReasonAffinityCommand is recorded on revisions written by an admin's
+// /好感度 设|+n|-n, which overrides the affinity rules.
+const ReasonAffinityCommand = "affinity_command"
+
 // Storage limits of private conversations, where the bot talks to one person
 // and can remember more about them; groups use SummaryMaxRunes and
 // NoteMaxRunes.
