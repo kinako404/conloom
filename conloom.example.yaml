@@ -113,7 +113,7 @@ model_profiles:
       native_window: 1000000
       configured_window: 1000000
       soft_input_budget: 120000
-      reserved_output_tokens: 4096
+      reserved_output_tokens: 8192   # 记忆整理的输出也用它：默认的私聊 3000 字摘要加笔记需要 8192 以上
       safety_margin_tokens: 4096
     runtime:
       max_concurrency: 2
@@ -274,6 +274,8 @@ default_group_policy:
     consolidate_interval: 6h      # 新消息不足条数时，距上次整理超过这么久且至少有 consolidate_min 条新消息也整理一次，30m~48h
     consolidate_min: 20           # 按时间整理时至少要有的新消息条数，1~2000
     backlog: 1000                 # 第一次开启时往回整理多少条旧消息，0~5000
+    summary_max_chars: 0          # 摘要最多多少字，200~8000；0 表示按会话类型的默认值（群聊 1500、私聊 3000）
+    note_max_chars: 0             # 每人笔记最多多少字，50~2000；0 表示按会话类型的默认值（群聊 300、私聊 1000）
 
 # 私聊会话的默认策略，结构与 default_group_policy 相同。段内省略的字段取内置默认值，
 # 不取上面 default_group_policy 里的配置，所以像 review.blocked_words 这样想在私聊里也生效的设置

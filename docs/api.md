@@ -81,7 +81,7 @@
 - 只要含有 `proactive` 段，它就必须是完整且合法的一段。API 不会把它与当前设置或默认值合并，像 `{"enabled": false}` 这样只写部分字段的请求会被拒绝并返回校验错误。
 - 例外：`reply.turn_gap`、`turn_max_wait`、`turn_cooldown`、`max_unprompted_replies`、`max_consecutive_skips`、`quote`、`max_parts` 和 `proactive.join_*` 在请求里缺少时逐字段按默认值补齐，方便旧的调用方继续使用；已移除的 `proactive.contact_cooldown` 出现在请求里会被忽略。
 - `reply.private_wait` 和 `private_max_wait` 成对补齐：两者都缺少或都为 0 时，一起取会话类型对应的默认值，所以请求里把两者都设为 0 表示“用默认值”，存下来的是默认值；只要有一个不为 0，就按写的值校验（`private_wait` 0~60s，`private_max_wait` 从 `private_wait` 到 2m）。
-- 请求体完全不含 `memory` 段时，同样保留本群**当前**的记忆设置，与 `proactive` 相同。含有 `memory` 段时，段内缺少的键取内置默认值，不与当前设置合并：`{"memory":{"enabled":true}}` 得到 `affinity: true`、`consolidate_every: 150`、`consolidate_interval: 6h`、`backlog: 1000`；显式写出的 `0` 和 `false` 保留。`memory.enabled` 为 true 时要求 `concurrency.allow_long_requests` 也为 true，否则返回校验错误。
+- 请求体完全不含 `memory` 段时，同样保留本群**当前**的记忆设置，与 `proactive` 相同。含有 `memory` 段时，段内缺少的键取内置默认值，不与当前设置合并：`{"memory":{"enabled":true}}` 得到 `affinity: true`、`consolidate_every: 150`、`consolidate_interval: 6h`、`backlog: 1000`、`summary_max_chars: 0`、`note_max_chars: 0`（0 表示按会话类型的默认上限）；显式写出的 `0` 和 `false` 保留。`memory.enabled` 为 true 时要求 `concurrency.allow_long_requests` 也为 true，否则返回校验错误。
 - 只想关闭主动搭话时，管理员可以在群里发 `/主动 全群 关`：它以当前版本为基础写入一个新版本，只改 `proactive.enabled`（`开` 同理），可以用 `GET …/policy` 查看结果。
 - 把 `concurrency.max_interactive_requests` 设为 0 等同于 `/pause`：本群正在生成和排队的回复会被静默取消。
 
@@ -115,7 +115,7 @@
 {"note": "喜欢手冲咖啡。", "affinity": 60, "reason": "管理员更正"}
 ```
 
-- `note` 去掉首尾空白后群聊最多 200 字、私聊最多 500 字，写 `""` 清空笔记；`affinity` 取 0–100 的整数。两个字段都没有、笔记超长或好感度越界时返回 400。
+- `note` 去掉首尾空白后最多 `memory.note_max_chars` 字（为 0 时群聊 300 字、私聊 1000 字），写 `""` 清空笔记；`affinity` 取 0–100 的整数。两个字段都没有、笔记超长或好感度越界时返回 400。
 - 返回修改后的这位群友（格式同 `members` 里的一项）。每个有变化的字段写一条修改记录（来源 `api`，原因取 `reason`），并写审计 `memory.update`，审计里只记用户 ID 和改了哪些字段。和整理同时修改同一个人时会自动重试；仍然冲突时返回 503（`retryable: true`），可以稍后重试。
 - 记忆关闭时也可以修改，方便管理员更正冻结的数据。
 

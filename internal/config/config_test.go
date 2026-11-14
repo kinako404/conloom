@@ -206,7 +206,7 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 		t.Errorf("short_context.privacy = %+v", short.Privacy)
 	}
 	long := cfg.ModelProfiles["long_context"]
-	wantLongCtx := ContextLimits{NativeWindow: 1000000, ConfiguredWindow: 1000000, SoftInputBudget: 120000, ReservedOutputTokens: 4096, SafetyMarginTokens: 4096}
+	wantLongCtx := ContextLimits{NativeWindow: 1000000, ConfiguredWindow: 1000000, SoftInputBudget: 120000, ReservedOutputTokens: 8192, SafetyMarginTokens: 4096}
 	if long.Context != wantLongCtx || long.Runtime.MaxConcurrency != 2 {
 		t.Errorf("long_context = %+v", long)
 	}

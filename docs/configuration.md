@@ -98,7 +98,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `endpoint`、`model`、`api_key` | `endpoint`、`model` 必填 | 接口地址、模型名、密钥 |
 | `modalities` | 空 | 模型支持的模态，如 `[text]` |
 | `context.native_window` / `configured_window` / `soft_input_budget` | 必填，均 > 0 | 必须满足 `soft_input_budget <= configured_window <= native_window`；软预算决定历史最多装多少 |
-| `context.reserved_output_tokens` / `safety_margin_tokens` | 0 | 输出预留（大于 0 时也作为请求的 `max_tokens`，推理 token 也算在内）和安全余量 |
+| `context.reserved_output_tokens` / `safety_margin_tokens` | 0 | 输出预留（大于 0 时也作为请求的 `max_tokens`，推理 token 也算在内）和安全余量。记忆整理也用 `long_context` 的输出预留：摘要和笔记的默认上限（私聊 3000 / 1000 字，群聊 1500 / 300 字）建议 `long_context` 至少设 8192，否则整理容易被截断（`output_truncated`），每批的人数也会被压到 1 人 |
 | `runtime.max_concurrency` | 2 | 该模型的全局并发上限，≥ 1 |
 | `runtime.timeout` | 60s | 单次请求超时，> 0 |
 | `runtime.max_retries` | 2 | 网络错误、429、5xx 的重试次数，0~5 |
@@ -200,6 +200,8 @@ default_group_policy:
     consolidate_interval: 6h      # 新消息不足条数时，距上次整理超过这么久且至少有 consolidate_min 条新消息也整理一次，30m~48h
     consolidate_min: 20           # 按时间整理时至少要有的新消息条数，1~2000
     backlog: 1000                 # 第一次开启时往回整理多少条旧消息，0~5000
+    summary_max_chars: 0          # 摘要最多多少字，200~8000；0 表示按会话类型的默认值（群聊 1500、私聊 3000）
+    note_max_chars: 0             # 每人笔记最多多少字，50~2000；0 表示按会话类型的默认值（群聊 300、私聊 1000）
 ```
 
 各字段的具体行为见 [使用指南](usage.md#机器人在群里怎么说话)，汇总表见 [架构 4.9 节](architecture.md#49-阈值一览)。
@@ -241,7 +243,8 @@ default_private_policy:
 - YAML 配置里不一样：和其他字段一样，省略才取内置默认值（6s 和 20s）；在 `default_group_policy` 或 `default_private_policy` 里明确写 `private_wait: 0` 和 `private_max_wait: 0`，就是不等待、收到消息立即开始回复，不会被换成默认值。这时上一条里的“取默认值”取到的也是 0 和 0。
 - `continuation_window` 不补，旧版本里的 `0s` 仍表示不开启在聊模式；它不为 0 时必须大于 `turn_cooldown`，否则校验失败（否则挂起的一轮会在会话超时后才放行，然后被丢弃）。
 - 已存库的策略版本缺少整个 `memory` 段时，读取时用会话类型对应的默认策略里的 `memory` 补齐，即群聊记忆按配置默认关闭，私聊按 `default_private_policy.memory`。
-- `memory` 段内缺少的键取内置默认值（`affinity: true`、`consolidate_every: 150`、`consolidate_interval: 6h`、`consolidate_min: 20`、`backlog: 1000`，`enabled` 为 `false`）；显式写出的 `0` 和 `false` 保留。加入 `consolidate_min` 之前存库的版本读出来是 20，和原来写死的条数一致。
+- `memory` 段内缺少的键取内置默认值（`affinity: true`、`consolidate_every: 150`、`consolidate_interval: 6h`、`consolidate_min: 20`、`backlog: 1000`、`summary_max_chars: 0`、`note_max_chars: 0`，`enabled` 为 `false`）；显式写出的 `0` 和 `false` 保留。加入 `consolidate_min` 之前存库的版本读出来是 20，和原来写死的条数一致。
+- `memory.summary_max_chars` 和 `note_max_chars` 是摘要和每人笔记的字数上限（按字符计）：整理提示词按它要求篇幅（素材足够时写到上限的 60%~90%，不超过上限），写入时超出的部分截掉，`/记住` 写满时从最前面腾位置，API、面板和命令修改笔记时超过上限会被拒绝。0 表示按会话类型的默认值：群聊 1500 / 300，私聊 3000 / 1000。存库的旧版本没有这两个键，读出来是 0，也就是按会话类型取默认值，不会把群聊的数字带进私聊；补齐默认策略时也不填它们。调大上限后整理的输出变长，`long_context` 的 `reserved_output_tokens` 要跟着留足（见上面模型配置表）。
 - 群策略 API 对 `proactive` 和 `memory` 段的处理不同于 YAML，见 [API：群策略](api.md#群策略)。
 - `default_private_policy` 段里省略的字段同样取上面的内置默认值（不是 `default_group_policy` 的值），校验规则也一样；整段省略时，私聊会话直接沿用 `default_group_policy`。
 - `proactive.contact_cooldown` 已移除：已存库的旧版本里的这个键在读取时被忽略；但配置文件不接受未知字段，升级后要从 `conloom.yaml` 里删掉这一行，否则启动时报错。
