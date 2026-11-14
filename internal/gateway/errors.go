@@ -41,6 +41,11 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, memory.ErrInvalid):
 		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
 			strings.TrimPrefix(err.Error(), memory.ErrInvalid.Error()+": "), false, err)
+	case errors.Is(err, core.ErrInvalidBar):
+		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
+			strings.TrimPrefix(err.Error(), core.ErrInvalidBar.Error()+": "), false, err)
+	case errors.Is(err, core.ErrNotPrivate):
+		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "not a private conversation", false, err)
 	case errors.Is(err, memory.ErrUpdateConflict):
 		s.writeError(w, r, http.StatusServiceUnavailable, conloomapi.CodeInternal, "member memory kept changing; try again", true, err)
 	case errors.Is(err, memory.ErrMemoryDisabled):

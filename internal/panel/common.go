@@ -74,6 +74,20 @@ func (s *Server) memoryConversation(w http.ResponseWriter, r *http.Request) (sto
 	return conv, true
 }
 
+// privateConversation is conversation for the autonomy API, which only
+// private conversations have: others get 400.
+func (s *Server) privateConversation(w http.ResponseWriter, r *http.Request) (store.ConversationRecord, bool) {
+	conv, ok := s.conversation(w, r)
+	if !ok {
+		return conv, false
+	}
+	if conv.Type != conloomapi.ConvPrivate {
+		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "only private conversations have a hidden state")
+		return conv, false
+	}
+	return conv, true
+}
+
 // location is the server time zone, UTC when none was given.
 func (s *Server) location() *time.Location {
 	if s.d.Location == nil {

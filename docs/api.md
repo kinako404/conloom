@@ -26,10 +26,13 @@
 | `PUT /api/v1/conversations/{id}/memory/members/{user_id}` | `memory:write` | 修改某位群友的笔记、好感度 |
 | `DELETE /api/v1/conversations/{id}/memory/members/{user_id}` | `memory:write` | 忘记某位群友，等同于他发 `/忘记我` |
 | `POST /api/v1/conversations/{id}/memory/consolidate` | `memory:write` | 立即整理一次记忆；返回 202 |
+| `GET /api/v1/conversations/{id}/autonomy` | `memory:read` | 私聊的状态、状态条、最近的状态条变化和主动找人的情况 |
+| `PUT /api/v1/conversations/{id}/autonomy/buffs/{name}` | `memory:write` | 把私聊的一条状态条设成指定值 |
+| `DELETE /api/v1/conversations/{id}/autonomy/status` | `memory:write` | 结束私聊的当前状态，同时取消回来说话的定时 |
 | `GET /healthz` | 无 | 健康检查：查一次数据库（2 秒超时），正常返回纯文本 `ok`，失败返回 503 |
 | `GET /metrics` | 无 | Prometheus 指标，`server.metrics_enabled: false` 时不注册 |
 
-会话 `{id}` 是标准会话 ID，如 `group_10001`、`private_20001`；核心收到过这个会话的消息后它才存在，在此之前读写它的人格、群策略和记忆都返回 404。没有列出的路径返回纯文本 404（不是下面的 JSON 错误格式）。
+会话 `{id}` 是标准会话 ID，如 `group_10001`、`private_20001`；核心收到过这个会话的消息后它才存在，在此之前读写它的人格、群策略、记忆和自主状态都返回 404。没有列出的路径返回纯文本 404（不是下面的 JSON 错误格式）。
 
 配置了 `panel` 段时，`/panel/` 下的路径属于 Web 管理面板，用登录 cookie 而不是 Bearer 令牌鉴权，见 [Web 管理面板](panel.md)。面板还能直接和 bot 私聊（接管已有私聊或新建 `panel` 平台的会话），接口见 [Web 管理面板：接口](panel.md#接口)。设了 `panel.listen` 时面板只在那个单独的端口上，API 端口上的 `/panel/` 返回 404。
 
@@ -126,6 +129,48 @@
 
 `POST …/memory/consolidate` 请求立即整理一次，返回 202 `{"accepted":true}`，整理在后台执行，结果可以用 `GET …/memory` 查看。会话没有开启记忆时返回 409 `MEMORY_DISABLED`；会话暂停中（`concurrency.max_interactive_requests: 0`）时返回 409 `PAUSED`。两种情况都不会整理。
 
+## 自主状态
+
+私聊里机器人的状态（`set_status`）、状态条（`adjust_buff`）和主动找人，规则见 [使用指南](usage.md) 和 [技能](skills.md)。`{id}` 必须是私聊会话：群聊等其他会话返回 400，会话不属于令牌的机器人时返回 404。权限沿用记忆的 `memory:read`、`memory:write`。
+
+`GET …/autonomy` 返回：
+
+```json
+{
+  "status": {"activity": "洗澡", "started_at": "2026-11-14T12:10:00Z", "until_at": "2026-11-14T12:30:00Z"},
+  "bars": [
+    {"name": "心情", "value": 71, "band": "偏高", "baseline": 60, "description": "高=开心放松，低=低落烦躁"},
+    {"name": "精力", "value": 70, "band": "偏高", "baseline": 70, "description": "高=有精神，低=累、困"}
+  ],
+  "events": [
+    {"name": "心情", "source": "model", "reason": "聊到喜欢的电影", "before": 66, "after": 71, "at": "2026-11-14T12:00:00Z"}
+  ],
+  "proactive": {
+    "enabled": true, "level": "mid", "sent_today": 1, "daily_cap": 2,
+    "quiet_start": "00:30", "quiet_end": "08:00", "quiet_inferred": false, "unanswered_left": 2,
+    "timers": [{"kind": "status_return", "due_at": "2026-11-14T12:30:00Z"}]
+  }
+}
+```
+
+- `status` 只在状态生效中（`until_at` 晚于现在）时给出，否则为 `null`。
+- `bars` 按会话当前人设的 `bars` 排列，人设没写 `bars` 时是默认的心情和精力；会话还没有人设版本时按将要使用的模板，查看不会生成人设版本。`value` 是回落到现在的值（四舍五入，没存过时是基准值），`band` 是它的档位词（很低、偏低、中等、偏高、很高）。人设里已经没有的条不列出。
+- `events` 是最近 50 次状态条变化，新的在前；`source` 为 `model`（模型调用 `adjust_buff`）、`panel` 或 `api`，`before`、`after` 四舍五入。人设里已经去掉的条，以前的变化照样列出。变化记录保留 30 天。
+- `proactive`：`enabled` 是策略的 `proactive.enabled`；`level` 是生效的档位（没设时为 `mid`）；`sent_today`、`daily_cap` 是今天（`server.timezone` 的自然日）已经主动发出的条数和档位的上限；`quiet_start`、`quiet_end` 是生效的免打扰时段，`quiet_inferred` 为 true 表示按对方的作息推算；`unanswered_left` 是对方再次发言前还能主动发几条；`timers` 是还没触发的定时，按时间排序，`kind` 为 `status_return`（回来说话）、`initiate`（主动找人）或 `follow_up`（追问）。
+- 各个列表总是数组。`activity` 和 `reason` 是模型或管理员写的文字，请按纯文本显示。
+
+`PUT …/autonomy/buffs/{name}` 把一条状态条直接设成指定值，`{name}` 是 URL 编码的条名：
+
+```json
+{"value": 20, "reason": "管理员调整"}
+```
+
+- `value` 必填，取 0–100 的整数；`reason` 可以省略，去掉首尾空白后最多 40 字。`{name}` 必须和当前人设的某一条完全一致，否则返回 400 并列出现有的条名。
+- 不受模型调整时单次 ±10、每天净变化 ±30 的限制，也不计入当天的净变化：模型当天已经调过的量保持不变，它当天还能再调多少不受这次修改影响。
+- 记一次来源为 `api` 的状态条变化（`before` 是修改前回落到现在的值），并写审计 `autonomy.buff`（条名、来源、原因和前后值，`actor` 是令牌名）。返回 `{"ok":true}`。
+
+`DELETE …/autonomy/status` 立即结束当前状态，同时取消回来说话的定时，等同于模型调用 `set_status` 设 0 分钟：还在排队的回来说话任务找不到状态，结束时不发消息；已经开始生成的那一次不受影响。没有状态时同样成功。写审计 `autonomy.status.clear`（`cleared` 表示是否删掉了状态，删掉时附带它的内容和结束时间），返回 `{"ok":true}`。
+
 ## 错误格式
 
 所有 JSON 错误响应统一为：
@@ -136,7 +181,7 @@
 
 | 状态码 | `code` | 场景 |
 |---|---|---|
-| 400 | `INVALID_EVENT` | 请求不合法，包括人格、群策略、记忆修改校验失败 |
+| 400 | `INVALID_EVENT` | 请求不合法，包括人格、群策略、记忆、状态条修改校验失败，以及读写非私聊会话的自主状态 |
 | 401 | `UNAUTHORIZED` | 缺少或无效的令牌 |
 | 403 | `FORBIDDEN` | 缺少 scope，或事件的机器人与令牌不一致 |
 | 404 | `NOT_FOUND` | 任务、动作或会话不存在 |

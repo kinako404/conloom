@@ -7,10 +7,13 @@ import (
 	"time"
 
 	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 // conversationView summarises a conversation. Its persona fields are null
-// while the conversation has no persona version yet.
+// while the conversation has no persona version yet. ProactiveLevel is the
+// effective private level (conloomapi.PrivateProactivePolicy.EffectiveLevel)
+// of a private chat, empty for other conversations.
 type conversationView struct {
 	Key                    string     `json:"key"`
 	BotInstanceID          string     `json:"bot_instance_id"`
@@ -22,6 +25,7 @@ type conversationView struct {
 	LastMessageAt          *time.Time `json:"last_message_at"`
 	Paused                 bool       `json:"paused"`
 	ProactiveEnabled       bool       `json:"proactive_enabled"`
+	ProactiveLevel         string     `json:"proactive_level"`
 	MemoryEnabled          bool       `json:"memory_enabled"`
 	PersonaTemplate        *string    `json:"persona_template"`
 	PersonaVersion         *int       `json:"persona_version"`
@@ -103,6 +107,9 @@ func (s *Server) conversationView(ctx context.Context, st store.ConversationStat
 		Paused:           p.Concurrency.MaxInteractiveRequests == 0,
 		ProactiveEnabled: p.Proactive.Enabled,
 		MemoryEnabled:    p.Memory.Enabled && p.Concurrency.AllowLongRequests,
+	}
+	if st.Type == conloomapi.ConvPrivate {
+		v.ProactiveLevel = p.Proactive.Private.EffectiveLevel()
 	}
 	if bot, ok := s.d.Config.Bot(st.BotInstanceID); ok {
 		v.BotName = bot.Name

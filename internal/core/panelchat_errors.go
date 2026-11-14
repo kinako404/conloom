@@ -3,7 +3,8 @@ package core
 import "errors"
 
 // Errors of the panel chat methods (SubmitPanel, CreatePanelChat,
-// DeletePanelChat); the panel API answers them with 400.
+// DeletePanelChat); the panel API answers them with 400. AutonomyService also
+// refuses conversations that are not private with ErrNotPrivate.
 var (
 	ErrNotPrivate   = errors.New("core: panel chat needs a private conversation")
 	ErrNotPanelChat = errors.New("core: not a panel chat")

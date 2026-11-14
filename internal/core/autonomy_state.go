@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"time"
 
 	"github.com/kinako404/conloom/internal/autonomy"
 	"github.com/kinako404/conloom/internal/config"
@@ -48,14 +49,28 @@ func (o *Orchestrator) stateBlock(ctx context.Context, task store.TaskRecord, bo
 			return ""
 		}
 		for _, b := range doc.EffectiveBars() {
-			v := float64(b.Baseline)
-			if i := slices.IndexFunc(stored, func(s store.BuffValue) bool { return s.Name == b.Name }); i >= 0 {
-				v = autonomy.Decay(stored[i].Value, b.Baseline, b.HalfLife.Duration, now.Sub(stored[i].UpdatedAt))
-			}
-			bars = append(bars, autonomy.StateBar{Name: b.Name, Description: b.Description, Value: v})
+			cur, found := storedBar(stored, b.Name)
+			bars = append(bars, autonomy.StateBar{Name: b.Name, Description: b.Description, Value: barValue(b, cur, found, now)})
 		}
 	}
 	return autonomy.RenderState(status, bars, o.loc)
+}
+
+// storedBar finds the bar name among the stored values of a conversation.
+func storedBar(stored []store.BuffValue, name string) (store.BuffValue, bool) {
+	if i := slices.IndexFunc(stored, func(s store.BuffValue) bool { return s.Name == name }); i >= 0 {
+		return stored[i], true
+	}
+	return store.BuffValue{}, false
+}
+
+// barValue is the value of bar b at now: cur, its stored value, decayed to
+// now when found, else b's baseline.
+func barValue(b conloomapi.PersonaBar, cur store.BuffValue, found bool, now time.Time) float64 {
+	if !found {
+		return float64(b.Baseline)
+	}
+	return autonomy.Decay(cur.Value, b.Baseline, b.HalfLife.Duration, now.Sub(cur.UpdatedAt))
 }
 
 func (o *Orchestrator) logStateError(task store.TaskRecord, err error) {

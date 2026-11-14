@@ -110,9 +110,9 @@ panel:
 
 面板上的修改和 Bearer API、聊天命令走同一套代码，校验规则、字数上限、好感度范围完全一致，校验失败时原样显示服务端返回的错误。
 
-- 每次修改都写一条审计记录，`actor` 为 `panel:<用户名>`，`bot_instance_id` 是会话所属的 bot。种类沿用 API 的 `policy.update`、`persona.update`、`memory.update`、`memory.forget`；触发整理写 `memory.consolidate`（API 触发整理不写审计）。登录成功写 `panel.login`。
+- 每次修改都写一条审计记录，`actor` 为 `panel:<用户名>`，`bot_instance_id` 是会话所属的 bot。种类沿用 API 的 `policy.update`、`persona.update`、`memory.update`、`memory.forget`、`autonomy.buff`（修改私聊的状态条）、`autonomy.status.clear`（结束私聊的状态）；触发整理写 `memory.consolidate`（API 触发整理不写审计）。登录成功写 `panel.login`。
 - 面板聊天的审计：发消息写 `panel.message`（内容只有消息 ID，不含正文），新建聊天写 `panel.chat.create`，删除聊天写 `panel.chat.delete`；目标都是会话键。
-- 策略和人设的新版本里 `updated_by` 为 `panel:<用户名>`；成员记忆的修订记录来源为 `panel`。
+- 策略和人设的新版本里 `updated_by` 为 `panel:<用户名>`；成员记忆的修订记录、状态条的变化记录来源为 `panel`。
 - 忘记成员等同于这个人在会话里发 `/忘记我`；暂停、恢复和 `/pause`、`/resume` 写入同样的策略版本（恢复时并发回到暂停前最近一个非 0 的值）。
 
 ## 登录与安全
@@ -181,7 +181,7 @@ panel:
 | `GET usage?from=&to=&group=` | 每日分桶和区间合计；`group` 为 `model`（默认）、`role`、`purpose`、`bot`；不传日期时为截至今天的 7 天 |
 | `GET usage/calls?from=&to=&model=&purpose=&conversation=&before=&limit=` | 调用明细，新的在前；`conversation` 是会话键 |
 | `GET metrics/live` | 本进程 Prometheus 指标的快照：计数器和仪表给值，直方图给次数、总和和按桶估算的 p50 / p95 |
-| `GET conversations` | 全部会话 `conversations`，以及配置里的 bot 列表 `bots`（`id`、`name`、`platform`，“新建聊天”从这里选） |
+| `GET conversations` | 全部会话 `conversations`，以及配置里的 bot 列表 `bots`（`id`、`name`、`platform`，“新建聊天”从这里选）。私聊会话的 `proactive_level` 是生效的主动找人档位（`off`、`low`、`mid`、`high`，没设时为 `mid`），其他会话为空字符串；单个会话的接口同样有这个字段 |
 | `GET conversations/{key}` | 单个会话 |
 | `GET conversations/{key}/messages?before=&limit=` | 浏览消息，按 `seq` 游标翻页。每条消息带 `channel`：`panel` 表示从面板发出或送到面板，平台上的消息为空字符串 |
 | `GET conversations/{key}/messages?q=&from=&to=&offset=&limit=` | 检索消息，按 `offset` 翻页，响应里的 `next_offset` 是下一页 |
@@ -190,6 +190,7 @@ panel:
 | `GET conversations/{key}/persona` | 当前人设、历史版本、可用模板；还没有人设时给出将要使用的模板，不写库。`minor` 是当前人设（没有时是该模板）的 `minor`，`content_mode` 是它在私聊里的内容模式（`open` 或 `protected`），与会话本身是群聊还是私聊无关 |
 | `GET conversations/{key}/memory` | 与 `GET /api/v1/conversations/{id}/memory` 相同 |
 | `GET conversations/{key}/memory/revisions?user_id=` | 某成员的修订记录，不传 `user_id` 时是摘要的 |
+| `GET conversations/{key}/autonomy` | 私聊的状态、状态条、最近的状态条变化和主动找人的情况，与 `GET /api/v1/conversations/{id}/autonomy` 相同（见 [HTTP API：自主状态](api.md#自主状态)）；不是私聊返回 400 |
 | `GET tasks?status=&bot=&conversation=&before=&limit=` | 任务列表 |
 | `GET tasks/{id}` | 任务详情：任务、meta、动作、模型调用 |
 | `GET audit?kind=&bot=&before=&limit=` | 审计记录 |
@@ -206,6 +207,8 @@ panel:
 | `PUT conversations/{key}/memory/members/{user_id}` | 改备注或好感度，规则同 API |
 | `DELETE conversations/{key}/memory/members/{user_id}` | 忘记该成员，返回 204 |
 | `POST conversations/{key}/memory/consolidate` | 触发一次整理，返回 202 |
+| `PUT conversations/{key}/autonomy/buffs/{name}` | 请求 `{"value","reason"}`，把私聊的这条状态条设成指定值，规则同 API（不受模型调整的上限约束），变化记录的来源为 `panel`，返回 204；不是私聊、值不在 0–100、人设里没有这一条时返回 400 |
+| `DELETE conversations/{key}/autonomy/status` | 结束私聊的当前状态并取消回来说话的定时，返回 204；不是私聊返回 400 |
 | `POST conversations/{key}/messages` | 面板聊天发消息，请求 `{"text"}`，返回 202 `{"message_id"}`。只限私聊；群聊、文本为空或超过 2000 字、接管的会话还没有用户消息、bot 不回复这个发言人（私聊白名单不允许）时返回 400 |
 | `POST chats` | 新建面板聊天，请求 `{"bot_instance_id","display_name"}`，返回 201 `{"key"}`；bot 没有配置时返回 404 |
 | `DELETE conversations/{key}` | 删除面板聊天，返回 204；不是 `panel` 平台的会话返回 400；聊天里被取消的任务 5 秒内没停下时返回 409 `CHAT_BUSY`，可以重试 |

@@ -3,6 +3,7 @@ package panel
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ type convResp struct {
 	LastMessageAt          *time.Time `json:"last_message_at"`
 	Paused                 bool       `json:"paused"`
 	ProactiveEnabled       bool       `json:"proactive_enabled"`
+	ProactiveLevel         string     `json:"proactive_level"`
 	MemoryEnabled          bool       `json:"memory_enabled"`
 	PersonaTemplate        *string    `json:"persona_template"`
 	PersonaVersion         *int       `json:"persona_version"`
@@ -140,5 +142,44 @@ func TestConversation_KeyRoundTrip(t *testing.T) {
 
 	if w := dh.do(http.MethodGet, convPath(tg.Key), ""); w.Code != http.StatusUnauthorized {
 		t.Errorf("without a session: status %d, want 401", w.Code)
+	}
+}
+
+func TestConversations_PrivateProactiveLevel(t *testing.T) {
+	dh := newDataHarness(t)
+	group := dh.seedConv("qq", conloomapi.ConvGroup, "10001")
+	private := dh.seedConv("qq", conloomapi.ConvPrivate, "20001")
+	levels := func() map[string]string {
+		var list struct {
+			Conversations []convResp `json:"conversations"`
+		}
+		dh.getJSON("/panel/api/conversations", &list)
+		out := map[string]string{}
+		for _, c := range list.Conversations {
+			out[c.Key] = c.ProactiveLevel
+		}
+		var one convResp
+		dh.getJSON(convPath(private.Key), &one)
+		if one.ProactiveLevel != out[private.Key] {
+			t.Errorf("detail level %q, list level %q", one.ProactiveLevel, out[private.Key])
+		}
+		return out
+	}
+
+	if got := levels(); got[private.Key] != conloomapi.PrivateLevelMid || got[group.Key] != "" {
+		t.Errorf("default levels = %v, want mid for the private chat and none for the group", got)
+	}
+	if !strings.Contains(string(dh.getJSON(convPath(group.Key), nil)), `"proactive_level":""`) {
+		t.Error("group detail lacks an empty proactive_level")
+	}
+
+	p := conloomapi.DefaultGroupPolicy()
+	p.Proactive.Private.Level = conloomapi.PrivateLevelHigh
+	if _, err := dh.policies.Update(context.Background(), private.Key,
+		conloomapi.PolicyPut{Policy: p, ProactivePresent: true}, "panel:admin"); err != nil {
+		t.Fatal(err)
+	}
+	if got := levels(); got[private.Key] != conloomapi.PrivateLevelHigh {
+		t.Errorf("level after setting high = %q", got[private.Key])
 	}
 }
