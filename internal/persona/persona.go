@@ -32,6 +32,7 @@ func Validate(p conloomapi.PersonaDoc) error {
 type cachedPrompt struct {
 	version int
 	botName string
+	mode    conloomapi.ContentMode
 	prompt  Prompt
 }
 
@@ -147,11 +148,12 @@ func (s *Service) Update(ctx context.Context, convKey, templateName string, put 
 }
 
 // Prompt is a conversation's system prompt: Text built from persona version
-// Version, in which the bot is called BotName.
+// Version under content mode Mode, in which the bot is called BotName.
 type Prompt struct {
 	Text    string
 	Version int
 	BotName string
+	Mode    conloomapi.ContentMode
 }
 
 // BotName is the bot's name under persona p: its character name when set,
@@ -173,27 +175,32 @@ func PlatformNameNote(name, botName string) string {
 }
 
 // SystemPrompt returns CorePrompt of the bot's name under the current persona
-// (see BotName), the PlatformNameNote when that name is not the configured
+// (see BotName), the content rules of the conversation's content mode (see
+// contentRules), the PlatformNameNote when that name is not the configured
 // botName, and the rendered persona, separated by blank lines. The prompt is
-// cached per conversation, version and configured bot name, which determine
-// it, so one version always yields byte-identical output.
+// cached per conversation, version, content mode and configured bot name,
+// which determine it, so one version always yields byte-identical output.
 func (s *Service) SystemPrompt(ctx context.Context, convKey, templateName, botName string) (Prompt, error) {
 	pv, err := s.Current(ctx, convKey, templateName)
 	if err != nil {
 		return Prompt{}, err
 	}
+	mode := conloomapi.ModeFor(pv.Persona, convType(convKey))
 	s.promptMu.Lock()
 	defer s.promptMu.Unlock()
-	if c, ok := s.prompts[convKey]; ok && c.version == pv.Version && c.botName == botName {
+	if c, ok := s.prompts[convKey]; ok && c.version == pv.Version && c.botName == botName && c.mode == mode {
 		return c.prompt, nil
 	}
 	name := BotName(pv.Persona, botName)
 	text := CorePrompt(name) + "\n\n"
+	if rules := contentRules(pv.Persona, mode); rules != "" {
+		text += rules + "\n\n"
+	}
 	if note := PlatformNameNote(name, botName); note != "" {
 		text += note + "\n\n"
 	}
-	p := Prompt{Text: text + Render(pv.Persona), Version: pv.Version, BotName: name}
-	s.prompts[convKey] = cachedPrompt{version: pv.Version, botName: botName, prompt: p}
+	p := Prompt{Text: text + Render(pv.Persona), Version: pv.Version, BotName: name, Mode: mode}
+	s.prompts[convKey] = cachedPrompt{version: pv.Version, botName: botName, mode: mode, prompt: p}
 	return p, nil
 }
 
@@ -201,4 +208,13 @@ func (s *Service) SystemPrompt(ctx context.Context, convKey, templateName, botNa
 func botID(convKey string) string {
 	id, _, _ := strings.Cut(convKey, ":")
 	return id
+}
+
+// convType returns the type part of a "bot:platform:type:id" conversation
+// key, or "" when the key is malformed.
+func convType(convKey string) string {
+	if parts := strings.SplitN(convKey, ":", 4); len(parts) == 4 {
+		return parts[2]
+	}
+	return ""
 }
