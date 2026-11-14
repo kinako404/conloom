@@ -84,13 +84,13 @@ func TestMemoryCommand_AffinityShowsTierAndValue(t *testing.T) {
 	}
 
 	p := conloomapi.DefaultPersona()
-	p.CharacterName = "铃兰"
+	p.CharacterName = "小织"
 	bot, _ := env.cfg.Bot(testBot)
 	if _, err := env.o.personas.Update(context.Background(), testConvKey, bot.PersonaTemplate,
 		conloomapi.PersonaPut{Persona: &p, Reason: "test"}, "test"); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := env.command(t, "20001", "/好感度"), "铃兰对你的好感：熟悉（52/100）"; got != want {
+	if got, want := env.command(t, "20001", "/好感度"), "小织对你的好感：熟悉（52/100）"; got != want {
 		t.Fatalf("/好感度 with character name = %q, want %q", got, want)
 	}
 }

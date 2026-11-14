@@ -43,12 +43,16 @@ type personaResponse struct {
 	TemplateDoc     *conloomapi.PersonaDoc `json:"template_doc"`
 	Versions        []personaVersionView   `json:"versions"`
 	Templates       []string               `json:"templates"`
+	Minor           bool                   `json:"minor"`
+	ContentMode     conloomapi.ContentMode `json:"content_mode"`
 }
 
 // getPersona returns the current persona and its versions newest first. It
 // never writes: a conversation without a persona gets current null, and the
 // template its first version will be made from (the bot's persona_template,
-// "default" when unset) with that template's content.
+// "default" when unset) with that template's content. minor and content_mode
+// describe the current persona, or that template without one; content_mode is
+// the mode it has in a private chat, whatever the conversation's type.
 func (s *Server) getPersona(w http.ResponseWriter, r *http.Request, _ *Session) {
 	conv, ok := s.conversation(w, r)
 	if !ok {
@@ -85,6 +89,14 @@ func (s *Server) getPersona(w http.ResponseWriter, r *http.Request, _ *Session) 
 	for _, v := range versions {
 		resp.Versions = append(resp.Versions, newPersonaVersionView(v))
 	}
+	var doc conloomapi.PersonaDoc
+	if resp.Current != nil {
+		doc = resp.Current.Persona
+	} else if resp.TemplateDoc != nil {
+		doc = *resp.TemplateDoc
+	}
+	resp.Minor = doc.Minor
+	resp.ContentMode = conloomapi.ModeFor(doc, conloomapi.ConvPrivate)
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
