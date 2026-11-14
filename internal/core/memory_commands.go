@@ -145,7 +145,8 @@ func (o *Orchestrator) memCmdAffinity(ctx context.Context, task store.TaskRecord
 // it, clamped to [0, 100], from the current value or, without one, from
 // memory.InitialAffinity. Daily caps and run deltas do not apply. The change
 // goes through memory.Admin.EditMember as a command revision audited by the
-// sender. Other arguments get the usage.
+// sender; an unchanged value writes nothing and gets its own reply. Other
+// arguments get the usage.
 func (o *Orchestrator) memCmdSetAffinity(ctx context.Context, task store.TaskRecord, isAdmin bool, args string) (string, error) {
 	fields := strings.Fields(args)
 	var num string
@@ -165,16 +166,23 @@ func (o *Orchestrator) memCmdSetAffinity(ctx context.Context, task store.TaskRec
 	if err != nil || set && memory.Clamp(n) != n {
 		return CopyAffinityUsage, nil
 	}
+	m, err := o.memCmdMember(ctx, task)
+	if err != nil {
+		return "", err
+	}
 	if !set {
-		m, err := o.memCmdMember(ctx, task)
-		if err != nil {
-			return "", err
-		}
 		base := memory.InitialAffinity
 		if m.Affinity != nil {
 			base = *m.Affinity
 		}
-		n = memory.Clamp(base + n)
+		n = memory.Clamp(base + min(max(n, -100), 100))
+	}
+	name, err := o.memCmdBotName(ctx, task)
+	if err != nil {
+		return "", err
+	}
+	if m.Affinity != nil && *m.Affinity == n {
+		return CopyAffinityUnchanged(name, memory.TierName(n), n), nil
 	}
 	conv, err := o.conversation(ctx, task.ConversationKey)
 	if err != nil {
@@ -190,10 +198,6 @@ func (o *Orchestrator) memCmdSetAffinity(ctx context.Context, task store.TaskRec
 	}
 	if got.Affinity != nil {
 		n = *got.Affinity
-	}
-	name, err := o.memCmdBotName(ctx, task)
-	if err != nil {
-		return "", err
 	}
 	return CopyAffinityAdjusted(name, memory.TierName(n), n), nil
 }

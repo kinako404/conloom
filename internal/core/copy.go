@@ -91,6 +91,12 @@ func CopyAffinityAdjusted(name, tier string, v int) string {
 	return "好感度已调整：" + name + "对你的好感 " + tier + "（" + strconv.Itoa(v) + "/100）"
 }
 
+// CopyAffinityUnchanged tells an admin that /好感度 left how name, the bot,
+// feels about them at tier and v.
+func CopyAffinityUnchanged(name, tier string, v int) string {
+	return "好感度没有变化：" + name + "对你的好感 " + tier + "（" + strconv.Itoa(v) + "/100）"
+}
+
 // CopyAffinityNone tells a member without an affinity that name, the bot,
 // does not know them yet.
 func CopyAffinityNone(name string) string {

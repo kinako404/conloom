@@ -93,18 +93,28 @@ func TestMemoryCommand_AffinityAdminSet(t *testing.T) {
 func TestMemoryCommand_AffinityAdminDelta(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{configure: memCmdConfig(true, true)})
 	for _, c := range []struct {
-		text  string
-		value int
+		text      string
+		value     int
+		unchanged bool
 	}{
-		{"/好感度 +5", memory.InitialAffinity + 5},
-		{"/affinity +10", memory.InitialAffinity + 15},
-		{"/好感度 -3", memory.InitialAffinity + 12},
-		{"/好感度 +200", 100},
-		{"/affinity +1", 100},
-		{"/好感度 -500", 0},
-		{"/好感度 -5", 0},
+		{"/好感度 +5", memory.InitialAffinity + 5, false},
+		{"/affinity +10", memory.InitialAffinity + 15, false},
+		{"/好感度 -3", memory.InitialAffinity + 12, false},
+		{"/好感度 +0", memory.InitialAffinity + 12, true},
+		{"/好感度 -0", memory.InitialAffinity + 12, true},
+		{"/好感度 设 32", memory.InitialAffinity + 12, true},
+		{"/好感度 +9223372036854775807", 100, false},
+		{"/好感度 -9223372036854775807", 0, false},
+		{"/好感度 +200", 100, false},
+		{"/affinity +1", 100, true},
+		{"/好感度 -500", 0, false},
+		{"/好感度 -5", 0, true},
+		{"/affinity -9223372036854775808", 0, true},
 	} {
 		want := CopyAffinityAdjusted("织语", memory.TierName(c.value), c.value)
+		if c.unchanged {
+			want = CopyAffinityUnchanged("织语", memory.TierName(c.value), c.value)
+		}
 		if got := env.command(t, "29999", c.text); got != want {
 			t.Fatalf("%s = %q, want %q", c.text, got, want)
 		}
@@ -112,8 +122,15 @@ func TestMemoryCommand_AffinityAdminDelta(t *testing.T) {
 			t.Fatalf("after %s affinity = %v, want %d", c.text, v, c.value)
 		}
 	}
-	if revs := affinityRevisions(t, env, testConvKey, "29999"); len(revs) != 5 {
-		t.Errorf("affinity revisions = %+v, want 5 (clamped no-ops write nothing)", revs)
+	if revs := affinityRevisions(t, env, testConvKey, "29999"); len(revs) != 7 {
+		t.Errorf("affinity revisions = %+v, want 7 (unchanged values write nothing)", revs)
+	}
+	audits, err := env.st.ListAudit(context.Background(), store.AuditFilter{Kind: "memory.update", BotInstanceID: testBot, Limit: 20})
+	if err != nil || len(audits) != 7 {
+		t.Errorf("memory.update audits = %d, %v; want 7", len(audits), err)
+	}
+	if got, want := CopyAffinityUnchanged("织语", "认识", 32), "好感度没有变化：织语对你的好感 认识（32/100）"; got != want {
+		t.Errorf("CopyAffinityUnchanged = %q, want %q", got, want)
 	}
 	if got, want := CopyAffinityAdjusted("织语", "认识", 25), "好感度已调整：织语对你的好感 认识（25/100）"; got != want {
 		t.Errorf("CopyAffinityAdjusted = %q, want %q", got, want)
