@@ -234,6 +234,17 @@ var dailySentences = []string{
 	"My dog loves chasing the ball in the park every evening.",
 	"小明，晚安，明天见！",
 	"The analysis of the data shows sales grew this quarter.",
+	"我加了一个母乳交流群，里面的妈妈们都很热情。",
+	"冰箱里的牛乳交给你保管，记得早点喝完。",
+	"豆乳交给前台就行。",
+	"BOSS血太厚了，大家节约炮弹，等它残血再打。",
+	"弹药不多了，节约炮火，先撤到掩体后面。",
+	"这部剧讲的是古罗马女性奴隶的故事。",
+	"猫主子太任性奴才只能听话。",
+	"他从小就很任性 奴役别人可不行。",
+	"今年春 药店里的口罩都卖光了。",
+	"早春 药材的价格又涨了。",
+	"立春 药膳汤要多喝点。",
 }
 
 func TestOutputProtected_AllowsDailyChat(t *testing.T) {
