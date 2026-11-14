@@ -121,10 +121,11 @@ func dummyHash(users []config.PanelUser) string {
 		b64.EncodeToString(make([]byte, saltLen)), b64.EncodeToString(make([]byte, keyLen)))
 }
 
-// Handler serves /panel and everything under /panel/. Every response carries
-// the security headers and API responses are not cached; every request gets a
-// trace ID and is counted by route pattern and status; panics become 500
-// INTERNAL_ERROR responses.
+// Handler serves /panel and everything under /panel/, and redirects / to
+// /panel/ for a listener of its own; every other path is not found. Every
+// response carries the security headers and API responses are not cached;
+// every request gets a trace ID and is counted by route pattern and status;
+// panics become 500 INTERNAL_ERROR responses.
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -164,6 +165,9 @@ func (s *Server) routes() {
 	})
 	s.mux.HandleFunc("GET /panel", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/panel/", http.StatusMovedPermanently)
+	})
+	s.mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/panel/", http.StatusFound)
 	})
 	s.mux.HandleFunc("/panel/", s.static)
 }

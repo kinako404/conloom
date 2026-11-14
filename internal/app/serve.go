@@ -19,7 +19,32 @@ const (
 	writeTimeout    = 45 * time.Second
 	idleTimeout     = 120 * time.Second
 	shutdownTimeout = 10 * time.Second
+	// panelReadTimeout bounds reading a whole request, body included, on the
+	// panel's own listener, which may face the internet. The core server has
+	// no such limit: it would cut off outbox long polls.
+	panelReadTimeout = 30 * time.Second
 )
+
+// newCoreServer serves h, the core's API, with request contexts derived from
+// baseCtx.
+func newCoreServer(baseCtx context.Context, h http.Handler, logger *slog.Logger) *http.Server {
+	return &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: readHeaderTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
+		BaseContext:       func(net.Listener) context.Context { return baseCtx },
+	}
+}
+
+// newPanelServer is newCoreServer for the panel on panel.listen, which also
+// bounds how long reading a request may take.
+func newPanelServer(baseCtx context.Context, h http.Handler, logger *slog.Logger) *http.Server {
+	srv := newCoreServer(baseCtx, h, logger)
+	srv.ReadTimeout = panelReadTimeout
+	return srv
+}
 
 // Serve runs the core service on cfg.Server.Listen, and the web panel on
 // cfg.Panel.Listen when that is set, until ctx is done, then shuts the HTTP
@@ -63,23 +88,14 @@ func Serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts Op
 	// polls return at once instead of holding shutdown for their full wait.
 	baseCtx, cancelBase := context.WithCancel(context.Background())
 	defer cancelBase()
-	newServer := func(h http.Handler) *http.Server {
-		srv := &http.Server{
-			Handler:           h,
-			ReadHeaderTimeout: readHeaderTimeout,
-			WriteTimeout:      writeTimeout,
-			IdleTimeout:       idleTimeout,
-			ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
-			BaseContext:       func(net.Listener) context.Context { return baseCtx },
-		}
-		srv.RegisterOnShutdown(cancelBase)
-		return srv
-	}
-	servers := []*http.Server{newServer(a.Handler())}
+	servers := []*http.Server{newCoreServer(baseCtx, a.Handler(), logger)}
 	listeners := []net.Listener{ln}
 	if panelLn != nil {
-		servers = append(servers, newServer(a.PanelHandler()))
+		servers = append(servers, newPanelServer(baseCtx, a.PanelHandler(), logger))
 		listeners = append(listeners, panelLn)
+	}
+	for _, srv := range servers {
+		srv.RegisterOnShutdown(cancelBase)
 	}
 	served := make(chan error, len(servers))
 	for i, srv := range servers {

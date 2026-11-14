@@ -648,6 +648,7 @@ func TestSecurityHeaders(t *testing.T) {
 		opts []reqOpt
 		api  bool
 	}{
+		{"/", nil, false},
 		{"/panel/", nil, false},
 		{"/panel/missing.js", nil, false},
 		{"/panel/api/session", nil, true},
@@ -670,6 +671,20 @@ func TestSecurityHeaders(t *testing.T) {
 		}
 	}
 	errorBody(t, h.do(http.MethodGet, "/panel/api/no-such-route", "", withCookie(c)), http.StatusNotFound, conloomapi.CodeNotFound)
+}
+
+func TestRootRedirectsToPanel(t *testing.T) {
+	h := newHarness(t, nil)
+	w := h.do(http.MethodGet, "/", "")
+	if w.Code != http.StatusFound || w.Header().Get("Location") != "/panel/" {
+		t.Fatalf("GET / = %d Location %q, want 302 /panel/", w.Code, w.Header().Get("Location"))
+	}
+	if got := h.counter("conloom_panel_requests_total", map[string]string{"route": "GET /{$}", "code": "302"}); got != 1 {
+		t.Errorf("GET / 302 = %v, want 1", got)
+	}
+	if w := h.do(http.MethodGet, "/metrics", ""); w.Code != http.StatusNotFound {
+		t.Errorf("GET /metrics = %d, want 404", w.Code)
+	}
 }
 
 func TestMetrics_RequestsByRouteAndCode(t *testing.T) {

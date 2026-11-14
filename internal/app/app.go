@@ -235,7 +235,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 			StartedAt:   opts.StartedAt,
 		}).Handler()
 		if cfg.Panel.Listen != "" {
-			panelSite, panelHandler = panelOnly(panelHandler), nil
+			panelSite, panelHandler = panelHandler, nil
 		}
 	}
 	gw := gateway.New(gateway.Deps{
@@ -255,17 +255,6 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	})
 	return &App{st: st, orch: orch, sched: sched, usage: rec, handler: gw.Handler(), panelSite: panelSite,
 		indexer: indexer, vectors: vectors, logger: logger, usageFlushTimeout: usageFlushTimeout}, nil
-}
-
-// panelOnly serves the panel alone on its own listener: / redirects to
-// /panel/ and every path outside the panel is not found.
-func panelOnly(h http.Handler) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/panel/", http.StatusFound)
-	})
-	mux.Handle("/", h)
-	return mux
 }
 
 // location is the time zone tz, falling back to Asia/Shanghai, then UTC.

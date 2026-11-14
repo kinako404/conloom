@@ -244,6 +244,14 @@ func TestServe_PanelOnItsOwnListener(t *testing.T) {
 		if got := resp.Header.Get("Location"); got != tc.location {
 			t.Errorf("%s: Location = %q, want %q", tc.name, got, tc.location)
 		}
+		if !strings.HasPrefix(tc.url, site+"/") {
+			continue
+		}
+		for _, h := range []string{"Content-Security-Policy", "X-Content-Type-Options", "Referrer-Policy"} {
+			if resp.Header.Get(h) == "" {
+				t.Errorf("%s: panel listener response has no %s", tc.name, h)
+			}
+		}
 	}
 
 	cancel()
@@ -276,5 +284,29 @@ func TestServe_PanelListenInUseIsStartupError(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "listening") {
 		t.Errorf("logged listening although startup failed:\n%s", logs)
+	}
+}
+
+func TestServe_ServerTimeouts(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	for _, tc := range []struct {
+		name     string
+		srv      *http.Server
+		wantRead time.Duration
+	}{
+		{"core", newCoreServer(context.Background(), http.NotFoundHandler(), logger), 0},
+		{"panel", newPanelServer(context.Background(), http.NotFoundHandler(), logger), 30 * time.Second},
+	} {
+		s := tc.srv
+		if s.ReadTimeout != tc.wantRead {
+			t.Errorf("%s: ReadTimeout = %v, want %v", tc.name, s.ReadTimeout, tc.wantRead)
+		}
+		if s.ReadHeaderTimeout != 10*time.Second || s.WriteTimeout != 45*time.Second || s.IdleTimeout != 120*time.Second {
+			t.Errorf("%s: ReadHeaderTimeout %v, WriteTimeout %v, IdleTimeout %v, want 10s, 45s, 2m",
+				tc.name, s.ReadHeaderTimeout, s.WriteTimeout, s.IdleTimeout)
+		}
+		if s.Handler == nil || s.BaseContext == nil || s.ErrorLog == nil {
+			t.Errorf("%s: Handler, BaseContext or ErrorLog not set", tc.name)
+		}
 	}
 }
