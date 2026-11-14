@@ -461,12 +461,16 @@ func resolveDir(base, p string) string {
 }
 
 // PrivatePolicy is the default policy of private conversations:
-// DefaultPrivatePolicy when the file sets one, else DefaultGroupPolicy.
+// DefaultPrivatePolicy when the file sets one, else DefaultGroupPolicy without
+// its memory summary and note limits, so private chats keep their own type's
+// defaults rather than a group's numbers.
 func (c *Config) PrivatePolicy() conloomapi.GroupPolicy {
 	if c.DefaultPrivatePolicy != nil {
 		return *c.DefaultPrivatePolicy
 	}
-	return c.DefaultGroupPolicy
+	p := c.DefaultGroupPolicy
+	p.Memory.SummaryMaxChars, p.Memory.NoteMaxChars = 0, 0
+	return p
 }
 
 // Bot returns the bot with the given ID.

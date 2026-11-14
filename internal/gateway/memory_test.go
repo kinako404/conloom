@@ -303,13 +303,13 @@ func TestMemoryAPI_PutValidation(t *testing.T) {
 	s.accept(t, adapterToken, s.event("20001", "大家好"))
 	path := memoryPath + "/members/20001"
 	for name, body := range map[string]any{
-		"note of 301 runes": conloomapi.MemberMemoryPut{Note: strPtr(strings.Repeat("字", memory.NoteMaxRunes+1))},
-		"affinity 101":      conloomapi.MemberMemoryPut{Affinity: intPtr(101)},
-		"affinity -1":       conloomapi.MemberMemoryPut{Affinity: intPtr(-1)},
-		"empty object":      `{}`,
-		"reason only":       `{"reason":"x"}`,
-		"empty body":        "",
-		"malformed":         `{"note":`,
+		"note over the limit": conloomapi.MemberMemoryPut{Note: strPtr(strings.Repeat("字", groupNoteLimit()+1))},
+		"affinity 101":        conloomapi.MemberMemoryPut{Affinity: intPtr(101)},
+		"affinity -1":         conloomapi.MemberMemoryPut{Affinity: intPtr(-1)},
+		"empty object":        `{}`,
+		"reason only":         `{"reason":"x"}`,
+		"empty body":          "",
+		"malformed":           `{"note":`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			expectError(t, s.do(t, http.MethodPut, path, memoryToken, body, nil), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
@@ -319,9 +319,9 @@ func TestMemoryAPI_PutValidation(t *testing.T) {
 		t.Fatalf("rejected PUTs wrote %+v", m)
 	}
 	r := s.do(t, http.MethodPut, path, memoryToken,
-		conloomapi.MemberMemoryPut{Note: strPtr(" " + strings.Repeat("字", 200) + " "), Affinity: intPtr(100)}, nil)
+		conloomapi.MemberMemoryPut{Note: strPtr(" " + strings.Repeat("字", groupNoteLimit()) + " "), Affinity: intPtr(100)}, nil)
 	if r.status != http.StatusOK {
-		t.Fatalf("200 runes and affinity 100: status %d, body %s", r.status, r.body)
+		t.Fatalf("a note of exactly %d runes and affinity 100: status %d, body %s", groupNoteLimit(), r.status, r.body)
 	}
 	if audits := s.audits.all(); len(audits) != 1 || !strings.Contains(audits[0].Detail, `"fields":["note","affinity"]`) {
 		t.Fatalf("audits = %+v", audits)
@@ -524,10 +524,13 @@ func TestMemoryAPI_PrivateConversation(t *testing.T) {
 	}
 }
 
-func TestMemoryAPI_GroupNoteLimitUnchanged(t *testing.T) {
+// groupNoteLimit is the note limit of a group whose policy leaves it at 0.
+func groupNoteLimit() int { return memory.NoteLimit(conloomapi.MemoryPolicy{}, conloomapi.ConvGroup) }
+
+func TestMemoryAPI_GroupNoteLimit(t *testing.T) {
 	s := newMemServer(t, true)
 	s.accept(t, adapterToken, s.event("20001", "大家好"))
-	long := strings.Repeat("记", memory.NoteMaxRunes+1)
+	long := strings.Repeat("记", groupNoteLimit()+1)
 	expectError(t, s.do(t, http.MethodPut, memoryPath+"/members/20001", memoryToken, conloomapi.MemberMemoryPut{Note: &long}, nil),
 		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
 	if err := s.st.PutGroupMemory(context.Background(), store.GroupMemory{ConversationKey: memGroupKey, Summary: "大家在聊咖啡。"}); err != nil {

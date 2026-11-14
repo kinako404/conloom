@@ -13,8 +13,9 @@ import (
 const (
 	consReasonMaxRunes = 200
 	// consRawMaxRunes only guards against runaway output; storage limits are
-	// applied by consResolveRefs after codes are replaced.
-	consRawMaxRunes = conloomapi.MaxSummaryMaxChars
+	// applied by consResolveRefs after codes are replaced, so it stays well
+	// above the largest limit and never cuts a code that is then replaced.
+	consRawMaxRunes = 2 * conloomapi.MaxSummaryMaxChars
 )
 
 var errConsNoJSON = errors.New("model output has no JSON object")

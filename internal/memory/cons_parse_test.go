@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 func TestParseOutput_ClampsAndTruncates(t *testing.T) {
@@ -23,7 +25,7 @@ func TestParseOutput_ClampsAndTruncates(t *testing.T) {
 		}
 	}
 
-	long := `{"group_summary":"` + strings.Repeat("摘", 9000) + `","members":[
+	long := `{"group_summary":"` + strings.Repeat("摘", 2*conloomapi.MaxSummaryMaxChars+1000) + `","members":[
 		{"ref":"P1","note":"` + strings.Repeat("记", 350) + `","affinity_delta":9,"reason":"` + strings.Repeat("因", 250) + `"},
 		{"ref":"P2","affinity_delta":-9},
 		{"ref":"P3","affinity_delta":1.6},
@@ -167,5 +169,18 @@ func TestConsResolveRefs_TruncatesAfterReplacing(t *testing.T) {
 	}
 	if out.Members[1].Note != "名字很长的小明同学 和 P9" || out.Members[1].Ref != "P9" {
 		t.Errorf("unknown member = %+v, want only the known code replaced", out.Members[1])
+	}
+}
+
+func TestParseOutput_LongSummaryKeepsCodesWholeForReplacement(t *testing.T) {
+	names := map[string]string{"P1": "小明", "P12": "小红"}
+	raw := strings.Repeat("狗", conloomapi.MaxSummaryMaxChars-2) + "P12"
+	out, err := parseOutput(`{"group_summary":"` + raw + `","members":[]}`)
+	if err != nil {
+		t.Fatalf("parseOutput: %v", err)
+	}
+	got := consResolveRefs(out, names, nil, conloomapi.MaxSummaryMaxChars, NoteMaxRunes).Summary
+	if want := strings.Repeat("狗", conloomapi.MaxSummaryMaxChars-2) + "小红"; got != want {
+		t.Fatalf("summary ends %q, want P12 replaced whole by its name", string([]rune(got)[conloomapi.MaxSummaryMaxChars-6:]))
 	}
 }

@@ -308,8 +308,9 @@ func DefaultGroupPolicy() GroupPolicy {
 // and each turn-taking, quote, max_parts and join setting that is zero (missing from policies
 // stored before it existed; zero is never valid for them) taken from def. Zero is a valid
 // private_wait, so private_wait and private_max_wait are taken from def only when both are zero.
-// Memory's summary_max_chars and note_max_chars are never taken from def: their zero means the
-// default of the conversation's type.
+// Within a stored memory section, zero summary_max_chars and note_max_chars are kept, not filled
+// from def: their zero means the default of the conversation's type. A missing memory section is
+// replaced by def's whole section, limits included.
 func (p GroupPolicy) WithDefaults(def GroupPolicy) GroupPolicy {
 	if p.Proactive == (ProactivePolicy{}) {
 		p.Proactive = def.Proactive

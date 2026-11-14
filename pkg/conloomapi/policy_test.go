@@ -641,6 +641,18 @@ func TestWithDefaultsKeepsZeroMemoryLimits(t *testing.T) {
 	}
 }
 
+func TestWithDefaultsCopiesLimitsOfAMissingMemorySection(t *testing.T) {
+	def := DefaultGroupPolicy()
+	def.Memory.SummaryMaxChars, def.Memory.NoteMaxChars = 4000, 900
+	var stored GroupPolicy
+	if err := json.Unmarshal([]byte(`{"concurrency":{"max_interactive_requests":1}}`), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if m := stored.WithDefaults(def).Memory; m != def.Memory {
+		t.Fatalf("missing memory section = %+v after WithDefaults, want def's whole section %+v", m, def.Memory)
+	}
+}
+
 func TestValidateMemory_RequiresLongRequests(t *testing.T) {
 	p := DefaultGroupPolicy()
 	p.Concurrency.AllowLongRequests = false

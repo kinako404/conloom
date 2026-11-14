@@ -671,6 +671,31 @@ func TestLoad_PrivatePolicyFallsBackToGroup(t *testing.T) {
 	}
 }
 
+func TestLoad_PrivatePolicyFallbackDropsGroupMemoryLimits(t *testing.T) {
+	cfg := mustLoad(t, writeConfig(t, `default_group_policy:
+  memory:
+    summary_max_chars: 1200
+    note_max_chars: 250
+`))
+	got := cfg.PrivatePolicy()
+	if got.Memory.SummaryMaxChars != 0 || got.Memory.NoteMaxChars != 0 {
+		t.Fatalf("private fallback memory limits = %d/%d, want 0/0 (the private type defaults)", got.Memory.SummaryMaxChars, got.Memory.NoteMaxChars)
+	}
+	if m := cfg.DefaultGroupPolicy.Memory; m.SummaryMaxChars != 1200 || m.NoteMaxChars != 250 {
+		t.Fatalf("group memory limits = %d/%d, want 1200/250 kept", m.SummaryMaxChars, m.NoteMaxChars)
+	}
+	cfg = mustLoad(t, writeConfig(t, `default_group_policy:
+  memory:
+    summary_max_chars: 1200
+default_private_policy:
+  memory:
+    summary_max_chars: 4000
+`))
+	if got := cfg.PrivatePolicy().Memory.SummaryMaxChars; got != 4000 {
+		t.Fatalf("configured private summary_max_chars = %d, want 4000", got)
+	}
+}
+
 func TestLoad_PrivatePolicyMissingKeysUseBuiltInDefaults(t *testing.T) {
 	cfg := mustLoad(t, writeConfig(t, `default_group_policy:
   context:
