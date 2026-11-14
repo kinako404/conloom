@@ -130,6 +130,7 @@ type consOpts struct {
 	private        bool
 	noLong         bool
 	memory         func(*conloomapi.MemoryPolicy)
+	persona        func(*conloomapi.PersonaDoc)
 }
 
 type consEnv struct {
@@ -185,13 +186,17 @@ func newConsEnv(t *testing.T, opts consOpts) *consEnv {
 	if opts.memory != nil {
 		opts.memory(&defaults.Memory)
 	}
+	doc := conloomapi.DefaultPersona()
+	if opts.persona != nil {
+		opts.persona(&doc)
+	}
 	e.router = router.New(profiles, router.BreakerConfig{}, time.Now)
 	e.adm = admission.New(limits)
 	e.c = NewConsolidator(ConsolidatorDeps{
 		Store:     e.st,
 		Router:    e.router,
 		Admission: e.adm,
-		Personas:  persona.NewService(e.st, map[string]conloomapi.PersonaDoc{"default": conloomapi.DefaultPersona()}),
+		Personas:  persona.NewService(e.st, map[string]conloomapi.PersonaDoc{"default": doc}),
 		Policies:  policy.NewService(e.st, defaults),
 		Config:    cfg,
 		Metrics:   obs.NewMetrics(e.reg),

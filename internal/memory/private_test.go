@@ -120,6 +120,126 @@ func TestConsolidate_PrivateUsesPrivatePromptAndLimits(t *testing.T) {
 	}
 }
 
+const privateProtectedRule6 = "6. 不记录也不复述任何色情、性暗示、低俗或辱骂的词句；不记录对方对机器人表达的爱慕、亲昵或恋爱关系的说法；不记录对方要求机器人改变称呼、身份、性格或进行角色扮演的要求。这些言行都不加分。"
+
+func TestConsStyle_ProtectedModeKeepsRuleSixVerbatim(t *testing.T) {
+	private := consStyleFor(testPrivateKey).system
+	if !strings.Contains(private, "\n"+privateProtectedRule6+"\n") {
+		t.Fatalf("protected private prompt lacks rule 6:\n%s", private)
+	}
+	rules := "6. 只记对方明确同意记下的内容。"
+	for _, tc := range []struct {
+		name, convKey, want string
+		doc                 conloomapi.PersonaDoc
+	}{
+		{"default group", testConvKey, groupSystemPromptV2, conloomapi.DefaultPersona()},
+		{"adult group", testConvKey, groupSystemPromptV2, conloomapi.PersonaDoc{Adult: true, MemoryRules: rules}},
+		{"default private", testPrivateKey, private, conloomapi.DefaultPersona()},
+		{"minor private", testPrivateKey, private, conloomapi.PersonaDoc{Minor: true, MemoryRules: rules}},
+		{"adult minor private", testPrivateKey, private, conloomapi.PersonaDoc{Adult: true, Minor: true, MemoryRules: rules}},
+	} {
+		if got := consStyleForPersona(tc.convKey, tc.doc).system; got != tc.want {
+			t.Errorf("%s: prompt is not the protected one:\n%s", tc.name, got)
+		}
+	}
+}
+
+func TestConsStyle_OpenModeUsesMemoryRulesAsRuleSix(t *testing.T) {
+	protected := strings.Split(consStyleFor(testPrivateKey).system, "\n")
+	rules := "只记对方明确同意记下的内容。\n不记对方提到的第三方。"
+	open := consStyleForPersona(testPrivateKey, conloomapi.PersonaDoc{Adult: true, MemoryRules: "  " + rules + "\n"})
+	if open.summaryMax != PrivateSummaryMaxRunes || open.noteMax != PrivateNoteMaxRunes || open.summaryLabel != LabelPrivateSummary {
+		t.Errorf("open style = %+v, want the private labels and limits", open)
+	}
+	var want []string
+	for _, l := range protected {
+		if l == privateProtectedRule6 {
+			want = append(want, strings.Split("6. "+rules, "\n")...)
+			continue
+		}
+		want = append(want, l)
+	}
+	if got := open.system; got != strings.Join(want, "\n") {
+		t.Errorf("open prompt is not the private prompt with memory_rules as rule 6:\n%s", got)
+	}
+}
+
+func TestConsStyle_OpenModeWithoutMemoryRulesOmitsRuleSix(t *testing.T) {
+	protected := strings.Split(consStyleFor(testPrivateKey).system, "\n")
+	for _, rules := range []string{"", " \n\t"} {
+		open := consStyleForPersona(testPrivateKey, conloomapi.PersonaDoc{Adult: true, MemoryRules: rules}).system
+		lines := strings.Split(open, "\n")
+		if len(lines) != len(protected)-1 {
+			t.Fatalf("open prompt has %d lines, want %d:\n%s", len(lines), len(protected)-1, open)
+		}
+		for _, banned := range []string{"6. ", "第 6 条", "5、6", "这两条", "色情", "主仆", "群", "大家"} {
+			if strings.Contains(open, banned) {
+				t.Errorf("open prompt without memory_rules contains %q:\n%s", banned, open)
+			}
+		}
+		i := 0
+		for _, p := range protected {
+			if p == privateProtectedRule6 {
+				continue
+			}
+			want := p
+			switch {
+			case strings.HasPrefix(p, "3. "):
+				want = strings.Replace(p, "（包括希望被怎么称呼的普通昵称；涉及主仆、恋爱、亲昵的称呼按第 6 条处理）", "（包括希望被怎么称呼）", 1)
+			case strings.HasPrefix(p, "11. "):
+				want = strings.Replace(p, "但第 5、6 条优先：违反这两条的内容要删掉。", "但第 5 条优先：违反这条的内容要删掉。", 1)
+			}
+			if want == p && (strings.HasPrefix(p, "3. ") || strings.HasPrefix(p, "11. ")) {
+				t.Fatalf("protected line %q lost the wording this test rewrites", p)
+			}
+			if lines[i] != want {
+				t.Errorf("line %d = %q, want %q", i, lines[i], want)
+			}
+			i++
+		}
+	}
+}
+
+func TestConsolidate_ModeFollowsCurrentPersonaVersion(t *testing.T) {
+	rules := "只记对方明确同意记下的内容。"
+	e := newConsEnv(t, consOpts{private: true})
+	e.add(t, e.msg("20001", "小明", "我最近在学钢琴", consAt(0)), e.botMsg("加油", consAt(1)))
+	e.long.answer(`{"group_summary":"学钢琴","members":[{"ref":"P1","note":"在学钢琴"}]}`)
+	e.run(t, false)
+	if system := e.long.request(t, 0).Messages[0].Content; system != consStyleFor(testPrivateKey).system {
+		t.Errorf("default persona's run is not protected:\n%s", system)
+	}
+
+	doc := conloomapi.DefaultPersona()
+	doc.Adult, doc.MemoryRules = true, rules
+	if _, err := e.c.d.Personas.Update(context.Background(), testPrivateKey, "default", conloomapi.PersonaPut{Persona: &doc}, "test"); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	e.add(t, e.msg("20001", "小明", "今天弹了一首曲子", consAt(2)))
+	e.long.answer(`{"group_summary":"学钢琴","members":[{"ref":"P1","note":"在学钢琴"}]}`)
+	e.run(t, false)
+	system := e.long.request(t, 1).Messages[0].Content
+	if system != consStyleForPersona(testPrivateKey, doc).system || !strings.Contains(system, "\n6. "+rules+"\n") {
+		t.Errorf("adult persona's private run does not use memory_rules as rule 6:\n%s", system)
+	}
+	if strings.Contains(system, privateProtectedRule6) {
+		t.Errorf("open run keeps the protected rule 6:\n%s", system)
+	}
+}
+
+func TestConsolidate_GroupWithAdultPersonaStaysProtected(t *testing.T) {
+	adult := func(doc *conloomapi.PersonaDoc) {
+		doc.Adult, doc.MemoryRules = true, "只记对方明确同意记下的内容。"
+	}
+	e := newConsEnv(t, consOpts{persona: adult})
+	consSeedThree(t, e)
+	e.long.answer(`{"group_summary":"S","members":[]}`)
+	e.run(t, false)
+	if system := e.long.request(t, 0).Messages[0].Content; system != groupSystemPromptV2 {
+		t.Errorf("adult persona's group run is not protected:\n%s", system)
+	}
+}
+
 func TestConsolidate_GroupLimitsUnchanged(t *testing.T) {
 	e := newConsEnv(t, consOpts{})
 	consSeedThree(t, e)

@@ -168,10 +168,11 @@ func (c *Consolidator) run(ctx context.Context, convKey string, manual bool) (Re
 	if err != nil {
 		return Result{}, 0, err
 	}
-	botName, err := c.botName(ctx, convKey)
+	doc, botName, err := c.currentPersona(ctx, convKey)
 	if err != nil {
 		return Result{}, 0, err
 	}
+	style := consStyleForPersona(convKey, doc)
 
 	var res Result
 	promptTokens := 0
@@ -189,7 +190,7 @@ func (c *Consolidator) run(ctx context.Context, convKey string, manual bool) (Re
 		if len(msgs) == 0 {
 			break
 		}
-		out, err := c.batch(ctx, &g, mp, botName, msgs, runStart)
+		out, err := c.batch(ctx, &g, mp, style, botName, msgs, runStart)
 		if err != nil {
 			return res, promptTokens, err
 		}
@@ -225,16 +226,16 @@ type consOutcome struct {
 // before the model call ("forgotten": nothing written, the cursor left
 // where it is), and one whose member is forgotten during the call writes no
 // summary (store.MemoryWrite's SummaryGuards) and never moves the cursor
-// back.
-func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conloomapi.MemoryPolicy, botName string,
-	msgs []store.MessageRecord, runStart time.Time) (consOutcome, error) {
+// back. style is the conversation's consolidation style under its current
+// persona.
+func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conloomapi.MemoryPolicy, style consStyle,
+	botName string, msgs []store.MessageRecord, runStart time.Time) (consOutcome, error) {
 	convKey := g.ConversationKey
 	private := convTypeOf(convKey) == conloomapi.ConvPrivate
 	in, err := c.gather(ctx, convKey, msgs)
 	if err != nil {
 		return consOutcome{}, err
 	}
-	style := consStyleFor(convKey)
 	base := consPromptTokens(buildPrompt(style, g.Summary, nil, nil), c.d.Config.ModelProfiles[string(router.RoleLong)].TokenEstimateFactor)
 	d, err := c.d.Router.Route(router.Request{AllowLong: true, Exclude: []router.Role{router.RoleShort}, BaseTokens: base})
 	if err != nil {
@@ -664,17 +665,18 @@ func (c *Consolidator) chat(ctx context.Context, p *router.Profile, convKey stri
 	return resp, nil
 }
 
-// botName is the bot's name under the conversation's current persona.
-func (c *Consolidator) botName(ctx context.Context, convKey string) (string, error) {
+// currentPersona returns the conversation's current persona and the bot's
+// name under it.
+func (c *Consolidator) currentPersona(ctx context.Context, convKey string) (conloomapi.PersonaDoc, string, error) {
 	bot, ok := c.d.Config.Bot(consBotID(convKey))
 	if !ok {
-		return "", fmt.Errorf("memory: no configured bot for %s", convKey)
+		return conloomapi.PersonaDoc{}, "", fmt.Errorf("memory: no configured bot for %s", convKey)
 	}
 	pv, err := c.d.Personas.Current(ctx, convKey, bot.PersonaTemplate)
 	if err != nil {
-		return "", err
+		return conloomapi.PersonaDoc{}, "", err
 	}
-	return persona.BotName(pv.Persona, bot.Name), nil
+	return pv.Persona, persona.BotName(pv.Persona, bot.Name), nil
 }
 
 // consBotID is the bot instance part of a "bot:platform:type:id" conversation key.
