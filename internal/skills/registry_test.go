@@ -46,8 +46,15 @@ func TestLoad_Builtins(t *testing.T) {
 				return
 			}
 		}
-	}); !slices.Equal(names, []string{"memory", "time"}) {
+	}); !slices.Equal(names, []string{"buff", "memory", "status", "time"}) {
 		t.Fatalf("builtin skills = %v", names)
+	}
+	for _, c := range []struct{ name, tool string }{{"status", "set_status"}, {"buff", "adjust_buff"}} {
+		s := got[c.name]
+		if !slices.Equal(s.Tools, []string{c.tool}) || !slices.Equal(s.Conversations, []string{"private"}) || s.Description == "" ||
+			s.Source != "builtin" {
+			t.Errorf("%s = %+v", c.name, s)
+		}
 	}
 	mem := got["memory"]
 	if mem.Body != memoryBody || !slices.Equal(mem.Tools, []string{"remember", "recall", "get_affinity"}) ||
@@ -85,7 +92,7 @@ func TestLoad_DirOverridesAndAdds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(got) != 3 || got["memory"].Body != memoryBody {
+	if len(got) != 5 || got["memory"].Body != memoryBody {
 		t.Fatalf("skills = %v", got)
 	}
 	if tm := got["time"]; tm.Body != "- 只在被问到时间时调用 now。" || !slices.Equal(tm.Conversations, []string{"private"}) ||

@@ -192,7 +192,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	}
 	tools := opts.Tools
 	if tools == nil {
-		tools = builtinTools(toolDeps{Store: st, Policies: policies, Reviewer: reviewer, Metrics: metrics, Vectors: vectors})
+		tools = builtinTools(toolDeps{Store: st, Policies: policies, Personas: personaSource{cfg: cfg, personas: personas},
+			Reviewer: reviewer, Metrics: metrics, Vectors: vectors})
 	}
 	skillReg, err := registerSkills(cfg, loadedSkills, tools)
 	if err != nil {

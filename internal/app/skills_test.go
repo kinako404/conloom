@@ -10,9 +10,14 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/internal/skills"
+	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/internal/store/sqlite"
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 type fakeNow struct{}
@@ -51,7 +56,7 @@ func TestBuiltinTools(t *testing.T) {
 	for _, tool := range builtinTools(toolDeps{}) {
 		names = append(names, tool.Spec().Name)
 	}
-	if !slices.Equal(names, []string{"remember", "recall", "get_affinity", "now"}) {
+	if !slices.Equal(names, []string{"remember", "recall", "get_affinity", "now", "set_status", "adjust_buff"}) {
 		t.Fatalf("builtinTools = %v", names)
 	}
 	for _, c := range []struct {
@@ -70,6 +75,28 @@ func TestBuiltinTools(t *testing.T) {
 	}
 }
 
+func TestPersonaSource(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "conloom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	lighthouse := conloomapi.DefaultPersona()
+	lighthouse.PersonaName = "灯塔"
+	lighthouse.Bars = []conloomapi.PersonaBar{{Name: "好奇", Baseline: 50, HalfLife: conloomapi.Duration{Duration: 2 * time.Hour}}}
+	cfg := &config.Config{Bots: []config.BotConfig{{ID: "qq-main", PersonaTemplate: "lighthouse"}}}
+	src := personaSource{cfg: cfg, personas: persona.NewService(st, map[string]conloomapi.PersonaDoc{"lighthouse": lighthouse})}
+	convKey := store.ConversationKey("qq-main", "qq", conloomapi.ConvPrivate, "private_20001")
+	doc, err := src.Persona(ctx, "qq-main", convKey)
+	if err != nil || doc.PersonaName != "灯塔" || len(doc.EffectiveBars()) != 1 || doc.EffectiveBars()[0].Name != "好奇" {
+		t.Fatalf("Persona = %+v, %v, want the bot's template", doc, err)
+	}
+	if _, err := src.Persona(ctx, "tg-main", convKey); err == nil {
+		t.Error("Persona of an unknown bot succeeded")
+	}
+}
+
 func TestNew_ChecksEnabledSkills(t *testing.T) {
 	a, err := New(skillsConfig(t, "[]", ""), nil, Options{})
 	if err != nil {
@@ -80,6 +107,12 @@ func TestNew_ChecksEnabledSkills(t *testing.T) {
 	a, err = New(skillsConfig(t, "[time, memory]", ""), nil, Options{})
 	if err != nil {
 		t.Fatalf("New with the built-in skills and tools: %v", err)
+	}
+	_ = a.Close()
+
+	a, err = New(skillsConfig(t, "[status, buff]", ""), nil, Options{})
+	if err != nil {
+		t.Fatalf("New with the status and buff skills: %v", err)
 	}
 	_ = a.Close()
 

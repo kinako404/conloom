@@ -15,6 +15,8 @@ func TestTools_DeclareResultLimits(t *testing.T) {
 		{NewRemember(RememberDeps{}), shortResultRunes},
 		{NewGetAffinity(AffinityDeps{}), shortResultRunes},
 		{NewNow(), shortResultRunes},
+		{NewSetStatus(nil, nil, nil, nil), shortResultRunes},
+		{NewAdjustBuff(nil, nil), shortResultRunes},
 	} {
 		if got := skills.MaxResultRunes(c.tool); got != c.want {
 			t.Errorf("%s: MaxResultRunes = %d, want %d", c.tool.Spec().Name, got, c.want)

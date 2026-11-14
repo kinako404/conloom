@@ -135,3 +135,12 @@ func putMember(t *testing.T, st store.Store, m store.MemberMemory) {
 func putOf(p conloomapi.GroupPolicy) conloomapi.PolicyPut {
 	return conloomapi.PolicyPut{Policy: p, Reason: "test"}
 }
+
+// fakePersonas is a PersonaSource giving doc for every conversation.
+type fakePersonas struct {
+	doc conloomapi.PersonaDoc
+}
+
+func (f fakePersonas) Persona(context.Context, string, string) (conloomapi.PersonaDoc, error) {
+	return f.doc, nil
+}
