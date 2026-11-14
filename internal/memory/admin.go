@@ -67,8 +67,8 @@ func NewAdmin(d AdminDeps) *Admin {
 	return &Admin{d: d}
 }
 
-// View is the conversation's memory: whether it is in effect, the summary and
-// the members that have a note or an affinity.
+// View is the conversation's memory: whether it is in effect, the summary,
+// the members that have a note or an affinity and the limits in effect.
 func (a *Admin) View(ctx context.Context, conv store.ConversationRecord) (conloomapi.MemoryState, error) {
 	pv, err := a.d.Policies.Current(ctx, conv.Key)
 	if err != nil {
@@ -85,6 +85,7 @@ func (a *Admin) View(ctx context.Context, conv store.ConversationRecord) (conloo
 	state := conloomapi.MemoryState{
 		ConversationID: conv.ID, Enabled: pv.Policy.Memory.Enabled && pv.Policy.Concurrency.AllowLongRequests,
 		Summary: g.Summary, CursorSeq: g.CursorSeq, LastError: g.LastError, Members: []conloomapi.MemberMemoryState{},
+		SummaryMaxChars: SummaryLimit(pv.Policy.Memory, conv.Type), NoteMaxChars: NoteLimit(pv.Policy.Memory, conv.Type),
 	}
 	if !g.LastRunAt.IsZero() {
 		at := g.LastRunAt

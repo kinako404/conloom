@@ -101,13 +101,16 @@
   "last_error": "",
   "members": [
     {"user_id": "20001", "name": "小明", "note": "喜欢手冲咖啡。", "affinity": 52, "tier": "熟悉", "updated_at": "2026-11-12T08:00:00Z"}
-  ]
+  ],
+  "summary_max_chars": 1500,
+  "note_max_chars": 300
 }
 ```
 
 - `enabled` 表示记忆当前是否生效（`memory.enabled` 和 `concurrency.allow_long_requests` 都为 true）；关闭时照样返回已冻结的数据。
 - `cursor_seq` 是已整理到的位置；还没整理过时 `last_run_at` 为 `null`。`last_error` 是整理失败时记下的原因。
 - `members` 只列出有笔记或有好感度的群友，总是数组。还没有好感度的群友 `affinity` 为 `null`、`tier` 为空字符串。
+- `summary_max_chars`、`note_max_chars` 是当前生效的摘要和笔记字数上限：策略里 `memory.summary_max_chars`、`note_max_chars` 不为 0 时取策略的，否则取会话类型的默认值（群聊 1500 / 300，私聊 3000 / 1000）。修改笔记时按 `note_max_chars` 校验。
 
 `PUT …/memory/members/{user_id}` 修改笔记、好感度或两者，没写的字段保持不变；群友还没有记录时新建：
 

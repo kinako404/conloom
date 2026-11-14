@@ -5,13 +5,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 // getPolicy returns the current policy, the defaults as version 0 when none is
-// stored (policy.Service.Current stores nothing), and the stored versions
-// newest first.
+// stored (policy.Service.Current stores nothing), the stored versions newest
+// first and the memory limits.
 func (s *Server) getPolicy(w http.ResponseWriter, r *http.Request, _ *Session) {
 	conv, ok := s.conversation(w, r)
 	if !ok {
@@ -31,10 +32,26 @@ func (s *Server) getPolicy(w http.ResponseWriter, r *http.Request, _ *Session) {
 	for _, pv := range versions {
 		out = append(out, newPolicyVersionView(pv))
 	}
+	mp := cur.Policy.Memory
 	s.writeJSON(w, http.StatusOK, struct {
-		Current  policyVersionView   `json:"current"`
-		Versions []policyVersionView `json:"versions"`
-	}{newPolicyVersionView(cur), out})
+		Current      policyVersionView   `json:"current"`
+		Versions     []policyVersionView `json:"versions"`
+		MemoryLimits memoryLimitsView    `json:"memory_limits"`
+	}{newPolicyVersionView(cur), out, memoryLimitsView{
+		SummaryMaxChars: memory.SummaryLimit(mp, conv.Type), NoteMaxChars: memory.NoteLimit(mp, conv.Type),
+		DefaultSummaryMaxChars: memory.SummaryLimit(conloomapi.MemoryPolicy{}, conv.Type),
+		DefaultNoteMaxChars:    memory.NoteLimit(conloomapi.MemoryPolicy{}, conv.Type),
+	}})
+}
+
+// memoryLimitsView is a conversation's summary and note limits: those in
+// effect under its policy and its type's defaults, which a policy value of 0
+// stands for.
+type memoryLimitsView struct {
+	SummaryMaxChars        int `json:"summary_max_chars"`
+	NoteMaxChars           int `json:"note_max_chars"`
+	DefaultSummaryMaxChars int `json:"default_summary_max_chars"`
+	DefaultNoteMaxChars    int `json:"default_note_max_chars"`
 }
 
 type personaResponse struct {

@@ -148,7 +148,8 @@ async function policyTab({ key, conv, signal }) {
   const reply = p.reply || {};
   const maxParts = h('input', { type: 'number', min: 1, max: 5, step: 1, value: reply.max_parts ?? '' });
   const isPrivate = conv.type === 'private';
-  const [summaryDefault, noteDefault] = isPrivate ? [3000, 1000] : [1500, 300];
+  const limits = res.memory_limits || {};
+  const limitHint = (range, def, cur) => `${range}；0 表示用本会话类型的默认值（${def ?? '—'}），当前生效 ${cur ?? '—'}`;
   const privateWait = h('input', { value: reply.private_wait || '', placeholder: '6s' });
   const privateMaxWait = h('input', { value: reply.private_max_wait || '', placeholder: '20s' });
   const reason = h('input', { placeholder: '修改原因' });
@@ -186,8 +187,8 @@ async function policyTab({ key, conv, signal }) {
     field('历史条数', recent, '每次回复带上的最近消息数，0–500'),
     field('分条上限', maxParts, '一次回复最多分成几条消息发出，1–5；1 表示不分条')),
   h('div', { class: 'form-grid' },
-    field('摘要字数上限', summaryMax, `记忆摘要最多多少字，200–8000；0 表示用默认值（本会话 ${summaryDefault}）`),
-    field('笔记字数上限', noteMax, `每人的记忆笔记最多多少字，50–2000；0 表示用默认值（本会话 ${noteDefault}）`)),
+    field('摘要字数上限', summaryMax, limitHint('记忆摘要最多多少字，200–8000', limits.default_summary_max_chars, limits.summary_max_chars)),
+    field('笔记字数上限', noteMax, limitHint('每人的记忆笔记最多多少字，50–2000', limits.default_note_max_chars, limits.note_max_chars))),
   isPrivate ? h('div', { class: 'form-grid' },
     field('私聊等待', privateWait, '对方停顿多久才开始回复，0–60s'),
     field('私聊最长等待', privateMaxWait, '从开始等待起最多等多久，打断重来时重新计算，私聊等待–2m；两项都填 0 表示用默认值')) : null,
@@ -477,7 +478,7 @@ const AFFINITY_QUICK = [
   ['设为 100', () => 100],
 ];
 
-function memberEditor(key, mem) {
+function memberEditor(key, mem, noteMax) {
   const note = h('textarea', { value: mem.note || '' });
   const affinity = h('input', { type: 'number', min: 0, max: 100, step: 1, value: mem.affinity ?? '' });
   const reason = h('input', { placeholder: '修改原因' });
@@ -520,7 +521,7 @@ function memberEditor(key, mem) {
     },
   },
   h('h3', null, `编辑 ${mem.name || ''}（${mem.user_id}）`),
-  field('备注', note, '写空清除备注'),
+  field('备注', note, noteMax ? `最多 ${noteMax} 字；写空清除备注` : '写空清除备注'),
   field('好感度', affinity, '0–100 的整数'),
   h('div', { class: 'quick-adjust', role: 'group', 'aria-label': '快捷调整好感度' }, quick,
     h('span', { class: 'hint' },
@@ -599,7 +600,7 @@ async function memoryTab({ key, signal }) {
             h('button', {
               type: 'button',
               onclick: () => {
-                mount(editBox, memberEditor(key, x));
+                mount(editBox, memberEditor(key, x, m.note_max_chars));
                 editBox.scrollIntoView({ block: 'nearest' });
               },
             }, '编辑'),

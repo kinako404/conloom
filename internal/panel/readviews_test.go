@@ -183,6 +183,40 @@ func TestPolicy_CurrentAndVersions(t *testing.T) {
 	}
 }
 
+func TestPolicy_MemoryLimits(t *testing.T) {
+	dh := newDataHarness(t)
+	ctx := context.Background()
+	group := dh.seedConv("qq", conloomapi.ConvGroup, "10001")
+	private := dh.seedConv("qq", conloomapi.ConvPrivate, "20001")
+	type limits struct {
+		SummaryMaxChars        int `json:"summary_max_chars"`
+		NoteMaxChars           int `json:"note_max_chars"`
+		DefaultSummaryMaxChars int `json:"default_summary_max_chars"`
+		DefaultNoteMaxChars    int `json:"default_note_max_chars"`
+	}
+	get := func(key string) limits {
+		var got struct {
+			MemoryLimits limits `json:"memory_limits"`
+		}
+		dh.getJSON(convPath(key, "policy"), &got)
+		return got.MemoryLimits
+	}
+	if got := get(group.Key); got != (limits{1500, 300, 1500, 300}) {
+		t.Errorf("group memory_limits = %+v", got)
+	}
+	if got := get(private.Key); got != (limits{3000, 1000, 3000, 1000}) {
+		t.Errorf("private memory_limits = %+v", got)
+	}
+	p := conloomapi.DefaultGroupPolicy()
+	p.Memory.NoteMaxChars = 80
+	if _, err := dh.policies.Update(ctx, group.Key, conloomapi.PolicyPut{Policy: p, MemoryPresent: true}, "panel:admin"); err != nil {
+		t.Fatal(err)
+	}
+	if got := get(group.Key); got != (limits{1500, 80, 1500, 300}) {
+		t.Errorf("group memory_limits with note_max_chars 80 = %+v", got)
+	}
+}
+
 func TestMemory_ViewMatchesAPI(t *testing.T) {
 	dh := newDataHarness(t)
 	ctx := context.Background()

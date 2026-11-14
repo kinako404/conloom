@@ -279,6 +279,31 @@ func TestAdmin_View(t *testing.T) {
 	}
 }
 
+func TestAdmin_ViewShowsTheLimitsInEffect(t *testing.T) {
+	e := newAdminEnv(t)
+	ctx := context.Background()
+	private := adminConv
+	private.Type, private.ID = conloomapi.ConvPrivate, "private_20001"
+	private.Key = store.ConversationKey("qq-main", "qq", conloomapi.ConvPrivate, "private_20001")
+	for _, c := range []struct {
+		conv                  store.ConversationRecord
+		wantSummary, wantNote int
+	}{{adminConv, 1500, 300}, {private, 3000, 1000}} {
+		got, err := e.admin.View(ctx, c.conv)
+		if err != nil || got.SummaryMaxChars != c.wantSummary || got.NoteMaxChars != c.wantNote {
+			t.Fatalf("%s view limits = %d/%d, %v; want %d/%d", c.conv.Type, got.SummaryMaxChars, got.NoteMaxChars, err, c.wantSummary, c.wantNote)
+		}
+	}
+	pol := conloomapi.DefaultGroupPolicy()
+	pol.Memory.SummaryMaxChars, pol.Memory.NoteMaxChars = 900, 80
+	if _, err := e.admin.d.Policies.Update(ctx, adminConv.Key, conloomapi.PolicyPut{Policy: pol, MemoryPresent: true}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.admin.View(ctx, adminConv); err != nil || got.SummaryMaxChars != 900 || got.NoteMaxChars != 80 {
+		t.Fatalf("view limits under the policy's = %d/%d, %v; want 900/80", got.SummaryMaxChars, got.NoteMaxChars, err)
+	}
+}
+
 func TestConsolidateAllowed(t *testing.T) {
 	on := conloomapi.DefaultGroupPolicy()
 	on.Memory.Enabled = true

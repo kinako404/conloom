@@ -13,6 +13,10 @@ type MemoryState struct {
 	LastRunAt      *time.Time          `json:"last_run_at"`
 	LastError      string              `json:"last_error"`
 	Members        []MemberMemoryState `json:"members"`
+	// SummaryMaxChars and NoteMaxChars are the summary and note limits in
+	// effect: the policy's, or the conversation type's defaults.
+	SummaryMaxChars int `json:"summary_max_chars"`
+	NoteMaxChars    int `json:"note_max_chars"`
 }
 
 // MemberMemoryState is what the bot remembers about one member: UserID is the
