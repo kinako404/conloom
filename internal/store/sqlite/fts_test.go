@@ -421,7 +421,7 @@ func TestMigration0006_UpgradeFromExistingData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db, err := Open(ctx, path)
+	db, err := open(ctx, path, migrationsUpTo(t, 6))
 	if err != nil {
 		t.Fatal(err)
 	}

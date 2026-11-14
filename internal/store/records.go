@@ -89,6 +89,7 @@ type OutboxRecord struct {
 	PlatformMessageID string
 	CreatedAt         time.Time
 	ExpiresAt         time.Time
+	NotBefore         time.Time // earliest lease time; zero means immediately
 }
 
 type TaskCompletion struct {

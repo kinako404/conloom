@@ -160,6 +160,8 @@ type Action struct {
 	ReplyToPlatformMessageID string        `json:"reply_to_platform_message_id,omitempty"`
 	Content                  ActionContent `json:"content"`
 	Attachments              []Attachment  `json:"attachments,omitempty"`
+	PartIndex                int           `json:"part_index,omitempty"` // from 1; omitted for a single-part reply
+	PartCount                int           `json:"part_count,omitempty"`
 	CreatedAt                time.Time     `json:"created_at"`
 }
 
