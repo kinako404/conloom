@@ -285,6 +285,30 @@ func TestReplyImage_MissingImageStillReplies(t *testing.T) {
 	})
 }
 
+func TestReplyImage_EchoedLabelOnlyIsNotSent(t *testing.T) {
+	echo := answer(contextbuilder.AppearanceLabel)
+	env := newTestOrchestrator(t, testOpts{short: echo, long: echo, configure: withImageModality("short_context", "long_context")})
+	img := env.putTestImage(t)
+	env.setAppearance(t, testConvKey, img.ID, false)
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "在吗", mentionBot)).TaskID)
+	if task.Status != conloomapi.TaskFailed || task.Error == nil || task.Error.Code != conloomapi.CodeModelUnavailable {
+		t.Fatalf("task = %+v", task)
+	}
+	if len(task.Actions) != 1 || task.Actions[0].Content.Text != CopyUnavailable {
+		t.Fatalf("actions = %+v", task.Actions)
+	}
+	if s, l := env.short.Calls(), env.long.Calls(); s != 1 || l != 1 {
+		t.Errorf("calls short=%d long=%d, want 1 and 1", s, l)
+	}
+}
+
+func TestReplyImage_EchoedLabelStrippedFromReply(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{short: answer(contextbuilder.AppearanceLabel + "\n" + fakeReply), configure: withImageModality("short_context")})
+	img := env.putTestImage(t)
+	env.setAppearance(t, testConvKey, img.ID, false)
+	env.replyTo(t, false, "在吗")
+}
+
 func TestReplyImage_SystemPromptUnchanged(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{configure: withImageModality("short_context")})
 	img := env.putTestImage(t)

@@ -18,11 +18,13 @@ const (
 	annotationsRE       = `(?:` + replyAnnotationRE + `)?(?:` + mentionAnnotationRE + `)?`
 )
 
-// transcriptPrefixes match, at the start of a reply, the history line prefix
-// "[HH:MM] 名字：" (optionally with its annotations), the header lines of the
-// current message, the recent-history block and the current message's mention
-// line. The memory and state blocks are cut by cutBlock.
+// transcriptPrefixes match, at the start of a reply, the appearance label
+// line, the history line prefix "[HH:MM] 名字：" (optionally with its
+// annotations), the header lines of the current message, the recent-history
+// block and the current message's mention line. The memory and state blocks
+// are cut by cutBlock.
 var transcriptPrefixes = []*regexp.Regexp{
+	regexp.MustCompile(`^` + regexp.QuoteMeta(AppearanceLabel) + `[ \t]*(?:\n|$)`),
 	regexp.MustCompile(`^\[\d{1,2}:\d{2}\]\s*` + transcriptName + `{1,40}?(?:` + replyAnnotationRE + `(?:` + mentionAnnotationRE + `)?|` + mentionAnnotationRE + `)\s*[：:]`),
 	regexp.MustCompile(`^\[\d{1,2}:\d{2}\]\s*` + transcriptName + `{1,40}[：:]`),
 	regexp.MustCompile(`^【当前消息】[^\n]*(?:\n|$)`),
@@ -78,7 +80,8 @@ func cutBlock(s string, header, line *regexp.Regexp) (string, bool) {
 }
 
 // StripTranscriptPrefix removes the prompt's transcript formatting that a
-// model echoed at the start of its reply: repeated "[HH:MM] 名字：" prefixes
+// model echoed at the start of its reply: the AppearanceLabel line,
+// repeated "[HH:MM] 名字：" prefixes
 // (with or without their "（回复 …）" and "（@了 …）" annotations), the
 // 【当前消息】 and 【近期消息…】 header lines, the 【你记得的事…】 header with the
 // summary, note and closing lines after it, the 【你的状态…】 header with the

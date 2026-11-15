@@ -59,6 +59,24 @@ func TestStripTranscriptPrefix_MemoryHeader(t *testing.T) {
 	}
 }
 
+func TestStripTranscriptPrefix_AppearanceLabel(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{AppearanceLabel + "\n你好呀", "你好呀"},
+		{AppearanceLabel + " \n\n你好呀", "你好呀"},
+		{AppearanceLabel, ""},
+		{AppearanceLabel + "\n【当前消息】发送者：小明\n[12:30] 小明：在吗\n在的", "在吗\n在的"},
+		{AppearanceLabel + "\n【当前消息】发送者：小明\n[12:30] 织语：在的", "在的"},
+		{AppearanceLabel + "\n[12:30] 织语：在的", "在的"},
+		{"你好呀\n" + AppearanceLabel, "你好呀\n" + AppearanceLabel},
+		{AppearanceLabel + "你好呀", AppearanceLabel + "你好呀"},
+	}
+	for _, c := range cases {
+		if got := StripTranscriptPrefix(c.in, "织语"); got != c.want {
+			t.Errorf("StripTranscriptPrefix(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestStripTranscriptPrefix_EchoedStateBlock(t *testing.T) {
 	bars := []autonomy.StateBar{
 		{Name: "心情", Description: "高=开心放松，低=低落烦躁", Value: 65},
