@@ -1,5 +1,6 @@
--- Appearance reference images, never changed once stored, and persona
--- templates written online, which override or add to the configured ones.
+-- Appearance reference images, whose bytes never change once stored, and
+-- persona templates written online, which override or add to the configured
+-- ones.
 CREATE TABLE persona_images (
     id           TEXT PRIMARY KEY, -- hex sha256 of the original bytes
     mime         TEXT NOT NULL,    -- image/png | image/jpeg

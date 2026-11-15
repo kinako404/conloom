@@ -14,7 +14,8 @@ const personaImageCols = `id, mime, width, height, reply_jpeg, reply_width, repl
 func (db *DB) PutPersonaImage(ctx context.Context, img store.PersonaImage) error {
 	_, err := db.w.ExecContext(ctx, `INSERT INTO persona_images
 		(id, mime, width, height, original, reply_jpeg, reply_width, reply_height, reply_tokens, created_by, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (id) DO UPDATE SET created_at = excluded.created_at, created_by = excluded.created_by`,
 		img.ID, img.MIME, img.Width, img.Height, blob(img.Original), blob(img.ReplyJPEG),
 		img.ReplyWidth, img.ReplyHeight, img.ReplyTokens, img.CreatedBy, fmtTime(nowIfZero(img.CreatedAt)))
 	return err

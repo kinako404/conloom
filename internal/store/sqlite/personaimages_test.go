@@ -124,10 +124,13 @@ func TestPersonaImages_PutIdempotentAndGet(t *testing.T) {
 	withoutOriginal.Original = nil
 	checkImage(t, getImage(t, db, img.ID, false), withoutOriginal)
 
-	again := img
-	again.ReplyJPEG, again.CreatedBy, again.CreatedAt = []byte("other reply"), "panel:other", created.Add(time.Hour)
+	again := store.PersonaImage{ID: img.ID, MIME: "image/jpeg", Width: 2, Height: 2, Original: []byte("other original"),
+		ReplyJPEG: []byte("other reply"), ReplyWidth: 2, ReplyHeight: 2, ReplyTokens: 3,
+		CreatedBy: "panel:other", CreatedAt: created.Add(time.Hour)}
 	putImage(t, db, again)
-	checkImage(t, getImage(t, db, img.ID, true), img)
+	reuploaded := img
+	reuploaded.CreatedBy, reuploaded.CreatedAt = again.CreatedBy, again.CreatedAt
+	checkImage(t, getImage(t, db, img.ID, true), reuploaded)
 	if n := countRows(t, db, "persona_images"); n != 1 {
 		t.Fatalf("persona_images rows after putting the same ID twice = %d, want 1", n)
 	}
@@ -209,6 +212,30 @@ func TestPersonaImages_PurgeKeepsReferenced(t *testing.T) {
 	purge(1)
 	kept["by template"] = false
 	checkKept(kept)
+}
+
+func TestPersonaImages_ReuploadRestartsGrace(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	now := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	cutoff := now.Add(-7 * 24 * time.Hour)
+	old := cutoff.Add(-24 * time.Hour)
+	reuploaded, untouched := fakeImage("reuploaded", old), fakeImage("untouched", old)
+	putImage(t, db, reuploaded)
+	putImage(t, db, untouched)
+
+	again := reuploaded
+	again.ReplyJPEG, again.CreatedBy, again.CreatedAt = []byte("other reply"), "panel:other", now.Add(-time.Hour)
+	putImage(t, db, again)
+	if n, err := db.PurgePersonaImages(ctx, cutoff); err != nil || n != 1 {
+		t.Fatalf("PurgePersonaImages = %d, %v; want 1", n, err)
+	}
+	if imageExists(t, db, untouched.ID) {
+		t.Fatal("old unreferenced image kept")
+	}
+	want := reuploaded
+	want.CreatedBy, want.CreatedAt = again.CreatedBy, again.CreatedAt
+	checkImage(t, getImage(t, db, reuploaded.ID, true), want)
 }
 
 func TestPersonaTemplates_CRUD(t *testing.T) {

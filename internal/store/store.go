@@ -122,9 +122,10 @@ type Store interface {
 	GetPersonaVersion(ctx context.Context, convKey string, version int) (PersonaVersion, error)
 	// AppendPersonaVersion assigns the next version number.
 	AppendPersonaVersion(ctx context.Context, pv PersonaVersion) (PersonaVersion, error)
-	// PutPersonaImage stores img unless an image with its ID exists, in which
-	// case nothing is written. Nil Original or ReplyJPEG are stored as empty,
-	// a zero CreatedAt as now.
+	// PutPersonaImage stores img. If an image with its ID exists, only its
+	// CreatedBy and CreatedAt are replaced, which restarts its purge grace
+	// period; its bytes and sizes are kept. Nil Original or ReplyJPEG are
+	// stored as empty, a zero CreatedAt as now.
 	PutPersonaImage(ctx context.Context, img PersonaImage) error
 	// GetPersonaImage returns the image, with its Original only when original
 	// is set (nil otherwise), or ErrNotFound.

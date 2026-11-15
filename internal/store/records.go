@@ -142,7 +142,8 @@ type PersonaVersion struct {
 
 // PersonaImage is an uploaded appearance reference image, as checked by
 // imaging.Process: the original bytes and a smaller JPEG reply copy. ID is
-// the lowercase hex sha256 of Original, so an image is never changed.
+// the lowercase hex sha256 of Original, so its bytes never change; CreatedAt
+// is when it was last uploaded.
 type PersonaImage struct {
 	ID          string
 	MIME        string
