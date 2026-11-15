@@ -21,6 +21,27 @@ const (
 	PlatformPanel = conloomapi.PlatformPanel
 )
 
+// BotInstance is a registered bot: a config bot or a panel bot, deleted
+// panel bots included.
+type BotInstance struct {
+	ID       string
+	Platform string
+	Name     string
+}
+
+// PanelBot is a bot created in the panel; it only has panel chats. Skills
+// lists skill names, PersonaTemplate the default persona template of its new
+// chats.
+type PanelBot struct {
+	ID              string
+	Name            string
+	PersonaTemplate string
+	Skills          []string
+	CreatedBy       string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 type ConversationRecord struct {
 	BotInstanceID          string
 	ID                     string

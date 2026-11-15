@@ -27,6 +27,9 @@ var (
 	ErrTimerGone      = errors.New("store: timer gone")
 	// ErrBuffDuplicate refuses an UpdateBuff of a bar its task already changed.
 	ErrBuffDuplicate = errors.New("store: bar already adjusted by this task")
+	// ErrBotHasData refuses a DeletePanelBot of a bot that still has
+	// conversations, tasks or outbox actions.
+	ErrBotHasData = errors.New("store: bot still has conversations")
 )
 
 // ConversationKey returns the canonical "bot:platform:type:id" key of a conversation.
@@ -36,6 +39,26 @@ func ConversationKey(botID, platform, convType, convID string) string {
 
 type Store interface {
 	UpsertBotInstance(ctx context.Context, id, platform, name string) error
+	// ListBotInstances returns all registered bots ordered by ID.
+	ListBotInstances(ctx context.Context) ([]BotInstance, error)
+	// CreatePanelBot stores b and, in the same transaction, its bot instance
+	// with platform PlatformPanel. It fails when a panel bot or bot instance
+	// with b.ID exists, even one of a deleted panel bot. Nil Skills are stored
+	// as none; a zero CreatedAt or UpdatedAt as now.
+	CreatePanelBot(ctx context.Context, b PanelBot) error
+	// UpdatePanelBot stores b's Name, PersonaTemplate, Skills and UpdatedAt (a
+	// zero UpdatedAt as now) and, in the same transaction, the new name of its
+	// bot instance; CreatedBy and CreatedAt are kept. ErrNotFound if the panel
+	// bot does not exist.
+	UpdatePanelBot(ctx context.Context, b PanelBot) error
+	// ListPanelBots returns all panel bots ordered by CreatedAt, then ID.
+	ListPanelBots(ctx context.Context) ([]PanelBot, error)
+	// DeletePanelBot deletes the panel bot together with its leftover users
+	// and events in one transaction; its bot instance, model calls and audit
+	// events are kept. ErrNotFound if the panel bot does not exist,
+	// ErrBotHasData, with nothing deleted, while it still has conversations,
+	// tasks or outbox actions.
+	DeletePanelBot(ctx context.Context, id string) error
 	// Ingest writes an event and its derived records in one transaction. If the
 	// event's idempotency key already exists nothing is written and the stored
 	// event is returned as existing.

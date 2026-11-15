@@ -883,7 +883,7 @@ func TestMigration0012_OnlyAddsTables(t *testing.T) {
 	if err := old.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db, err := Open(ctx, path)
+	db, err := open(ctx, path, migrationsUpTo(t, 12))
 	if err != nil {
 		t.Fatal(err)
 	}
