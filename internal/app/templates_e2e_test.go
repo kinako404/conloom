@@ -15,6 +15,7 @@ import (
 	"github.com/kinako404/conloom/internal/app"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/panel"
+	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/internal/store/sqlite"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -305,5 +306,65 @@ func TestDirectory_ConfigBotMissingTemplate(t *testing.T) {
 	status, raw := p.do("DELETE", "/panel/api/persona-templates/night-owl", nil)
 	if status != 409 || !strings.Contains(string(raw), botID) {
 		t.Errorf("DELETE night-owl: status %d, body %s; want 409 naming %s", status, raw, botID)
+	}
+}
+
+func TestTemplates_PanelExportImport(t *testing.T) {
+	hash, err := panel.HashPassword(panelPassword, panel.MinIterations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := panelTestConfig(t, configParams{modelURL: "http://127.0.0.1:1"}, hash)
+	cfg.Bots[0].PersonaTemplate = "night-owl"
+	e := newEnv(t, cfg)
+	p := panelLogin(t, e.srv.URL)
+	problems := func() []string {
+		t.Helper()
+		var resp struct {
+			Bots []struct {
+				ID       string   `json:"id"`
+				Problems []string `json:"problems"`
+			} `json:"bots"`
+		}
+		p.get("/panel/api/bots", &resp)
+		for _, b := range resp.Bots {
+			if b.ID == botID {
+				return b.Problems
+			}
+		}
+		t.Fatalf("bots %+v lack %s", resp.Bots, botID)
+		return nil
+	}
+	if got := problems(); len(got) != 1 {
+		t.Fatalf("config bot problems = %v, want its missing template", got)
+	}
+
+	// The built-in default, exported and imported as night-owl.
+	var f persona.ExchangeFile
+	p.get("/panel/api/persona-templates/default/export", &f)
+	if len(f.Templates) != 1 || f.Templates[0].Name != "default" {
+		t.Fatalf("export of default = %+v", f)
+	}
+	f.Templates[0].Name = "night-owl"
+	f.Templates[0].Persona = legacyTemplate("夜猫")
+	status, raw := p.do("POST", "/panel/api/persona-templates/import", f)
+	if status != 200 || !strings.Contains(string(raw), `"name":"night-owl"`) {
+		t.Fatalf("import: status %d, body %s", status, raw)
+	}
+	if got := problems(); len(got) != 0 {
+		t.Errorf("config bot problems after its template was imported = %v, want none", got)
+	}
+	var tpl struct {
+		Source  string                `json:"source"`
+		Persona conloomapi.PersonaDoc `json:"persona"`
+	}
+	p.get("/panel/api/persona-templates/night-owl", &tpl)
+	if tpl.Source != "db" || !reflect.DeepEqual(tpl.Persona, legacyTemplate("夜猫")) {
+		t.Errorf("imported night-owl = %+v", tpl)
+	}
+
+	status, raw = p.do("POST", "/panel/api/persona-templates/import?on_conflict=fail", f)
+	if status != 409 || !strings.Contains(string(raw), `"code":"TEMPLATE_EXISTS"`) || !strings.Contains(string(raw), `"names":["night-owl"]`) {
+		t.Errorf("second import: status %d, body %s; want 409 TEMPLATE_EXISTS naming night-owl", status, raw)
 	}
 }

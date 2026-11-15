@@ -160,7 +160,7 @@ NapCat      Adapter                 Core                          SQLite        
 - **配置 bot**：配置校验不再检查 `persona_template` 是否存在。`PanelBots().Load` 发布 bot 时，模板不存在的配置 bot 记警告、运行时改用 `default`，面板上标“模板已不存在”，和面板 bot 的规则一样。
 - **图片 ID**：所有写人设的路径——`PutTemplate` 和 `Update`（面板和 Bearer API 的 `PUT …/persona`，包括套用模板和回滚，以及 `/persona use`）——在 `appearance_image` 不为空时查 `persona_images` 表，图片不存在就返回 400（`ErrInvalid`）。建第 1 版时直接复制模板，不再检查。
 - **清理图片时保留的 ID**：`ReferencedImages()` 列出库里模板引用的图片 ID。`PurgePersonaImages(createdBefore, keep)` 只删创建早于 `createdBefore`、不在 `keep` 里、也没有任何模板或人设版本（不论新旧）引用的图片；人设不是合法 JSON 的行（`json_valid` 为假）当作没有引用，不会让整次清理出错。核心的维护任务（启动时一次，之后每小时）以“现在减 7 天”和 `ReferencedImages()` 调用它，删除条数计入 `cleanup_deleted_total{table="persona_images"}`。
-- **面板接口**：`/panel/api/persona-templates` 的写操作调用上面三个方法，成功后让 `PanelBotService.Load` 重新发布配置 bot 和面板 bot，引用的模板重新出现时“模板已不存在”的说明随之消失。上传图片和生成外观介绍各自一次只处理一个请求（解码 2500 万像素的图要几百 MB 内存），另一个请求同时到达时直接返回 409，不排队。
+- **面板接口**：`/panel/api/persona-templates` 的写操作调用上面三个方法，成功后让 `PanelBotService.Load` 重新发布配置 bot 和面板 bot，引用的模板重新出现时“模板已不存在”的说明随之消失。导出（`GET …/{name}/export`、`GET …/export`）调用 `Export`，以下载文件返回；导入（`POST …/import`，请求体最多 64 MiB）调用 `Import`，重新发布 bot 由上面 `SetOnImport` 设的函数完成，`*ImportConflictError` 映射为 409 `TEMPLATE_EXISTS`，`names` 列出同名模板。上传图片和生成外观介绍各自一次只处理一个请求（解码 2500 万像素的图要几百 MB 内存），导入和上传共用一个名额，整个 `Import` 调用期间都占着；另一个请求同时到达时直接返回 409，不排队。
 
 ## 3. 任务模型
 

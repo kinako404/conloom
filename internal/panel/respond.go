@@ -42,12 +42,20 @@ func (s *Server) badRequest(w http.ResponseWriter, r *http.Request, err error) {
 // respondError is writeError that also logs cause, which is never sent.
 func (s *Server) respondError(w http.ResponseWriter, r *http.Request, status int, code, message string, cause error) {
 	s.respond(w, r, status, code, message, cause, status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable ||
-		status == http.StatusGatewayTimeout || code == conloomapi.CodeChatBusy)
+		status == http.StatusGatewayTimeout || code == conloomapi.CodeChatBusy, nil)
+}
+
+// apiError is conloomapi.ErrorBody with Names, the names an error is about
+// when it has a list of them, such as the templates of a refused import.
+type apiError struct {
+	conloomapi.ErrorBody
+	Names []string `json:"names,omitempty"`
 }
 
 // respond is respondError with the error's retryable flag given by the
-// caller.
-func (s *Server) respond(w http.ResponseWriter, r *http.Request, status int, code, message string, cause error, retryable bool) {
+// caller, and names, when not empty, listed in the body as names.
+func (s *Server) respond(w http.ResponseWriter, r *http.Request, status int, code, message string, cause error, retryable bool,
+	names []string) {
 	level := slog.LevelDebug
 	if status >= http.StatusInternalServerError {
 		level = slog.LevelError
@@ -57,9 +65,9 @@ func (s *Server) respond(w http.ResponseWriter, r *http.Request, status int, cod
 		attrs = append(attrs, "error", cause)
 	}
 	s.log.Log(r.Context(), level, "panel request failed", attrs...)
-	s.writeJSON(w, status, conloomapi.ErrorResponse{Error: conloomapi.ErrorBody{
-		Code: code, Message: message, TraceID: traceID(r.Context()), Retryable: retryable,
-	}})
+	s.writeJSON(w, status, struct {
+		Error apiError `json:"error"`
+	}{apiError{conloomapi.ErrorBody{Code: code, Message: message, TraceID: traceID(r.Context()), Retryable: retryable}, names}})
 }
 
 // fail maps err from a collaborator to an error response as the Bot
@@ -69,17 +77,19 @@ func (s *Server) respond(w http.ResponseWriter, r *http.Request, status int, cod
 // is not private; a change to a bot of the config file, and deleting the
 // persona template "default", is 403; a refused consolidation is 409
 // MEMORY_DISABLED or PAUSED; deleting a persona template bots use is 409
-// TEMPLATE_IN_USE naming them; a bot being deleted, or a chat whose
-// cancelled tasks are still stopping, is a retryable 409 CHAT_BUSY; a
-// cancelled request or a member memory that kept changing is a retryable 503;
-// a description without a vision model is a 503 MODEL_UNAVAILABLE that is not
-// retryable, as only a config change helps; anything else is a 500 whose
-// details are only logged.
+// TEMPLATE_IN_USE naming them; importing templates whose names stored
+// templates have is 409 TEMPLATE_EXISTS listing them in names; a bot being
+// deleted, or a chat whose cancelled tasks are still stopping, is a retryable
+// 409 CHAT_BUSY; a cancelled request or a member memory that kept changing is
+// a retryable 503; a description without a vision model is a 503
+// MODEL_UNAVAILABLE that is not retryable, as only a config change helps;
+// anything else is a 500 whose details are only logged.
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if ctxErr := r.Context().Err(); ctxErr != nil && errors.Is(err, ctxErr) {
 		s.respondError(w, r, http.StatusServiceUnavailable, conloomapi.CodeInternal, "request cancelled; server may be shutting down", err)
 		return
 	}
+	var conflict *persona.ImportConflictError
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		s.respondError(w, r, http.StatusNotFound, conloomapi.CodeNotFound, "not found", err)
@@ -101,8 +111,11 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, persona.ErrTemplateInUse):
 		s.respondError(w, r, http.StatusConflict, conloomapi.CodeTemplateInUse,
 			strings.TrimPrefix(err.Error(), persona.ErrTemplateInUse.Error()+": "), err)
+	case errors.As(err, &conflict):
+		s.respond(w, r, http.StatusConflict, conloomapi.CodeTemplateExists, strings.TrimPrefix(conflict.Error(), "persona: "), err,
+			false, conflict.Names)
 	case errors.Is(err, core.ErrNoVision):
-		s.respond(w, r, http.StatusServiceUnavailable, conloomapi.CodeModelUnavailable, "未配置识图模型", err, false)
+		s.respond(w, r, http.StatusServiceUnavailable, conloomapi.CodeModelUnavailable, "未配置识图模型", err, false, nil)
 	case errors.Is(err, core.ErrChatBusy):
 		s.respondError(w, r, http.StatusConflict, conloomapi.CodeChatBusy, strings.TrimPrefix(core.ErrChatBusy.Error(), "core: "), err)
 	case errors.Is(err, core.ErrBotDeleting):
@@ -123,7 +136,22 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 // decode decodes the JSON request body into v, writing a 400 response itself
 // when the body exceeds 1 MiB, is not one JSON value or has unknown fields.
 func (s *Server) decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	err := decodeJSON(http.MaxBytesReader(w, r.Body, maxBodyBytes), v)
+	if mbe := (*http.MaxBytesError)(nil); errors.As(err, &mbe) {
+		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "request body exceeds 1 MiB")
+		return false
+	}
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "invalid JSON body: "+err.Error())
+		return false
+	}
+	return true
+}
+
+// decodeJSON decodes body, which must be one JSON value without unknown
+// fields, into v. It returns the error of reading body as it is.
+func decodeJSON(body io.Reader, v any) error {
+	dec := json.NewDecoder(body)
 	dec.DisallowUnknownFields()
 	err := dec.Decode(v)
 	if err == nil {
@@ -135,15 +163,7 @@ func (s *Server) decode(w http.ResponseWriter, r *http.Request, v any) bool {
 			err = errors.New("trailing data after the JSON value")
 		}
 	}
-	if mbe := (*http.MaxBytesError)(nil); errors.As(err, &mbe) {
-		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "request body exceeds 1 MiB")
-		return false
-	}
-	if err != nil {
-		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "invalid JSON body: "+err.Error())
-		return false
-	}
-	return true
+	return err
 }
 
 // panelActor is who a change made through the panel by sess's user is

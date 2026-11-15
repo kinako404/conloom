@@ -2,12 +2,19 @@ package panel
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"mime"
 	"net/http"
 	"time"
 
 	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
+
+// maxImportBytes bounds the body of a persona template import.
+const maxImportBytes = 64 << 20
 
 // templateUser is a bot whose new chats start from a persona template.
 type templateUser struct {
@@ -153,6 +160,130 @@ func (s *Server) deleteTemplate(w http.ResponseWriter, r *http.Request, sess *Se
 	s.templatesChanged(r)
 	s.audit(r, sess, "", "persona.template.delete", name, struct{}{})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// exportTemplate downloads the persona template {name} as an exchange file
+// named persona-{name}.json; an unknown name is 404.
+func (s *Server) exportTemplate(w http.ResponseWriter, r *http.Request, sess *Session) {
+	name := r.PathValue("name")
+	s.exportTemplates(w, r, sess, []string{name}, name, "persona-"+name+".json")
+}
+
+// exportAllTemplates downloads every persona template of the catalog as an
+// exchange file named persona-templates-YYYYMMDD.json, dated in the server's
+// time zone.
+func (s *Server) exportAllTemplates(w http.ResponseWriter, r *http.Request, sess *Session) {
+	s.exportTemplates(w, r, sess, nil, "", "persona-templates-"+s.now().In(s.location()).Format("20060102")+".json")
+}
+
+// exportTemplates answers the persona templates names, all of them when
+// none, as an exchange file (see persona.Service.Export) to save as
+// filename, and audits the export for target with the names exported.
+func (s *Server) exportTemplates(w http.ResponseWriter, r *http.Request, sess *Session, names []string, target, filename string) {
+	f, err := s.d.Personas.Export(r.Context(), names)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	exported := make([]string, len(f.Templates))
+	for i, t := range f.Templates {
+		exported[i] = t.Name
+	}
+	s.audit(r, sess, "", "persona.template.export", target, struct {
+		Templates []string `json:"templates"`
+	}{exported})
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", attachment(filename))
+	w.WriteHeader(http.StatusOK)
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(f)
+}
+
+// attachment is the Content-Disposition of a download saved as filename. A
+// name that is not plain printable ASCII, as a template migrated from an old
+// config file may have, is encoded as RFC 2231 says.
+func attachment(filename string) string {
+	for _, b := range []byte(filename) {
+		if b < ' ' || b > '~' || b == '"' || b == '\\' {
+			return mime.FormatMediaType("attachment", map[string]string{"filename": filename})
+		}
+	}
+	return `attachment; filename="` + filename + `"`
+}
+
+// importedTemplate is a persona template an import stored: Requested is its
+// name in the file, Name the name it was stored under, and Created false when
+// it replaced a stored template.
+type importedTemplate struct {
+	Name      string `json:"name"`
+	Requested string `json:"requested"`
+	Created   bool   `json:"created"`
+}
+
+// importTemplates stores the persona templates of the request body, an
+// exchange file as exported, all of them or none (see
+// persona.Service.Import), and answers, in the order of the file, the name
+// each one was stored under, its name in the file and whether it was created.
+// on_conflict, fail by default, overwrite or rename, decides what happens to
+// a template whose name a stored template has; with fail, such names are 409
+// TEMPLATE_EXISTS listing them. A body over 64 MiB is 413; one that is not one
+// JSON value of known fields, and a file Import refuses, are 400. Once the
+// body is read, the import takes the image upload slot and holds it until
+// Import has returned: while another upload or import holds it, the request
+// is a retryable 409 CHAT_BUSY. The import is audited with the names, never
+// the personas or images.
+func (s *Server) importTemplates(w http.ResponseWriter, r *http.Request, sess *Session) {
+	var f persona.ExchangeFile
+	err := decodeJSON(http.MaxBytesReader(w, r.Body, maxImportBytes), &f)
+	if mbe := (*http.MaxBytesError)(nil); errors.As(err, &mbe) {
+		s.writeError(w, r, http.StatusRequestEntityTooLarge, conloomapi.CodeInvalidEvent,
+			fmt.Sprintf("导入文件不能超过 %d MiB", maxImportBytes>>20))
+		return
+	}
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "invalid JSON body: "+err.Error())
+		return
+	}
+	release, ok := s.tryImageSlot(w, r, s.imageUploads)
+	if !ok {
+		return
+	}
+	defer release()
+	mode := persona.ConflictMode(r.URL.Query().Get("on_conflict"))
+	if mode == "" {
+		mode = persona.ConflictFail
+	}
+	results, err := s.d.Personas.Import(r.Context(), f, mode, panelActor(sess))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	out := make([]importedTemplate, len(results))
+	detail := struct {
+		OnConflict  string            `json:"on_conflict"`
+		Created     []string          `json:"created"`
+		Overwritten []string          `json:"overwritten"`
+		Renamed     map[string]string `json:"renamed,omitempty"`
+	}{OnConflict: string(mode), Created: []string{}, Overwritten: []string{}}
+	for i, res := range results {
+		out[i] = importedTemplate{Name: res.Name, Requested: res.Requested, Created: res.Created}
+		if res.Created {
+			detail.Created = append(detail.Created, res.Name)
+		} else {
+			detail.Overwritten = append(detail.Overwritten, res.Name)
+		}
+		if res.Name != res.Requested {
+			if detail.Renamed == nil {
+				detail.Renamed = map[string]string{}
+			}
+			detail.Renamed[res.Requested] = res.Name
+		}
+	}
+	s.audit(r, sess, "", "persona.template.import", "", detail)
+	s.writeJSON(w, http.StatusOK, struct {
+		Templates []importedTemplate `json:"templates"`
+	}{out})
 }
 
 // templatesChanged publishes the bots again after a persona template changed,

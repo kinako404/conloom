@@ -1,17 +1,22 @@
 package panel
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -291,4 +296,463 @@ func mustJSON(t *testing.T, v any) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+const templatesExportPath = "/panel/api/persona-templates/export"
+
+// importPath is the import API's path with on_conflict mode, none when empty.
+func importPath(mode string) string {
+	p := "/panel/api/persona-templates/import"
+	if mode != "" {
+		p += "?on_conflict=" + url.QueryEscape(mode)
+	}
+	return p
+}
+
+// exchangeFile is an exchange file of templates.
+func exchangeFile(templates ...persona.ExchangeTemplate) persona.ExchangeFile {
+	return persona.ExchangeFile{
+		Format: persona.ExchangeFormat, Version: persona.ExchangeVersion,
+		ExportedAt: time.Date(2026, 11, 13, 7, 0, 0, 0, time.UTC), Templates: templates,
+	}
+}
+
+// embedded is data embedded as an exchange file's appearance image.
+func embedded(data []byte) *persona.ExchangeImage {
+	return &persona.ExchangeImage{MIME: "image/png", Data: base64.StdEncoding.EncodeToString(data)}
+}
+
+// decodeExport checks that w is a JSON download named filename and returns
+// the exchange file it carries, decoded without unknown fields.
+func decodeExport(t *testing.T, w *httptest.ResponseRecorder, filename string) persona.ExchangeFile {
+	t.Helper()
+	if w.Code != http.StatusOK {
+		t.Fatalf("export status = %d, want 200 (body %s)", w.Code, w.Body)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("export Content-Type = %q, want application/json", ct)
+	}
+	disposition, params, err := mime.ParseMediaType(w.Header().Get("Content-Disposition"))
+	if err != nil || disposition != "attachment" || params["filename"] != filename {
+		t.Errorf("export Content-Disposition = %q (%s %v, %v), want an attachment named %q",
+			w.Header().Get("Content-Disposition"), disposition, params, err, filename)
+	}
+	dec := json.NewDecoder(bytes.NewReader(w.Body.Bytes()))
+	dec.DisallowUnknownFields()
+	var f persona.ExchangeFile
+	if err := dec.Decode(&f); err != nil {
+		t.Fatalf("decode export %.200s: %v", w.Body, err)
+	}
+	if f.Format != persona.ExchangeFormat || f.Version != persona.ExchangeVersion || f.ExportedAt.IsZero() {
+		t.Errorf("export header = %q v%d at %v, want %q v%d with a time", f.Format, f.Version, f.ExportedAt,
+			persona.ExchangeFormat, persona.ExchangeVersion)
+	}
+	return f
+}
+
+type importedResp struct {
+	Name      string `json:"name"`
+	Requested string `json:"requested"`
+	Created   bool   `json:"created"`
+}
+
+func decodeImport(t *testing.T, w *httptest.ResponseRecorder) []importedResp {
+	t.Helper()
+	if w.Code != http.StatusOK {
+		t.Fatalf("import status = %d, want 200 (body %.500s)", w.Code, w.Body)
+	}
+	var resp struct {
+		Templates []importedResp `json:"templates"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode %s: %v", w.Body, err)
+	}
+	return resp.Templates
+}
+
+type conflictResp struct {
+	Code      string   `json:"code"`
+	Message   string   `json:"message"`
+	Retryable bool     `json:"retryable"`
+	TraceID   string   `json:"trace_id"`
+	Names     []string `json:"names"`
+}
+
+// decodeConflict checks that w is a 409 TEMPLATE_EXISTS and returns its error.
+func decodeConflict(t *testing.T, w *httptest.ResponseRecorder) conflictResp {
+	t.Helper()
+	errorBody(t, w, http.StatusConflict, conloomapi.CodeTemplateExists)
+	var resp struct {
+		Error conflictResp `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode %s: %v", w.Body, err)
+	}
+	return resp.Error
+}
+
+// noImageData fails t when one of details carries the image data, which is
+// in standard base64 as b64.
+func noImageData(t *testing.T, kind string, details []string, b64 string) {
+	t.Helper()
+	for _, d := range details {
+		if len(d) > 300 || strings.Contains(d, b64[:40]) {
+			t.Errorf("%s audit detail %.300s carries image data", kind, d)
+		}
+	}
+}
+
+func TestTemplatesAPI_ExportHeadersAndBody(t *testing.T) {
+	h := newBotsHarness(t)
+	ctx := context.Background()
+	data := pngData(t, testImage(64, 32, true))
+	up := decodeUpload(t, h.upload(data, "image/png"))
+	doc := lighthousePersona()
+	doc.AppearanceImage = up.ID
+	decodeTemplate(t, h.putTemplate("lighthouse", doc, ""), http.StatusCreated)
+
+	w := h.get(templatePath("lighthouse", "export"))
+	if got := w.Header().Get("Content-Disposition"); got != `attachment; filename="persona-lighthouse.json"` {
+		t.Errorf("Content-Disposition = %q", got)
+	}
+	if w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Errorf("export headers = %v, want no-store and nosniff", w.Header())
+	}
+	f := decodeExport(t, w, "persona-lighthouse.json")
+	if len(f.Templates) != 1 {
+		t.Fatalf("export of lighthouse = %d templates, want 1", len(f.Templates))
+	}
+	got := f.Templates[0]
+	if got.Name != "lighthouse" || !reflect.DeepEqual(got.Persona, doc) || got.AppearanceImage == nil ||
+		got.AppearanceImage.MIME != "image/png" {
+		t.Fatalf("exported lighthouse = %s %+v, image %+v; want the template with its image ID and the PNG",
+			got.Name, got.Persona, got.AppearanceImage != nil)
+	}
+	if raw, err := base64.StdEncoding.DecodeString(got.AppearanceImage.Data); err != nil || !bytes.Equal(raw, data) {
+		t.Errorf("exported image = %d bytes, %v; want the original upload", len(raw), err)
+	}
+	if body := w.Body.String(); strings.Contains(body, "panel:"+testUser) || strings.Contains(body, "updated") {
+		t.Errorf("export carries who changed the template: %.300s", body)
+	}
+
+	// The built-in default, without an image.
+	f = decodeExport(t, h.get(templatePath("default", "export")), "persona-default.json")
+	if len(f.Templates) != 1 || f.Templates[0].Name != "default" ||
+		!reflect.DeepEqual(f.Templates[0].Persona, conloomapi.DefaultPersona()) || f.Templates[0].AppearanceImage != nil {
+		t.Errorf("export of the built-in default = %+v", f.Templates)
+	}
+
+	// A template migrated from an old config file may have any name; the
+	// download keeps it.
+	legacy := `小猫 "旧"`
+	if err := h.db.PutPersonaTemplate(ctx, store.PersonaTemplateRecord{Name: legacy, Persona: catPersona, UpdatedBy: "system"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.personas.LoadTemplates(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f = decodeExport(t, h.get(templatePath(legacy, "export")), "persona-"+legacy+".json")
+	if len(f.Templates) != 1 || f.Templates[0].Name != legacy || !reflect.DeepEqual(f.Templates[0].Persona, catPersona) {
+		t.Errorf("export of %s = %+v", legacy, f.Templates)
+	}
+
+	h.getErr(templatePath("nope", "export"), http.StatusNotFound, conloomapi.CodeNotFound)
+
+	details := checkTemplateAudits(t, h, "persona.template.export", "lighthouse", "default", legacy)
+	noImageData(t, "export", details, got.AppearanceImage.Data)
+	for _, want := range []string{`{"templates":["lighthouse"]}`, `{"templates":["default"]}`} {
+		if !slices.Contains(details, want) {
+			t.Errorf("export audit details %v lack %s", details, want)
+		}
+	}
+}
+
+func TestTemplatesAPI_ExportAll(t *testing.T) {
+	h := newBotsHarness(t)
+	h.srv.d.Location = time.FixedZone("UTC+8", 8*60*60)
+	data := pngData(t, testImage(64, 32, false))
+	up := decodeUpload(t, h.upload(data, "image/png"))
+	doc := lighthousePersona()
+	doc.AppearanceImage = up.ID
+	decodeTemplate(t, h.putTemplate("lighthouse", doc, ""), http.StatusCreated)
+
+	// 2026-11-13 18:00 UTC is already the 14th in the server's time zone.
+	h.advance(10 * time.Hour)
+	w := h.get(templatesExportPath)
+	if got := w.Header().Get("Content-Disposition"); got != `attachment; filename="persona-templates-20261114.json"` {
+		t.Errorf("Content-Disposition = %q, want the server's local date", got)
+	}
+	f := decodeExport(t, w, "persona-templates-20261114.json")
+	var names []string
+	for _, tpl := range f.Templates {
+		names = append(names, tpl.Name)
+	}
+	if !slices.Equal(names, []string{"cat", "default", "lighthouse"}) {
+		t.Fatalf("exported templates = %v, want cat, default and lighthouse", names)
+	}
+	if cat, def, lh := f.Templates[0], f.Templates[1], f.Templates[2]; !reflect.DeepEqual(cat.Persona, catPersona) ||
+		cat.AppearanceImage != nil || !reflect.DeepEqual(def.Persona, conloomapi.DefaultPersona()) ||
+		!reflect.DeepEqual(lh.Persona, doc) || lh.AppearanceImage == nil {
+		t.Errorf("exported templates = %+v", f.Templates)
+	}
+	details := checkTemplateAudits(t, h, "persona.template.export", "")
+	if want := `{"templates":["cat","default","lighthouse"]}`; !slices.Equal(details, []string{want}) {
+		t.Errorf("export audit details = %v, want [%s]", details, want)
+	}
+
+	// The file restores the templates elsewhere: another deployment, which
+	// has a cat of its own and the built-in default.
+	other := newBotsHarness(t)
+	got := decodeImport(t, other.write(http.MethodPost, importPath("overwrite"), w.Body.String()))
+	want := []importedResp{{"cat", "cat", false}, {"default", "default", true}, {"lighthouse", "lighthouse", true}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("import of the export = %+v, want %+v", got, want)
+	}
+	if lh := other.template("lighthouse"); lh.Persona == nil || !reflect.DeepEqual(*lh.Persona, doc) || lh.AppearanceImage != up.ID {
+		t.Errorf("imported lighthouse = %+v, want the same persona and image ID", lh)
+	}
+	if img, err := other.db.GetPersonaImage(context.Background(), up.ID, true); err != nil || !bytes.Equal(img.Original, data) {
+		t.Errorf("imported image: %v, want the original bytes", err)
+	}
+	if def := other.template("default"); def.Source != "db" {
+		t.Errorf("imported default = %+v, want it stored", def)
+	}
+}
+
+func TestTemplatesAPI_ImportModes(t *testing.T) {
+	h := newBotsHarness(t)
+	ctx := context.Background()
+	// A stored panel bot whose template is missing.
+	if err := h.db.CreatePanelBot(ctx, store.PanelBot{ID: "panel-abcd1234", Name: "小红", PersonaTemplate: "night-owl",
+		Skills: []string{}, CreatedBy: "panel:" + testUser}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.srv.d.PanelBots.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if b := h.bots().Bots[1]; b.PersonaTemplate != "default" || len(b.Problems) != 1 {
+		t.Fatalf("bot with a missing template = %+v, want default and one problem", b)
+	}
+
+	data := pngData(t, testImage(40, 20, false))
+	bigCat := catPersona
+	bigCat.CharacterName = "大猫"
+	night := lighthousePersona()
+	night.PersonaName = "夜猫"
+	night.AppearanceImage = strings.Repeat("ab", 32)
+	ownDefault := lighthousePersona()
+	ownDefault.PersonaName = "默认"
+	body := mustJSON(t, exchangeFile(
+		persona.ExchangeTemplate{Name: "cat", Persona: bigCat},
+		persona.ExchangeTemplate{Name: "night-owl", Persona: night, AppearanceImage: embedded(data)},
+		persona.ExchangeTemplate{Name: "default", Persona: ownDefault},
+	))
+
+	// fail, also without on_conflict, refuses names stored templates have
+	// and writes nothing; the built-in default is no conflict.
+	for _, mode := range []string{"", "fail"} {
+		c := decodeConflict(t, h.write(http.MethodPost, importPath(mode), body))
+		if !slices.Equal(c.Names, []string{"cat"}) || c.Retryable || !strings.Contains(c.Message, "cat") || c.TraceID == "" {
+			t.Errorf("on_conflict=%q: conflict = %+v, want cat named, not retryable", mode, c)
+		}
+	}
+	if _, ok := h.personas.Template("night-owl"); ok || h.imageStored(imageID(data)) {
+		t.Error("refused import stored something")
+	}
+	if doc, _ := h.personas.Template("cat"); !reflect.DeepEqual(doc, catPersona) {
+		t.Errorf("cat after a refused import = %+v", doc)
+	}
+
+	// rename stores the cat as cat-2.
+	got := decodeImport(t, h.write(http.MethodPost, importPath("rename"), body))
+	want := []importedResp{{"cat-2", "cat", true}, {"night-owl", "night-owl", true}, {"default", "default", true}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("rename import = %+v, want %+v", got, want)
+	}
+	if doc, _ := h.personas.Template("cat"); !reflect.DeepEqual(doc, catPersona) {
+		t.Errorf("cat after rename import = %+v, want it unchanged", doc)
+	}
+	if doc, _ := h.personas.Template("cat-2"); !reflect.DeepEqual(doc, bigCat) {
+		t.Errorf("cat-2 = %+v, want the imported cat", doc)
+	}
+	wantNight := night
+	wantNight.AppearanceImage = imageID(data)
+	if got := h.template("night-owl"); got.Source != "db" || got.Persona == nil || !reflect.DeepEqual(*got.Persona, wantNight) ||
+		got.UpdatedBy != "panel:"+testUser {
+		t.Errorf("night-owl = %+v, want the import with the image's computed ID", got)
+	}
+	if !h.imageStored(imageID(data)) {
+		t.Error("embedded image not stored")
+	}
+	if got := h.template("default"); got.Source != "db" || got.Persona == nil || !reflect.DeepEqual(*got.Persona, ownDefault) {
+		t.Errorf("default = %+v, want the imported one stored", got)
+	}
+	// The bot has its template back without another write.
+	if b := h.bots().Bots[1]; b.PersonaTemplate != "night-owl" || len(b.Problems) != 0 {
+		t.Errorf("bot after its template was imported = %+v, want night-owl without problems", b)
+	}
+
+	// overwrite replaces them.
+	got = decodeImport(t, h.write(http.MethodPost, importPath("overwrite"), body))
+	want = []importedResp{{"cat", "cat", false}, {"night-owl", "night-owl", false}, {"default", "default", false}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("overwrite import = %+v, want %+v", got, want)
+	}
+	if doc, _ := h.personas.Template("cat"); !reflect.DeepEqual(doc, bigCat) {
+		t.Errorf("cat after overwrite import = %+v, want the imported cat", doc)
+	}
+
+	// Anything wrong refuses the whole file.
+	both := lighthousePersona()
+	both.Minor, both.Adult = true, true
+	before := h.templates()
+	for _, c := range []struct{ name, mode, body, want string }{
+		{"unknown mode", "merge", body, "on_conflict"},
+		{"wrong format", "rename", strings.Replace(body, persona.ExchangeFormat, "conloom.persona", 1), "format"},
+		{"wrong version", "rename", strings.Replace(body, `"version":1`, `"version":2`, 1), "version"},
+		{"minor and adult", "rename", mustJSON(t, exchangeFile(
+			persona.ExchangeTemplate{Name: "owl", Persona: lighthousePersona()},
+			persona.ExchangeTemplate{Name: "teen", Persona: both})), "minor"},
+		{"not an image", "rename", mustJSON(t, exchangeFile(
+			persona.ExchangeTemplate{Name: "owl", Persona: lighthousePersona(), AppearanceImage: embedded([]byte("GIF89a not really"))})), "unsupported image"},
+		{"not base64", "rename", mustJSON(t, exchangeFile(
+			persona.ExchangeTemplate{Name: "owl", Persona: lighthousePersona(), AppearanceImage: &persona.ExchangeImage{Data: "%%%"}})), "base64"},
+		{"unknown field", "rename", strings.Replace(body, `"version":1`, `"version":1,"extra":1`, 1), "unknown field"},
+		{"unknown persona field", "rename", strings.Replace(body, `"persona":{`, `"persona":{"extra":1,`, 1), "unknown field"},
+		{"trailing data", "rename", body + "{}", "trailing data"},
+		{"not JSON", "rename", "{", "invalid JSON"},
+	} {
+		e := errorBody(t, h.write(http.MethodPost, importPath(c.mode), c.body), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+		if !strings.Contains(e.Message, c.want) {
+			t.Errorf("%s: message %q lacks %q", c.name, e.Message, c.want)
+		}
+	}
+	if after := h.templates(); !reflect.DeepEqual(after, before) {
+		t.Errorf("templates after refused imports = %+v, want %+v", after, before)
+	}
+
+	// Another image being processed refuses the import.
+	h.srv.imageUploads <- struct{}{}
+	e := errorBody(t, h.write(http.MethodPost, importPath("overwrite"), body), http.StatusConflict, conloomapi.CodeChatBusy)
+	if e.Message != "正在处理另一张图片，请稍后" || !e.Retryable {
+		t.Errorf("busy import = %+v", e)
+	}
+	<-h.srv.imageUploads
+
+	details := checkTemplateAudits(t, h, "persona.template.import", "", "")
+	noImageData(t, "import", details, embedded(data).Data)
+	for _, want := range []string{
+		`{"on_conflict":"rename","created":["cat-2","night-owl","default"],"overwritten":[],"renamed":{"cat":"cat-2"}}`,
+		`{"on_conflict":"overwrite","created":[],"overwritten":["cat","night-owl","default"]}`,
+	} {
+		if !slices.Contains(details, want) {
+			t.Errorf("import audit details %v lack %s", details, want)
+		}
+	}
+}
+
+func TestTemplatesAPI_ImportHoldsImageSlot(t *testing.T) {
+	h := newBotsHarness(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	load := h.srv.d.PanelBots.Load
+	h.personas.SetOnImport(func(ctx context.Context) error {
+		close(entered)
+		<-release
+		return load(ctx)
+	})
+	body := mustJSON(t, exchangeFile(persona.ExchangeTemplate{Name: "owl", Persona: lighthousePersona()}))
+
+	first := make(chan *httptest.ResponseRecorder, 1)
+	go func() { first <- h.write(http.MethodPost, importPath(""), body) }()
+	select {
+	case <-entered:
+	case w := <-first:
+		t.Fatalf("import answered %d %s before it called the hook", w.Code, w.Body)
+	}
+	// Until the import is done, other imports and uploads are refused.
+	errorBody(t, h.write(http.MethodPost, importPath("rename"), body), http.StatusConflict, conloomapi.CodeChatBusy)
+	png := pngData(t, testImage(20, 20, false))
+	errorBody(t, h.upload(png, "image/png"), http.StatusConflict, conloomapi.CodeChatBusy)
+	unblock()
+	if got := decodeImport(t, <-first); !reflect.DeepEqual(got, []importedResp{{"owl", "owl", true}}) {
+		t.Errorf("import = %+v", got)
+	}
+	decodeUpload(t, h.upload(png, "image/png"))
+}
+
+func TestTemplatesAPI_ImportTooLarge413(t *testing.T) {
+	h := newBotsHarness(t)
+	over := `{"format":"` + strings.Repeat("a", maxImportBytes) + `"}`
+	e := errorBody(t, h.write(http.MethodPost, importPath(""), over), http.StatusRequestEntityTooLarge, conloomapi.CodeInvalidEvent)
+	if !strings.Contains(e.Message, "64 MiB") {
+		t.Errorf("too large message = %q", e.Message)
+	}
+
+	// A file of exactly 64 MiB is read.
+	valid := mustJSON(t, exchangeFile(persona.ExchangeTemplate{Name: "owl", Persona: lighthousePersona()}))
+	atLimit := valid + strings.Repeat(" ", maxImportBytes-len(valid))
+	if got := decodeImport(t, h.write(http.MethodPost, importPath(""), atLimit)); !reflect.DeepEqual(got, []importedResp{{"owl", "owl", true}}) {
+		t.Errorf("import at the limit = %+v", got)
+	}
+	if n := len(h.audits("persona.template.import")); n != 1 {
+		t.Errorf("import audits = %d, want 1", n)
+	}
+}
+
+func TestTemplatesAPI_ImportCSRF(t *testing.T) {
+	h := newBotsHarness(t)
+	body := mustJSON(t, exchangeFile(persona.ExchangeTemplate{Name: "owl", Persona: lighthousePersona()}))
+	for _, mode := range []string{"", "overwrite"} {
+		p := importPath(mode)
+		errorBody(t, h.do(http.MethodPost, p, body, withCookie(h.cookie)), http.StatusForbidden, conloomapi.CodeForbidden)
+		errorBody(t, h.do(http.MethodPost, p, body, withCookie(h.cookie), withCSRF("wrong")), http.StatusForbidden, conloomapi.CodeForbidden)
+		errorBody(t, h.do(http.MethodPost, p, body, withCookie(h.cookie), withCSRF(h.csrf), withOrigin("http://attacker.invalid")),
+			http.StatusForbidden, conloomapi.CodeForbidden)
+		errorBody(t, h.do(http.MethodPost, p, body, withCSRF(h.csrf)), http.StatusUnauthorized, conloomapi.CodeUnauthorized)
+	}
+	for _, p := range []string{templatesExportPath, templatePath("cat", "export")} {
+		errorBody(t, h.do(http.MethodGet, p, ""), http.StatusUnauthorized, conloomapi.CodeUnauthorized)
+	}
+	if _, ok := h.personas.Template("owl"); ok {
+		t.Error("refused import stored")
+	}
+	for _, kind := range []string{"persona.template.import", "persona.template.export"} {
+		if n := len(h.audits(kind)); n != 0 {
+			t.Errorf("%s audits = %d, want 0", kind, n)
+		}
+	}
+}
+
+func TestTemplatesAPI_ResetOnlyDefault(t *testing.T) {
+	h := newBotsHarness(t)
+	ctx := context.Background()
+
+	// The built-in default stays as it is.
+	got := decodeTemplate(t, h.write(http.MethodPost, templatePath("default", "reset"), nil), http.StatusOK)
+	if got.Source != "builtin" || got.Persona == nil || !reflect.DeepEqual(*got.Persona, conloomapi.DefaultPersona()) {
+		t.Errorf("reset of the built-in default = %+v", got)
+	}
+	// A stored default goes back to the built-in one.
+	decodeTemplate(t, h.putTemplate("default", lighthousePersona(), ""), http.StatusOK)
+	got = decodeTemplate(t, h.write(http.MethodPost, templatePath("default", "reset"), nil), http.StatusOK)
+	if got.Source != "builtin" || got.Persona == nil || !reflect.DeepEqual(*got.Persona, conloomapi.DefaultPersona()) ||
+		got.UpdatedBy != "" || got.UpdatedAt != nil {
+		t.Errorf("reset of the stored default = %+v, want the built-in default", got)
+	}
+
+	// Any other template, stored or not, is 400 and left alone.
+	for _, name := range []string{"cat", "nope"} {
+		e := errorBody(t, h.write(http.MethodPost, templatePath(name, "reset"), nil), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+		if !strings.Contains(e.Message, `only "default" can be reset`) {
+			t.Errorf("reset %s message = %q", name, e.Message)
+		}
+	}
+	if rows, _, err := h.db.ListPersonaTemplates(ctx); err != nil || len(rows) != 1 || rows[0].Name != "cat" ||
+		!reflect.DeepEqual(rows[0].Persona, catPersona) {
+		t.Errorf("stored templates = %+v, %v; want only cat, unchanged", rows, err)
+	}
+	checkTemplateAudits(t, h, "persona.template.reset", "default", "default")
 }

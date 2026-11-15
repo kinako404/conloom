@@ -76,7 +76,7 @@ panel:
 - **会话**：所有 bot 的全部群聊和私聊，带消息数、最后一条消息的时间、是否暂停、主动发言和记忆开关、人设模板和版本。私聊的主动发言徽章显示主动找人的档位，如“主动：中”；总开关或档位关闭时显示“主动关”。右上角的“新建聊天”在面板里和 bot 开一个私聊，建好后在聊天页打开，见下文 [在面板里聊天](#在面板里聊天)。点进一个会话默认打开“消息”标签；私聊会话的详情里有“在聊天页打开”，面板里新建的聊天还有“删除这个聊天”。有以下标签页：
   - **消息**：按时间倒序浏览，从面板发出或送到面板的消息带“面板”标记；也可以输入关键词检索，规则和 `recall` 的关键词检索相同（任一词命中，按相关度排序，同分时新的在前），可以限定日期。
   - **策略**：常用字段做成了表单（主动发言、记忆、历史条数、分条上限 `reply.max_parts`，记忆的摘要和笔记字数上限 `memory.summary_max_chars`、`note_max_chars`（0 表示按会话类型的默认值，提示里写出本会话的默认值和当前生效的值）；私聊会话还有“私聊等待” `reply.private_wait` 和“私聊最长等待” `reply.private_max_wait`，写成 `6s`、`500ms`、`1m` 这样的时长，两项都填 0 表示用默认值；以及“主动找人档位” `proactive.private.level`（留空按“中”）和“免打扰开始”“免打扰结束” `proactive.private.quiet_start`、`quiet_end`，写成 `23:00` 这样的两位数时间，按 `server.timezone`，两项要么都填、要么都留空，都留空时按对方的作息推算，见 [配置：私聊主动找人](configuration.md#群策略)），另有“高级：JSON 编辑”可以整份替换；保存时服务端校验，不合法的值会在表单下方显示服务端给出的错误；暂停、恢复；历史版本列表，可以把任一版本恢复为新版本。字段含义见 [使用指南：私聊的节奏](usage.md#私聊的节奏)。
-  - **人设**：编辑人设的各个字段、套用模板（配置文件里的和面板里改过或新建的，见 [人设模板和外观参考图](#人设模板和外观参考图)）、回滚到历史版本。会话还没有人设时只显示“尚未生成”和将要使用的模板，查看不会生成第 1 版。
+  - **人设**：编辑人设的各个字段、套用模板（人设模板目录里的，见 [人设模板和外观参考图](#人设模板和外观参考图)）、回滚到历史版本。会话还没有人设时只显示“尚未生成”和将要使用的模板，查看不会生成第 1 版。
     - “内容尺度”一栏有“未成年角色”和“成年人设”两个开关，以及“内容规则”“记忆规则”两个文本框，对应人设的 `minor`、`adult`、`content_rules`、`memory_rules`。勾选“未成年角色”后，“成年人设”会被取消并且不可用；服务端同样拒绝两者同时为真。两段规则只在开放模式（成年、非未成年、私聊）下生效，规则见 [配置：内容模式](configuration.md#内容模式)。
     - 页面顶部显示“私聊内容模式”：当前人设（还没有人设时是将要使用的模板）放在私聊里会是开放还是保护模式。群聊不论人设如何都是保护模式。
     - “状态条”一栏编辑人设的 `bars`：每行是名称、基准、半衰期（写成 `6h`、`90m` 这样的时长）和说明，可以添加和删除，最多 4 行。一行都没有时保存的人设不带 `bars`，运行时用默认的心情和精力。限制见 [配置：状态条](configuration.md#状态条)。
@@ -149,13 +149,25 @@ panel:
 - **修改和新建**：`PUT persona-templates/{name}` 写入整份人设，覆盖同名模板，或者新建模板，新名字只能是 1–32 个小写字母、数字、`-` 或 `_`。内容的校验和会话人设相同（字数上限，`minor` 和 `adult` 不能同时为真，`appearance_image` 必须是已上传的图片），不通过返回 400。
 - **恢复和删除**：`default` 只能“恢复为内置默认”（`POST …/reset`，删掉数据库里的 `default`），不能删除，删除返回 403。其他模板只能删除，恢复返回 400；还有 bot（配置 bot 或面板 bot）用它作默认模板时返回 409 `TEMPLATE_IN_USE`，`message` 列出这些 bot（如“bot 织语（qq-main）、小红 还在用这个模板”，配置 bot 带 ID），先把这些 bot 改用别的模板。
 - **已有会话不变**：会话第一次回复时把模板复制成自己的人设，之后各自独立。改模板只影响之后新建的会话；要更新已有会话，在会话的“人设”页套用模板。
-- **bot**：模板写入、恢复或删除后，配置 bot 和面板 bot 按新的目录重新生效：引用的模板重新出现时，“人设模板“x”已不存在”的说明随之消失。
+- **bot**：模板写入、恢复、删除或导入后，配置 bot 和面板 bot 按新的目录重新生效：引用的模板重新出现时，“人设模板“x”已不存在”的说明随之消失。
+- **导出**：`GET persona-templates/{name}/export` 下载一个模板，`GET persona-templates/export` 下载全部模板（没有保存过 `default` 时包括内置的那份）。响应是 JSON 文件（`Content-Disposition: attachment`），文件名分别是 `persona-<模板名>.json` 和 `persona-templates-<YYYYMMDD>.json`（`server.timezone` 的当地日期）；模板不存在返回 404。两种导出格式相同，只是 `templates` 里的项数不同：
+
+  ```json
+  {"format":"conloom.persona-template","version":1,"exported_at":"2026-11-15T04:00:00Z",
+   "templates":[{"name":"night-owl","persona":{"persona_name":"…","appearance_image":"<图片 ID>"},
+                 "appearance_image":{"mime":"image/png","data":"<原图 base64>"}}]}
+  ```
+
+  外观图以原图的标准 base64 嵌在文件里，没有参考图时省略 `appearance_image`；人设保留原来的图片 ID。文件里没有操作者和修改时间。模板引用的图片已经不存在时（从旧配置文件迁移来的模板可能这样），导出的人设去掉这个 ID，服务端记一条警告。
+- **导入**：`POST persona-templates/import?on_conflict=` 的请求体就是导出的文件本身（不是表单），单个模板和全部模板的文件都可以，最多 64 MiB，超过返回 413。先整体检查，任何一项不合格就返回 400，一项都不写：`format` 和 `version` 必须是上面的值；不能有多余的字段；模板名必须是 1–32 个小写字母、数字、`-` 或 `_`，同一个文件里不能重名；人设的校验和修改模板相同（字数上限，`minor` 和 `adult` 不能同时为真）；内嵌的图片必须是标准 base64，格式和尺寸的要求同上传图片（按字节判断类型，不看 `mime`）；没有内嵌图片的人设引用的图片必须已经上传过，或者内嵌在同一个文件的其他模板里。内嵌图片按上传处理，ID 按内容重算，写进人设的 `appearance_image`。
+  - 同名：只有数据库里已存的模板算同名，内置的 `default` 不算（导入的 `default` 直接存进数据库，取代内置的那份）。`on_conflict` 决定怎么处理：`fail`（默认）返回 409 `TEMPLATE_EXISTS`，`error.names` 列出同名的模板，什么都不写；`overwrite` 覆盖同名模板；`rename` 改名导入，用 `名字-2`、`名字-3`……中第一个没被占用的（文件里的名字也算占用），超过 32 个字符时先截短名字。其他值返回 400。
+  - 图片和模板在一个事务里写入。返回 `{"templates":[{"name","requested","created"}]}`，按文件里的顺序：`name` 是最后用的名字，`requested` 是文件里的名字，`created` 为 false 表示覆盖了已有模板。
 - **上传图片**：`POST persona-images` 的请求体就是图片文件本身（不是表单），最多 8 MiB，超过返回 413。格式按文件开头的字节判断，不看 `Content-Type`，只接受 PNG 和 JPEG；宽和高都不能超过 8000 像素、总共不超过 2500 万像素，先读文件头检查尺寸、再解码，不合格返回 400，什么都不存。有透明部分的 PNG 铺在白底上；JPEG 的方向标记（EXIF orientation）不处理，按像素原样使用。服务器存原图，另存一份长边不超过 768 像素、质量 85 的 JPEG 给回复模型用，返回 201 `{"id","width","height","reply_tokens"}`：`id` 是原图内容的 SHA-256（同一张图再传一次得到同一个 ID），`reply_tokens` 是缩小图按 `ceil(宽/28) × ceil(高/28) + 2` 估算的 token。
 - **取图**：`GET persona-images/{id}` 默认返回缩小图（`image/jpeg`），`?size=original` 返回原图（按上传时识别的类型）。
 - **生成外观介绍**：`POST persona-images/{id}/describe` 把原图缩到长边不超过 1536 像素发给识图模型 `model_profiles.vision`（见 [配置：model_profiles](configuration.md#model_profiles)），返回 `{"text"}`，不自动保存，确认后写进人设的“外观描述”再保存。没有配置 `vision` 时返回 503 `MODEL_UNAVAILABLE`“未配置识图模型”（`retryable: false`，重试没有用，要改配置）；40 秒内没有完成返回 504（`retryable: true`）、模型调用失败返回 502，都是 `MODEL_UNAVAILABLE`，细节只写日志；图片不存在返回 404。用量按用途 `vision` 记录。
-- **一次一张**：解码一张大图要几百 MB 内存，所以上传和生成外观介绍各自同时只处理一个请求；另一个请求同时到达时直接返回 409 `CHAT_BUSY`（`retryable: true`）“正在处理另一张图片，请稍后”，不排队。
+- **一次一张**：解码一张大图要几百 MB 内存，所以上传和生成外观介绍各自同时只处理一个请求，导入模板和上传共用一个名额，从开始处理文件里的图片到导入结束一直占着；另一个请求同时到达时直接返回 409 `CHAT_BUSY`（`retryable: true`）“正在处理另一张图片，请稍后”，不排队。
 - **清理**：没有被任何模板或会话人设版本（包括历史版本）引用的图片，上传满 7 天后由每小时的维护任务删除。刚上传、还没保存进人设的图片有这 7 天的余地；同一张图再上传一次重新计时。
-- **审计**：模板写入、恢复、删除分别写 `persona.template.put`、`persona.template.reset`、`persona.template.delete`，目标是模板名，`put` 的内容是写入后的来源 `source`、是否新建 `created` 和原因 `reason`。上传写 `persona.image.upload`，目标是图片 ID，内容是类型、宽高、字节数和 `reply_tokens`。生成外观介绍成功时写 `persona.appearance.describe`，目标是图片 ID，内容只有生成文字的字数 `chars`。都不属于某个 bot（`bot_instance_id` 为空），图片内容和生成的文字都不进审计和日志。
+- **审计**：模板写入、恢复、删除分别写 `persona.template.put`、`persona.template.reset`、`persona.template.delete`，目标是模板名，`put` 的内容是写入后的来源 `source`、是否新建 `created` 和原因 `reason`。导出写 `persona.template.export`，目标是模板名（导出全部时为空），内容是导出的模板名 `templates`。导入成功时写 `persona.template.import`，目标为空，内容是冲突方式 `on_conflict`、新建的 `created` 和覆盖的 `overwritten`（都是最后用的名字），改过名时另有 `renamed`（文件里的名字对应最后用的名字）；人设内容和图片不进审计。上传写 `persona.image.upload`，目标是图片 ID，内容是类型、宽高、字节数和 `reply_tokens`。生成外观介绍成功时写 `persona.appearance.describe`，目标是图片 ID，内容只有生成文字的字数 `chars`。都不属于某个 bot（`bot_instance_id` 为空），图片内容和生成的文字都不进审计和日志。
 
 ### 面板上的修改
 
@@ -164,7 +176,7 @@ panel:
 - 每次修改都写一条审计记录，`actor` 为 `panel:<用户名>`，`bot_instance_id` 是会话所属的 bot。种类沿用 API 的 `policy.update`、`persona.update`、`memory.update`、`memory.forget`、`autonomy.buff`（修改私聊的状态条）、`autonomy.status.clear`（结束私聊的状态）；触发整理写 `memory.consolidate`（API 触发整理不写审计）。登录成功写 `panel.login`。
 - 面板聊天的审计：发消息写 `panel.message`（内容只有消息 ID，不含正文），新建聊天写 `panel.chat.create`，删除聊天写 `panel.chat.delete`；目标都是会话键。
 - 面板 bot 的新建、编辑、删除写 `panel.bot.create`、`panel.bot.update`、`panel.bot.delete`，目标是 bot 的 ID，见 [面板 bot](#面板-bot)。
-- 人设模板的写入、恢复、删除写 `persona.template.put`、`persona.template.reset`、`persona.template.delete`，目标是模板名；上传参考图写 `persona.image.upload`，生成外观介绍写 `persona.appearance.describe`，目标是图片 ID；这几种的 `bot_instance_id` 为空，见 [人设模板和外观参考图](#人设模板和外观参考图)。
+- 人设模板的写入、恢复、删除写 `persona.template.put`、`persona.template.reset`、`persona.template.delete`，目标是模板名；导出和导入写 `persona.template.export`、`persona.template.import`；上传参考图写 `persona.image.upload`，生成外观介绍写 `persona.appearance.describe`，目标是图片 ID；这几种的 `bot_instance_id` 为空，见 [人设模板和外观参考图](#人设模板和外观参考图)。
 - 策略和人设的新版本里 `updated_by` 为 `panel:<用户名>`；成员记忆的修订记录、状态条的变化记录来源为 `panel`。
 - 忘记成员等同于这个人在会话里发 `/忘记我`；暂停、恢复和 `/pause`、`/resume` 写入同样的策略版本（恢复时并发回到暂停前最近一个非 0 的值）。
 
@@ -215,7 +227,7 @@ panel:
 
 页面用的 JSON 接口都在 `/panel/api/` 下，带登录 cookie 访问；这些接口为面板服务，不保证兼容性，脚本和程序请用 [HTTP API](api.md)。
 
-- 错误格式和 Bearer API 相同：`{"error":{"code","message","retryable","trace_id"}}`。没登录或会话已失效返回 401 `UNAUTHORIZED`，CSRF 或 `Origin` 检查不通过返回 403 `FORBIDDEN`，登录被限流返回 429 `RATE_LIMITED`。
+- 错误格式和 Bearer API 相同：`{"error":{"code","message","retryable","trace_id"}}`；导入模板遇到同名时的 409 `TEMPLATE_EXISTS` 另有 `names`，列出同名的模板。没登录或会话已失效返回 401 `UNAUTHORIZED`，CSRF 或 `Origin` 检查不通过返回 403 `FORBIDDEN`，登录被限流返回 429 `RATE_LIMITED`。
 - 时间是 RFC3339 UTC 字符串，可以为空的时间为 `null`。用量接口的 `from`、`to` 是 `server.timezone` 的当地日期 `YYYY-MM-DD`。
 - 路径里的 `{key}` 是会话键 `bot:平台:类型:会话ID`（如 `qq-main:qq:group:group_10001`）经 URL 编码后的形式。面板跨 bot，所以不用 Bearer API 里那种按令牌绑定 bot 的会话 ID。
 - 任务列表、审计记录、调用明细（`usage/calls`）和消息浏览用 `before` 游标加 `limit` 翻页；响应里的 `next_before` 是下一页的 `before`，最后一页为 `null`。消息检索改用 `offset` 翻页（见下表）。`limit` 都是默认 50、最大 200。会话列表不分页，一次返回全部会话。
@@ -251,6 +263,8 @@ panel:
 | `GET conversations/{key}/autonomy` | 私聊的状态、状态条、最近的状态条变化和主动找人的情况，与 `GET /api/v1/conversations/{id}/autonomy` 相同（见 [HTTP API：自主状态](api.md#自主状态)）；不是私聊返回 400 |
 | `GET persona-templates` | 人设模板目录 `templates`，按名字排序。每项 `name`、`source`（`db` 或 `builtin`）、`persona_name`、`character_name`、`appearance_image`（没有参考图时为空字符串）、`users`（运行时用它作默认模板的 bot，每项 `id`、`name`、`source`，没有时为空列表）、`updated_by` 和 `updated_at`（最后写入的人和时间，内置的 `default` 为空字符串和 `null`） |
 | `GET persona-templates/{name}` | 单个模板：列表里的字段，加上整份人设 `persona`；不存在返回 404 |
+| `GET persona-templates/{name}/export` | 下载这个模板的导出文件 `persona-<模板名>.json`，不存在返回 404；写审计 `persona.template.export`。见 [人设模板和外观参考图](#人设模板和外观参考图) |
+| `GET persona-templates/export` | 下载全部模板的导出文件 `persona-templates-<YYYYMMDD>.json`（`server.timezone` 的当地日期）；写审计 `persona.template.export` |
 | `GET persona-images/{id}?size=` | 图片本身：`size` 为 `reply`（默认，缩小图，`image/jpeg`）或 `original`（原图，`image/png` 或 `image/jpeg`）；其他值返回 400，图片不存在返回 404 |
 | `GET tasks?status=&bot=&conversation=&before=&limit=` | 任务列表 |
 | `GET tasks/{id}` | 任务详情：任务、meta、动作、模型调用 |
@@ -279,6 +293,7 @@ panel:
 | `PUT persona-templates/{name}` | 请求 `{"persona","reason"}`（`persona` 必填，是整份人设，`reason` 只进审计），覆盖同名模板或新建模板；返回模板，格式同 `GET persona-templates/{name}`，新建时 201，否则 200。名字或内容不合规则、图片不存在返回 400 |
 | `POST persona-templates/{name}/reset` | 只对 `default` 有效：删掉数据库里的 `default`，返回内置的默认人设；没有保存过时照样返回 200。其他名字返回 400 |
 | `DELETE persona-templates/{name}` | 删除模板，返回 204；`default` 返回 403 `FORBIDDEN`，还有 bot 在用返回 409 `TEMPLATE_IN_USE`（`message` 列出这些 bot），不存在返回 404 |
+| `POST persona-templates/import?on_conflict=` | 请求体是导出的文件本身，最多 64 MiB；`on_conflict` 为 `fail`（默认）、`overwrite` 或 `rename`。返回 `{"templates":[{"name","requested","created"}]}`；超过 64 MiB 返回 413，文件有任何问题返回 400、一项都不写，`fail` 时有同名模板返回 409 `TEMPLATE_EXISTS`（`names` 列出它们），正在处理另一张图片时返回 409 `CHAT_BUSY`。见 [人设模板和外观参考图](#人设模板和外观参考图) |
 | `POST persona-images` | 请求体是 PNG 或 JPEG 文件本身，最多 8 MiB，返回 201 `{"id","width","height","reply_tokens"}`；超过 8 MiB 返回 413，格式或尺寸不合格返回 400，正在处理另一张图片时返回 409 `CHAT_BUSY`。见 [人设模板和外观参考图](#人设模板和外观参考图) |
 | `POST persona-images/{id}/describe` | 用识图模型生成外观介绍，返回 `{"text"}`，不保存；图片不存在返回 404，正在生成另一张时返回 409 `CHAT_BUSY`，没有配置 `vision` 返回 503、超时 504、模型调用失败 502（都是 `MODEL_UNAVAILABLE`） |
 

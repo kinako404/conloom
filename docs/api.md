@@ -188,8 +188,10 @@
 | 409 | `DUPLICATE_EVENT` | 幂等键重复但请求体不同，或平台消息已经提交过 |
 | 409 | `MEMORY_DISABLED` | 请求整理记忆，但本群没有开启记忆 |
 | 409 | `PAUSED` | 请求整理记忆，但本群暂停中 |
-| 409 | `CHAT_BUSY`，`retryable: true` | 只由 Web 管理面板返回，Bot Interaction API 不会返回：删除面板聊天时它的任务还没停下，可以稍后重试（见 [Web 管理面板：接口](panel.md#接口)） |
-| 409 | `TEMPLATE_IN_USE` | 只由 Web 管理面板返回：要删除的人设模板还有面板 bot 在用 |
+| 409 | `CHAT_BUSY`，`retryable: true` | 只由 Web 管理面板返回，Bot Interaction API 不会返回：删除面板聊天时它的任务还没停下，或者正在处理另一张图片（上传、生成外观介绍、导入人设模板），可以稍后重试（见 [Web 管理面板：接口](panel.md#接口)） |
+| 409 | `TEMPLATE_IN_USE` | 只由 Web 管理面板返回：要删除的人设模板还有 bot（配置 bot 或面板 bot）在用 |
+| 409 | `TEMPLATE_EXISTS` | 只由 Web 管理面板返回：按 `on_conflict=fail` 导入人设模板时，文件里有数据库里已存的模板名；`error` 里另有 `names` 列出这些名字，什么都没写 |
+| 413 | `INVALID_EVENT` | 只由 Web 管理面板返回：上传的图片超过 8 MiB，或导入的人设模板文件超过 64 MiB |
 | 502、503、504 | `MODEL_UNAVAILABLE` | 只由 Web 管理面板返回：生成外观介绍时识图模型调用失败（502）、没有配置识图模型（503，`retryable: false`，要改配置）或超时（504，`retryable: true`） |
 | 503 | `INTERNAL_ERROR`，`retryable: true` | 服务正在关闭，或记忆修改反复冲突，可以稍后重试 |
 | 500 | `INTERNAL_ERROR` | 其他内部错误，细节只写日志，可用 `trace_id` 查找 |
