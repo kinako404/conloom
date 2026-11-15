@@ -19,6 +19,16 @@ const TABS = [
 // PRIVATE_TABS need a private conversation: the hidden state.
 const PRIVATE_TABS = new Set(['autonomy']);
 
+// SCOPE_TABS show the data of the conversation's memory scope (memory_scope).
+const SCOPE_TABS = new Set(['memory', 'autonomy']);
+
+// scopeNote heads SCOPE_TABS of a conversation whose memory scope is not its
+// own: a panel chat's, which every panel chat of its bot shares.
+function scopeNote(c, tab) {
+  if (!SCOPE_TABS.has(tab) || !c.memory_scope || c.memory_scope === c.key) return null;
+  return h('p', { class: 'hint' }, '这个 bot 的所有面板聊天共用这份记忆');
+}
+
 // flash is a success message shown once after a write reloads the page.
 let flash = '';
 
@@ -533,7 +543,7 @@ function deleteChat(c) {
     type: 'button',
     class: 'danger',
     onclick: async () => {
-      if (!confirm('删除这个聊天？聊天记录、记忆、人设和策略都会删除，不能恢复；用量统计和审计记录保留。')) return;
+      if (!confirm('删除这个聊天？聊天记录、人设和策略都会删除，不能恢复；在这个聊天里设的状态会结束。这个 bot 所有面板聊天共用的记忆保留，用量统计和审计记录也保留。')) return;
       button.disabled = true;
       mount(msg);
       try {
@@ -596,7 +606,7 @@ export async function conversationView(ctx) {
   );
   try {
     const nodes = await TAB_VIEWS[tab]({ ...ctx, key, conv });
-    if (!ctx.signal.aborted) mount(body, nodes);
+    if (!ctx.signal.aborted) mount(body, scopeNote(conv, tab), nodes);
   } catch (err) {
     if (!isAbort(err) && !ctx.signal.aborted) mount(body, errorBox(err));
   }

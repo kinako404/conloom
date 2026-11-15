@@ -166,6 +166,23 @@ func TestStatic_ServesChatsView(t *testing.T) {
 	}
 }
 
+func TestStatic_SharedMemoryNote(t *testing.T) {
+	h := staticHandler(t, web.FS)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/panel/views/conversation.js", nil))
+	body := w.Body.String()
+	for _, want := range []string{
+		"'这个 bot 的所有面板聊天共用这份记忆'",
+		"const SCOPE_TABS = new Set(['memory', 'autonomy']);",
+		"c.memory_scope === c.key",
+		"mount(body, scopeNote(conv, tab), nodes)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/panel/views/conversation.js lacks %q", want)
+		}
+	}
+}
+
 func TestStatic_ServesTemplatesViews(t *testing.T) {
 	h := staticHandler(t, web.FS)
 	get := func(target string) *httptest.ResponseRecorder {

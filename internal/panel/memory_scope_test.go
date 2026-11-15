@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"reflect"
@@ -79,5 +80,76 @@ func TestMemory_PanelChatsShareScope(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(revisions(a)), &revs); err != nil || len(revs.Revisions) != 0 {
 		t.Errorf("revisions of A after forgetting in B = %s, %v", revisions(a), err)
+	}
+}
+
+func TestConversation_PanelChatsReportSharedScope(t *testing.T) {
+	h := newAutonomyHarness(t)
+	ctx := context.Background()
+	a := h.seedConv(store.PlatformPanel, conloomapi.ConvPrivate, "panel_a")
+	b := h.seedConv(store.PlatformPanel, conloomapi.ConvPrivate, "panel_b")
+	platform := h.seedConv("qq", conloomapi.ConvPrivate, "private_20001")
+	shared := dataBot + ":panel:private:~shared"
+
+	want := map[string]string{
+		a.Key: shared, b.Key: shared, platform.Key: platform.Key,
+		writeGroup.Key: writeGroup.Key, writeChannel.Key: writeChannel.Key,
+	}
+	var list struct {
+		Conversations []convResp `json:"conversations"`
+	}
+	h.getJSON("/panel/api/conversations", &list)
+	if len(list.Conversations) != len(want) {
+		t.Fatalf("conversations = %+v, want %d", list.Conversations, len(want))
+	}
+	for _, c := range list.Conversations {
+		if c.MemoryScope != want[c.Key] {
+			t.Errorf("listed memory_scope of %s = %q, want %q", c.Key, c.MemoryScope, want[c.Key])
+		}
+	}
+	for key, scope := range want {
+		var one convResp
+		h.getJSON(convPath(key), &one)
+		if one.MemoryScope != scope {
+			t.Errorf("memory_scope of %s = %q, want %q", key, one.MemoryScope, scope)
+		}
+	}
+
+	autonomy := func(conv store.ConversationRecord) conloomapi.AutonomyState {
+		t.Helper()
+		var st conloomapi.AutonomyState
+		h.getJSON(convPath(conv.Key, "autonomy"), &st)
+		return st
+	}
+	if w := h.write(http.MethodPut, convPath(a.Key, "autonomy", "buffs", "心情"),
+		conloomapi.AutonomyBarPut{Value: intPtr(20), Reason: "在 A 里调低"}); w.Code != http.StatusNoContent {
+		t.Fatalf("PUT bar in A: %d %s", w.Code, w.Body)
+	}
+	until := h.now.Add(20 * time.Minute)
+	if err := h.db.SetStatus(ctx, store.ConversationStatus{ConversationKey: shared, OriginConversationKey: a.Key, Activity: "洗澡",
+		StartedAt: h.now.Add(-10 * time.Minute), UntilAt: until},
+		&store.ConversationTimer{BotInstanceID: dataBot, PlatformUserID: "20001", DueAt: until}); err != nil {
+		t.Fatal(err)
+	}
+	sa, sb := autonomy(a), autonomy(b)
+	if sb.Status == nil || sb.Status.Activity != "洗澡" || len(sb.Bars) == 0 || sb.Bars[0].Name != "心情" || sb.Bars[0].Value != 20 ||
+		len(sb.Events) != 1 || sb.Events[0].Reason != "在 A 里调低" {
+		t.Fatalf("B's 自主 view = %+v, want the status and the bar change of A", sb)
+	}
+	if !reflect.DeepEqual(sa.Status, sb.Status) || !reflect.DeepEqual(sa.Bars, sb.Bars) || !reflect.DeepEqual(sa.Events, sb.Events) {
+		t.Errorf("status and bars differ:\nA %+v\nB %+v", sa, sb)
+	}
+	if len(sa.Proactive.Timers) != 1 || sa.Proactive.Timers[0].Kind != string(store.TimerStatusReturn) || len(sb.Proactive.Timers) != 0 {
+		t.Errorf("timers A %+v, B %+v, want the status return in A only", sa.Proactive.Timers, sb.Proactive.Timers)
+	}
+	if sp := autonomy(platform); sp.Status != nil || len(sp.Events) != 0 || sp.Bars[0].Value != 60 {
+		t.Errorf("platform private chat = %+v, want none of the panel scope", sp)
+	}
+
+	if w := h.write(http.MethodDelete, convPath(b.Key, "autonomy", "status"), nil); w.Code != http.StatusNoContent {
+		t.Fatalf("DELETE status in B: %d %s", w.Code, w.Body)
+	}
+	if st := autonomy(a); st.Status != nil || len(st.Proactive.Timers) != 0 {
+		t.Errorf("A after ending the status in B = %+v, want no status and no return", st)
 	}
 }

@@ -24,6 +24,7 @@ type convResp struct {
 	ProactiveEnabled       bool       `json:"proactive_enabled"`
 	ProactiveLevel         string     `json:"proactive_level"`
 	MemoryEnabled          bool       `json:"memory_enabled"`
+	MemoryScope            string     `json:"memory_scope"`
 	PersonaTemplate        *string    `json:"persona_template"`
 	PersonaVersion         *int       `json:"persona_version"`
 }
