@@ -1,0 +1,638 @@
+package persona
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"hash/crc32"
+	"image"
+	"image/color"
+	"image/png"
+	"log/slog"
+	"reflect"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/kinako404/conloom/internal/imaging"
+	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/internal/store/sqlite"
+	"github.com/kinako404/conloom/pkg/conloomapi"
+)
+
+// testPNG is a w×h PNG whose pixels depend on seed.
+func testPNG(t *testing.T, w, h int, seed uint8) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			img.Set(x, y, color.RGBA{uint8(x), uint8(y), seed, 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// bombPNG is a PNG whose header claims a w×h grayscale image and that has no
+// pixel data.
+func bombPNG(w, h uint32) []byte {
+	var buf bytes.Buffer
+	buf.WriteString("\x89PNG\r\n\x1a\n")
+	chunk := func(typ string, data []byte) {
+		var n [4]byte
+		binary.BigEndian.PutUint32(n[:], uint32(len(data)))
+		buf.Write(n[:])
+		buf.WriteString(typ)
+		buf.Write(data)
+		binary.BigEndian.PutUint32(n[:], crc32.ChecksumIEEE(append([]byte(typ), data...)))
+		buf.Write(n[:])
+	}
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr, w)
+	binary.BigEndian.PutUint32(ihdr[4:], h)
+	ihdr[8] = 8
+	chunk("IHDR", ihdr)
+	chunk("IEND", nil)
+	return buf.Bytes()
+}
+
+// imageID is the ID imaging.Process gives data.
+func imageID(t *testing.T, data []byte) string {
+	t.Helper()
+	p, err := imaging.Process(data)
+	if err != nil {
+		t.Fatalf("imaging.Process: %v", err)
+	}
+	return p.ID
+}
+
+// exchangeFile is an exchange file of templates.
+func exchangeFile(templates ...ExchangeTemplate) ExchangeFile {
+	return ExchangeFile{Format: ExchangeFormat, Version: ExchangeVersion, ExportedAt: time.Now().UTC(), Templates: templates}
+}
+
+// exchangeTemplate is the template name of an exchange file with doc and,
+// unless img is nil, img as its appearance image.
+func exchangeTemplate(name string, doc conloomapi.PersonaDoc, img []byte) ExchangeTemplate {
+	t := ExchangeTemplate{Name: name, Persona: doc}
+	if img != nil {
+		t.AppearanceImage = &ExchangeImage{MIME: "image/png", Data: base64.StdEncoding.EncodeToString(img)}
+	}
+	return t
+}
+
+// countImports makes svc count its successful imports.
+func countImports(svc *Service) func() int {
+	var n int
+	svc.SetOnImport(func(context.Context) error {
+		n++
+		return nil
+	})
+	return func() int { return n }
+}
+
+// checkUnchanged fails unless st stores exactly the templates names and none
+// of the images ids, and svc's catalog is names plus default.
+func checkUnchanged(t *testing.T, st store.Store, svc *Service, names []string, ids ...string) {
+	t.Helper()
+	if got := storedTemplateNames(t, st); !slices.Equal(got, names) {
+		t.Errorf("stored templates = %v, want %v", got, names)
+	}
+	catalog := slices.Sorted(slices.Values(append(slices.Clone(names), "default")))
+	catalog = slices.Compact(catalog)
+	if got := svc.TemplateNames(); !slices.Equal(got, catalog) {
+		t.Errorf("catalog = %v, want %v", got, catalog)
+	}
+	for _, id := range ids {
+		if ok, err := st.PersonaImageExists(context.Background(), id); err != nil || ok {
+			t.Errorf("image %s stored = %v, %v; want not stored", id, ok, err)
+		}
+	}
+}
+
+func TestExchange_RoundTripSameImageID(t *testing.T) {
+	ctx := context.Background()
+	src := newTestStore(t)
+	svc := NewService(src)
+	loadTemplates(t, svc)
+	data := testPNG(t, 1000, 500, 1)
+	p, err := imaging.Process(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := src.PutPersonaImage(ctx, store.PersonaImage{ID: p.ID, MIME: p.MIME, Width: p.Width, Height: p.Height,
+		Original: p.Original, ReplyJPEG: p.ReplyJPEG, ReplyWidth: p.ReplyWidth, ReplyHeight: p.ReplyHeight,
+		ReplyTokens: p.ReplyTokens, CreatedBy: "panel:admin"}); err != nil {
+		t.Fatal(err)
+	}
+	lighthouse, cat := tagged("灯塔"), tagged("猫")
+	lighthouse.AppearanceImage = p.ID
+	for name, doc := range map[string]conloomapi.PersonaDoc{"lighthouse": lighthouse, "cat": cat} {
+		if err := svc.PutTemplate(ctx, name, doc, "panel:admin"); err != nil {
+			t.Fatalf("PutTemplate %s: %v", name, err)
+		}
+	}
+
+	before := time.Now().Add(-time.Second)
+	f, err := svc.Export(ctx, nil)
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	if f.Format != "conloom.persona-template" || f.Version != 1 || f.ExportedAt.Before(before) || f.ExportedAt.After(time.Now()) ||
+		f.ExportedAt.Location() != time.UTC {
+		t.Errorf("exported file header = %q v%d at %v", f.Format, f.Version, f.ExportedAt)
+	}
+	want := []ExchangeTemplate{
+		{Name: "cat", Persona: cat},
+		{Name: "default", Persona: conloomapi.DefaultPersona()},
+		{Name: "lighthouse", Persona: lighthouse, AppearanceImage: &ExchangeImage{MIME: "image/png", Data: base64.StdEncoding.EncodeToString(data)}},
+	}
+	if !reflect.DeepEqual(f.Templates, want) {
+		t.Fatalf("exported templates = %+v, want %+v", f.Templates, want)
+	}
+	raw, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("panel:admin")) || bytes.Contains(raw, []byte("updated")) {
+		t.Errorf("exported file carries who stored the templates: %.300s", raw)
+	}
+	var back ExchangeFile
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := newTestStore(t)
+	other := NewService(dst)
+	loadTemplates(t, other)
+	results, err := other.Import(ctx, back, ConflictOverwrite, "panel:other")
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	wantResults := []ImportResult{
+		{Name: "cat", Requested: "cat", Created: true},
+		{Name: "default", Requested: "default", Created: false},
+		{Name: "lighthouse", Requested: "lighthouse", Created: true},
+	}
+	if !slices.Equal(results, wantResults) {
+		t.Errorf("results = %+v, want %+v", results, wantResults)
+	}
+	for _, w := range want {
+		got := info(t, other, w.Name)
+		if got.Source != SourceDB || got.UpdatedBy != "panel:other" || !reflect.DeepEqual(got.Doc, w.Persona) {
+			t.Errorf("imported %s = %+v, want the exported persona stored by panel:other", w.Name, got)
+		}
+	}
+	img, err := dst.GetPersonaImage(ctx, p.ID, true)
+	if err != nil {
+		t.Fatalf("GetPersonaImage of the imported image: %v", err)
+	}
+	if !bytes.Equal(img.Original, data) || img.MIME != "image/png" || img.Width != 1000 || img.Height != 500 ||
+		!bytes.Equal(img.ReplyJPEG, p.ReplyJPEG) || img.ReplyWidth != 768 || img.ReplyHeight != 384 ||
+		img.ReplyTokens != p.ReplyTokens || img.CreatedBy != "panel:other" {
+		t.Errorf("imported image = %s %d×%d reply %d×%d %d tokens by %s, original equal %v",
+			img.MIME, img.Width, img.Height, img.ReplyWidth, img.ReplyHeight, img.ReplyTokens, img.CreatedBy, bytes.Equal(img.Original, data))
+	}
+	restarted := NewService(dst)
+	loadTemplates(t, restarted)
+	checkInfos(t, restarted.Templates(), other.Templates())
+}
+
+func TestExport_BuiltinDefault(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := NewService(st)
+	loadTemplates(t, svc)
+	builtin := []ExchangeTemplate{{Name: "default", Persona: conloomapi.DefaultPersona()}}
+	for _, names := range [][]string{nil, {}, {"default"}, {"default", "default"}} {
+		f, err := svc.Export(ctx, names)
+		if err != nil {
+			t.Fatalf("Export(%q): %v", names, err)
+		}
+		if !reflect.DeepEqual(f.Templates, builtin) {
+			t.Errorf("Export(%q) = %+v, want the built-in default once", names, f.Templates)
+		}
+	}
+	if _, err := svc.Export(ctx, []string{"default", "nope"}); !errors.Is(err, store.ErrNotFound) || !strings.Contains(err.Error(), "nope") {
+		t.Errorf("Export of an unknown template err = %v, want ErrNotFound naming it", err)
+	}
+
+	stored := tagged("默认")
+	if err := svc.PutTemplate(ctx, "default", stored, "panel:admin"); err != nil {
+		t.Fatal(err)
+	}
+	f, err := svc.Export(ctx, []string{"default"})
+	if err != nil || !reflect.DeepEqual(f.Templates, []ExchangeTemplate{{Name: "default", Persona: stored}}) {
+		t.Errorf("Export of the stored default = %+v, %v; want the stored one", f.Templates, err)
+	}
+}
+
+func TestExport_MissingImage(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	gone := tagged("迁移")
+	gone.AppearanceImage = fakeImageID("never uploaded")
+	putTemplateRow(t, st, "migrated", gone, time.Now())
+	svc := NewService(st)
+	var logs bytes.Buffer
+	svc.SetLogger(slog.New(slog.NewTextHandler(&logs, nil)))
+	loadTemplates(t, svc)
+
+	f, err := svc.Export(ctx, []string{"migrated"})
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	without := gone
+	without.AppearanceImage = ""
+	if !reflect.DeepEqual(f.Templates, []ExchangeTemplate{{Name: "migrated", Persona: without}}) {
+		t.Errorf("exported = %+v, want the persona without its missing image", f.Templates)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), gone.AppearanceImage) {
+		t.Errorf("no warning about the missing image:\n%s", logs.String())
+	}
+	other := NewService(newTestStore(t))
+	loadTemplates(t, other)
+	if _, err := other.Import(ctx, f, ConflictFail, "panel:admin"); err != nil {
+		t.Errorf("Import of the exported file: %v", err)
+	}
+}
+
+func TestImport_AllOrNothing(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := newServiceWith(t, st, map[string]conloomapi.PersonaDoc{"lighthouse": tagged("灯塔")})
+	imports := countImports(svc)
+	img := testPNG(t, 16, 16, 2)
+	warm := tagged("坏")
+	warm.Style.Warmth = 2
+	f := exchangeFile(
+		exchangeTemplate("cat", tagged("猫"), img),
+		exchangeTemplate("warm", warm, nil),
+		exchangeTemplate("owl", tagged("夜猫"), nil),
+		exchangeTemplate("Night Owl", tagged("夜猫"), nil),
+	)
+	for _, mode := range []ConflictMode{ConflictFail, ConflictOverwrite, ConflictRename} {
+		results, err := svc.Import(ctx, f, mode, "panel:admin")
+		if !errors.Is(err, ErrInvalidTemplate) || results != nil {
+			t.Fatalf("Import (%s) = %+v, %v; want ErrInvalidTemplate", mode, results, err)
+		}
+		for _, part := range []string{`templates[1] "warm"`, "style.warmth", `templates[3] "Night Owl"`, "name must be"} {
+			if !strings.Contains(err.Error(), part) {
+				t.Errorf("Import (%s) err = %v, want it to mention %s", mode, err, part)
+			}
+		}
+		if strings.Contains(err.Error(), `"cat"`) || strings.Contains(err.Error(), `"owl"`) {
+			t.Errorf("Import (%s) err = %v, names valid templates", mode, err)
+		}
+		checkUnchanged(t, st, svc, []string{"lighthouse"}, imageID(t, img))
+	}
+	if n := imports(); n != 0 {
+		t.Errorf("OnImport called %d times by refused imports", n)
+	}
+}
+
+func TestImport_RejectsBadImage(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := newServiceWith(t, st, nil)
+	good := testPNG(t, 16, 16, 3)
+	for _, c := range []struct {
+		name string
+		data string
+		want error
+	}{
+		{"not base64", "!!!not-base64!!!", nil},
+		{"base64 url encoding", base64.URLEncoding.EncodeToString(append(slices.Repeat([]byte{0xff}, 3), good...)), nil},
+		{"gif", base64.StdEncoding.EncodeToString([]byte("GIF89a\x01\x00\x01\x00\x00\x00\x00;")), imaging.ErrUnsupported},
+		{"text", base64.StdEncoding.EncodeToString([]byte("不是图片")), imaging.ErrUnsupported},
+		{"empty", "", imaging.ErrUnsupported},
+		{"broken png", base64.StdEncoding.EncodeToString(good[:len(good)/2]), imaging.ErrUnsupported},
+		{"bomb over the edge limit", base64.StdEncoding.EncodeToString(bombPNG(20000, 20000)), imaging.ErrTooLarge},
+		{"bomb over the pixel limit", base64.StdEncoding.EncodeToString(bombPNG(6000, 6000)), imaging.ErrTooLarge},
+	} {
+		f := exchangeFile(exchangeTemplate("cat", tagged("猫"), good),
+			ExchangeTemplate{Name: "bad", Persona: tagged("坏"), AppearanceImage: &ExchangeImage{MIME: "image/png", Data: c.data}})
+		_, err := svc.Import(ctx, f, ConflictFail, "panel:admin")
+		if !errors.Is(err, ErrInvalidTemplate) || !strings.Contains(err.Error(), `templates[1] "bad"`) ||
+			!strings.Contains(err.Error(), "appearance_image") {
+			t.Errorf("%s: err = %v, want ErrInvalidTemplate about the appearance image of bad", c.name, err)
+			continue
+		}
+		if c.want != nil && !errors.Is(err, c.want) {
+			t.Errorf("%s: err = %v, want %v", c.name, err, c.want)
+		}
+		if len(c.data) > 8 && strings.Contains(err.Error(), c.data[:8]) {
+			t.Errorf("%s: err = %v, quotes the image data", c.name, err)
+		}
+		checkUnchanged(t, st, svc, []string{}, imageID(t, good))
+	}
+}
+
+// conflictSetup returns a service whose store has lighthouse, cat, cat-2, a
+// template with the longest name allowed and the first rename of it.
+func conflictSetup(t *testing.T) (*sqlite.DB, *Service) {
+	t.Helper()
+	st := newTestStore(t)
+	svc := newServiceWith(t, st, map[string]conloomapi.PersonaDoc{
+		"lighthouse": tagged("灯塔"), "cat": tagged("猫"), "cat-2": tagged("猫2"),
+		longName: tagged("长"), longName[:30] + "-2": tagged("长2"),
+	})
+	return st, svc
+}
+
+const longName = "abcdefghijklmnopqrstuvwxyz012345"
+
+func TestImport_ConflictModes(t *testing.T) {
+	ctx := context.Background()
+	stored := []string{"abcdefghijklmnopqrstuvwxyz0123-2", longName, "cat", "cat-2", "lighthouse"}
+	f := exchangeFile(
+		exchangeTemplate("lighthouse", tagged("新灯塔"), nil),
+		exchangeTemplate("owl", tagged("夜猫"), nil),
+		exchangeTemplate("cat", tagged("新猫"), nil),
+		exchangeTemplate("default", tagged("新默认"), nil),
+		exchangeTemplate(longName, tagged("新长"), nil),
+		exchangeTemplate("lighthouse-2", tagged("灯塔2"), nil),
+	)
+
+	t.Run("fail", func(t *testing.T) {
+		st, svc := conflictSetup(t)
+		imports := countImports(svc)
+		results, err := svc.Import(ctx, f, ConflictFail, "panel:admin")
+		var conflict *ImportConflictError
+		if !errors.Is(err, ErrImportConflict) || !errors.As(err, &conflict) || results != nil {
+			t.Fatalf("Import = %+v, %v; want ErrImportConflict", results, err)
+		}
+		wantNames := []string{"lighthouse", "cat", "default", longName}
+		if !slices.Equal(conflict.Names, wantNames) {
+			t.Errorf("conflicting names = %v, want %v", conflict.Names, wantNames)
+		}
+		for _, name := range wantNames {
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("err = %v, want it to name %s", err, name)
+			}
+		}
+		if _, err := svc.Import(ctx, f, "", "panel:admin"); !errors.Is(err, ErrImportConflict) {
+			t.Errorf("Import without a mode err = %v, want ErrImportConflict", err)
+		}
+		checkUnchanged(t, st, svc, stored)
+		if doc, _ := svc.Template("lighthouse"); !reflect.DeepEqual(doc, tagged("灯塔")) {
+			t.Errorf("lighthouse = %+v, want it unchanged", doc)
+		}
+		if n := imports(); n != 0 {
+			t.Errorf("OnImport called %d times by a refused import", n)
+		}
+	})
+
+	t.Run("overwrite", func(t *testing.T) {
+		st, svc := conflictSetup(t)
+		imports := countImports(svc)
+		results, err := svc.Import(ctx, f, ConflictOverwrite, "panel:other")
+		if err != nil {
+			t.Fatalf("Import: %v", err)
+		}
+		want := []ImportResult{
+			{Name: "lighthouse", Requested: "lighthouse"},
+			{Name: "owl", Requested: "owl", Created: true},
+			{Name: "cat", Requested: "cat"},
+			{Name: "default", Requested: "default"},
+			{Name: longName, Requested: longName},
+			{Name: "lighthouse-2", Requested: "lighthouse-2", Created: true},
+		}
+		if !slices.Equal(results, want) {
+			t.Errorf("results = %+v, want %+v", results, want)
+		}
+		for name, tag := range map[string]string{"lighthouse": "新灯塔", "owl": "夜猫", "cat": "新猫", "default": "新默认",
+			longName: "新长", "lighthouse-2": "灯塔2", "cat-2": "猫2"} {
+			if got := info(t, svc, name); got.Source != SourceDB || !reflect.DeepEqual(got.Doc, tagged(tag)) {
+				t.Errorf("%s after the import = %+v, want tagged %s", name, got, tag)
+			}
+		}
+		if got := storedTemplateNames(t, st); len(got) != len(stored)+3 {
+			t.Errorf("stored templates = %v, want the old ones plus default, lighthouse-2 and owl", got)
+		}
+		if n := imports(); n != 1 {
+			t.Errorf("OnImport called %d times, want 1", n)
+		}
+	})
+
+	t.Run("rename", func(t *testing.T) {
+		_, svc := conflictSetup(t)
+		results, err := svc.Import(ctx, f, ConflictRename, "panel:other")
+		if err != nil {
+			t.Fatalf("Import: %v", err)
+		}
+		want := []ImportResult{
+			{Name: "lighthouse-3", Requested: "lighthouse", Created: true},
+			{Name: "owl", Requested: "owl", Created: true},
+			{Name: "cat-3", Requested: "cat", Created: true},
+			{Name: "default-2", Requested: "default", Created: true},
+			{Name: "abcdefghijklmnopqrstuvwxyz0123-3", Requested: longName, Created: true},
+			{Name: "lighthouse-2", Requested: "lighthouse-2", Created: true},
+		}
+		if !slices.Equal(results, want) {
+			t.Errorf("results = %+v, want %+v", results, want)
+		}
+		for name, tag := range map[string]string{"lighthouse": "灯塔", "cat": "猫", "cat-2": "猫2", longName: "长",
+			"lighthouse-3": "新灯塔", "cat-3": "新猫", "default-2": "新默认", "abcdefghijklmnopqrstuvwxyz0123-3": "新长", "lighthouse-2": "灯塔2"} {
+			if got := info(t, svc, name); !reflect.DeepEqual(got.Doc, tagged(tag)) {
+				t.Errorf("%s after the import = %+v, want tagged %s", name, got.Doc, tag)
+			}
+		}
+		if got := info(t, svc, "default"); got.Source != SourceBuiltin {
+			t.Errorf("default after a renaming import = %+v, want the built-in one", got)
+		}
+	})
+
+	t.Run("unknown mode", func(t *testing.T) {
+		st, svc := conflictSetup(t)
+		if _, err := svc.Import(ctx, exchangeFile(exchangeTemplate("owl", tagged("夜猫"), nil)), "merge", "panel:admin"); !errors.Is(err, ErrInvalid) {
+			t.Errorf("Import with mode merge err = %v, want ErrInvalid", err)
+		}
+		checkUnchanged(t, st, svc, stored)
+	})
+}
+
+func TestImport_RejectsWrongFormatOrVersion(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := newServiceWith(t, st, nil)
+	good := exchangeFile(exchangeTemplate("owl", tagged("夜猫"), nil))
+	for _, c := range []struct {
+		name string
+		edit func(*ExchangeFile)
+		want string
+	}{
+		{"no format", func(f *ExchangeFile) { f.Format = "" }, "format"},
+		{"other format", func(f *ExchangeFile) { f.Format = "conloom.persona" }, "format"},
+		{"version 0", func(f *ExchangeFile) { f.Version = 0 }, "version"},
+		{"version 2", func(f *ExchangeFile) { f.Version = 2 }, "version"},
+		{"no templates", func(f *ExchangeFile) { f.Templates = nil }, "no templates"},
+	} {
+		f := good
+		c.edit(&f)
+		if _, err := svc.Import(ctx, f, ConflictOverwrite, "panel:admin"); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want ErrInvalid about %s", c.name, err, c.want)
+		}
+		checkUnchanged(t, st, svc, []string{})
+	}
+	if _, err := svc.Import(ctx, good, ConflictFail, "panel:admin"); err != nil {
+		t.Errorf("Import of the good file: %v", err)
+	}
+}
+
+func TestImport_DuplicateNamesInFile(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := newServiceWith(t, st, nil)
+	f := exchangeFile(
+		exchangeTemplate("cat", tagged("猫"), nil),
+		exchangeTemplate("owl", tagged("夜猫"), nil),
+		exchangeTemplate("cat", tagged("猫2"), nil),
+	)
+	for _, mode := range []ConflictMode{ConflictFail, ConflictOverwrite, ConflictRename} {
+		_, err := svc.Import(ctx, f, mode, "panel:admin")
+		if !errors.Is(err, ErrInvalidTemplate) || !strings.Contains(err.Error(), `templates[2] "cat"`) ||
+			!strings.Contains(err.Error(), "templates[0]") {
+			t.Errorf("Import (%s) err = %v, want ErrInvalidTemplate naming both cats", mode, err)
+		}
+		checkUnchanged(t, st, svc, []string{})
+	}
+}
+
+func TestImport_ProtectedModeRule(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := newServiceWith(t, st, nil)
+	minorAdult := tagged("甲")
+	minorAdult.Minor, minorAdult.Adult = true, true
+	f := exchangeFile(exchangeTemplate("owl", tagged("夜猫"), nil), exchangeTemplate("both", minorAdult, nil))
+	for _, mode := range []ConflictMode{ConflictFail, ConflictOverwrite, ConflictRename} {
+		_, err := svc.Import(ctx, f, mode, "panel:admin")
+		if !errors.Is(err, ErrInvalidTemplate) || !strings.Contains(err.Error(), "a minor persona cannot be adult") ||
+			!strings.Contains(err.Error(), `"both"`) {
+			t.Errorf("Import (%s) of a minor adult persona err = %v, want ErrInvalidTemplate", mode, err)
+		}
+		checkUnchanged(t, st, svc, []string{})
+	}
+	adult, minor := tagged("乙"), tagged("丙")
+	adult.Adult, minor.Minor = true, true
+	if _, err := svc.Import(ctx, exchangeFile(exchangeTemplate("grownup", adult, nil), exchangeTemplate("young", minor, nil)),
+		ConflictFail, "panel:admin"); err != nil {
+		t.Errorf("Import of an adult and a minor persona: %v", err)
+	}
+}
+
+func TestImport_AppearanceImageID(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := newServiceWith(t, st, nil)
+	stored := putTestImage(t, st, "stored")
+	shared, other := testPNG(t, 20, 10, 4), testPNG(t, 10, 20, 5)
+	sharedID, otherID := imageID(t, shared), imageID(t, other)
+
+	claimsOther := tagged("甲")
+	claimsOther.AppearanceImage = fakeImageID("what the file says")
+	keepsStored := tagged("乙")
+	keepsStored.AppearanceImage = stored
+	namesEmbedded := tagged("丙")
+	namesEmbedded.AppearanceImage = otherID
+	results, err := svc.Import(ctx, exchangeFile(
+		exchangeTemplate("claims", claimsOther, shared),
+		exchangeTemplate("bare", tagged("丁"), shared),
+		exchangeTemplate("stored", keepsStored, nil),
+		exchangeTemplate("refers", namesEmbedded, nil),
+		exchangeTemplate("other", tagged("戊"), other),
+	), ConflictFail, "panel:admin")
+	if err != nil {
+		t.Fatalf("Import: %v (results %+v)", err, results)
+	}
+	for name, id := range map[string]string{"claims": sharedID, "bare": sharedID, "stored": stored, "refers": otherID, "other": otherID} {
+		if doc, _ := svc.Template(name); doc.AppearanceImage != id {
+			t.Errorf("%s appearance_image = %q, want %q", name, doc.AppearanceImage, id)
+		}
+	}
+	for _, id := range []string{sharedID, otherID} {
+		if img, err := st.GetPersonaImage(ctx, id, true); err != nil || imageID(t, img.Original) != id {
+			t.Errorf("image %s = %v; want stored with its bytes", id, err)
+		}
+	}
+
+	unknown := tagged("己")
+	unknown.AppearanceImage = fakeImageID("never uploaded")
+	if _, err := svc.Import(ctx, exchangeFile(exchangeTemplate("unknown", unknown, nil)), ConflictFail, "panel:admin"); !errors.Is(err, ErrInvalidTemplate) ||
+		!strings.Contains(err.Error(), "unknown appearance_image") {
+		t.Errorf("Import of a persona naming an image neither embedded nor stored err = %v, want ErrInvalidTemplate", err)
+	}
+	if _, ok := svc.Template("unknown"); ok {
+		t.Error("template unknown imported")
+	}
+}
+
+// importHook is a store whose ImportPersonaTemplates fails with err when set
+// and otherwise stores, then calls after.
+type importHook struct {
+	store.Store
+	err   error
+	after func()
+}
+
+func (s importHook) ImportPersonaTemplates(ctx context.Context, images []store.PersonaImage, rows []store.PersonaTemplateRecord) error {
+	if s.err != nil {
+		return s.err
+	}
+	err := s.Store.ImportPersonaTemplates(ctx, images, rows)
+	if s.after != nil {
+		s.after()
+	}
+	return err
+}
+
+func TestImport_OnImport(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	f := exchangeFile(exchangeTemplate("owl", tagged("夜猫"), nil))
+
+	broken := newServiceWith(t, importHook{Store: st, err: errors.New("disk full")}, nil)
+	imports := countImports(broken)
+	if results, err := broken.Import(ctx, f, ConflictFail, "panel:admin"); err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("Import with a failing store = %+v, %v; want its error", results, err)
+	}
+	checkUnchanged(t, st, broken, []string{})
+	if n := imports(); n != 0 {
+		t.Errorf("OnImport called %d times after a failed import", n)
+	}
+
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	svc := newServiceWith(t, importHook{Store: st, after: cancel}, nil)
+	var logs bytes.Buffer
+	svc.SetLogger(slog.New(slog.NewTextHandler(&logs, nil)))
+	var seen []string
+	svc.SetOnImport(func(ctx context.Context) error {
+		if ctx.Err() != nil {
+			t.Errorf("OnImport context is done: %v", ctx.Err())
+		}
+		seen = svc.TemplateNames()
+		return errors.New("bots not refreshed")
+	})
+	results, err := svc.Import(reqCtx, f, ConflictFail, "panel:admin")
+	if err != nil || !slices.Equal(results, []ImportResult{{Name: "owl", Requested: "owl", Created: true}}) {
+		t.Fatalf("Import = %+v, %v; want owl created despite the failing OnImport", results, err)
+	}
+	if !slices.Equal(seen, []string{"default", "owl"}) {
+		t.Errorf("OnImport saw the catalog %v, want it to hold owl", seen)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "bots not refreshed") {
+		t.Errorf("failing OnImport not logged:\n%s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "persona templates imported") || !strings.Contains(logs.String(), "owl") {
+		t.Errorf("import not logged:\n%s", logs.String())
+	}
+}

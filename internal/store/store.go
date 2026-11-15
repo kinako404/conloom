@@ -152,6 +152,10 @@ type Store interface {
 	// keeping its CreatedAt. A zero UpdatedAt is stored as now, a zero
 	// CreatedAt as UpdatedAt.
 	PutPersonaTemplate(ctx context.Context, r PersonaTemplateRecord) error
+	// ImportPersonaTemplates stores images as PutPersonaImage does and then
+	// rows as PutPersonaTemplate does, all in one transaction: when one
+	// fails, nothing is stored.
+	ImportPersonaTemplates(ctx context.Context, images []PersonaImage, rows []PersonaTemplateRecord) error
 	// DeletePersonaTemplate deletes the template and reports whether it existed.
 	DeletePersonaTemplate(ctx context.Context, name string) (bool, error)
 	LatestPolicy(ctx context.Context, convKey string) (PolicyVersion, error)

@@ -122,6 +122,7 @@ type Service struct {
 
 	imageExists   func(ctx context.Context, id string) (bool, error)
 	templateUsers func(name string) []string
+	onImport      func(ctx context.Context) error
 	log           *slog.Logger
 
 	// writeMu serialises version creation so concurrent callers never append duplicates.
@@ -155,8 +156,17 @@ func (s *Service) SetTemplateUsers(f func(name string) []string) {
 	s.templateUsers = f
 }
 
-// SetLogger sets the logger LoadTemplates reports to; by default it logs
-// nothing. Call it before the Service is shared.
+// SetOnImport sets f, which Import calls after it stored and published
+// templates, with a context not cancelled with Import's; the orchestrator
+// publishes the bots again there, so that a bot whose template was missing
+// loses its problem. An error of f is only logged. Call it before Import is
+// first called.
+func (s *Service) SetOnImport(f func(ctx context.Context) error) {
+	s.onImport = f
+}
+
+// SetLogger sets the logger LoadTemplates, Export and Import report to; by
+// default it logs nothing. Call it before the Service is shared.
 func (s *Service) SetLogger(l *slog.Logger) {
 	s.log = l
 }
@@ -317,11 +327,7 @@ func (s *Service) checkImage(ctx context.Context, p conloomapi.PersonaDoc, inval
 	if p.AppearanceImage == "" {
 		return nil
 	}
-	exists := s.imageExists
-	if exists == nil {
-		exists = s.st.PersonaImageExists
-	}
-	ok, err := exists(ctx, p.AppearanceImage)
+	ok, err := s.imageUploaded(ctx, p.AppearanceImage)
 	switch {
 	case err != nil:
 		return fmt.Errorf("persona: check appearance image: %w", err)
@@ -329,6 +335,16 @@ func (s *Service) checkImage(ctx context.Context, p conloomapi.PersonaDoc, inval
 		return fmt.Errorf("%w: unknown appearance_image %q", invalid, p.AppearanceImage)
 	}
 	return nil
+}
+
+// imageUploaded reports whether the appearance image id was uploaded (see
+// SetImageChecker).
+func (s *Service) imageUploaded(ctx context.Context, id string) (bool, error) {
+	exists := s.imageExists
+	if exists == nil {
+		exists = s.st.PersonaImageExists
+	}
+	return exists(ctx, id)
 }
 
 // Current returns the latest persona version, creating version 1 from the

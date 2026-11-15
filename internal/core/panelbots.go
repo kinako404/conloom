@@ -103,7 +103,8 @@ func randomPanelBotID() string {
 
 // Load publishes the config bots and the stored panel bots to the bot
 // directory, each as it takes effect with the persona templates of the
-// moment, so call it again after a template change. A bot whose persona
+// moment, so call it again after a template change; an import of templates
+// calls it itself (New sets it as the personas' OnImport). A bot whose persona
 // template does not exist uses "default" instead, and a panel bot's skill
 // that is no longer registered or no longer usable in private chats is left
 // out; each is logged as a warning and noted among the bot's problems in the

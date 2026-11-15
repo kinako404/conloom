@@ -772,6 +772,47 @@ func TestPanelBots_LoadMarksConfigBotProblems(t *testing.T) {
 	}
 }
 
+func TestPanelBots_ImportClearsTemplateProblems(t *testing.T) {
+	env := panelBotEnv(t, testOpts{configure: func(c *config.Config) { c.Bots[0].PersonaTemplate = "night-owl" }})
+	ctx := context.Background()
+	svc := env.o.PanelBots()
+	cat := conloomapi.DefaultPersona()
+	cat.PersonaName = "猫人格"
+	if err := env.o.personas.PutTemplate(ctx, "online_cat", cat, panelBotActor); err != nil {
+		t.Fatalf("PutTemplate: %v", err)
+	}
+	bot := env.createPanelBot(t, PanelBotInput{Name: "小红", PersonaTemplate: "online_cat"})
+	// The template disappears behind the catalog's back, as a stored row
+	// found invalid at startup does.
+	if _, err := env.st.DeletePersonaTemplate(ctx, "online_cat"); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.o.personas.LoadTemplates(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Load(ctx); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, id := range []string{testBot, bot.ID} {
+		if b, _ := env.o.bots.Bot(id); b.PersonaTemplate != "default" || len(env.o.bots.Problems(id)) != 1 {
+			t.Fatalf("bot %s with a missing template = %+v, problems %q; want default with a problem", id, b, env.o.bots.Problems(id))
+		}
+	}
+
+	owl := conloomapi.DefaultPersona()
+	owl.PersonaName = "夜猫人格"
+	f := persona.ExchangeFile{Format: persona.ExchangeFormat, Version: persona.ExchangeVersion,
+		Templates: []persona.ExchangeTemplate{{Name: "night-owl", Persona: owl}, {Name: "online_cat", Persona: cat}}}
+	if _, err := env.o.personas.Import(ctx, f, persona.ConflictFail, panelBotActor); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	for id, want := range map[string]string{testBot: "night-owl", bot.ID: "online_cat"} {
+		if b, _ := env.o.bots.Bot(id); b.PersonaTemplate != want || env.o.bots.Problems(id) != nil {
+			t.Errorf("bot %s after its template was imported = %+v, problems %q; want %s without problems", id, b, env.o.bots.Problems(id), want)
+		}
+	}
+}
+
 func TestPanelBots_PrivateSkills(t *testing.T) {
 	env := panelBotEnv(t, testOpts{})
 	var names []string

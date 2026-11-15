@@ -254,6 +254,7 @@ func New(d Deps) (*Orchestrator, error) {
 	o.sched.OnDrop(o.dropHeldTurn)
 	o.bgCtx, o.bgCancel = context.WithCancel(context.Background())
 	o.policies.OnChange(o.PolicyChanged)
+	o.personas.SetOnImport(o.panelBots.Load)
 	if lvl := o.cfg.DefaultGroupPolicy.Review.Level; !review.LevelImplemented(lvl) {
 		o.log.Warn("model review is not implemented yet; this review level behaves like basic", "level", lvl)
 	}

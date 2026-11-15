@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -13,7 +14,11 @@ import (
 const personaImageCols = `id, mime, width, height, reply_jpeg, reply_width, reply_height, reply_tokens, created_by, created_at`
 
 func (db *DB) PutPersonaImage(ctx context.Context, img store.PersonaImage) error {
-	_, err := db.w.ExecContext(ctx, `INSERT INTO persona_images
+	return putPersonaImage(ctx, db.w, img)
+}
+
+func putPersonaImage(ctx context.Context, e execer, img store.PersonaImage) error {
+	_, err := e.ExecContext(ctx, `INSERT INTO persona_images
 		(id, mime, width, height, original, reply_jpeg, reply_width, reply_height, reply_tokens, created_by, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET created_at = excluded.created_at, created_by = excluded.created_by`,
@@ -109,6 +114,10 @@ func decodeTemplate(r *store.PersonaTemplateRecord, persona, created, updated st
 }
 
 func (db *DB) PutPersonaTemplate(ctx context.Context, r store.PersonaTemplateRecord) error {
+	return putPersonaTemplate(ctx, db.w, r)
+}
+
+func putPersonaTemplate(ctx context.Context, e execer, r store.PersonaTemplateRecord) error {
 	persona, err := json.Marshal(r.Persona)
 	if err != nil {
 		return err
@@ -118,12 +127,28 @@ func (db *DB) PutPersonaTemplate(ctx context.Context, r store.PersonaTemplateRec
 	if created.IsZero() {
 		created = updated
 	}
-	_, err = db.w.ExecContext(ctx, `INSERT INTO persona_templates (name, persona, updated_by, created_at, updated_at)
+	_, err = e.ExecContext(ctx, `INSERT INTO persona_templates (name, persona, updated_by, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT (name) DO UPDATE SET persona = excluded.persona, updated_by = excluded.updated_by,
 			updated_at = excluded.updated_at`,
 		r.Name, string(persona), r.UpdatedBy, fmtTime(created), fmtTime(updated))
 	return err
+}
+
+func (db *DB) ImportPersonaTemplates(ctx context.Context, images []store.PersonaImage, rows []store.PersonaTemplateRecord) error {
+	return db.inTx(ctx, func(tx *sql.Tx) error {
+		for _, img := range images {
+			if err := putPersonaImage(ctx, tx, img); err != nil {
+				return fmt.Errorf("image %s: %w", img.ID, err)
+			}
+		}
+		for _, r := range rows {
+			if err := putPersonaTemplate(ctx, tx, r); err != nil {
+				return fmt.Errorf("template %q: %w", r.Name, err)
+			}
+		}
+		return nil
+	})
 }
 
 func (db *DB) DeletePersonaTemplate(ctx context.Context, name string) (bool, error) {

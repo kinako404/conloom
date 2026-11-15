@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -382,6 +384,48 @@ func TestPersonaTemplates_ListReportsUnreadableRows(t *testing.T) {
 	if !slices.Equal(names, []string{"a_json", "c_created", "d_updated"}) {
 		t.Fatalf("unreadable rows = %+v, want a_json, c_created and d_updated", unreadable)
 	}
+}
+
+func TestPersonaTemplates_ImportOneTransaction(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	at := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	kept := fakeImage("kept", at)
+	putImage(t, db, kept)
+	old := store.PersonaTemplateRecord{Name: "teacher", Persona: conloomapi.DefaultPersona(), UpdatedBy: "panel:admin",
+		CreatedAt: at, UpdatedAt: at}
+	putTemplate(t, db, old)
+
+	later := at.Add(time.Hour)
+	again := kept
+	again.ReplyJPEG, again.CreatedBy, again.CreatedAt = []byte("other reply"), "panel:other", later
+	added := fakeImage("added", later)
+	added.CreatedBy = "panel:other"
+	teacher := store.PersonaTemplateRecord{Name: "teacher", Persona: personaWithImage(kept.ID), UpdatedBy: "panel:other", UpdatedAt: later}
+	student := store.PersonaTemplateRecord{Name: "student", Persona: personaWithImage(added.ID), UpdatedBy: "panel:other", UpdatedAt: later}
+	broken := student
+	broken.Name = "broken"
+	broken.Persona.Style.Warmth = math.NaN()
+
+	err := db.ImportPersonaTemplates(ctx, []store.PersonaImage{again, added}, []store.PersonaTemplateRecord{teacher, broken})
+	if err == nil || !strings.Contains(err.Error(), "broken") {
+		t.Fatalf("ImportPersonaTemplates with a row that cannot be stored err = %v, want one naming it", err)
+	}
+	checkImage(t, getImage(t, db, kept.ID, true), kept)
+	if imageExists(t, db, added.ID) {
+		t.Fatal("image of a failed import stored")
+	}
+	checkTemplates(t, listTemplates(t, db), []store.PersonaTemplateRecord{old})
+
+	if err := db.ImportPersonaTemplates(ctx, []store.PersonaImage{again, added}, []store.PersonaTemplateRecord{teacher, student}); err != nil {
+		t.Fatalf("ImportPersonaTemplates: %v", err)
+	}
+	reuploaded := kept
+	reuploaded.CreatedBy, reuploaded.CreatedAt = again.CreatedBy, again.CreatedAt
+	checkImage(t, getImage(t, db, kept.ID, true), reuploaded)
+	checkImage(t, getImage(t, db, added.ID, true), added)
+	teacher.CreatedAt, student.CreatedAt = at, later
+	checkTemplates(t, listTemplates(t, db), []store.PersonaTemplateRecord{student, teacher})
 }
 
 func TestMigration0014_OnlyAddsTables(t *testing.T) {
