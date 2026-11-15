@@ -2,9 +2,11 @@ package store
 
 import "time"
 
-// ConversationStats is a conversation with a summary of its messages.
+// ConversationStats is a conversation with when it was first stored and a
+// summary of its messages.
 type ConversationStats struct {
 	ConversationRecord
+	CreatedAt     time.Time
 	MessageCount  int
 	LastMessageAt time.Time // zero when the conversation has no messages
 }

@@ -437,7 +437,9 @@ func (h *writeHarness) panelChat(botID, name string) store.ConversationRecord {
 
 func TestChatsAPI_GroupsAndOrder(t *testing.T) {
 	h := newBotsHarness(t)
-	base := time.Date(2026, 11, 13, 6, 0, 0, 0, time.UTC)
+	// The store records a conversation's creation on the wall clock; these
+	// messages come after it, so they order the chats that have them.
+	base := time.Now().UTC().Truncate(time.Second).Add(time.Hour)
 	red := h.createBot("小红", "cat")
 	h.advance(time.Minute) // panel bots are listed by creation
 	green := h.createBot("小绿", "default")
@@ -511,12 +513,13 @@ func TestChatsAPI_GroupsAndOrder(t *testing.T) {
 		green.ID: {},
 	})
 
-	// At most 200 chats a bot, the newest first: the quiet ones last, by key.
+	// At most 200 chats a bot, cut after sorting: the quiet ones by creation,
+	// the newest first, so the two created first are left out.
 	for i := range 199 {
 		h.seedConv("qq", conloomapi.ConvPrivate, fmt.Sprint(21000+i))
 	}
-	capped := append([]item{}, configChats...)
-	for i := range 197 {
+	capped := append([]item{}, configChats[:2]...)
+	for i := 198; i >= 1; i-- {
 		id := fmt.Sprint(21000 + i)
 		capped = append(capped, item{store.ConversationKey(dataBot, "qq", conloomapi.ConvPrivate, id), id, "qq", true, nil})
 	}
@@ -530,6 +533,44 @@ func TestChatsAPI_GroupsAndOrder(t *testing.T) {
 	})
 	if b := h.bots().Bots[0]; b.Chats != 202 || b.LastMessageAt == nil || !b.LastMessageAt.Equal(base.Add(3*time.Minute)) {
 		t.Errorf("config bot = %+v, want 202 private chats, the last message at %s", b, base.Add(3*time.Minute))
+	}
+}
+
+func TestChatsAPI_NewChatFirst(t *testing.T) {
+	h := newBotsHarness(t)
+	bot := h.createBot("小红", "cat")
+	past := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	older := h.panelChat(bot.ID, "阿蓝")
+	h.seedChatMessage(older, "panel_"+testUser, "阿蓝", past)
+	recent := h.panelChat(bot.ID, "阿紫")
+	h.seedChatMessage(recent, "panel_"+testUser, "阿紫", past.Add(30*time.Minute))
+	platform := h.seedConv("qq", conloomapi.ConvPrivate, "20001")
+	h.seedMessage(platform, "在吗", past.Add(40*time.Minute), false)
+
+	fresh := h.panelChat(bot.ID, "阿绿")
+	configFresh := h.panelChat(dataBot, "小白")
+
+	var resp chatsResp
+	h.getJSON("/panel/api/chats", &resp)
+	keys := map[string][]string{}
+	for _, b := range resp.Bots {
+		for _, c := range b.Chats {
+			keys[b.ID] = append(keys[b.ID], c.Key)
+			if c.Key == fresh.Key && (c.LastMessageAt != nil || c.Title != "阿绿") {
+				t.Errorf("new chat = %+v, want titled 阿绿 without a last message", c)
+			}
+		}
+	}
+	if want := []string{fresh.Key, recent.Key, older.Key}; !slices.Equal(keys[bot.ID], want) {
+		t.Errorf("panel bot chats = %v, want the new empty chat first: %v", keys[bot.ID], want)
+	}
+	if want := []string{configFresh.Key, platform.Key}; !slices.Equal(keys[dataBot], want) {
+		t.Errorf("config bot chats = %v, want the new empty chat first: %v", keys[dataBot], want)
+	}
+
+	list := h.bots()
+	if b := list.Bots[1]; b.ID != bot.ID || b.Chats != 3 || !sameTime(b.LastMessageAt, new(past.Add(30*time.Minute))) {
+		t.Errorf("panel bot = %+v, want 3 chats, the last message at %s", b, past.Add(30*time.Minute))
 	}
 }
 

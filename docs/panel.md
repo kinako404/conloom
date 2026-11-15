@@ -207,7 +207,7 @@ panel:
 | `GET metrics/live` | 本进程 Prometheus 指标的快照：计数器和仪表给值，直方图给次数、总和和按桶估算的 p50 / p95 |
 | `GET bots` | 全部 bot `bots`：先配置 bot，再按新建顺序列面板 bot。每项 `id`、`name`、`source`（`config` 或 `panel`）、`persona_template` 和 `skills`（运行时生效的值）、`problems`（面板 bot 失效引用的说明，没有时为空列表）、`chats`（私聊数）、`last_message_at`（这些私聊最后一条消息的时间）。另有 `templates`：可选的人设模板名，按名字排序 |
 | `GET bots/skills` | 面板 bot 可以启用的技能 `skills`（已加载、允许在私聊里用、工具齐全），每项 `name`、`description`，按名字排序 |
-| `GET chats` | 聊天页左栏用：`bots` 按 bot 分组，顺序同 `GET bots`，每组 `id`、`name`、`source` 和这个 bot 的私聊 `chats`（没有时为空列表）。私聊按最后一条消息从新到旧，没有消息的排最后，每个 bot 最多 200 个；群聊不列出。每项 `key`、`title`（对方的显示名：会话里他最新的昵称；面板聊天还没人发言时是新建时填的称呼；都没有时是平台会话 ID）、`platform`、`takeover`（平台上的私聊为 true，在面板里发言是接管；面板聊天为 false）、`last_message_at` |
+| `GET chats` | 聊天页左栏用：`bots` 按 bot 分组，顺序同 `GET bots`，每组 `id`、`name`、`source` 和这个 bot 的私聊 `chats`（没有时为空列表）。私聊按最近活动从新到旧：取最后一条消息的时间和会话建立的时间中较晚的一个，所以刚新建、还没有消息的聊天排在最前；排好序后每个 bot 取前 200 个；群聊不列出。每项 `key`、`title`（对方的显示名：会话里他最新的昵称；面板聊天还没人发言时是新建时填的称呼；都没有时是平台会话 ID）、`platform`、`takeover`（平台上的私聊为 true，在面板里发言是接管；面板聊天为 false）、`last_message_at` |
 | `GET conversations` | 全部会话 `conversations`，以及全部 bot `bots`（`id`、`name`、`platform`、`source`，“新建聊天”从这里选；面板 bot 的 `platform` 和 `source` 都是 `panel`）。私聊会话的 `proactive_level` 是生效的主动找人档位（`off`、`low`、`mid`、`high`，没设时为 `mid`），其他会话为空字符串；单个会话的接口同样有这个字段 |
 | `GET conversations/{key}` | 单个会话 |
 | `GET conversations/{key}/messages?before=&limit=` | 浏览消息，按 `seq` 游标翻页。每条消息带 `channel`：`panel` 表示从面板发出或送到面板，平台上的消息为空字符串 |

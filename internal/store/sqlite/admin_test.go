@@ -75,7 +75,9 @@ func TestConversationStats(t *testing.T) {
 	empty := panelConv("qq", conloomapi.ConvGroup, "10000")
 	busy := panelConv("qq", conloomapi.ConvGroup, "10001")
 	older := panelConv("qq", conloomapi.ConvPrivate, "20001")
+	before := time.Now()
 	seedConversations(t, db, older, empty, busy)
+	after := time.Now()
 	base := time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
 	memInsertMessages(t, db,
 		panelMessage(older.Key, base.Add(-time.Hour)),
@@ -104,6 +106,14 @@ func TestConversationStats(t *testing.T) {
 	}
 	if !got[2].LastMessageAt.IsZero() {
 		t.Errorf("empty conversation LastMessageAt = %v, want zero", got[2].LastMessageAt)
+	}
+	// Seeded in the order older, empty, busy.
+	created := []time.Time{got[1].CreatedAt, got[2].CreatedAt, got[0].CreatedAt}
+	for i, c := range created {
+		if c.Before(before) || c.After(after) || (i > 0 && c.Before(created[i-1])) {
+			t.Errorf("CreatedAt in seed order = %v, want non-decreasing times between %v and %v", created, before, after)
+			break
+		}
 	}
 
 	fresh := newTestDB(t)

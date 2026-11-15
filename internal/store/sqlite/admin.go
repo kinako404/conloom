@@ -36,12 +36,12 @@ func (db *DB) GetConversationByKey(ctx context.Context, key string) (store.Conve
 	return scanConversation(db.r.QueryRowContext(ctx, `SELECT `+conversationCols+` FROM conversations WHERE key = ?`, key))
 }
 
-// ConversationStats lists every conversation with its message count and the
-// time of its newest message, most recently active first; conversations
-// without messages come last, by key.
+// ConversationStats lists every conversation with when it was first stored,
+// its message count and the time of its newest message, most recently active
+// first; conversations without messages come last, by key.
 func (db *DB) ConversationStats(ctx context.Context) ([]store.ConversationStats, error) {
 	return queryAll(ctx, db, scanConversationStats, `
-		SELECT c.bot_instance_id, c.id, c.key, c.type, c.platform, c.platform_conversation_id,
+		SELECT c.bot_instance_id, c.id, c.key, c.type, c.platform, c.platform_conversation_id, c.created_at,
 			COALESCE(s.n, 0), COALESCE((SELECT occurred_at FROM messages WHERE seq = s.last_seq), '') AS last_at
 		FROM conversations c
 		LEFT JOIN (SELECT conversation_key, COUNT(*) AS n, MAX(seq) AS last_seq FROM messages GROUP BY conversation_key) s
@@ -51,10 +51,13 @@ func (db *DB) ConversationStats(ctx context.Context) ([]store.ConversationStats,
 
 func scanConversationStats(row scanner) (store.ConversationStats, error) {
 	var s store.ConversationStats
-	var last string
-	err := row.Scan(&s.BotInstanceID, &s.ID, &s.Key, &s.Type, &s.Platform, &s.PlatformConversationID,
+	var created, last string
+	err := row.Scan(&s.BotInstanceID, &s.ID, &s.Key, &s.Type, &s.Platform, &s.PlatformConversationID, &created,
 		&s.MessageCount, &last)
 	if err != nil {
+		return s, err
+	}
+	if s.CreatedAt, err = parseTime(created); err != nil {
 		return s, err
 	}
 	s.LastMessageAt, err = parseTime(last)

@@ -1,10 +1,12 @@
 package panel
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/kinako404/conloom/internal/config"
@@ -112,8 +114,7 @@ func (s *Server) botSource(id string) string {
 }
 
 // privateChats maps each bot ID to the bot's stored private chats, the most
-// recently active first and those without messages last (see
-// ConversationStats).
+// recently active first (see chatActivity), then by key.
 func (s *Server) privateChats(ctx context.Context) (map[string][]store.ConversationStats, error) {
 	stats, err := s.d.Store.ConversationStats(ctx)
 	if err != nil {
@@ -125,19 +126,36 @@ func (s *Server) privateChats(ctx context.Context) (map[string][]store.Conversat
 			out[st.BotInstanceID] = append(out[st.BotInstanceID], st)
 		}
 	}
+	for _, chats := range out {
+		slices.SortFunc(chats, func(a, b store.ConversationStats) int {
+			return cmp.Or(chatActivity(b).Compare(chatActivity(a)), cmp.Compare(a.Key, b.Key))
+		})
+	}
 	return out, nil
 }
 
-// describeBot describes b, whose private chats are chats as privateChats
-// orders them.
+// chatActivity is when st was last active: its newest message or, when it was
+// stored later than that (a chat just created), its creation.
+func chatActivity(st store.ConversationStats) time.Time {
+	if st.CreatedAt.After(st.LastMessageAt) {
+		return st.CreatedAt
+	}
+	return st.LastMessageAt
+}
+
+// describeBot describes b, whose private chats are chats.
 func (s *Server) describeBot(b config.BotConfig, chats []store.ConversationStats) botSummary {
 	v := botSummary{
 		ID: b.ID, Name: b.Name, Source: s.botSource(b.ID), PersonaTemplate: b.PersonaTemplate,
 		Skills: strs(b.Skills), Problems: strs(s.d.Bots.Problems(b.ID)), Chats: len(chats),
 	}
-	if len(chats) > 0 {
-		v.LastMessageAt = nullTime(chats[0].LastMessageAt)
+	var last time.Time
+	for _, c := range chats {
+		if c.LastMessageAt.After(last) {
+			last = c.LastMessageAt
+		}
 	}
+	v.LastMessageAt = nullTime(last)
 	return v
 }
 
@@ -247,8 +265,9 @@ func (s *Server) deleteBot(w http.ResponseWriter, r *http.Request, sess *Session
 }
 
 // listChats lists the private chats of every bot for the chat page, grouped
-// by bot in directory order, each bot's most recently active first and at
-// most maxBotChats of them.
+// by bot in directory order: each bot's most recently active first (its
+// newest message or, if later, its creation; see privateChats), cut to
+// maxBotChats after sorting.
 func (s *Server) listChats(w http.ResponseWriter, r *http.Request, _ *Session) {
 	chats, err := s.privateChats(r.Context())
 	if err != nil {
