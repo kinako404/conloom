@@ -325,6 +325,37 @@ func TestMaintenance_PurgesOldBuffEvents(t *testing.T) {
 	}
 }
 
+func TestMaintenance_PurgesExpiredEffects(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	ctx := context.Background()
+	now := time.Now()
+	for _, e := range []store.Effect{
+		{ConversationKey: privateConvKey, Name: "着凉", TaskID: "task_a", StartedAt: now.Add(-2 * time.Hour), UntilAt: now.Add(-time.Hour)},
+		{ConversationKey: privateConvKey, Name: "吃饱了", TaskID: "task_b", StartedAt: now.Add(-time.Hour), UntilAt: now.Add(time.Hour)},
+	} {
+		if err := env.st.AddEffect(ctx, e, 6, e.StartedAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := env.o.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "run-out effects purged", func() bool {
+		return env.counter(t, "conloom_cleanup_deleted_total", "table", "conversation_effects") == 1
+	})
+	// RemoveEffect also finds an effect that has run out, so it tells whether
+	// the row is still there.
+	if removed, err := env.st.RemoveEffect(ctx, privateConvKey, "着凉", store.BuffSourcePanel, "", now); err != nil || removed {
+		t.Errorf("run-out effect still stored: RemoveEffect = %v, %v", removed, err)
+	}
+	if effects, err := env.st.ListEffects(ctx, privateConvKey, now); err != nil || len(effects) != 1 || effects[0].Name != "吃饱了" {
+		t.Errorf("effects left = %+v, %v; want the active one", effects, err)
+	}
+	if logs := env.logs.String(); !strings.Contains(logs, "purged run-out effects") {
+		t.Errorf("logs lack the purge:\n%s", logs)
+	}
+}
+
 func TestMaintenance_PurgesImages(t *testing.T) {
 	sum := func(s string) string {
 		b := sha256.Sum256([]byte(s))

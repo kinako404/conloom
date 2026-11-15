@@ -13,21 +13,20 @@ import (
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
-// skillBuff is the skill whose bot gets its hidden bars in private replies;
-// toolAdjustBuff is its tool, the only one a wake task offers.
-const (
-	skillBuff      = "buff"
-	toolAdjustBuff = "adjust_buff"
-)
+// skillBuff is the skill whose bot gets its hidden bars and effects in
+// private replies; wakeTools are its tools, the only ones a wake task offers.
+const skillBuff = "buff"
+
+var wakeTools = []string{"adjust_buff", "add_buff", "remove_buff"}
 
 // stateBlock returns the hidden state block (autonomy.RenderState) of a
-// private task: the status of the conversation's memory scope
-// (memory.ScopeKey, shared by a bot's panel chats) while it lasts and, when
-// the bot enables skillBuff, doc's bars (conloomapi.PersonaDoc.EffectiveBars)
-// in their order, each at the scope's stored value decayed to now, or at its
-// baseline when none is stored. Stored bars doc does not have are left out.
-// It is "" for other conversations, when there is nothing to show, or when a
-// read fails, which is logged.
+// private task, read from the conversation's memory scope (memory.ScopeKey,
+// shared by a bot's panel chats): the status while it lasts and, when the bot
+// enables skillBuff, the bars (scopeBars), each at the scope's stored value
+// decayed to now with its baseline and half-life, or at its baseline when
+// none is stored, then the effects still active. Stored bars that are neither
+// doc's nor added by the bot are left out. It is "" for other conversations,
+// when there is nothing to show, or when a read fails, which is logged.
 func (o *Orchestrator) stateBlock(ctx context.Context, task store.TaskRecord, bot config.BotConfig, doc conloomapi.PersonaDoc) string {
 	if convType(task.ConversationKey) != conloomapi.ConvPrivate {
 		return ""
@@ -45,18 +44,48 @@ func (o *Orchestrator) stateBlock(ctx context.Context, task store.TaskRecord, bo
 		status = &autonomy.StateStatus{Activity: st.Activity, StartedAt: st.StartedAt, UntilAt: st.UntilAt}
 	}
 	var bars []autonomy.StateBar
+	var effects []autonomy.StateEffect
 	if slices.Contains(bot.Skills, skillBuff) {
 		stored, err := o.st.GetBuffs(ctx, scope)
 		if err != nil {
 			o.logStateError(task, err)
 			return ""
 		}
-		for _, b := range doc.EffectiveBars() {
+		custom, err := o.st.ListCustomBars(ctx, scope)
+		if err != nil {
+			o.logStateError(task, err)
+			return ""
+		}
+		active, err := o.st.ListEffects(ctx, scope, now)
+		if err != nil {
+			o.logStateError(task, err)
+			return ""
+		}
+		for _, b := range scopeBars(doc, custom) {
 			cur, found := storedBar(stored, b.Name)
 			bars = append(bars, autonomy.StateBar{Name: b.Name, Description: b.Description, Value: barValue(b, cur, found, now)})
 		}
+		for _, e := range active {
+			effects = append(effects, autonomy.StateEffect{Name: e.Name, Description: e.Description, UntilAt: e.UntilAt})
+		}
 	}
-	return autonomy.RenderState(status, bars, nil, now, o.loc)
+	return autonomy.RenderState(status, bars, effects, now, o.loc)
+}
+
+// scopeBars returns the hidden bars of a memory scope: doc's
+// (conloomapi.PersonaDoc.EffectiveBars) in their order, then those of custom,
+// the bars the bot added, whose name none of doc's has; doc's bar wins a
+// name.
+func scopeBars(doc conloomapi.PersonaDoc, custom []store.CustomBar) []conloomapi.PersonaBar {
+	bars := doc.EffectiveBars()
+	persona := len(bars)
+	for _, c := range custom {
+		if !slices.ContainsFunc(bars[:persona], func(b conloomapi.PersonaBar) bool { return b.Name == c.Name }) {
+			bars = append(bars, conloomapi.PersonaBar{Name: c.Name, Baseline: c.Baseline,
+				HalfLife: conloomapi.Duration{Duration: c.HalfLife}, Description: c.Description})
+		}
+	}
+	return bars
 }
 
 // storedBar finds the bar name among the stored values of a conversation.

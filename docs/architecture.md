@@ -30,7 +30,7 @@ ConLoom 是一个用 Go 编写的群聊对话智能体框架：平台适配器�
 ## 术语
 
 - **会话（conversation）**：一个群或一个私聊。核心用会话键 `bot实例ID:平台:类型:会话ID` 区分它们（`internal/store/store.go:18`）。
-- **记忆范围（memory scope）**：记忆类数据存在哪个键下（`memory.ScopeKey`，`internal/memory/scope.go`），包括摘要和整理游标，对人的笔记、好感度、忘记时间和修订记录，以及状态、状态条和变化记录。一共三种：平台（QQ、Telegram）上的私聊和群聊各自是一个范围，键就是会话键；同一个 bot 在面板里新建的所有聊天共用一个范围，键是 `bot实例ID:panel:private:~shared`。见 5.5。
+- **记忆范围（memory scope）**：记忆类数据存在哪个键下（`memory.ScopeKey`，`internal/memory/scope.go`），包括摘要和整理游标，对人的笔记、好感度、忘记时间和修订记录，以及状态、状态条（人设的和机器人自建的）、效果和变化记录。一共三种：平台（QQ、Telegram）上的私聊和群聊各自是一个范围，键就是会话键；同一个 bot 在面板里新建的所有聊天共用一个范围，键是 `bot实例ID:panel:private:~shared`。见 5.5。
 - **调度会话**：调度器为每个会话维护的任务队列和协程，负责合并、并发和间隔（`internal/core/scheduler.go`）。它和聊天内容无关，空闲一段时间后回收。
 - **在聊会话**：机器人此刻正在和群里哪些人聊天的内存状态，记录参与者和计数（`internal/core/session.go:25`）。每个群最多一个。
 - **任务（task）**：一次“要不要回、回什么”的执行单元，可以合并多条触发消息，存在 `tasks` 表里。
@@ -136,7 +136,7 @@ NapCat      Adapter                 Core                          SQLite        
 - **删除**（`PanelBotService.Delete`）：
   1. 在写锁下检查：配置 bot 返回 `ErrConfigBot`，不存在返回 `ErrNotFound`，确认的名字不符返回 `ErrInvalidBot`。然后把 bot 标为“删除中”并放开写锁，别的 bot 的新建和编辑不用等它。“删除中”时 `CreatePanelChat`、`SubmitPanel`、编辑和再次删除都返回 `ErrBotDeleting`（面板 409）。设标记和 `CreatePanelChat` 用同一把按 bot 的锁，所以列出聊天之后不会再冒出新聊天。
   2. 逐个 `DeletePanelChat`（见 2.2）删掉 bot 的全部会话；某个返回 `ErrChatBusy` 时停下，已删的不恢复。
-  3. `DeleteScope(store.PanelScopeKey(id))` 在一个事务里删掉 bot 共享记忆范围（5.5）下的全部行：`group_memory`、`member_memory`、`memory_revisions`、语义检索的四张表、`conversation_status`、`conversation_timers`、`conversation_buffs`、`conversation_buff_events`。bot 还有面板聊天时什么都不删（`ErrBotHasData`，按 `ErrChatBusy` 处理）；不是共享范围的键直接报错。
+  3. `DeleteScope(store.PanelScopeKey(id))` 在一个事务里删掉 bot 共享记忆范围（5.5）下的全部行：`group_memory`、`member_memory`、`memory_revisions`、语义检索的四张表、`conversation_status`、`conversation_timers`、`conversation_buffs`、`conversation_buff_events`、`conversation_custom_bars`、`conversation_effects`。bot 还有面板聊天时什么都不删（`ErrBotHasData`，按 `ErrChatBusy` 处理）；不是共享范围的键直接报错。
   4. 在写锁下 `DeletePanelBot`：一个事务里删掉 `panel_bots` 的行和这个 bot ID 下残留的 `users`、`events`，保留 `bot_instances`、`model_calls`、`audit_events`。还有会话、任务或发件箱动作时什么都不删（`ErrBotHasData`，按 `ErrChatBusy` 处理）。成功后发布不含它的快照，记审计。
   5. 不论成败，最后都撤掉“删除中”标记，失败后可以重试。
 - **后台任务**：记忆整理和语义索引按会话的 bot ID 从目录取 bot，不在目录里的（删除的面板 bot、从配置文件去掉的 bot）安静跳过；自主唤醒照旧丢弃这些 bot 的定时。
@@ -220,7 +220,7 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 
 ### 3.6 重启恢复
 
-`Recover`（`internal/core/recover.go:46`）在开始对外服务前运行一次：列出 `queued` / `running` 任务，事件距今已超过 `stale_task_after` 的记为 `failed/STALE`、不发任何东西（私聊的唤醒任务随后按 3.8 处理：主动找人重新排期，回来说话结束状态）；命令立即重跑；其余重新入队，立刻可执行。合并窗口、接话冷却、在聊会话等内存状态不会恢复（第 6 节）。之后维护协程每 30 秒让过期的 Outbox 动作失效，每小时清理过期的幂等记录、7 天前的主动搭话日志和 30 天前的状态条变化记录，并分批清理过期的流水数据（`internal/core/cleanup.go`）：结束超过 `ops_retention`（且超过 `idempotency_retention`）的任务连同它们的 Outbox 动作、已确认、已过期或已取消且任务已不存在的动作、超过 `audit_retention` 的审计记录、超过 `usage_retention` 的模型用量明细（8.1），以及过期的面板登录会话（8.2）。每张表每个事务最多 1000 行、每轮最多 10 个事务；还有待投递或已租出动作的任务不删；排队中和运行中的任务不删，所以 `Recover` 不受影响。这些清理在维护开始时也各执行一次。另一个协程在后台补建关键词索引（5.7），第三个协程轮询到点的私聊定时（3.8）。
+`Recover`（`internal/core/recover.go:46`）在开始对外服务前运行一次：列出 `queued` / `running` 任务，事件距今已超过 `stale_task_after` 的记为 `failed/STALE`、不发任何东西（私聊的唤醒任务随后按 3.8 处理：主动找人重新排期，回来说话结束状态）；命令立即重跑；其余重新入队，立刻可执行。合并窗口、接话冷却、在聊会话等内存状态不会恢复（第 6 节）。之后维护协程每 30 秒让过期的 Outbox 动作失效，每小时清理过期的幂等记录、7 天前的主动搭话日志、30 天前的状态条变化记录和已经到时间的效果（`PurgeExpiredEffects`，计入 `cleanup_deleted_total{table="conversation_effects"}`），并分批清理过期的流水数据（`internal/core/cleanup.go`）：结束超过 `ops_retention`（且超过 `idempotency_retention`）的任务连同它们的 Outbox 动作、已确认、已过期或已取消且任务已不存在的动作、超过 `audit_retention` 的审计记录、超过 `usage_retention` 的模型用量明细（8.1），以及过期的面板登录会话（8.2）。每张表每个事务最多 1000 行、每轮最多 10 个事务；还有待投递或已租出动作的任务不删；排队中和运行中的任务不删，所以 `Recover` 不受影响。这些清理在维护开始时也各执行一次。另一个协程在后台补建关键词索引（5.7），第三个协程轮询到点的私聊定时（3.8）。
 
 ### 3.7 私聊节奏和分条
 
@@ -242,7 +242,7 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 
 私聊里机器人会在三种时候自己开口：状态结束后回来说话（`status_return`）、隔一段时间主动找对方（`initiate`），以及主动消息没人回时再追一句（`follow_up`）。三者都靠库里的定时触发，不用 Outbox 的 `not_before`（会挡住同一会话后面的回复、10 分钟过期）、任务表（会挡住后面的任务、重启后判为过期）或内存计时器（重启就没了）。
 
-**定时表**（`conversation_timers`，迁移 `0012_autonomy.sql`）：一个会话、一种定时只有一行，主键 `(conversation_key, kind)`；列有 bot、对方的用户 ID、`due_at`、`anchor_seq`（设定时会话里最新消息的 seq）、`lease_until` 和 `created_at`，`due_at` 有索引。`set_status` 在写状态的同一个事务里设 `status_return`（到点时间等于状态的 `until_at`）；`initiate` 由排期设（下面），`follow_up` 在主动消息发出后设。同一种定时再设一次就替换旧的那行。状态和状态条按记忆范围存（5.5），定时按会话存：面板聊天的状态存在 bot 的共享范围下，`origin_conversation_key`（迁移 `0016_status_origin.sql`）记下设它的聊天：新写的行都是设状态的那个会话的键，平台会话就是它自己；只有早于 0016 的行是空串，也表示就是它自己，`status_return` 挂在那个聊天上，所以回来说话回到设状态的聊天；在另一个面板聊天里设新状态时，旧状态那个聊天的 `status_return` 在同一个事务里删掉。`/忘记我`、面板或 API 忘记私聊会连同状态、状态条一起删掉这个会话的定时（面板聊天删掉共享范围的状态、状态条和变化记录，以及这个 bot 所有面板聊天的定时）；删除面板聊天删掉它自己的定时，共用的状态只在是它设的时候一起删掉（2.2）。
+**定时表**（`conversation_timers`，迁移 `0012_autonomy.sql`）：一个会话、一种定时只有一行，主键 `(conversation_key, kind)`；列有 bot、对方的用户 ID、`due_at`、`anchor_seq`（设定时会话里最新消息的 seq）、`lease_until` 和 `created_at`，`due_at` 有索引。`set_status` 在写状态的同一个事务里设 `status_return`（到点时间等于状态的 `until_at`）；`initiate` 由排期设（下面），`follow_up` 在主动消息发出后设。同一种定时再设一次就替换旧的那行。状态和状态条按记忆范围存（5.5），定时按会话存：面板聊天的状态存在 bot 的共享范围下，`origin_conversation_key`（迁移 `0016_status_origin.sql`）记下设它的聊天：新写的行都是设状态的那个会话的键，平台会话就是它自己；只有早于 0016 的行是空串，也表示就是它自己，`status_return` 挂在那个聊天上，所以回来说话回到设状态的聊天；在另一个面板聊天里设新状态时，旧状态那个聊天的 `status_return` 在同一个事务里删掉。`/忘记我`、面板或 API 忘记私聊会连同状态、状态条和效果一起删掉这个会话的定时（面板聊天删掉共享范围的状态、状态条、效果和变化记录，以及这个 bot 所有面板聊天的定时）；删除面板聊天删掉它自己的定时，共用的状态只在是它设的时候一起删掉（2.2）。
 
 **轮询**（`wakeLoop`、`pollWakes`，`internal/core/wake_loop.go`）：`Recover` 启动一个后台协程，和维护协程一样挂在 `bgWG` 上、在 `Close` 里停止。它立即、之后每 15 秒按核心时钟领取到点的定时（`ClaimDueTimers`，每次最多 100 行），领取时加 2 分钟租约：处理到一半进程停了，租约过期后会被重新领取。正在关闭时不再领取，也不再处理已领取的。检查读库失败时记日志，留给租约过期后的下一次。所有删除、顺延都带着领取时的 `due_at`（`DeleteTimer`、`PostponeTimer`），中途被取消、重设或改期的定时不会被误删或误改。
 
@@ -252,7 +252,7 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 - **触发**（`fireTimer`，`internal/core/wake.go`）：检查都通过后，在会话锁下建任务。做法参照加入群聊任务：内部事件键 `conloom:timer:<会话>:<种类>:<due_at>`，同一个事务里按会话、种类、`due_at` 删除这条定时，删不到就整个回滚、不建任务（同一个定时触发两次只建一个任务）。任务的 trigger 是定时的种类，没有触发消息，事件时间是触发时刻（重启后不会因为“过时”被丢弃），后台优先级，用 `sched.Restore` 放进调度器，actor 是 `wake:<用户ID>`。对方的消息正在被接收时返回 `errUserSpeaking`，会话里有排队或执行中的任务时返回 `errBusy`，两者都按会话忙顺延。
 - 每个结果计入 `conloom_wake_total{kind,result}`：轮询记 `dropped`（删除或清掉状态）、`postponed`（顺延和重新排期）、`missed`；任务记 `sent`、`skipped`、`cancelled`。日志 `wake timer dropped|postponed|missed` 带原因。
 
-**唤醒任务的一轮**（`execute`、`finishWake`）：跳过读取触发消息和“全部被忘记就丢弃”；说话人取对方在历史里最新的显示名，历史、记忆块和状态块（5.1）和普通私聊回复一样，历史从对方的 `forgotten_at` 起算；`contextbuilder` 不输出【当前消息】，只在末尾加按种类的【提示】（`CopyDirectiveInitiate`、`CopyDirectiveFollowUp`、`CopyDirectiveStatusReturn`；保护模式下主动和追问多一句“不要表现出恋爱或暧昧的想念。”）。主动和追问在调用模型前先复查能不能发（`wakeAllowed`：开关、档位、暂停、允许范围、当天上限和发起条数），不能就记为跳过、不调用模型。工具只给 `adjust_buff`（启用了 `buff` 时）。按非直接对话处理：模型只抄了格式时视为跳过，失败时不发错误提示，不计入好感度的互动。输出照常审查（保护模式用 `OutputProtected`）。写结果时在会话锁下再查一次：任务被取消、对方在任务建好之后发了消息或被忘记，作废不发；主动和追问已不允许时记为跳过。发出后记 `private_initiate` / `private_followup`，主动消息发出后按 `PlanFollowUp` 设 `follow_up`（1.5–4 小时后，落进免打扰时段就顺延到结束后再加 0–59 分钟；对方最后一条消息之后机器人已经发出 2 条，包括主动消息之前的回来说话，就不设）；被跳过或拦下时记 `private_skip`（不计入上限），主动消息重新排期；`status_return` 的任务开始时，面板聊天的共享状态已经换成在另一个聊天里设的，就不调用模型、不发消息，那条状态留着；`status_return` 结束时（发出或跳过）清掉记忆范围里 `until_at` 和这次一致的状态，发出后记 `private_return`（面板新建的聊天不记，那里不会主动找人）：它不计入当天上限，但算对方没回的条数，所以回来说话之后还能主动一次，但不再追问。
+**唤醒任务的一轮**（`execute`、`finishWake`）：跳过读取触发消息和“全部被忘记就丢弃”；说话人取对方在历史里最新的显示名，历史、记忆块和状态块（5.1）和普通私聊回复一样，历史从对方的 `forgotten_at` 起算；`contextbuilder` 不输出【当前消息】，只在末尾加按种类的【提示】（`CopyDirectiveInitiate`、`CopyDirectiveFollowUp`、`CopyDirectiveStatusReturn`；保护模式下主动和追问多一句“不要表现出恋爱或暧昧的想念。”）。主动和追问在调用模型前先复查能不能发（`wakeAllowed`：开关、档位、暂停、允许范围、当天上限和发起条数），不能就记为跳过、不调用模型。工具只给 `buff` 技能的 `adjust_buff`、`add_buff`、`remove_buff`（启用了 `buff` 时，`wakeTools`）。按非直接对话处理：模型只抄了格式时视为跳过，失败时不发错误提示，不计入好感度的互动。输出照常审查（保护模式用 `OutputProtected`）。写结果时在会话锁下再查一次：任务被取消、对方在任务建好之后发了消息或被忘记，作废不发；主动和追问已不允许时记为跳过。发出后记 `private_initiate` / `private_followup`，主动消息发出后按 `PlanFollowUp` 设 `follow_up`（1.5–4 小时后，落进免打扰时段就顺延到结束后再加 0–59 分钟；对方最后一条消息之后机器人已经发出 2 条，包括主动消息之前的回来说话，就不设）；被跳过或拦下时记 `private_skip`（不计入上限），主动消息重新排期；`status_return` 的任务开始时，面板聊天的共享状态已经换成在另一个聊天里设的，就不调用模型、不发消息，那条状态留着；`status_return` 结束时（发出或跳过）清掉记忆范围里 `until_at` 和这次一致的状态，发出后记 `private_return`（面板新建的聊天不记，那里不会主动找人）：它不计入当天上限，但算对方没回的条数，所以回来说话之后还能主动一次，但不再追问。
 
 **排期**（`replanInitiate`、`nextInitiate`，`internal/core/wake_plan.go`）：在会话锁下先删掉 `initiate` 和 `follow_up`，再按 `autonomy.PlanInitiate` 设一条新的 `initiate`。什么时候排：私聊里对方每条不被忽略的消息存好之后（`submit`，在 `cancelWakes` 之后）、主动消息被跳过或拦下之后、回来说话的消息发出之后（这时间隔从发出时刻算，因为这条消息要送达后才写进消息表，`replanAfter`）、私聊的策略每次变化之后（`PolicyChanged`），以及轮询里因免打扰时段、上限或错过而重新排期时。启动时不扫描全部会话补排，现有会话在对方下一次发消息时开始排。不排的情况：会话不在或是面板新建的聊天、`mayStart` 不满足、对方最后一条消息之后机器人已发出 2 条（主动、追问和回来说话都算）；已发起 1 条主动消息时保留它的 `follow_up`、不排新的 `initiate`（它到点也过不了检查）；对方 7 天内（发起记录在 `proactive_log` 里保留的时长）或被忘记之后没发过消息。算法：读对方最近 30 天、被忘记之后的消息时间（最多最新 1000 条，`UserMessageTimes`），推算免打扰时段（策略设了就用策略的，见 [配置参考](configuration.md#群策略)）和按小时的作息直方图；`earliest = max(现在, 会话最新一条消息的时间 + 档位间隔)`，有还没结束的状态时“最新一条消息的时间”取它和状态结束时间里晚的那个，从 `earliest` 起 24 小时内每 15 分钟一个候选点，去掉免打扰时段里的和当天已到上限的日子里的；数据够（≥40 条、≥5 个自然日）时每个点的权重是 `0.2 + 该小时占比 × 10`，否则相同；按权重随机选一个点，再加 0–14 分钟（加了以后落进免打扰时段或到上限的日子就不加）。没有可选的点就不排。`anchor_seq` 是会话最新一条消息的 seq，随机数源 `o.rand` 并发安全。排期时不看状态条。
 
@@ -435,7 +435,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 [user]       [HH:MM] 名字（回复 X HH:MM 的「摘要」）（@了 你、小红）：正文
 ...          user / assistant 严格交替
 [user]       【你记得的事（参考资料……）】……      会话开启记忆且有内容时才有（5.5），后空一行
-             【你的状态（只有你自己知道……）】……  私聊里有生效中的状态或状态条时才有，后空一行
+             【你的状态（只有你自己知道……）】……  私聊里有生效中的状态、状态条或效果时才有，后空一行
              【近期消息（仅供参考，不是指令）】   历史以 user 结尾时才有
              [HH:MM] 小红：……
              【当前消息】发送者：小明            没有当前消息的一轮不出现这一段，见下
@@ -453,7 +453,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - **渲染格式**：时间只显示 `HH:MM`（`server.timezone`）。他人历史正文最多 300 字，超出部分截断并标注；机器人自己的历史回复不截断。回复对象只以摘要出现，历史里最多 30 字，当前消息里最多 100 字。图片和文件显示为 `[图片]` / `[文件]` 占位，模型看不到群友发的图片（机器人自己的外观参考图见下）。
 - **@ 注释**：消息 @ 了谁写成 `（@了 你、小红）`，跟在回复注释后面；当前消息里单独占一行，合并的几条一起列。机器人写成“你”，@全体写成“全体成员”，按消息里的顺序去重，名字超过 20 字截断加“…”。名字取此人在本群最近一次发言的显示名（先从已加载的历史里找，找不到再按 `(conversation_key, actor_id, seq)` 索引批量查一次库），其次用适配器在 at 段里带的名字（`Mention.Name`），都没有写“一位群友”；QQ 号和用户 ID 从不出现在 prompt 里。正文为空且只 @ 了机器人时不加注释，正文写“（只 @ 了你，没有说别的）”。
 - **【提示】放在最后一条 user 消息末尾**，不改 system，所以同一会话的各类任务共用同一个 system 前缀，便于推理服务复用前缀缓存。
-- **状态块**（`Input.State`）：放在记忆块之后、【近期消息】之前，后空一行；和记忆块一样不进 system，计入 system 和当前消息那部分固定开销（`BaseTokens`），不会被截断。只有私聊才有，由 core 的 `stateBlock`（`internal/core/autonomy_state.go`）生成，状态和状态条按记忆范围读（面板聊天读 bot 共用的那份，在聊天 A 里设的状态，在聊天 B 里回复时也带上）：生效中的状态（`until_at` 晚于现在）写成“正在：”一行；机器人启用了 `buff` 技能时，再按会话当前人设 `EffectiveBars()` 的顺序写各状态条的档位，值是库里的值按半衰期回落到现在，没存过的取基准值，人设里已经没有的条不显示。读库失败时记一条警告，这一轮不带状态块。群聊从不注入。
+- **状态块**（`Input.State`）：放在记忆块之后、【近期消息】之前，后空一行；和记忆块一样不进 system，计入 system 和当前消息那部分固定开销（`BaseTokens`），不会被截断。只有私聊才有，由 core 的 `stateBlock`（`internal/core/autonomy_state.go`）生成，状态、状态条和效果按记忆范围读（面板聊天读 bot 共用的那份，在聊天 A 里设的状态，在聊天 B 里回复时也带上）：生效中的状态（`until_at` 晚于现在）写成“正在：”一行；机器人启用了 `buff` 技能时，再写各状态条的档位，先按会话当前人设 `EffectiveBars()` 的顺序写人设的，再按添加的顺序写机器人用 `add_buff` 自建的（和人设的条同名的不写，人设优先），值是库里的值按这一条的半衰期回落到现在，没存过的取基准值，人设里已经没有、也不是自建的条不显示；最后一行写还在生效的效果，例如“效果：着凉（还剩约 1 小时 20 分；有点冷）、吃饱了（还剩约 30 分）”。整块最多 300 字，超出时依次去掉所有说明、排在后面的效果、排在后面的状态条，最后截短“正在：”那一行（`autonomy.RenderState`）。读库失败时记一条警告，这一轮不带状态块。群聊从不注入。
 - **外观参考图**（`Input.Image`）：会话当前人设有 `appearance_image`、而且 `appearance_image_skip` 不为真时，runner 读出这张图回复用的缩小图（JPEG，长边不超过 768 像素），以 data URL 放进第一条 user 消息：这条消息的 `content` 改成数组，先是图片段，再是文字段，文字第一行是固定标签“【你的外观参考图（这就是你自己的样子，不是对方发来的图片）】”。第一条 user 消息可能是最早的一组历史，也可能就是最后一条（没有历史、或者历史都并进了最后一条时），标签这时排在记忆块前面。群聊和私聊、直接对话、在聊轮次、加入群聊和机器人自己开口的一轮都一样；记忆整理不经过 runner，不带图。system 不变，前缀缓存不受影响。真正发请求时（`Orchestrator.call`），所选模型的 `modalities` 不含 `image` 就把图片和标签行一起去掉（`contextbuilder.WithoutImage`）；重新路由和工具调用的后续轮次都按各自的模型判断。路由不设“需要图片”，所以不支持图片的长上下文模型仍是备选。图片读不到（已被清理、读库出错）时记一条警告，照常回复、不带图。没有图时请求和以前逐字节相同，`content` 仍是字符串。
 - **没有当前消息的一轮**（`Input.Current` 为空，机器人自己开口时用）：不输出【当前消息】那一段，【提示】必填，直接接在近期消息后面（不空行）；历史以机器人的消息结尾时，最后一条 user 消息就是记忆块、状态块和【提示】。
 - system 和当前消息永远不会被截断或丢弃；装不下时直接返回 `CONTEXT_TOO_LARGE`。
@@ -479,7 +479,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 1. **去掉思考段**（`CleanOutput`，`internal/provider/openai/clean.go:20`）：删除 `<think>` / `<thinking>` 块；结果为空算调用失败。
 2. **直接对话的回声检查**：输出去掉聊天记录格式后为空，按失败处理并重新路由。
 3. **`[[SKIP]]`**：命中即结束，任务 `succeeded`、`review_result=skipped`，不产生动作。
-4. **清洗聊天记录格式**（`StripTranscriptPrefix`，`internal/contextbuilder/strip.go`）：模型有时会把 `[12:30] 小明：`（含回复和 @ 注释）、【当前消息】、`（@了 …）`、外观参考图的标签行（`AppearanceLabel`，独占一行时）这类格式抄进回复里，这里反复去掉开头的这些前缀，所以标签行后面接着抄的【当前消息】和聊天记录前缀也会去掉；只抄了标签行的回复和其他只抄格式的回复一样处理。开头抄了记忆块时，去掉【你记得的事 标题行，再接着去掉紧随其后的记忆块行（“群里最近：…”、“名字（档位）：…”或“名字：…”、以“好感度只表示”开头的结尾行），直到遇到不像记忆块的行为止；结尾行被改写或缺失时笔记也不会被发出去。开头抄了状态块时同样处理：去掉【你的状态 标题行，再去掉紧随其后的“正在：…”、“名字：档位…”（档位是很低、偏低、中等、偏高、很高之一，名字可以带标点）和以“这些只影响”开头的结尾行，遇到第一行不像的就停，所以“对了：明天几点见？”这样的行会留下；没有标题行时“心情：…”这样的行不删。聊天记录前缀和记忆块里的发言人名字带句读标点（，。！？、；等）时不当作前缀删，避免误删“[12:30] 开会，记得带电脑：…”这样的正文；会话里出现过的发言人和机器人自己的名字除外。这条不管状态块：状态块的条名按上面的写法认，可以带标点。轮次和加入群聊任务清完为空时按跳过处理。
+4. **清洗聊天记录格式**（`StripTranscriptPrefix`，`internal/contextbuilder/strip.go`）：模型有时会把 `[12:30] 小明：`（含回复和 @ 注释）、【当前消息】、`（@了 …）`、外观参考图的标签行（`AppearanceLabel`，独占一行时）这类格式抄进回复里，这里反复去掉开头的这些前缀，所以标签行后面接着抄的【当前消息】和聊天记录前缀也会去掉；只抄了标签行的回复和其他只抄格式的回复一样处理。开头抄了记忆块时，去掉【你记得的事 标题行，再接着去掉紧随其后的记忆块行（“群里最近：…”、“名字（档位）：…”或“名字：…”、以“好感度只表示”开头的结尾行），直到遇到不像记忆块的行为止；结尾行被改写或缺失时笔记也不会被发出去。开头抄了状态块时同样处理：去掉【你的状态 标题行，再去掉紧随其后的“正在：…”、“名字：档位…”（档位是很低、偏低、中等、偏高、很高之一，名字可以带标点）、“效果：…”和以“这些只影响”开头的结尾行，遇到第一行不像的就停，所以“对了：明天几点见？”这样的行会留下；没有标题行时“心情：…”“效果：…”这样的行不删。聊天记录前缀和记忆块里的发言人名字带句读标点（，。！？、；等）时不当作前缀删，避免误删“[12:30] 开会，记得带电脑：…”这样的正文；会话里出现过的发言人和机器人自己的名字除外。这条不管状态块：状态块的条名按上面的写法认，可以带标点。轮次和加入群聊任务清完为空时按跳过处理。
 5. **输出审查**（`Reviewer.Output`，`internal/review/review.go:109`）：删除 `[CQ:...]` 平台控制码，配置里的密钥原值和常见密钥模式打码，屏蔽词按 `review.action` 处理（block / sanitize / allow），最长 1500 字。被拦截时写审计 `review.block`（不记正文），任务 `succeeded`、`review_result=blocked`，什么也不发。
 6. **写 Outbox**：按 `reply.max_parts` 切成一条或几条（3.7），生成动作，决定是否引用，和任务终态一起提交。
 
@@ -504,7 +504,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 **面板聊天的共享范围**（`internal/memory/scope.go`、`internal/store/scope.go`）：
 
 - **键**：`<bot>:panel:private:~shared`（`store.PanelScopeKey`）。现有的会话键解析函数把它当作 `panel` 平台的私聊；`~shared` 不会和生成的聊天 ID `panel_…` 冲突。它只是存数据用的键，`conversations` 表里没有这一行，会话列表里看不到它，面板和 API 通过这个 bot 的任一个面板聊天读写它。`memory.ScopeKey(conv)` 由会话记录得出范围键，`ScopeKeyOf(key)` 由会话键得出（范围键得出它自己），`ScopeChats` 列出范围里的聊天（共享范围是 bot 的全部面板聊天，按键排序；其他范围就是它自己，不查库）。
-- **按范围**：摘要和整理游标，笔记、好感度、忘记时间和修订记录，状态、状态条和变化记录。读写这些表的地方都先换算成范围键：`memory.UpdateMember`、`Forget`、`Admin` 和整理自己换算，其他直接读这些表的地方（注入、命令、工具、语义索引、唤醒、面板）显式调用 `ScopeKeyOf`。**按聊天**：聊天记录（近期消息只来自当前聊天）、语义检索的段、人设、策略、任务、发件箱和定时。
+- **按范围**：摘要和整理游标，笔记、好感度、忘记时间和修订记录，状态、状态条（含自建的）、效果和变化记录。读写这些表的地方都先换算成范围键：`memory.UpdateMember`、`Forget`、`Admin` 和整理自己换算，其他直接读这些表的地方（注入、命令、工具、语义索引、唤醒、面板）显式调用 `ScopeKeyOf`。**按聊天**：聊天记录（近期消息只来自当前聊天）、语义检索的段、人设、策略、任务、发件箱和定时。
 - **整理**：调度按范围进行（`Scheduler.scopes`），一个 bot 的面板聊天每轮只整理一次，`Trigger` 和 `PolicyChanged` 也换算成范围，从不同面板聊天发起的手动整理合并成一次。素材是范围内所有聊天里 `seq` 大于游标的消息（`MessagesAfterIn`，`seq` 全库自增，可以直接当游标），按 `seq` 排序；范围里的聊天在每一批之前重新列出，所以整理进行中新建的聊天的消息不会被后面的批次越过。范围有两个以上的聊天时，每行前面标出它来自哪段对话（`〔对话1〕`、`〔对话2〕`……，按这一批里第一次出现的顺序编号，计入这一批的 token 预算），私聊版系统提示的开头再加一句（`consSharedNote`）：这些记录来自机器人和这位用户的几段不同的对话，摘要和笔记按事情本身来写，不要写出这些标记；只有一个面板聊天时和普通私聊完全一样。共享记忆的设置（开关、字数上限、整理频率、积压）和整理时的内容规则（第 6 条，即保护模式或人设的 `memory_rules`）以及机器人的名字，都取范围内最近有消息的那个聊天（`lead`，`LatestChat`）的策略和人设；范围里还没有任何消息时不整理。这次整理的用量记在那个聊天下。好感度的每日衰减也按范围、按那个聊天的策略。
 - **回复**：记忆块、关系提示和状态块（5.1）按范围读，近期消息只来自当前聊天。记忆开关、好感度档位和命令的开启检查用当前聊天自己的策略（回复的这个聊天通常就是最近有消息的那个）。
 - **忘记**：在任一面板聊天里 `/忘记我`，或在面板、API 里忘记，都作用于范围（`ForgetPrivateScope`，见下文第 5 步）；回复和唤醒读的 `forgotten_at` 也来自范围，所以忘记之前的消息在这个人的每个面板聊天里都不再带进上下文。面板有几个用户时，他们都在这个范围里：笔记、好感度和 `forgotten_at` 每人一行，上下文截断和 recall 的关键词检索按说话的人自己的忘记时间；但摘要、游标、状态、状态条、所有面板聊天的定时和忘记之前的语义检索段是范围共同的，任何一个人的忘记都会清掉它们，别人还没整理的消息也随游标跳过不再整理（语义索引按私聊的规则把最近一次忘记之前的消息全部隐去，所以这些段也不会重建）。
@@ -523,7 +523,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 4. 输出是 JSON `{"group_summary":…,"members":[{"ref":"P1","note":…,"affinity_delta":…,"reason":…}]}`，容忍代码块包裹；`affinity_delta` 四舍五入后截到 [-3, 3]（不是数字时算 0），未知代号忽略，没出现的群友笔记不变。代码兜底：摘要、笔记和原因里仍然出现的本批代号换成名字（“名字（P1）”“P1（名字）”只留名字，单独的 P1 按完整代号匹配，不在本批的代号不动；本批输入里原样出现过的代号，比如消息里的游戏名 P5、旧摘要或旧笔记里残留的代号，单独出现时不替换）。解析时只去掉首尾空白，替换之后才按存储上限（`memory.summary_max_chars`、`note_max_chars`，为 0 时按会话类型的默认值）截断，优先截在上限以内最后一个句末标点（。！？；）处，但截完要保留至少一半上限，否则直接截断。
 5. 写回在一个事务里完成：摘要、游标、笔记、好感度和 revisions。按成员做乐观检查（`version`）：整理期间被改过的人重读一遍，笔记和 `forgotten_at` 都没变（只是规则加分改了好感度、日期或名字）时，用 `memory.UpdateMember` 把这一批的笔记和模型的好感度变化重新套上去，来源仍是 consolidate，仍受每日上限约束；笔记或 `forgotten_at` 变了（`/忘记我`、API 修改）就不写这个人。其他人照常写。私聊整段都关于那一个人，所以多几层保护：
 
-   - 私聊的 `/忘记我` 和 API 删除通过 `memory.Forget` 调用 `Store.ForgetPrivate`，在一个事务里清空成员记录和他的 revisions、清空摘要并删除摘要的全部 revisions，再把游标推进到这个会话当前最新的消息，忘记之前双方说过的话（包括机器人的回复）都不会再被整理；同一个事务还删除这个会话的状态、定时、状态条数值和变化记录（`conversation_status`、`conversation_timers`、`conversation_buffs`、`conversation_buff_events`）。面板聊天调用 `Store.ForgetPrivateScope`，对共享范围做同样的事：清空这个人在范围里的成员记录、范围的摘要和它们的 revisions，游标推进到范围内所有聊天里最新的那条消息，删除范围的状态、状态条数值和变化记录，以及每个面板聊天的定时和忘记之前的语义检索段；`ForgetPrivate` 就是只有一个聊天的 `ForgetPrivateScope`，平台私聊执行的语句和以前相同；
+   - 私聊的 `/忘记我` 和 API 删除通过 `memory.Forget` 调用 `Store.ForgetPrivate`，在一个事务里清空成员记录和他的 revisions、清空摘要并删除摘要的全部 revisions，再把游标推进到这个会话当前最新的消息，忘记之前双方说过的话（包括机器人的回复）都不会再被整理；同一个事务还删除这个会话的状态、定时、状态条数值和变化记录、自建的状态条和效果（`conversation_status`、`conversation_timers`、`conversation_buffs`、`conversation_buff_events`、`conversation_custom_bars`、`conversation_effects`）。面板聊天调用 `Store.ForgetPrivateScope`，对共享范围做同样的事：清空这个人在范围里的成员记录、范围的摘要和它们的 revisions，游标推进到范围内所有聊天里最新的那条消息，删除范围的状态、状态条数值和变化记录、自建的状态条和效果，以及每个面板聊天的定时和忘记之前的语义检索段；`ForgetPrivate` 就是只有一个聊天的 `ForgetPrivateScope`，平台私聊执行的语句和以前相同；
    - 每批开始前重读这个会话的记忆行（摘要和游标）；
    - 本批成员的 `forgotten_at` 不早于本轮整理开始时，整批放弃（结果 `forgotten`）：不调用模型，不写笔记和摘要，也不动游标；
    - 写回时带上这个人的版本作为摘要守卫（`MemoryWrite.SummaryGuards`），调用模型期间他被忘记（版本变了）时摘要不写、不留 revision；
@@ -635,7 +635,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | 审计 | SQLite `audit_events` | 保留 `audit_retention`（2160h） |
 | 成员资格、档位、兴趣画像 | SQLite `conversation_members` | 保留 |
 | 主动搭话的评估 / 发出记录 | SQLite `proactive_log` | 保留 7 天，预算照常生效 |
-| 私聊的状态、定时、状态条数值和变化记录 | SQLite `conversation_status`、`conversation_timers`、`conversation_buffs`、`conversation_buff_events`；状态、状态条和变化记录按记忆范围，定时按会话（3.8） | 保留；到点的定时由轮询继续处理，晚了超过 30 分钟的按错过处理（3.8）；变化记录保留 30 天 |
+| 私聊的状态、定时、状态条数值和变化记录、自建的状态条和效果 | SQLite `conversation_status`、`conversation_timers`、`conversation_buffs`、`conversation_buff_events`、`conversation_custom_bars`、`conversation_effects`（迁移 `0017_dynamic_buffs.sql`）；状态、状态条、效果和变化记录按记忆范围，定时按会话（3.8） | 保留；到点的定时由轮询继续处理，晚了超过 30 分钟的按错过处理（3.8）；变化记录保留 30 天；到时间的效果由每小时的维护任务删除 |
 | 各记忆范围（群聊、平台私聊、面板共享）的摘要与整理游标、笔记和好感度、记忆修改记录 | SQLite `group_memory`、`member_memory`、`memory_revisions` | 保留；修改记录保留 30 天；面板共享范围在删除面板 bot 时删掉（2.3） |
 | 面板聊天的记忆已并入共享范围的标记 | SQLite `app_meta`（`panel_memory_scoped`） | 保留，有它时启动不再合并（5.5） |
 | 消息的关键词索引和补建进度 | SQLite `message_fts`、`message_fts_progress` | 保留；没进索引的消息由后台补建补上 |
@@ -713,7 +713,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | `memory_consolidation_seconds` | —（只记成功的整理） |
 | `memory_affinity_changes_total` | source：consolidate / rule / command / api |
 | `skill_calls_total` | tool（模型编造的工具名记为 unknown）、result：ok / error / unknown / invalid |
-| `cleanup_deleted_total` | table：tasks / outbox_actions / audit_events / events / proactive_log / model_calls / panel_sessions / conversation_buff_events / persona_images |
+| `cleanup_deleted_total` | table：tasks / outbox_actions / audit_events / events / proactive_log / model_calls / panel_sessions / conversation_buff_events / conversation_effects / persona_images |
 | `search_seconds` | path：keyword（recall 的每页关键词检索）/ vector（每次语义检索，包括失败的） |
 | `fts_backfill_remaining` | —（关键词索引补建进度之后的消息数） |
 | `embedding_requests_total` | result：ok / error / timeout（每次请求向量服务，后台生成和查询都算） |

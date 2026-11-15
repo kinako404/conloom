@@ -72,15 +72,22 @@ func bigWindows(c *config.Config) {
 // (tool boom) and verbose (tool long).
 func skillEnv(t *testing.T, opts testOpts, botSkills []string, tools ...skills.Tool) *testEnv {
 	t.Helper()
+	return skillEnvWith(t, opts, nil, botSkills, tools...)
+}
+
+// skillEnvWith is skillEnv whose skills also include override, which
+// replaces a skill of the same name as a skill of skills.dir would.
+func skillEnvWith(t *testing.T, opts testOpts, override []skills.Skill, botSkills []string, tools ...skills.Tool) *testEnv {
+	t.Helper()
 	loaded, err := skills.Load("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range []skills.Skill{
+	for _, s := range append([]skills.Skill{
 		{Name: "privnote", Description: "d", Tools: []string{"now"}, Conversations: []string{"private"}, Body: "- 私聊里用 now。"},
 		{Name: "chaos", Description: "d", Tools: []string{"boom"}, Conversations: []string{"private", "group"}, Body: "- 用 boom。"},
 		{Name: "verbose", Description: "d", Tools: []string{"long"}, Conversations: []string{"private", "group"}, Body: "- 用 long。"},
-	} {
+	}, override...) {
 		loaded[s.Name] = s
 	}
 	reg, err := skills.NewRegistry(loaded, tools)

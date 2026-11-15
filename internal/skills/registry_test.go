@@ -49,9 +49,12 @@ func TestLoad_Builtins(t *testing.T) {
 	}); !slices.Equal(names, []string{"buff", "memory", "status", "time"}) {
 		t.Fatalf("builtin skills = %v", names)
 	}
-	for _, c := range []struct{ name, tool string }{{"status", "set_status"}, {"buff", "adjust_buff"}} {
+	for _, c := range []struct {
+		name  string
+		tools []string
+	}{{"status", []string{"set_status"}}, {"buff", []string{"adjust_buff", "add_buff", "remove_buff"}}} {
 		s := got[c.name]
-		if !slices.Equal(s.Tools, []string{c.tool}) || !slices.Equal(s.Conversations, []string{"private"}) || s.Description == "" ||
+		if !slices.Equal(s.Tools, c.tools) || !slices.Equal(s.Conversations, []string{"private"}) || s.Description == "" ||
 			s.Source != "builtin" {
 			t.Errorf("%s = %+v", c.name, s)
 		}

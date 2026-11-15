@@ -17,6 +17,7 @@ import (
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/review"
+	"github.com/kinako404/conloom/internal/skills"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -27,18 +28,26 @@ import (
 // the built-in skills is a fake.
 func newWakeEnv(t *testing.T, model handlerFunc, botSkills []string, configure func(*config.Config)) (*testEnv, *injectClock) {
 	t.Helper()
+	return newWakeEnvWith(t, model, nil, botSkills, configure)
+}
+
+// newWakeEnvWith is newWakeEnv whose skills also include override (see
+// skillEnvWith).
+func newWakeEnvWith(t *testing.T, model handlerFunc, override []skills.Skill, botSkills []string,
+	configure func(*config.Config)) (*testEnv, *injectClock) {
+	t.Helper()
 	clock := newInjectClock(injectMorning)
-	var tools []*recTool
-	for _, name := range []string{"now", "set_status", "adjust_buff", "remember", "recall", "get_affinity"} {
+	var tools []skills.Tool
+	for _, name := range []string{"now", "set_status", "adjust_buff", "add_buff", "remove_buff", "remember", "recall", "get_affinity"} {
 		tools = append(tools, &recTool{name: name})
 	}
-	env := skillEnv(t, testOpts{short: model, now: clock.now, configure: func(c *config.Config) {
+	env := skillEnvWith(t, testOpts{short: model, now: clock.now, configure: func(c *config.Config) {
 		c.Bots[0].PrivateChat = "all"
 		c.DefaultGroupPolicy.Reply.UserRateLimitPerMinute = 100
 		if configure != nil {
 			configure(c)
 		}
-	}}, botSkills, tools[0], tools[1], tools[2], tools[3], tools[4], tools[5])
+	}}, override, botSkills, tools...)
 	return env, clock
 }
 
@@ -580,18 +589,48 @@ func TestWake_OpenDirectiveNoProtectedLine(t *testing.T) {
 	}
 }
 
-func TestWake_ToolsOnlyBuff(t *testing.T) {
-	env, clock := newWakeEnv(t, nil, []string{"time", "status", "buff", "memory"}, nil)
+func TestWake_BuffToolsOffered(t *testing.T) {
+	buffTools := []string{"adjust_buff", "add_buff", "remove_buff"}
+	for _, kind := range []store.TimerKind{store.TimerInitiate, store.TimerStatusReturn} {
+		env, clock := newWakeEnv(t, nil, []string{"time", "status", "buff", "memory"}, nil)
+		var timer store.ConversationTimer
+		if kind == store.TimerStatusReturn {
+			env.seedPrivateMessage(t, clock, "我去洗个澡")
+			until := clock.now().Add(20 * time.Minute)
+			timer = env.setWakeStatus(t, "洗澡", clock.now(), until)
+			clock.set(until)
+		} else {
+			env.seedPrivateMessage(t, clock, "晚安")
+			clock.set(clock.now().Add(5 * time.Hour))
+			timer = env.armWake(t, kind, clock.now())
+		}
+
+		if task := env.fireWake(t, timer); len(task.Actions) != 1 {
+			t.Fatalf("%s task = %+v, want a reply", kind, task)
+		}
+		req := wakeRequest(t, env)
+		if got := offeredTools(req); !reflect.DeepEqual(got, buffTools) {
+			t.Errorf("%s request tools = %v, want %v", kind, got, buffTools)
+		}
+		if sys := requestMessages(t, req)[0]["content"].(string); strings.Contains(sys, "set_status") || strings.Contains(sys, "remember") {
+			t.Errorf("%s system prompt describes other skills:\n%s", kind, sys)
+		}
+	}
+
+	// A buff skill of skills.dir that also lists set_status and remember
+	// still offers a wake task only the buff tools.
+	loaded, err := skills.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wide := loaded["buff"]
+	wide.Tools = []string{"set_status", "add_buff", "remember", "adjust_buff"}
+	env, clock := newWakeEnvWith(t, nil, []skills.Skill{wide}, []string{"buff"}, nil)
 	env.seedPrivateMessage(t, clock, "晚安")
 	clock.set(clock.now().Add(5 * time.Hour))
-
 	env.fireWake(t, env.armWake(t, store.TimerInitiate, clock.now()))
-	req := wakeRequest(t, env)
-	if got := offeredTools(req); !reflect.DeepEqual(got, []string{"adjust_buff"}) {
-		t.Errorf("wake request tools = %v, want [adjust_buff]", got)
-	}
-	if sys := requestMessages(t, req)[0]["content"].(string); strings.Contains(sys, "set_status") || strings.Contains(sys, "remember") {
-		t.Errorf("wake system prompt describes other skills:\n%s", sys)
+	if got, want := offeredTools(wakeRequest(t, env)), []string{"add_buff", "adjust_buff"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("wake request tools of a wider buff skill = %v, want %v", got, want)
 	}
 
 	env2, clock2 := newWakeEnv(t, nil, []string{"time", "status", "memory"}, nil)

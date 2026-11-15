@@ -421,6 +421,7 @@ model_profiles:
   | 事件幂等记录（含被处理事件的原文） | `events` | `runtime.idempotency_retention`（默认 7 天） |
   | 主动搭话记录 | `proactive_log` | 7 天 |
   | 私聊状态条的变化记录 | `conversation_buff_events` | 30 天 |
+  | 机器人在私聊里给自己加的效果 | `conversation_effects` | 到时间后删除 |
   | 人设外观参考图（原图和缩小图） | `persona_images` | 没有被任何人设模板或人设版本（包括历史版本）引用、上传满 7 天后删除 |
   | 记忆修订历史 | `memory_revisions` | 30 天（由记忆层清理，不受 `ops_retention` 影响） |
   | 模型用量明细（每次模型调用一行） | `model_calls` | `runtime.usage_retention`（默认 400 天） |

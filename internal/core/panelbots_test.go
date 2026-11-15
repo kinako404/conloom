@@ -36,7 +36,7 @@ func panelBotEnv(t *testing.T, opts testOpts) *testEnv {
 	loaded["broken"] = skills.Skill{Name: "broken", Description: "工具没有注册", Tools: []string{"boom"},
 		Conversations: []string{conloomapi.ConvPrivate}, Body: "- 用 boom。"}
 	var tools []skills.Tool
-	for _, name := range []string{"now", "set_status", "adjust_buff", "remember", "recall", "get_affinity"} {
+	for _, name := range []string{"now", "set_status", "adjust_buff", "add_buff", "remove_buff", "remember", "recall", "get_affinity"} {
 		tools = append(tools, &recTool{name: name})
 	}
 	reg, err := skills.NewRegistry(loaded, tools)

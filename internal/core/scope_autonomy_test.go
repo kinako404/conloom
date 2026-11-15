@@ -42,15 +42,17 @@ func (defaultPersonas) Persona(context.Context, string, string) (conloomapi.Pers
 }
 
 const (
-	// goBathe and goodNews make scopeAutonomyModel call set_status and
-	// adjust_buff.
-	goBathe  = "我去洗澡了"
-	goodNews = "告诉你个好消息"
+	// goBathe, goodNews and caughtCold make scopeAutonomyModel call
+	// set_status, adjust_buff and add_buff.
+	goBathe    = "我去洗澡了"
+	goodNews   = "告诉你个好消息"
+	caughtCold = "你淋雨了吧"
 )
 
 // scopeAutonomyModel calls set_status (洗澡, 20 minutes) when the newest
-// message of the current turn is goBathe and adjust_buff (心情 +5) when it is
-// goodNews, and otherwise, or once a tool answered, replies fakeReply.
+// message of the current turn is goBathe, adjust_buff (心情 +5) when it is
+// goodNews and add_buff (the bar 饥饿 and the effect 着凉 for an hour) when
+// it is caughtCold, and otherwise, or once a tool answered, replies fakeReply.
 func scopeAutonomyModel(req map[string]any) fakeopenai.Reply {
 	last := lastContent(req)
 	newest := last[strings.LastIndex(last, "\n")+1:]
@@ -62,22 +64,33 @@ func scopeAutonomyModel(req map[string]any) fakeopenai.Reply {
 	case newest == goodNews:
 		return fakeopenai.Reply{ToolCalls: []fakeopenai.ToolCall{{ID: "call_b", Name: "adjust_buff",
 			Arguments: `{"name":"心情","delta":5,"reason":"听到好消息"}`}}}
+	case newest == caughtCold:
+		return fakeopenai.Reply{ToolCalls: []fakeopenai.ToolCall{
+			{ID: "call_h", Name: "add_buff", Arguments: `{"kind":"bar","name":"饥饿","description":"高=很饿","baseline":30,"value":70}`},
+			{ID: "call_c", Name: "add_buff", Arguments: `{"kind":"effect","name":"着凉","description":"有点冷","minutes":60}`},
+		}}
 	}
 	return fakeopenai.Reply{Content: fakeReply}
 }
 
 // scopeAutonomyEnv is a test orchestrator at injectMorning with memory on
-// whose bot has the status and buff skills with the real set_status and
-// adjust_buff tools, answered by scopeAutonomyModel.
+// whose bot has the status and buff skills with the real set_status,
+// adjust_buff, add_buff and remove_buff tools, answered by
+// scopeAutonomyModel.
 func scopeAutonomyEnv(t *testing.T) (*testEnv, *injectClock) {
 	t.Helper()
 	clock := newInjectClock(injectMorning)
 	status := &lateTool{spec: tools.NewSetStatus(nil, nil, nil, nil).Spec()}
 	buff := &lateTool{spec: tools.NewAdjustBuff(nil, nil).Spec()}
+	add := &lateTool{spec: tools.NewAddBuff(nil, nil, nil, nil).Spec()}
+	remove := &lateTool{spec: tools.NewRemoveBuff(nil, nil).Spec()}
 	env := skillEnv(t, testOpts{shortTools: scopeAutonomyModel, now: clock.now, configure: privMemConfig(true)},
-		[]string{"status", "buff"}, status, buff)
-	status.inner = tools.NewSetStatus(env.st, env.policies, defaultPersonas{}, review.New(nil, review.Options{}))
+		[]string{"status", "buff"}, status, buff, add, remove)
+	rv := review.New(nil, review.Options{})
+	status.inner = tools.NewSetStatus(env.st, env.policies, defaultPersonas{}, rv)
 	buff.inner = tools.NewAdjustBuff(env.st, defaultPersonas{})
+	add.inner = tools.NewAddBuff(env.st, env.policies, defaultPersonas{}, rv)
+	remove.inner = tools.NewRemoveBuff(env.st, defaultPersonas{})
 	return env, clock
 }
 
@@ -240,6 +253,41 @@ func TestScope_BarsShared(t *testing.T) {
 	}
 	if got := env.timerKindsOf(t, b); len(got) != 0 {
 		t.Errorf("timers of B after /忘记我 in A = %v, want its status_return gone", got)
+	}
+}
+
+func TestScope_CustomBarsAndEffectsShared(t *testing.T) {
+	env, clock := scopeAutonomyEnv(t)
+	ctx := context.Background()
+	a, b := env.createChat(t, testBot), env.createChat(t, testBot)
+	scope := memory.ScopeKeyOf(a)
+
+	added := clock.now()
+	env.panelReply(t, a, caughtCold)
+	clock.set(added.Add(10 * time.Minute))
+	inB := env.panelReply(t, b, "在吗")
+	block := autonomy.RenderState(nil, append(defaultStateBars(60, 70), autonomy.StateBar{Name: "饥饿", Description: "高=很饿",
+		Value: autonomy.Decay(70, 30, 6*time.Hour, 10*time.Minute)}),
+		[]autonomy.StateEffect{{Name: "着凉", Description: "有点冷", UntilAt: added.Add(time.Hour)}}, clock.now(), env.o.loc)
+	if !strings.Contains(block, "效果：着凉（还剩约 50 分；有点冷）") || !strings.Contains(inB, block) {
+		t.Fatalf("B's request lacks the bar and effect A's reply added:\n%s\nwant\n%s", inB, block)
+	}
+	if bars, err := env.st.ListCustomBars(ctx, scope); err != nil || len(bars) != 1 || bars[0].Name != "饥饿" {
+		t.Errorf("scope bars = %+v, %v; want 饥饿", bars, err)
+	}
+	for _, key := range []string{a, b} {
+		if bars, err := env.st.ListCustomBars(ctx, key); err != nil || len(bars) != 0 {
+			t.Errorf("bars stored under the chat %s = %+v, %v", key, bars, err)
+		}
+		if effects, err := env.st.ListEffects(ctx, key, clock.now()); err != nil || len(effects) != 0 {
+			t.Errorf("effects stored under the chat %s = %+v, %v", key, effects, err)
+		}
+	}
+
+	clock.set(added.Add(time.Hour))
+	inA := env.panelReply(t, a, "还冷吗")
+	if strings.Contains(inA, "效果：") || !strings.Contains(inA, "\n饥饿：") {
+		t.Errorf("A's request an hour later shows the run-out effect or lacks the bar:\n%s", inA)
 	}
 }
 

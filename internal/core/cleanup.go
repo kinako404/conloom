@@ -26,8 +26,24 @@ const (
 	cleanupUsage      = "model_calls"
 	cleanupPanel      = "panel_sessions"
 	cleanupBuffEvents = "conversation_buff_events"
+	cleanupEffects    = "conversation_effects"
 	cleanupImages     = "persona_images"
 )
+
+// purgeExpiredEffects deletes the effects that have run out.
+func (o *Orchestrator) purgeExpiredEffects() {
+	n, err := o.st.PurgeExpiredEffects(o.bgCtx, o.now())
+	if err != nil {
+		if o.bgCtx.Err() == nil {
+			o.log.Error("purge run-out effects failed", "error", err)
+		}
+		return
+	}
+	o.countCleanup(cleanupEffects, n)
+	if n > 0 {
+		o.log.Info("purged run-out effects", "count", n)
+	}
+}
 
 // purgeBuffEvents deletes bar changes older than buffEventRetention.
 func (o *Orchestrator) purgeBuffEvents() {

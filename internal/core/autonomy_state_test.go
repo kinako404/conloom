@@ -17,8 +17,8 @@ import (
 const stateHeader = "【你的状态"
 
 // stateEnv is a test orchestrator at injectMorning in which everyone may chat
-// privately and whose bot enables botSkills (set_status, adjust_buff and now
-// are fake tools).
+// privately and whose bot enables botSkills (set_status, the buff tools and
+// now are fake tools).
 func stateEnv(t *testing.T, botSkills []string, configure func(*config.Config)) (*testEnv, *injectClock) {
 	t.Helper()
 	clock := newInjectClock(injectMorning)
@@ -27,7 +27,8 @@ func stateEnv(t *testing.T, botSkills []string, configure func(*config.Config)) 
 		if configure != nil {
 			configure(c)
 		}
-	}}, botSkills, &recTool{name: "set_status"}, &recTool{name: "adjust_buff"}, &recTool{name: "now"})
+	}}, botSkills, &recTool{name: "set_status"}, &recTool{name: "adjust_buff"}, &recTool{name: "add_buff"},
+		&recTool{name: "remove_buff"}, &recTool{name: "now"})
 	return env, clock
 }
 
@@ -104,6 +105,71 @@ func TestState_InjectedInPrivate(t *testing.T) {
 	}
 }
 
+// seedCustomBar stores a bar the bot added to the conversation at at, valued
+// initial then.
+func (e *testEnv) seedCustomBar(t *testing.T, convKey, name, description string, baseline int, halfLife time.Duration,
+	initial float64, at time.Time) {
+	t.Helper()
+	err := e.st.AddCustomBar(context.Background(), store.CustomBar{ConversationKey: convKey, Name: name, Description: description,
+		TaskID: "task_" + name, Baseline: baseline, HalfLife: halfLife, CreatedAt: at}, initial, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// seedEffect stores an effect the bot gave itself from started until until.
+func (e *testEnv) seedEffect(t *testing.T, convKey, name, description string, started, until time.Time) {
+	t.Helper()
+	err := e.st.AddEffect(context.Background(), store.Effect{ConversationKey: convKey, Name: name, Description: description,
+		TaskID: "task_" + name, StartedAt: started, UntilAt: until}, 6, started)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestState_CustomBarsAndEffectsInjected(t *testing.T) {
+	curious := conloomapi.PersonaBar{Name: "好奇", Baseline: 50, HalfLife: conloomapi.Duration{Duration: 2 * time.Hour},
+		Description: "高=想知道更多"}
+	env, clock := stateEnv(t, []string{"buff"}, func(c *config.Config) {
+		doc := conloomapi.DefaultPersona()
+		doc.Bars = []conloomapi.PersonaBar{curious}
+		c.LegacyPersonaTemplates["default"] = doc
+	})
+	key := privKeyOf("20001")
+	now := clock.now()
+	// 好奇 was added by the bot before the persona gained a bar of that name:
+	// the persona's wins, so 0 four hours ago decays to 37.5 toward 50, not 0.
+	env.seedCustomBar(t, key, "好奇", "自建的说明", 0, time.Hour, 0, now.Add(-4*time.Hour))
+	// 饥饿 was 80 three hours, its half-life, ago and is 50 now.
+	env.seedCustomBar(t, key, "饥饿", "高=很饿", 20, 3*time.Hour, 80, now.Add(-3*time.Hour))
+	env.seedCustomBar(t, key, "困意", "", 30, 6*time.Hour, 30, now.Add(-2*time.Hour))
+	env.seedEffect(t, key, "脚麻", "麻麻的", now.Add(-2*time.Hour), now.Add(-time.Hour))
+	env.seedEffect(t, key, "着凉", "有点冷", now.Add(-30*time.Minute), now.Add(50*time.Minute))
+	env.seedEffect(t, key, "吃饱了", "", now.Add(-10*time.Minute), now.Add(20*time.Minute))
+
+	req := env.statePrivateRequest(t, clock, "在吗")
+	want := autonomy.RenderState(nil, []autonomy.StateBar{
+		{Name: "好奇", Description: curious.Description, Value: 37.5},
+		{Name: "饥饿", Description: "高=很饿", Value: 50},
+		{Name: "困意", Value: 30},
+	}, []autonomy.StateEffect{
+		{Name: "着凉", Description: "有点冷", UntilAt: now.Add(50 * time.Minute)},
+		{Name: "吃饱了", UntilAt: now.Add(20 * time.Minute)},
+	}, now, env.o.loc)
+	for _, line := range []string{"好奇：偏低（高=想知道更多）\n饥饿：中等（高=很饿）\n困意：偏低\n",
+		"效果：着凉（还剩约 50 分；有点冷）、吃饱了（还剩约 20 分）\n"} {
+		if !strings.Contains(want, line) {
+			t.Fatalf("test block lacks %q:\n%s", line, want)
+		}
+	}
+	if last := lastContent(req); !strings.HasPrefix(last, want+"\n\n【当前消息】") {
+		t.Fatalf("last user message = %q, want it to start with the state block\n%s", last, want)
+	}
+	if text := requestText(t, req); strings.Contains(text, "脚麻") || strings.Contains(text, "自建的说明") {
+		t.Errorf("request shows a run-out effect or a shadowed bar:\n%s", text)
+	}
+}
+
 func TestState_ExpiredStatusHidden(t *testing.T) {
 	env, clock := stateEnv(t, []string{"status"}, nil)
 	now := clock.now()
@@ -121,14 +187,17 @@ func TestState_BarsNeedBuffSkill(t *testing.T) {
 	started, until := now.Add(-10*time.Minute), now.Add(20*time.Minute)
 	env.seedStatus(t, key, "洗澡", started, until)
 	env.seedBar(t, key, "心情", 10, now)
+	env.seedCustomBar(t, key, "无聊", "", 20, time.Hour, 80, now)
+	env.seedEffect(t, key, "脚麻", "", now, now.Add(time.Hour))
 
 	req := env.statePrivateRequest(t, clock, "在吗")
 	want := autonomy.RenderState(&autonomy.StateStatus{Activity: "洗澡", StartedAt: started, UntilAt: until}, nil, nil, time.Time{}, env.o.loc)
 	if last := lastContent(req); !strings.HasPrefix(last, want+"\n\n【当前消息】") {
 		t.Fatalf("last user message = %q, want it to start with the status only\n%s", last, want)
 	}
-	if text := requestText(t, req); strings.Contains(text, "心情：") || strings.Contains(text, "精力：") {
-		t.Errorf("request shows bars without the buff skill:\n%s", text)
+	if text := requestText(t, req); strings.Contains(text, "心情：") || strings.Contains(text, "精力：") ||
+		strings.Contains(text, "无聊") || strings.Contains(text, "脚麻") {
+		t.Errorf("request shows bars or effects without the buff skill:\n%s", text)
 	}
 }
 
@@ -144,7 +213,7 @@ func TestState_IgnoresRemovedBars(t *testing.T) {
 	})
 	key := privKeyOf("20001")
 	now := clock.now()
-	env.seedBar(t, key, "饥饿", 10, now)
+	env.seedBar(t, key, "无聊", 10, now)
 	env.seedBar(t, key, "精力", 15, now)
 
 	req := env.statePrivateRequest(t, clock, "在吗")
@@ -155,7 +224,7 @@ func TestState_IgnoresRemovedBars(t *testing.T) {
 	if last := lastContent(req); !strings.HasPrefix(last, want+"\n\n【当前消息】") {
 		t.Fatalf("last user message = %q, want it to start with the persona's bars in its order\n%s", last, want)
 	}
-	if text := requestText(t, req); strings.Contains(text, "饥饿") || strings.Contains(text, "心情：") {
+	if text := requestText(t, req); strings.Contains(text, "无聊") || strings.Contains(text, "心情：") {
 		t.Errorf("request shows a bar the persona does not have:\n%s", text)
 	}
 }
@@ -176,10 +245,25 @@ func TestState_NeverInGroups(t *testing.T) {
 	}
 }
 
-// stateFailStore fails the status or the bar reads.
+// stateFailStore fails the status, bar value, bot-created bar or effect
+// reads.
 type stateFailStore struct {
 	store.Store
-	status, bars bool
+	status, bars, custom, effects bool
+}
+
+func (s *stateFailStore) ListCustomBars(ctx context.Context, convKey string) ([]store.CustomBar, error) {
+	if s.custom {
+		return nil, errors.New("test: bot-created bars unavailable")
+	}
+	return s.Store.ListCustomBars(ctx, convKey)
+}
+
+func (s *stateFailStore) ListEffects(ctx context.Context, convKey string, now time.Time) ([]store.Effect, error) {
+	if s.effects {
+		return nil, errors.New("test: effects unavailable")
+	}
+	return s.Store.ListEffects(ctx, convKey, now)
 }
 
 func (s *stateFailStore) GetStatus(ctx context.Context, convKey string) (store.ConversationStatus, error) {
@@ -203,6 +287,8 @@ func TestState_ReadErrorsLeaveBlockOut(t *testing.T) {
 	}{
 		{"status", stateFailStore{status: true}},
 		{"bars", stateFailStore{bars: true}},
+		{"bot-created bars", stateFailStore{custom: true}},
+		{"effects", stateFailStore{effects: true}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			env, clock := stateEnv(t, []string{"status", "buff"}, nil)
@@ -231,12 +317,12 @@ func TestSkills_StatusAndBuffPrivateOnly(t *testing.T) {
 	if got := offeredTools(group); !reflect.DeepEqual(got, []string{"now"}) {
 		t.Errorf("group request tools = %v, want [now]", got)
 	}
-	if sys := requestMessages(t, group)[0]["content"].(string); strings.Contains(sys, "set_status") || strings.Contains(sys, "adjust_buff") {
+	if sys := requestMessages(t, group)[0]["content"].(string); strings.Contains(sys, "set_status") || strings.Contains(sys, "_buff") {
 		t.Errorf("group system prompt describes private-only skills:\n%s", sys)
 	}
 
 	private := env.statePrivateRequest(t, clock, "去洗澡吧")
-	if got := offeredTools(private); !reflect.DeepEqual(got, []string{"now", "set_status", "adjust_buff"}) {
-		t.Errorf("private request tools = %v, want [now set_status adjust_buff]", got)
+	if got, want := offeredTools(private), []string{"now", "set_status", "adjust_buff", "add_buff", "remove_buff"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("private request tools = %v, want %v", got, want)
 	}
 }

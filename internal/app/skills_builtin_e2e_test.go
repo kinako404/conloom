@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kinako404/conloom/internal/adapter/mock"
 	"github.com/kinako404/conloom/internal/memory"
@@ -152,9 +153,15 @@ func TestE2E_PrivateStatusAndBuffTools(t *testing.T) {
 	fake := toolModel(t, []toolStep{
 		{"去洗澡吧", fakeopenai.ToolCall{ID: "c1", Name: "set_status", Arguments: `{"activity":"洗澡","minutes":20}`}, "好，我去洗澡啦。"},
 		{"今天好开心", fakeopenai.ToolCall{ID: "c2", Name: "adjust_buff", Arguments: `{"name":"心情","delta":3,"reason":"对方很开心"}`}, "真好呀。"},
+		{"我有点饿了", fakeopenai.ToolCall{ID: "c3", Name: "add_buff",
+			Arguments: `{"kind":"bar","name":"饥饿","description":"高=很饿","baseline":30,"value":70}`}, "那去吃点东西吧。"},
+		{"刚才淋雨了", fakeopenai.ToolCall{ID: "c4", Name: "add_buff", Arguments: `{"kind":"effect","name":"着凉","minutes":120}`},
+			"快去洗个热水澡。"},
+		{"吃饱了", fakeopenai.ToolCall{ID: "c5", Name: "remove_buff", Arguments: `{"name":"饥饿"}`}, "太好了。"},
 	})
 	cfg := memoryTestConfig(t, fake.URL)
 	private := conloomapi.DefaultGroupPolicy()
+	private.Reply.PrivateWait = conloomapi.Duration{Duration: 100 * time.Millisecond}
 	cfg.DefaultPrivatePolicy = &private
 	cfg.Bots[0].Skills = []string{"status", "buff"}
 	e := newEnv(t, cfg)
@@ -181,6 +188,29 @@ func TestE2E_PrivateStatusAndBuffTools(t *testing.T) {
 	}
 	if got := toolMessagesOf(fake, "今天好开心"); len(got) != 1 || got[0] != toolPreface+"心情：偏高 → 偏高" {
 		t.Errorf("adjust_buff tool messages = %q", got)
+	}
+
+	for _, c := range []struct{ question, answer, result string }{
+		{"我有点饿了", "那去吃点东西吧。", "已加上状态条：饥饿，现在偏高。"},
+		{"刚才淋雨了", "快去洗个热水澡。", "已加上效果：着凉，还剩约 2 小时。"},
+		{"吃饱了", "太好了。", "已删掉状态条：饥饿。"},
+	} {
+		if reply := say(c.question); reply != c.answer {
+			t.Fatalf("%s reply = %q", c.question, reply)
+		}
+		if got := toolMessagesOf(fake, c.question); len(got) != 1 || got[0] != toolPreface+c.result {
+			t.Errorf("%s tool messages = %q, want %q", c.question, got, c.result)
+		}
+	}
+	var state string
+	for _, req := range fake.Requests() {
+		if last := strings.TrimSpace(lastUserMessage(req)); strings.HasSuffix(last, "吃饱了") {
+			state = last
+			break
+		}
+	}
+	if !strings.Contains(state, "\n饥饿：偏高（高=很饿）\n") || !strings.Contains(state, "\n效果：着凉（还剩约 ") {
+		t.Errorf("state block before removing 饥饿 lacks the added bar or effect:\n%s", state)
 	}
 }
 

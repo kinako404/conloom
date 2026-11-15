@@ -102,6 +102,23 @@ func TestPersonaBars_ValidateCollectsEveryError(t *testing.T) {
 	}
 }
 
+func TestValidBarName(t *testing.T) {
+	for name, want := range map[string]bool{
+		"心情": true, "六个字的名字": true, "好奇!": true,
+		"": false, "七个字的名字呀": false, "心 情": false, " 心情": false, "心\u3000情": false, "心\t情": false, "心情\n": false,
+		"心\u200b情": false, "【心情】": false, "心情：": false, "心:情": false,
+	} {
+		if got := ValidBarName(name); got != want {
+			t.Errorf("ValidBarName(%q) = %v, want %v", name, got, want)
+		}
+		p := DefaultPersona()
+		p.Bars = []PersonaBar{{Name: name, Baseline: 50, HalfLife: Duration{time.Hour}}}
+		if valid := p.Validate() == nil; valid != want {
+			t.Errorf("Validate with bar %q: valid %v, want %v like ValidBarName", name, valid, want)
+		}
+	}
+}
+
 func TestPersonaBars_Effective(t *testing.T) {
 	want := []PersonaBar{
 		{Name: "心情", Baseline: 60, HalfLife: Duration{6 * time.Hour}, Description: "高=开心放松，低=低落烦躁"},

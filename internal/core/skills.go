@@ -82,9 +82,10 @@ type skillRun struct {
 // newSkillRun returns the skills of a private chat or a group message
 // addressed to the bot, or nil when the bot enables none for the
 // conversation's type or the task is a turn or a join. A message the bot
-// starts itself (a wake task) gets only adjust_buff, of skillBuff: neither
-// set_status, so statuses do not chain, nor memory tools, which would take
-// old messages for a request.
+// starts itself (a wake task) gets only the wakeTools of skillBuff, even if a
+// skill of skills.dir replacing it lists others: neither set_status, so
+// statuses do not chain, nor memory tools, which would take old messages for
+// a request.
 func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, conv store.ConversationRecord,
 	triggers []store.MessageRecord, out *outcome) *skillRun {
 	if o.skills == nil || len(bot.Skills) == 0 {
@@ -101,7 +102,7 @@ func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, 
 	}
 	set := o.skills.For(names, conv.Type)
 	if out.wake != nil {
-		set.Tools = slices.DeleteFunc(set.Tools, func(t skills.Tool) bool { return t.Spec().Name != toolAdjustBuff })
+		set.Tools = slices.DeleteFunc(set.Tools, func(t skills.Tool) bool { return !slices.Contains(wakeTools, t.Spec().Name) })
 	}
 	if set.Empty() {
 		return nil

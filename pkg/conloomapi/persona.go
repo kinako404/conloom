@@ -168,6 +168,14 @@ func breaksBarName(r rune) bool {
 	return unicode.IsSpace(r) || breaksName(r)
 }
 
+// ValidBarName reports whether name may name a bar: 1 to MaxBarNameRunes
+// runes, none of them whitespace, a control or zero-width character, 【, 】
+// or a colon.
+func ValidBarName(name string) bool {
+	n := utf8.RuneCountInString(name)
+	return n > 0 && n <= MaxBarNameRunes && !strings.ContainsFunc(name, breaksBarName)
+}
+
 // isImageID reports whether s has the form of an image ID: 64 lowercase
 // hexadecimal characters.
 func isImageID(s string) bool {

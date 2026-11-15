@@ -1,7 +1,7 @@
 // Package tools holds the built-in tools that skills expose to the model:
-// remember, recall, get_affinity, now, set_status and adjust_buff. Each acts
-// only for the speaker and conversation of its skills.Invocation, never for
-// anyone named in its arguments.
+// remember, recall, get_affinity, now, set_status, adjust_buff, add_buff and
+// remove_buff. Each acts only for the speaker and conversation of its
+// skills.Invocation, never for anyone named in its arguments.
 package tools
 
 import (
@@ -34,11 +34,18 @@ type StatusStore interface {
 	ClearStatus(ctx context.Context, convKey string, untilAt time.Time) (bool, error)
 }
 
-// BuffStore is the part of store.Store that adjust_buff uses.
+// BuffStore is the part of store.Store that adjust_buff, add_buff and
+// remove_buff use.
 type BuffStore interface {
 	UpdateBuff(ctx context.Context, convKey, name string, ev store.BuffEvent,
 		apply func(cur store.BuffValue, found bool) (next store.BuffValue, before float64, err error)) (store.BuffValue, error)
 	GetBuffs(ctx context.Context, convKey string) ([]store.BuffValue, error)
+	AddCustomBar(ctx context.Context, b store.CustomBar, initial float64, limit int) error
+	RemoveCustomBar(ctx context.Context, convKey, name, source, taskID string, now time.Time) (bool, error)
+	ListCustomBars(ctx context.Context, convKey string) ([]store.CustomBar, error)
+	AddEffect(ctx context.Context, e store.Effect, limit int, now time.Time) error
+	RemoveEffect(ctx context.Context, convKey, name, source, taskID string, now time.Time) (bool, error)
+	ListEffects(ctx context.Context, convKey string, now time.Time) ([]store.Effect, error)
 }
 
 // Reviewer reviews text the model wrote before it is kept: Output in open
@@ -68,8 +75,8 @@ func clock(inv skills.Invocation) (time.Time, *time.Location) {
 var noArguments = json.RawMessage(`{"type":"object","properties":{}}`)
 
 // shortResultRunes is the result limit (skills.ResultLimiter) of the tools
-// that answer with one sentence: remember, get_affinity, now, set_status and
-// adjust_buff.
+// that answer with one sentence: remember, get_affinity, now, set_status,
+// adjust_buff, add_buff and remove_buff.
 const shortResultRunes = 100
 
 // memoryOn reports whether memory is in effect for convKey, as for the
@@ -100,14 +107,36 @@ func stringArg(args json.RawMessage, name string) (value string, ok bool) {
 	return value, true
 }
 
-// maxIntArg bounds the magnitude of an intArg.
-const maxIntArg = 1 << 30
+// hasArg reports whether args, a JSON object, gives the argument name a
+// value other than null.
+func hasArg(args json.RawMessage, name string) bool {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(args, &obj); err != nil {
+		return false
+	}
+	raw, found := obj[name]
+	return found && string(raw) != "null"
+}
+
+// maxNumberArg bounds the magnitude of a numberArg, and so of an intArg.
+const maxNumberArg = 1 << 30
 
 // intArg returns the integer argument name of args, a JSON object, given as
 // a number with no fractional part (20 or 20.0) or a string holding one
 // ("20"); ok is false otherwise, including for "20分钟" and magnitudes over
-// maxIntArg.
+// maxNumberArg.
 func intArg(args json.RawMessage, name string) (value int, ok bool) {
+	f, ok := numberArg(args, name)
+	if !ok || f != math.Trunc(f) {
+		return 0, false
+	}
+	return int(f), true
+}
+
+// numberArg returns the number argument name of args, a JSON object, given as
+// a number (0.5) or a string holding one ("0.5"); ok is false otherwise,
+// including for "6小时" and magnitudes over maxNumberArg.
+func numberArg(args json.RawMessage, name string) (value float64, ok bool) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(args, &obj); err != nil {
 		return 0, false
@@ -125,8 +154,8 @@ func intArg(args json.RawMessage, name string) (value int, ok bool) {
 		return 0, false
 	}
 	f, err := n.Float64()
-	if err != nil || f != math.Trunc(f) || math.Abs(f) > maxIntArg {
+	if err != nil || math.Abs(f) > maxNumberArg {
 		return 0, false
 	}
-	return int(f), true
+	return f, true
 }

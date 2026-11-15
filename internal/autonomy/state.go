@@ -111,7 +111,7 @@ func renderState(st *StateStatus, bars []StateBar, effects []StateEffect, withDe
 		} else {
 			b.WriteString("、")
 		}
-		b.WriteString(e.Name + "（" + timeLeft(e.UntilAt.Sub(now)))
+		b.WriteString(e.Name + "（" + TimeLeft(e.UntilAt.Sub(now)))
 		if withDescriptions && e.Description != "" {
 			b.WriteString("；" + e.Description)
 		}
@@ -124,10 +124,10 @@ func renderState(st *StateStatus, bars []StateBar, effects []StateEffect, withDe
 	return b.String()
 }
 
-// timeLeft words d, a positive time an effect has left, rounded up to the
+// TimeLeft words d, a positive time an effect has left, rounded up to the
 // minute below a day and to the hour from a day on: "还剩约 1 小时 20 分",
 // "还剩约 30 分", "还剩约 2 天 3 小时".
-func timeLeft(d time.Duration) string {
+func TimeLeft(d time.Duration) string {
 	minutes := int((d + time.Minute - 1) / time.Minute)
 	var parts []string
 	part := func(n int, unit string) {

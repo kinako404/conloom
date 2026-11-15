@@ -43,13 +43,14 @@ type adjustBuffTool struct {
 }
 
 // NewAdjustBuff returns the adjust_buff tool. In a private chat it changes
-// one of the persona's hidden bars (conloomapi.PersonaDoc.EffectiveBars),
-// kept in the chat's memory scope (memory.ScopeKey, shared by a bot's panel
-// chats), by a non-zero delta, cut to ±10, on top of its value decayed to now
-// (its baseline when none is stored), keeping the bar's net change on the
-// local day within ±30 and its value within 0–100. A task changes each bar at
-// most once. The answer names the bar's band before and after, never a
-// number; an unknown name is answered with the persona's bars.
+// one of the hidden bars of the chat's memory scope (memory.ScopeKey, shared
+// by a bot's panel chats), the persona's or one the bot added (scopeBars), by
+// a non-zero delta, cut to ±10, on top of its value decayed to now with the
+// bar's baseline and half-life (its baseline when none is stored), keeping
+// the bar's net change on the local day within ±30 and its value within
+// 0–100. A task adjusts each bar at most once. The answer names the bar's
+// band before and after, never a number; an unknown name is answered with
+// the bars there are.
 func NewAdjustBuff(st BuffStore, personas PersonaSource) skills.Tool {
 	return &adjustBuffTool{st: st, personas: personas}
 }
@@ -60,7 +61,7 @@ func (*adjustBuffTool) MaxResultRunes() int { return shortResultRunes }
 func (*adjustBuffTool) Spec() skills.Spec {
 	return skills.Spec{
 		Name: "adjust_buff",
-		Description: "小幅调整你自己的一条隐藏状态条（比如心情、精力），只有你自己知道。聊天里发生了真正影响你的事时调用：" +
+		Description: "小幅调整你自己的一条隐藏状态条（比如心情、精力，或你自己加的），只有你自己知道。聊天里发生了真正影响你的事时调用：" +
 			"日常小事调 ±2 到 5，大事调 ±10；不要每句都调，也不要向对方提起。返回调整前后的大致档位。",
 		Parameters: json.RawMessage(`{"type":"object","properties":{` +
 			`"name":{"type":"string","description":"状态条的名字，要和你的状态里写的完全一致，例如“心情”"},` +
@@ -91,25 +92,25 @@ func (t *adjustBuffTool) Call(ctx context.Context, inv skills.Invocation, args j
 	if err != nil {
 		return "", err
 	}
-	bars := doc.EffectiveBars()
+	scope := memory.ScopeKeyOf(inv.ConversationKey)
+	bars, err := scopeBars(ctx, t.st, doc, scope)
+	if err != nil {
+		return "", err
+	}
 	name, _ := stringArg(args, "name")
 	name = strings.TrimSpace(name)
 	i := slices.IndexFunc(bars, func(b conloomapi.PersonaBar) bool { return b.Name == name })
 	if i < 0 {
-		names := make([]string, len(bars))
-		for j, b := range bars {
-			names[j] = b.Name
-		}
 		if name == "" {
-			return "需要提供条名（name）。现有：" + strings.Join(names, "、") + "。", nil
+			return "需要提供条名（name）。现有：" + joinBarNames(bars) + "。", nil
 		}
-		return "没有这一条。现有：" + strings.Join(names, "、") + "。", nil
+		return "没有这一条。现有：" + joinBarNames(bars) + "。", nil
 	}
 	bar := bars[i]
 	now, loc := clock(inv)
 	day := now.In(loc).Format(time.DateOnly)
 	var before float64
-	after, err := t.st.UpdateBuff(ctx, memory.ScopeKeyOf(inv.ConversationKey), bar.Name,
+	after, err := t.st.UpdateBuff(ctx, scope, bar.Name,
 		store.BuffEvent{TaskID: inv.TaskID, Source: store.BuffSourceModel, Reason: reason, CreatedAt: now},
 		func(cur store.BuffValue, found bool) (store.BuffValue, float64, error) {
 			before = float64(bar.Baseline)
@@ -136,6 +137,38 @@ func (t *adjustBuffTool) Call(ctx context.Context, inv skills.Invocation, args j
 		return "", err
 	}
 	return bar.Name + "：" + autonomy.Band(before) + " → " + autonomy.Band(after.Value), nil
+}
+
+// scopeBars returns the hidden bars of the memory scope scope: doc's
+// (conloomapi.PersonaDoc.EffectiveBars), then, in the order they were added,
+// the bot-created ones whose name none of doc's has; doc's bar wins a name.
+func scopeBars(ctx context.Context, st BuffStore, doc conloomapi.PersonaDoc, scope string) ([]conloomapi.PersonaBar, error) {
+	bars := doc.EffectiveBars()
+	custom, err := st.ListCustomBars(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range custom {
+		if !isPersonaBar(doc, c.Name) {
+			bars = append(bars, conloomapi.PersonaBar{Name: c.Name, Baseline: c.Baseline,
+				HalfLife: conloomapi.Duration{Duration: c.HalfLife}, Description: c.Description})
+		}
+	}
+	return bars, nil
+}
+
+// isPersonaBar reports whether doc has a bar called name.
+func isPersonaBar(doc conloomapi.PersonaDoc, name string) bool {
+	return slices.ContainsFunc(doc.EffectiveBars(), func(b conloomapi.PersonaBar) bool { return b.Name == name })
+}
+
+// joinBarNames lists the names of bars as "心情、精力".
+func joinBarNames(bars []conloomapi.PersonaBar) string {
+	names := make([]string, len(bars))
+	for i, b := range bars {
+		names[i] = b.Name
+	}
+	return strings.Join(names, "、")
 }
 
 // dayCapped cuts delta so that a bar whose net change today is dayDelta

@@ -232,6 +232,63 @@ func TestAdjustBuff_UnknownBarListsCurrent(t *testing.T) {
 	}
 }
 
+func TestAdjustBuff_CustomBar(t *testing.T) {
+	st := newStore(t)
+	add := newAddBuff(st, newPolicies(st, true, true), conloomapi.DefaultPersona())
+	tool := newAdjustBuff(st, conloomapi.DefaultPersona())
+	inv := invocation(privateKey, "20001", "小明")
+	call(t, add, inv, `{"kind":"bar","name":"饥饿","baseline":20,"half_life_hours":2,"value":50}`)
+	call(t, add, inv, `{"kind":"effect","name":"着凉","minutes":60}`)
+
+	if got, want := call(t, tool, inv, `{"name":"饥饿","delta":5,"reason":"闻到饭香"}`), "饥饿：中等 → 中等"; got != want {
+		t.Errorf("adjust_buff of a bar added in the task = %q, want %q", got, want)
+	}
+	checkBuff(t, st, privateKey, "饥饿", 55, "2026-11-13", 5)
+	if ev := buffEvents(t, st, privateKey)[0]; ev.Kind != store.BuffKindAdjust || ev.Name != "饥饿" || ev.Before != 50 || ev.After != 55 {
+		t.Errorf("event = %+v, want an adjustment 50 → 55", ev)
+	}
+	if got := call(t, tool, inv, `{"name":"饥饿","delta":5,"reason":"又饿了"}`); got != "这一条这次已经调过了。" {
+		t.Errorf("second adjust_buff in the task = %q", got)
+	}
+
+	// Two hours, the bar's half-life, later 55 has decayed to 37.5 toward 20.
+	inv.TaskID, inv.Now = "task_next", testNow.Add(2*time.Hour)
+	if got, want := call(t, tool, inv, `{"name":"饥饿","delta":-3,"reason":"吃了点心"}`), "饥饿：偏低 → 偏低"; got != want {
+		t.Errorf("adjust_buff after the half-life = %q, want %q", got, want)
+	}
+	checkBuff(t, st, privateKey, "饥饿", 34.5, "2026-11-13", 2)
+
+	for _, c := range []struct{ args, want string }{
+		{`{"name":"着凉","delta":3,"reason":"冷"}`, "没有这一条。现有：心情、精力、饥饿。"},
+		{`{"delta":3,"reason":"冷"}`, "需要提供条名（name）。现有：心情、精力、饥饿。"},
+	} {
+		if got := call(t, tool, inv, c.args); got != c.want {
+			t.Errorf("adjust_buff(%s) = %q, want %q", c.args, got, c.want)
+		}
+	}
+}
+
+func TestAdjustBuff_PersonaWinsOnClash(t *testing.T) {
+	st := newStore(t)
+	add := newAddBuff(st, newPolicies(st, true, true), conloomapi.DefaultPersona())
+	inv := invocation(privateKey, "20001", "小明")
+	call(t, add, inv, `{"kind":"bar","name":"好奇","baseline":10,"half_life_hours":1,"value":10}`)
+
+	custom := conloomapi.DefaultPersona()
+	custom.Bars = []conloomapi.PersonaBar{{Name: "好奇", Baseline: 50, HalfLife: conloomapi.Duration{Duration: 2 * time.Hour}}}
+	tool := newAdjustBuff(st, custom)
+	inv.TaskID, inv.Now = "task_next", testNow.Add(2*time.Hour)
+	// With the persona's baseline and half-life 10 decays to 30; with the
+	// bot-created bar's it would stay 10.
+	if got, want := call(t, tool, inv, `{"name":"好奇","delta":3,"reason":"新鲜事"}`), "好奇：偏低 → 偏低"; got != want {
+		t.Errorf("adjust_buff of a shadowed bar = %q, want %q", got, want)
+	}
+	checkBuff(t, st, privateKey, "好奇", 33, "2026-11-13", 3)
+	if got, want := call(t, tool, inv, `{"name":"饥饿","delta":3,"reason":"饿"}`), "没有这一条。现有：好奇。"; got != want {
+		t.Errorf("adjust_buff of an unknown bar = %q, want %q", got, want)
+	}
+}
+
 func TestAdjustBuff_GroupRefused(t *testing.T) {
 	st := newStore(t)
 	tool := newAdjustBuff(st, conloomapi.DefaultPersona())

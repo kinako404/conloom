@@ -52,7 +52,7 @@ func newBotsHarness(t *testing.T) *writeHarness {
 	loaded["grouponly"] = skills.Skill{Name: "grouponly", Description: "只在群里用", Tools: []string{"now"},
 		Conversations: []string{conloomapi.ConvGroup}, Body: "- 群里用 now。"}
 	var tools []skills.Tool
-	for _, name := range []string{"now", "set_status", "adjust_buff", "remember", "recall", "get_affinity"} {
+	for _, name := range []string{"now", "set_status", "adjust_buff", "add_buff", "remove_buff", "remember", "recall", "get_affinity"} {
 		tools = append(tools, stubTool(name))
 	}
 	reg, err := skills.NewRegistry(loaded, tools)
