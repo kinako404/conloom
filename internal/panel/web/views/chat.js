@@ -19,10 +19,10 @@ function bubble(m) {
     h('div', { class: 'body' }, m.text));
 }
 
-// chatTab talks to the bot as the conversation's user. It opens with the
-// latest messages, then polls GET chat with the newest seq it has seen until
-// the page is left.
-export async function chatTab({ key, signal }) {
+// chatPane talks to the bot in the private conversation key, as its user. It
+// opens with the latest messages, then polls GET chat with the newest seq it
+// has seen until signal fires. hint, when given, is shown above the chat.
+export async function chatPane({ key, signal, hint }) {
   const log = h('ul', { class: 'chat-log' });
   const typing = h('div', { class: 'chat-typing', hidden: true }, '对方正在输入…');
   const pollError = h('div');
@@ -122,7 +122,7 @@ export async function chatTab({ key, signal }) {
     log.scrollTop = log.scrollHeight;
   });
   return [
-    h('p', { class: 'hint' }, '以这个会话的用户身份和 bot 聊天。从这里发的消息带“面板”标记，bot 的回复只出现在面板里，不会发到原平台。每条最多 2000 字。'),
+    hint ? h('p', { class: 'hint' }, hint) : null,
     h('section', { class: 'chat' }, log, typing, pollError, form, sendError),
   ];
 }

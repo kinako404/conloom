@@ -123,3 +123,33 @@ func TestStatic_ServesAutonomyView(t *testing.T) {
 		t.Errorf("/panel/views/conversation.js: %d, does not import ./autonomy.js", w.Code)
 	}
 }
+
+func TestStatic_ServesChatsView(t *testing.T) {
+	h := staticHandler(t, web.FS)
+	get := func(target string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+		return w
+	}
+	w := get("/panel/views/chats.js")
+	if ct := w.Header().Get("Content-Type"); w.Code != http.StatusOK || !strings.Contains(ct, "javascript") {
+		t.Fatalf("/panel/views/chats.js: %d Content-Type %q", w.Code, ct)
+	}
+	for _, want := range []string{"export async function chatsView(", "export function newChatDialog("} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("/panel/views/chats.js lacks %q", want)
+		}
+	}
+	app := get("/panel/app.js").Body.String()
+	for _, want := range []string{"from './views/chats.js'", "route('/chat', chatsView)", "route('/chat/:key', chatsView)", "['chat', '聊天']"} {
+		if !strings.Contains(app, want) {
+			t.Errorf("/panel/app.js lacks %q", want)
+		}
+	}
+	if w = get("/panel/views/conversations.js"); !strings.Contains(w.Body.String(), "from './chats.js'") {
+		t.Errorf("/panel/views/conversations.js: %d, does not import ./chats.js", w.Code)
+	}
+	if w = get("/panel/views/conversation.js"); strings.Contains(w.Body.String(), "['chat', '聊天']") {
+		t.Error("/panel/views/conversation.js still has the chat tab")
+	}
+}

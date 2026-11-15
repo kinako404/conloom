@@ -11,6 +11,19 @@ export function fmtTime(v) {
     `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+// fmtClock shows an RFC 3339 time briefly in the browser's local time: the
+// clock time on today's date, the date on another; null is ''. A list that is
+// not refreshed keeps it accurate, unlike fmtAgo's "3 分钟前".
+export function fmtClock(v) {
+  if (!v) return '';
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (d.getFullYear() === now.getFullYear()) return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 // fmtAgo shows how long ago an RFC 3339 time was.
 export function fmtAgo(v) {
   if (!v) return '—';

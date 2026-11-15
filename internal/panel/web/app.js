@@ -4,6 +4,7 @@ import { currentUser, loadSession, logout } from './lib/api.js';
 import { loginView } from './views/login.js';
 import { overviewView } from './views/overview.js';
 import { usageView } from './views/usage.js';
+import { chatsView } from './views/chats.js';
 import { conversationsView } from './views/conversations.js';
 import { conversationView } from './views/conversation.js';
 import { tasksView, taskDetailView } from './views/tasks.js';
@@ -13,6 +14,8 @@ import { configView } from './views/config.js';
 route('/', overviewView);
 route('/login', loginView);
 route('/usage', usageView);
+route('/chat', chatsView);
+route('/chat/:key', chatsView);
 route('/conversations', conversationsView);
 route('/conversations/:key', conversationView);
 route('/conversations/:key/:tab', conversationView);
@@ -24,6 +27,7 @@ route('/config', configView);
 const SECTIONS = [
   ['', '概览'],
   ['usage', '用量'],
+  ['chat', '聊天'],
   ['conversations', '会话'],
   ['tasks', '任务'],
   ['audit', '审计'],

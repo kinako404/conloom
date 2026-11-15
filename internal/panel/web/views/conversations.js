@@ -1,7 +1,8 @@
-import { h, mount, empty, table, field, errorBox } from '../lib/dom.js';
-import { get, post, isAbort } from '../lib/api.js';
+import { h, mount, empty, table } from '../lib/dom.js';
+import { get } from '../lib/api.js';
 import { go, href } from '../lib/router.js';
 import { fmtTime, fmtInt, label, CONV_TYPE, PRIVATE_LEVEL } from '../lib/format.js';
+import { newChatDialog } from './chats.js';
 
 // proactiveBadge shows whether the bot speaks unprompted: in a private chat
 // the level it starts the chat at, off when the switch or the level is off.
@@ -25,44 +26,6 @@ export function statusBadges(c) {
 export function personaLabel(c) {
   if (!c.persona_version) return h('span', { class: 'muted' }, '未生成');
   return `${c.persona_template || '自定义'} · 第 ${c.persona_version} 版`;
-}
-
-// MAX_DISPLAY_NAME is the longest name a panel chat calls its user by.
-const MAX_DISPLAY_NAME = 32;
-
-// newChatDialog asks for a bot and a name to be called, starts a panel chat
-// and opens it.
-function newChatDialog(bots) {
-  const bot = h('select', { required: true }, bots.map((b) => h('option', { value: b.id },
-    b.name ? `${b.name}（${b.id}）` : b.id)));
-  const name = h('input', { maxlength: MAX_DISPLAY_NAME, placeholder: '留空时用面板用户名' });
-  const msg = h('div');
-  const create = h('button', { type: 'submit', class: 'primary' }, '开始聊天');
-  const dialog = h('dialog', { class: 'card dialog' });
-  const cancel = h('button', { type: 'button', onclick: () => dialog.close() }, '取消');
-  mount(dialog, h('form', {
-    onsubmit: async (e) => {
-      e.preventDefault();
-      create.disabled = true;
-      mount(msg);
-      try {
-        const res = await post('chats', { bot_instance_id: bot.value, display_name: name.value.trim() });
-        dialog.close();
-        go(href('conversations', res.key, 'chat'));
-      } catch (err) {
-        if (!isAbort(err)) mount(msg, errorBox(err));
-      } finally {
-        create.disabled = false;
-      }
-    },
-  },
-  h('h2', null, '新建聊天'),
-  h('p', { class: 'hint' }, '在面板里和 bot 私聊。你是这个聊天的管理员，私聊白名单对它不生效。'),
-  field('Bot', bot),
-  field('称呼', name, `bot 怎么称呼你，最多 ${MAX_DISPLAY_NAME} 字`),
-  msg,
-  h('div', { class: 'toolbar' }, create, cancel)));
-  return dialog;
 }
 
 export async function conversationsView(ctx) {
@@ -95,14 +58,14 @@ export async function conversationsView(ctx) {
   filter.addEventListener('input', show);
   show();
   const bots = res.bots || [];
-  const dialog = newChatDialog(bots);
+  const chat = newChatDialog((key) => go(href('chat', key)));
   const newChat = h('button', {
     type: 'button',
     disabled: bots.length === 0,
-    title: bots.length ? null : '没有配置 bot',
-    onclick: () => dialog.showModal(),
+    title: bots.length ? null : '没有 bot',
+    onclick: () => chat.open(bots),
   }, '新建聊天');
   ctx.show(h('h1', null, '会话'),
     h('div', { class: 'toolbar' }, filter, h('span', { class: 'muted' }, `共 ${all.length} 个`), h('span', { class: 'spacer' }), newChat),
-    list, dialog);
+    list, chat.dialog);
 }
