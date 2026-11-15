@@ -65,9 +65,9 @@ type Store interface {
 // IndexerDeps are what the Indexer needs. Reviewer and IsCommand are those of
 // recall (tools.RecallDeps), so that chunks hold only what recall may show;
 // Location renders the chunks' times. Bots, the bot directory, decides, like
-// for memory consolidation, which private chats are embedded
-// (config.BotConfig.PrivateAllowed); without it all are. Metrics and Logger
-// may be nil.
+// for memory consolidation, which conversations are embedded: those of its
+// bots, and of their private chats those config.BotConfig.PrivateAllowed
+// allows; without it all are. Metrics and Logger may be nil.
 type IndexerDeps struct {
 	// Interval is how often Start runs a round, roundInterval when 0.
 	Interval  time.Duration
@@ -82,9 +82,9 @@ type IndexerDeps struct {
 	Logger    *slog.Logger
 }
 
-// Indexer embeds the chunks of every conversation where memory is in effect
-// (and, for a private chat, that the bot still allows),
-// in rounds a minute apart of at most 200 chunks each: first the chunks that
+// Indexer embeds the chunks of every conversation of a bot in the directory
+// where memory is in effect (and, for a private chat, that the bot still
+// allows), in rounds a minute apart of at most 200 chunks each: first the chunks that
 // forgetting or a change of model queued to be rebuilt, newest first, then
 // the conversation's new closed chunks. A failed round pauses the indexer,
 // for a minute after the first failure and twice as long after each further
@@ -208,7 +208,7 @@ func (ix *Indexer) RunOnce(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if !on || !ix.privateAllowed(c) {
+			if !on || !ix.botServes(c) {
 				continue
 			}
 			if budget > 0 {
@@ -229,14 +229,16 @@ func (ix *Indexer) RunOnce(ctx context.Context) error {
 	return nil
 }
 
-// privateAllowed reports whether c is not a private chat, or one whose user
-// the bot's private_chat setting still allows.
-func (ix *Indexer) privateAllowed(c store.ConversationRecord) bool {
-	if ix.d.Bots == nil || c.Type != conloomapi.ConvPrivate {
+// botServes reports whether c's bot is in the directory and, for a private
+// chat, its private_chat setting still allows the chat's user. A
+// conversation of a bot no longer in the directory, such as a deleted panel
+// bot, is skipped quietly.
+func (ix *Indexer) botServes(c store.ConversationRecord) bool {
+	if ix.d.Bots == nil {
 		return true
 	}
 	bot, ok := ix.d.Bots.Bot(c.BotInstanceID)
-	return ok && bot.PrivateAllowed(c.Platform, c.PlatformConversationID)
+	return ok && (c.Type != conloomapi.ConvPrivate || bot.PrivateAllowed(c.Platform, c.PlatformConversationID))
 }
 
 // unchunked estimates the chunks of convKey still to be cut: its messages

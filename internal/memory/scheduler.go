@@ -24,8 +24,9 @@ const (
 )
 
 // SchedulerDeps are the Scheduler's collaborators. Store, Policies and Runner
-// are required. Bots, the bot directory, decides which private chats may be
-// consolidated (see config.BotConfig.PrivateAllowed); without it all may. Nil
+// are required. Bots, the bot directory, decides which conversations may be
+// consolidated: those of its bots, and of their private chats those
+// config.BotConfig.PrivateAllowed allows; without it all may. Nil
 // Metrics are registered on a private registry, a nil Logger discards, a nil
 // Location is UTC and a nil Now is time.Now.
 type SchedulerDeps struct {
@@ -184,11 +185,12 @@ func (s *Scheduler) tick(ctx context.Context) {
 	}
 }
 
-// consolidate runs the Runner for convKey if memory is on, the conversation
-// is not paused and, for a private chat, the bot still chats with that user
-// privately; a scheduled run also needs the conversation to be due.
+// consolidate runs the Runner for convKey if its bot is in the directory,
+// memory is on, the conversation is not paused and, for a private chat, the
+// bot still chats with that user privately; a scheduled run also needs the
+// conversation to be due.
 func (s *Scheduler) consolidate(ctx context.Context, convKey string, manual bool) {
-	if !s.privateAllowed(ctx, convKey) {
+	if !s.botServes(ctx, convKey) {
 		return
 	}
 	pv, err := s.d.Policies.Current(ctx, convKey)
@@ -357,16 +359,22 @@ func (s *Scheduler) decayGroup(ctx context.Context, convKey, today string) {
 	}
 }
 
-// privateAllowed reports whether convKey is not a private chat, or one whose
-// user the bot's private_chat setting still allows.
-func (s *Scheduler) privateAllowed(ctx context.Context, convKey string) bool {
+// botServes reports whether convKey's bot is in the directory and, for a
+// private chat, its private_chat setting still allows the chat's user. A
+// conversation of a bot no longer in the directory, such as a deleted panel
+// bot, is skipped quietly.
+func (s *Scheduler) botServes(ctx context.Context, convKey string) bool {
 	parts := strings.SplitN(convKey, ":", 4)
-	if s.d.Bots == nil || len(parts) != 4 || parts[2] != conloomapi.ConvPrivate {
+	if s.d.Bots == nil || len(parts) != 4 {
 		return true
 	}
 	bot, ok := s.d.Bots.Bot(parts[0])
 	if !ok {
+		s.d.Logger.Debug("memory: skipped a conversation of a bot no longer in the directory", "conversation", convKey)
 		return false
+	}
+	if parts[2] != conloomapi.ConvPrivate {
+		return true
 	}
 	conv, err := s.d.Store.GetConversation(ctx, parts[0], parts[3])
 	if err != nil {

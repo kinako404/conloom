@@ -155,6 +155,9 @@ type Orchestrator struct {
 	// cancelled tasks to stop.
 	panelLocks      lockTable
 	panelDeleteWait time.Duration
+	// panelBots is the service over the panel bots, which also marks the
+	// bots being deleted.
+	panelBots *PanelBotService
 }
 
 // taskOwner is the one party in this process allowed to execute and complete
@@ -221,6 +224,7 @@ func New(d Deps) (*Orchestrator, error) {
 	if o.now == nil {
 		o.now = time.Now
 	}
+	o.panelBots = newPanelBotService(o)
 	o.memAdmin = memory.NewAdmin(memory.AdminDeps{Store: o.st, Policies: o.policies, Metrics: o.metrics,
 		Now: func() time.Time { return o.now() }})
 	o.tokenFactor = maxTokenFactor(o.cfg.ModelProfiles)
@@ -409,7 +413,9 @@ func (e *replayError) Error() string { return "core: event already stored" }
 // returns the stored response with replayed set; with a different body it
 // returns ErrDuplicateEvent. A platform message stored under another key
 // returns store.ErrDuplicateMessage. A reply or command trigger that occurred
-// StaleTaskAfter or longer ago is only observed, with reason stale.
+// StaleTaskAfter or longer ago is only observed, with reason stale. An event
+// of a panel bot that is not on the panel platform is refused, with nothing
+// stored.
 func (o *Orchestrator) Submit(ctx context.Context, botID, idemKey string, body []byte, ev conloomapi.Event) (resp conloomapi.EventAccepted, replayed bool, err error) {
 	return o.submitOn(ctx, botID, idemKey, body, ev, "")
 }
@@ -431,6 +437,9 @@ func (o *Orchestrator) submitOn(ctx context.Context, botID, idemKey string, body
 	bot, ok := o.bots.Bot(botID)
 	if !ok {
 		return conloomapi.EventAccepted{}, false, fmt.Errorf("core: unknown bot %q", botID)
+	}
+	if bot.Platform == store.PlatformPanel && ev.Platform != store.PlatformPanel {
+		return conloomapi.EventAccepted{}, false, fmt.Errorf("%w: bot %q, platform %q", errPanelBotPlatform, botID, ev.Platform)
 	}
 	s := &submission{
 		botID: botID, key: idemKey, hash: hash, body: body, ev: ev, channel: channel, bot: bot,

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +15,9 @@ import (
 	"github.com/kinako404/conloom/internal/adapter/mock"
 	"github.com/kinako404/conloom/internal/app"
 	"github.com/kinako404/conloom/internal/panel"
+	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/internal/store/sqlite"
 	"github.com/kinako404/conloom/internal/testutil/fakeopenai"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -251,4 +255,76 @@ func TestPanelChatE2E(t *testing.T) {
 	if p.get(convAPIPath(takeover), &conv); conv.Key != takeover {
 		t.Fatalf("platform chat after the delete = %+v, want %s", conv, takeover)
 	}
+}
+
+func TestPanelChatE2E_StoredPanelBotLoadedAtStart(t *testing.T) {
+	const panelBot = "panel-e2e00001"
+	fake := fakeopenai.New(t, answer(fakeReply))
+	hash, err := panel.HashPassword(panelPassword, panel.MinIterations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := panelTestConfig(t, configParams{modelURL: fake.URL}, hash)
+	if err := os.MkdirAll(cfg.Storage.DataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	st, err := sqlite.Open(ctx, cfg.DBPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreatePanelBot(ctx, store.PanelBot{ID: panelBot, Name: "小红", PersonaTemplate: "default",
+		Skills: []string{"time"}, CreatedBy: "panel:" + panelUser}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	e := newEnv(t, cfg)
+	p := panelLogin(t, e.srv.URL)
+	var view struct {
+		Config struct {
+			Bots []struct {
+				ID     string   `json:"id"`
+				Name   string   `json:"name"`
+				Source string   `json:"source"`
+				Skills []string `json:"skills"`
+			} `json:"bots"`
+		} `json:"config"`
+	}
+	p.get("/panel/api/config", &view)
+	bots := view.Config.Bots
+	if n := len(bots); n == 0 || bots[n-1].ID != panelBot || bots[n-1].Name != "小红" ||
+		bots[n-1].Source != "panel" || !slices.Equal(bots[n-1].Skills, []string{"time"}) {
+		t.Fatalf("config view bots = %+v, want the stored panel bot last", bots)
+	}
+
+	status, raw := p.do(http.MethodPost, "/panel/api/chats", map[string]string{"bot_instance_id": panelBot, "display_name": "小明"})
+	var created struct {
+		Key string `json:"key"`
+	}
+	if status != http.StatusCreated || json.Unmarshal(raw, &created) != nil || !strings.HasPrefix(created.Key, panelBot+":panel:private:") {
+		t.Fatalf("create chat of the panel bot: status %d, body %s", status, raw)
+	}
+	p.send(created.Key, "你好")
+	if got := p.botReplies(created.Key, 0, 1); got[0].Text != fakeReply {
+		t.Fatalf("reply = %+v, want %q", got, fakeReply)
+	}
+	reqs := fake.Requests()
+	if sys := requestMessagesOf(reqs[len(reqs)-1])[0]; !strings.HasPrefix(sys, persona.CorePrompt("小红")) {
+		t.Errorf("system prompt does not call the bot 小红:\n%s", sys)
+	}
+}
+
+// requestMessagesOf returns the contents of req's messages in order.
+func requestMessagesOf(req map[string]any) []string {
+	var out []string
+	msgs, _ := req["messages"].([]any)
+	for _, m := range msgs {
+		mm, _ := m.(map[string]any)
+		s, _ := mm["content"].(string)
+		out = append(out, s)
+	}
+	return out
 }

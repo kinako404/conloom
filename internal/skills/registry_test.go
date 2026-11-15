@@ -190,6 +190,27 @@ func TestRegistry_CheckEnabledSkills(t *testing.T) {
 	}
 }
 
+func TestRegistry_SkillAndSkills(t *testing.T) {
+	r := testRegistry(t, "now")
+	var names []string
+	for _, s := range r.Skills() {
+		names = append(names, s.Name)
+	}
+	if !slices.Equal(names, []string{"buff", "groupnote", "memory", "status", "time"}) {
+		t.Errorf("Skills = %v, want every loaded skill by name", names)
+	}
+	if s, ok := r.Skill("groupnote"); !ok || !slices.Equal(s.Conversations, []string{"group"}) {
+		t.Errorf("Skill(groupnote) = %+v, %v", s, ok)
+	}
+	if _, ok := r.Skill("nope"); ok {
+		t.Error("Skill(nope) found")
+	}
+	var none *Registry
+	if _, ok := none.Skill("time"); ok || none.Skills() != nil {
+		t.Error("a nil registry has skills")
+	}
+}
+
 func TestRegistry_For(t *testing.T) {
 	r := testRegistry(t, "now", "remember", "recall", "get_affinity")
 	ts := r.For([]string{"time", "groupnote", "memory"}, "private")

@@ -91,8 +91,9 @@ type App struct {
 
 // New loads the skills, opens the database in the configured data directory
 // (creating the directory if needed), registers the configured bots and wires
-// every component to one bot directory, with the web panel when the config
-// has a panel section. An invalid skill configuration is an error wrapping
+// every component to one bot directory, which also holds the panel bots
+// stored in the database, with the web panel when the config has a panel
+// section. An invalid skill configuration is an error wrapping
 // skills.ErrInvalid. The caller must Close the App.
 func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	if logger == nil {
@@ -221,6 +222,10 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Usage:         rec,
 	})
 	if err != nil {
+		return fail(err)
+	}
+	if err := orch.PanelBots().Load(ctx); err != nil {
+		orch.Close()
 		return fail(err)
 	}
 	memAdmin := memory.NewAdmin(memory.AdminDeps{Store: st, Policies: policies, Metrics: metrics, Now: now})

@@ -39,10 +39,19 @@ const (
 // (see panelSpeaker). It returns the new message's ID. A message the bot
 // ignores, and so does not store (its user is not allowed to chat privately),
 // is ErrNotAllowed; an unknown conversation, also one deleted meanwhile (see
-// DeletePanelChat), store.ErrNotFound.
+// DeletePanelChat), store.ErrNotFound; one whose bot is being deleted (see
+// PanelBotService.Delete) ErrBotDeleting.
 func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text string) (messageID string, err error) {
+	botID, _, _ := strings.Cut(convKey, ":")
+	if err := o.panelBots.notDeleting(botID); err != nil {
+		return "", err
+	}
 	unlock := o.panelLocks.lock(convKey)
 	defer unlock()
+	// The bot may have been marked while the chat's lock was awaited.
+	if err := o.panelBots.notDeleting(botID); err != nil {
+		return "", err
+	}
 	conv, err := o.panelConversation(ctx, convKey)
 	if err != nil {
 		return "", err
@@ -55,7 +64,7 @@ func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text
 	}
 	bot, ok := o.bots.Bot(conv.BotInstanceID)
 	if !ok {
-		return "", fmt.Errorf("%w: bot %q is not configured", store.ErrNotFound, conv.BotInstanceID)
+		return "", fmt.Errorf("%w: unknown bot %q", store.ErrNotFound, conv.BotInstanceID)
 	}
 	actor, err := o.panelSpeaker(ctx, conv, bot, panelUser)
 	if err != nil {
@@ -149,10 +158,16 @@ func (o *Orchestrator) panelDisplayName(ctx context.Context, conv store.Conversa
 // CreatePanelChat creates a private chat of the bot on the panel platform for
 // panelUser, who goes by displayName there (trimmed, panelUser when empty, at
 // most panelNameMax characters), and returns its conversation key. An unknown
-// bot is store.ErrNotFound.
+// bot is store.ErrNotFound, one being deleted (see PanelBotService.Delete)
+// ErrBotDeleting.
 func (o *Orchestrator) CreatePanelChat(ctx context.Context, botID, panelUser, displayName string) (convKey string, err error) {
+	unlock, err := o.panelBots.openChat(botID)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 	if _, ok := o.bots.Bot(botID); !ok {
-		return "", fmt.Errorf("%w: bot %q is not configured", store.ErrNotFound, botID)
+		return "", fmt.Errorf("%w: unknown bot %q", store.ErrNotFound, botID)
 	}
 	convID := ids.New("panel")
 	convKey = store.ConversationKey(botID, store.PlatformPanel, conloomapi.ConvPrivate, convID)

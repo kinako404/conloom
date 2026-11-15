@@ -162,6 +162,31 @@ func TestIndexer_OnlyAllowedPrivateChats(t *testing.T) {
 	}
 }
 
+func TestIndexer_SkipsConversationsOfUnknownBots(t *testing.T) {
+	e := newEnv(t)
+	e.say(groupKey, "20001", "小明", "草莓", at(0))
+	e.say(privateKey, "20001", "小明", "旅行", at(0))
+	e.cfg = &config.Config{}
+	e.run(e.indexer("m1", 16))
+	if got := flat(e.emb.take()); len(got) != 0 {
+		t.Fatalf("conversations of a bot not in the directory embedded %q", got)
+	}
+	if e.cursor(groupKey) != 0 || e.cursor(privateKey) != 0 {
+		t.Error("cursor moved in a conversation of a bot not in the directory")
+	}
+	if strings.Contains(e.logs.String(), "level=ERROR") || strings.Contains(e.logs.String(), "level=WARN") {
+		t.Errorf("skipping unknown bots logged a problem:\n%s", e.logs.String())
+	}
+
+	e.cfg = &config.Config{Bots: []config.BotConfig{{ID: testBot, PrivateChat: "all"}}}
+	e.run(e.indexer("m1", 16))
+	got := flat(e.emb.take())
+	slices.Sort(got)
+	if want := []string{"[11-13 09:00] 小明：旅行", "[11-13 09:00] 小明：草莓"}; !slices.Equal(got, want) {
+		t.Fatalf("once the bot is known embedded %q, want %q", got, want)
+	}
+}
+
 func TestIndexer_BacksOffAfterFailures(t *testing.T) {
 	e := newEnv(t)
 	e.say(groupKey, "20001", "小明", "草莓", at(0))

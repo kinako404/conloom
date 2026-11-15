@@ -11,7 +11,8 @@ import (
 )
 
 // Result describes one consolidation run. Skipped is empty when the run did
-// its work, otherwise one of "disabled", "backoff", "no_messages",
+// its work, otherwise one of "unknown_bot" (the conversation's bot is not in
+// the bot directory), "disabled", "backoff", "no_messages",
 // "long_unavailable", "busy" or "forgotten" (a private conversation's member
 // was forgotten during the run).
 type Result struct {

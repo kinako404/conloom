@@ -739,6 +739,23 @@ func TestConsolidate_DisabledAndNoMessages(t *testing.T) {
 	}
 }
 
+func TestConsolidate_UnknownBotSkipped(t *testing.T) {
+	e := newConsEnv(t, consOpts{})
+	consSeedThree(t, e)
+	e.convKey = store.ConversationKey("panel-gone0001", store.PlatformPanel, conloomapi.ConvPrivate, "panel_1")
+	for _, manual := range []bool{false, true} {
+		if res := e.run(t, manual); res.Skipped != "unknown_bot" {
+			t.Errorf("Run(manual %v) for a bot not in the directory = %+v, want skipped unknown_bot", manual, res)
+		}
+	}
+	if e.long.calls() != 0 || e.short.calls() != 0 {
+		t.Errorf("model calls = %d long, %d short; want none", e.long.calls(), e.short.calls())
+	}
+	if strings.Contains(e.logs.String(), "level=ERROR") {
+		t.Errorf("skipping an unknown bot logged an error:\n%s", e.logs.String())
+	}
+}
+
 func TestConsolidate_BotOnlyBatchAdvancesWithoutModel(t *testing.T) {
 	e := newConsEnv(t, consOpts{})
 	msgs := e.add(t, e.botMsg("有人吗", consAt(0)), e.botMsg("没人", consAt(1)))

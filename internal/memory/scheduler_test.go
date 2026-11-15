@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kinako404/conloom/internal/botdir"
+	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/policy"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -131,27 +133,31 @@ func (e *schedEnv) newScheduler() *Scheduler {
 // seed stores n messages, cycling through convKeys one message at a time.
 func (e *schedEnv) seed(t *testing.T, n int, convKeys ...string) {
 	t.Helper()
-	ctx := context.Background()
 	for i := range n {
-		key := convKeys[i%len(convKeys)]
-		e.msgs++
-		pmid := fmt.Sprintf("%d", 500000+e.msgs)
-		id := key[len("bot_test:qq:group:"):]
-		_, err := e.st.Ingest(ctx, store.Ingest{
-			Event: store.EventRecord{BotInstanceID: "bot_test", IdempotencyKey: "seed:" + pmid, EventID: "evt_" + pmid},
-			Conversation: &store.ConversationRecord{
-				BotInstanceID: "bot_test", ID: id, Key: key, Type: conloomapi.ConvGroup,
-				Platform: "qq", PlatformConversationID: id[len("conv_"):],
-			},
-			Message: &store.MessageRecord{
-				ID: "msg_" + pmid, BotInstanceID: "bot_test", ConversationKey: key, Platform: "qq",
-				PlatformMessageID: pmid, ActorID: "user_20001", PlatformUserID: "20001", DisplayName: "小明",
-				Text: "你好", OccurredAt: time.Now(),
-			},
-		})
-		if err != nil {
-			t.Fatalf("seed message: %v", err)
-		}
+		e.seedAs(t, "bot_test", convKeys[i%len(convKeys)])
+	}
+}
+
+// seedAs stores a message in the group conversation convKey of botID.
+func (e *schedEnv) seedAs(t *testing.T, botID, key string) {
+	t.Helper()
+	e.msgs++
+	pmid := fmt.Sprintf("%d", 500000+e.msgs)
+	id := key[len(botID+":qq:group:"):]
+	_, err := e.st.Ingest(context.Background(), store.Ingest{
+		Event: store.EventRecord{BotInstanceID: botID, IdempotencyKey: "seed:" + pmid, EventID: "evt_" + pmid},
+		Conversation: &store.ConversationRecord{
+			BotInstanceID: botID, ID: id, Key: key, Type: conloomapi.ConvGroup,
+			Platform: "qq", PlatformConversationID: id[len("conv_"):],
+		},
+		Message: &store.MessageRecord{
+			ID: "msg_" + pmid, BotInstanceID: botID, ConversationKey: key, Platform: "qq",
+			PlatformMessageID: pmid, ActorID: "user_20001", PlatformUserID: "20001", DisplayName: "小明",
+			Text: "你好", OccurredAt: time.Now(),
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed message: %v", err)
 	}
 }
 
@@ -481,6 +487,44 @@ func TestScheduler_CloseWithoutStart(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Close without Start did not return")
+	}
+}
+
+func TestScheduler_SkipsConversationsOfUnknownBots(t *testing.T) {
+	ctx := context.Background()
+	e := newSchedEnv(t)
+	gone := store.ConversationKey("panel-gone0001", store.PlatformPanel, conloomapi.ConvPrivate, "panel_1")
+	if _, err := e.st.Ingest(ctx, store.Ingest{
+		Event: store.EventRecord{BotInstanceID: "panel-gone0001", IdempotencyKey: "seed:gone", EventID: "evt_gone"},
+		Conversation: &store.ConversationRecord{BotInstanceID: "panel-gone0001", ID: "panel_1", Key: gone,
+			Type: conloomapi.ConvPrivate, Platform: store.PlatformPanel, PlatformConversationID: "panel_1"},
+		Message: &store.MessageRecord{ID: "msg_gone", BotInstanceID: "panel-gone0001", ConversationKey: gone,
+			Platform: store.PlatformPanel, PlatformMessageID: "gone", ActorID: "panel_admin", PlatformUserID: "panel_admin",
+			DisplayName: "小明", Text: "你好", Channel: store.ChannelPanel, OccurredAt: time.Now()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	unknownGroup := store.ConversationKey("bot_gone", "qq", conloomapi.ConvGroup, "conv_10009")
+	e.seed(t, 200, testConvKey)
+	for range 200 {
+		e.seedAs(t, "bot_gone", unknownGroup)
+	}
+	for _, key := range []string{testConvKey, unknownGroup, gone} {
+		e.setMemory(t, key, true, 1000)
+	}
+	var logs bytes.Buffer
+	e.sched = NewScheduler(SchedulerDeps{Store: e.st, Policies: e.policies, Runner: e.runner,
+		Bots:   botdir.New([]config.BotConfig{{ID: "bot_test", PrivateChat: "all"}}),
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))})
+	e.sched.tick(ctx)
+	e.sched.Trigger(gone)
+	e.sched.runTriggered(ctx)
+	calls := e.runner.takeCalls()
+	if len(calls) != 1 || calls[0].convKey != testConvKey {
+		t.Errorf("runner calls = %+v, want only the known bot's group", calls)
+	}
+	if strings.Contains(logs.String(), "level=ERROR") || strings.Contains(logs.String(), "level=WARN") {
+		t.Errorf("skipping conversations of unknown bots logged a problem:\n%s", logs.String())
 	}
 }
 

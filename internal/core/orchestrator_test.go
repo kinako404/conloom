@@ -95,6 +95,7 @@ type testOpts struct {
 type testEnv struct {
 	o        *Orchestrator
 	st       *sqlite.DB
+	dbPath   string
 	hooks    *hookStore
 	cfg      *config.Config
 	policies *policy.Service
@@ -331,7 +332,8 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 	}
 	env.cfg = cfg
 
-	st, err := sqlite.Open(context.Background(), filepath.Join(dir, "test.db"))
+	env.dbPath = filepath.Join(dir, "test.db")
+	st, err := sqlite.Open(context.Background(), env.dbPath)
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

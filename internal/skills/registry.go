@@ -2,6 +2,7 @@ package skills
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -31,6 +32,27 @@ func NewRegistry(skills map[string]Skill, tools []Tool) (*Registry, error) {
 		r.tools[name] = t
 	}
 	return r, nil
+}
+
+// Skill returns the loaded skill called name; a nil registry has none.
+func (r *Registry) Skill(name string) (Skill, bool) {
+	if r == nil {
+		return Skill{}, false
+	}
+	s, ok := r.skills[name]
+	return s, ok
+}
+
+// Skills returns the loaded skills sorted by name; a nil registry has none.
+func (r *Registry) Skills() []Skill {
+	if r == nil {
+		return nil
+	}
+	out := make([]Skill, 0, len(r.skills))
+	for _, name := range slices.Sorted(maps.Keys(r.skills)) {
+		out = append(out, r.skills[name])
+	}
+	return out
 }
 
 // Check reports, as ErrInvalid, every name that is not a loaded skill and

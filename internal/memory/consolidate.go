@@ -178,9 +178,10 @@ func NewConsolidator(d ConsolidatorDeps) *Consolidator {
 
 // Run consolidates up to maxBatchesPerRun batches of the conversation's
 // messages after its cursor, advancing the cursor after each batch is
-// written. It skips the run when memory is off, during a failure backoff
-// (unless manual), when there is nothing new, when no long-context model is
-// available or when admission stays busy. Batches are limited by the long
+// written. It skips the run when the conversation's bot is not in the
+// directory (a deleted panel bot), when memory is off, during a failure
+// backoff (unless manual), when there is nothing new, when no long-context
+// model is available or when admission stays busy. Batches are limited by the long
 // model's input budget and, through consMemberCap, by its reserved output. A
 // failed model call or truncated or unreadable output keeps the cursor,
 // records the failure category and returns an error; a cancelled ctx keeps
@@ -207,6 +208,10 @@ func (c *Consolidator) Run(ctx context.Context, convKey string, manual bool) (Re
 
 func (c *Consolidator) run(ctx context.Context, convKey string, manual bool) (Result, int, error) {
 	runStart := c.d.Now()
+	bot, ok := c.d.Bots.Bot(consBotID(convKey))
+	if !ok {
+		return Result{Skipped: "unknown_bot"}, 0, nil
+	}
 	pv, err := c.d.Policies.Current(ctx, convKey)
 	if err != nil {
 		return Result{}, 0, err
@@ -225,7 +230,7 @@ func (c *Consolidator) run(ctx context.Context, convKey string, manual bool) (Re
 	if err != nil {
 		return Result{}, 0, err
 	}
-	doc, botName, err := c.currentPersona(ctx, convKey)
+	doc, botName, err := c.currentPersona(ctx, convKey, bot)
 	if err != nil {
 		return Result{}, 0, err
 	}
@@ -745,13 +750,9 @@ func (c *Consolidator) chat(ctx context.Context, p *router.Profile, convKey stri
 	return resp, nil
 }
 
-// currentPersona returns the conversation's current persona and the bot's
-// name under it.
-func (c *Consolidator) currentPersona(ctx context.Context, convKey string) (conloomapi.PersonaDoc, string, error) {
-	bot, ok := c.d.Bots.Bot(consBotID(convKey))
-	if !ok {
-		return conloomapi.PersonaDoc{}, "", fmt.Errorf("memory: no configured bot for %s", convKey)
-	}
+// currentPersona returns the conversation's current persona and the name of
+// its bot under it.
+func (c *Consolidator) currentPersona(ctx context.Context, convKey string, bot config.BotConfig) (conloomapi.PersonaDoc, string, error) {
 	pv, err := c.d.Personas.Current(ctx, convKey, bot.PersonaTemplate)
 	if err != nil {
 		return conloomapi.PersonaDoc{}, "", err
