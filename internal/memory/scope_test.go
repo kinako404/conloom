@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kinako404/conloom/internal/provider/openai"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -282,5 +283,45 @@ func TestConsolidate_PanelScopeOfOneChatIsUnlabelled(t *testing.T) {
 	}
 	if g, err := e.st.GetGroupMemory(context.Background(), ScopeKey(a)); err != nil || g.Summary != "学钢琴" {
 		t.Errorf("scope memory = %+v, %v", g, err)
+	}
+}
+
+func TestConsolidate_ScopeChatCreatedDuringRun(t *testing.T) {
+	e := newConsEnv(t, consOpts{})
+	ctx := context.Background()
+	a, b := panelChat("bot_test", "panel_a"), panelChat("bot_test", "panel_b")
+	seedChat(t, e.st, a, "panel_admin", "我在学钢琴", consAt(0))
+	var last int64
+	e.long.setReply(func(n int, _ openai.ChatRequest) (openai.ChatResponse, error) {
+		if n == 1 {
+			seedChat(t, e.st, b, "panel_admin", "我养了一只猫", consAt(1))
+			last = seedChat(t, e.st, a, "panel_admin", "今天弹了一首曲子", consAt(2))
+		}
+		return openai.ChatResponse{Content: `{"group_summary":"学钢琴，养了猫","members":[]}`, Model: "fake-long"}, nil
+	})
+
+	res, err := e.c.Run(ctx, a.Key, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Batches != 2 || res.Messages != 3 {
+		t.Fatalf("Run = %+v, want 2 batches of 3 messages", res)
+	}
+	req := e.long.request(t, 1)
+	lines := consBatchLines(t, req)
+	want := []struct{ label, text string }{{"〔对话1〕", "我养了一只猫"}, {"〔对话2〕", "今天弹了一首曲子"}}
+	if len(lines) != len(want) {
+		t.Fatalf("second batch lines = %q, want the new chat's message and A's", lines)
+	}
+	for i, w := range want {
+		if !strings.HasPrefix(lines[i], w.label) || !strings.Contains(lines[i], w.text) {
+			t.Errorf("line %d = %q, want %s and %q", i, lines[i], w.label, w.text)
+		}
+	}
+	if system := req.Messages[0].Content; !strings.Contains(system, consSharedNote) {
+		t.Errorf("second batch's prompt lacks the note on several chats:\n%s", system)
+	}
+	if g, err := e.st.GetGroupMemory(ctx, ScopeKey(a)); err != nil || g.CursorSeq != last {
+		t.Errorf("scope memory = %+v, %v, want the cursor at %d", g, err, last)
 	}
 }

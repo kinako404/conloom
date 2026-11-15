@@ -181,14 +181,16 @@ func NewConsolidator(d ConsolidatorDeps) *Consolidator {
 // after each batch is written. A shared panel scope reads the messages of all
 // its chats in seq order, each line marked with its chat when there are
 // several (see consPlanBatch), under the policy and persona of its newest
-// chat. It skips the run when the conversation's bot is not in the directory
-// (a deleted panel bot), when memory is off, during a failure backoff (unless
-// manual), when there is nothing new, when no long-context model is available
-// or when admission stays busy. Batches are limited by the long model's input
-// budget and, through consMemberCap, by its reserved output. A failed model
-// call or truncated or unreadable output keeps the cursor, records the
-// failure category and returns an error; a cancelled ctx keeps the cursor and
-// is not a failure.
+// chat at the start of the run; its chats are read afresh before every batch,
+// so a chat created during the run is not skipped. It skips the run when the
+// conversation's bot is not in the directory (a deleted panel bot), when
+// memory is off, during a failure backoff (unless manual), when there is
+// nothing new, when no long-context model is available or when admission
+// stays busy. Batches are limited by the long model's input budget and,
+// through consMemberCap, by its reserved output. A failed model call or
+// truncated or unreadable output keeps the cursor, records the failure
+// category and returns an error; a cancelled ctx keeps the cursor and is not
+// a failure.
 func (c *Consolidator) Run(ctx context.Context, convKey string, manual bool) (Result, error) {
 	start := time.Now()
 	convKey = ScopeKeyOf(convKey)
@@ -249,15 +251,21 @@ func (c *Consolidator) run(ctx context.Context, convKey string, manual bool) (Re
 	if err != nil {
 		return Result{}, 0, err
 	}
-	style := consStyleForPersona(convKey, doc, mp)
-	if sc.multiChat() {
-		style = style.acrossChats()
-	}
+	chatStyle := consStyleForPersona(convKey, doc, mp)
 
 	var res Result
 	promptTokens := 0
 	private := convTypeOf(convKey) == conloomapi.ConvPrivate
 	for res.Batches < maxBatchesPerRun {
+		if res.Batches > 0 {
+			if sc, err = resolveScope(ctx, c.d.Store, convKey); err != nil {
+				return res, promptTokens, err
+			}
+		}
+		style := chatStyle
+		if sc.multiChat() {
+			style = style.acrossChats()
+		}
 		if private {
 			if err := c.refreshGroup(ctx, &g); err != nil {
 				return res, promptTokens, err
