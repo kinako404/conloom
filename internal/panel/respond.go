@@ -28,7 +28,7 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // writeError logs the failure with the request's trace ID (at error level for
-// 5xx) and writes the error body. 429, 503 and CHAT_BUSY are marked
+// 5xx) and writes the error body. 429, 503, 504 and CHAT_BUSY are marked
 // retryable.
 func (s *Server) writeError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
 	s.respondError(w, r, status, code, message, nil)
@@ -41,6 +41,13 @@ func (s *Server) badRequest(w http.ResponseWriter, r *http.Request, err error) {
 
 // respondError is writeError that also logs cause, which is never sent.
 func (s *Server) respondError(w http.ResponseWriter, r *http.Request, status int, code, message string, cause error) {
+	s.respond(w, r, status, code, message, cause, status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable ||
+		status == http.StatusGatewayTimeout || code == conloomapi.CodeChatBusy)
+}
+
+// respond is respondError with the error's retryable flag given by the
+// caller.
+func (s *Server) respond(w http.ResponseWriter, r *http.Request, status int, code, message string, cause error, retryable bool) {
 	level := slog.LevelDebug
 	if status >= http.StatusInternalServerError {
 		level = slog.LevelError
@@ -51,9 +58,7 @@ func (s *Server) respondError(w http.ResponseWriter, r *http.Request, status int
 	}
 	s.log.Log(r.Context(), level, "panel request failed", attrs...)
 	s.writeJSON(w, status, conloomapi.ErrorResponse{Error: conloomapi.ErrorBody{
-		Code: code, Message: message, TraceID: traceID(r.Context()),
-		Retryable: status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable ||
-			code == conloomapi.CodeChatBusy,
+		Code: code, Message: message, TraceID: traceID(r.Context()), Retryable: retryable,
 	}})
 }
 
@@ -66,9 +71,10 @@ func (s *Server) respondError(w http.ResponseWriter, r *http.Request, status int
 // MEMORY_DISABLED or PAUSED; deleting a persona template panel bots use is
 // 409 TEMPLATE_IN_USE naming them; a bot being deleted, or a chat whose
 // cancelled tasks are still stopping, is a retryable 409 CHAT_BUSY; a
-// cancelled request or a member memory that kept changing is a retryable 503,
-// and so is a description without a vision model (MODEL_UNAVAILABLE);
-// anything else is a 500 whose details are only logged.
+// cancelled request or a member memory that kept changing is a retryable 503;
+// a description without a vision model is a 503 MODEL_UNAVAILABLE that is not
+// retryable, as only a config change helps; anything else is a 500 whose
+// details are only logged.
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if ctxErr := r.Context().Err(); ctxErr != nil && errors.Is(err, ctxErr) {
 		s.respondError(w, r, http.StatusServiceUnavailable, conloomapi.CodeInternal, "request cancelled; server may be shutting down", err)
@@ -96,7 +102,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		s.respondError(w, r, http.StatusConflict, conloomapi.CodeTemplateInUse,
 			strings.TrimPrefix(err.Error(), persona.ErrTemplateInUse.Error()+": "), err)
 	case errors.Is(err, core.ErrNoVision):
-		s.respondError(w, r, http.StatusServiceUnavailable, conloomapi.CodeModelUnavailable, "未配置识图模型", err)
+		s.respond(w, r, http.StatusServiceUnavailable, conloomapi.CodeModelUnavailable, "未配置识图模型", err, false)
 	case errors.Is(err, core.ErrChatBusy):
 		s.respondError(w, r, http.StatusConflict, conloomapi.CodeChatBusy, strings.TrimPrefix(core.ErrChatBusy.Error(), "core: "), err)
 	case errors.Is(err, core.ErrBotDeleting):

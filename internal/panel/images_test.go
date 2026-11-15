@@ -24,6 +24,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/imaging"
 	"github.com/kinako404/conloom/internal/provider/openai"
 	"github.com/kinako404/conloom/internal/store"
@@ -345,8 +346,8 @@ func TestDescribeAPI_NoVision503(t *testing.T) {
 	h := newBotsHarness(t)
 	up := decodeUpload(t, h.upload(pngData(t, testImage(20, 20, false)), "image/png"))
 	e := errorBody(t, h.write(http.MethodPost, imagePath(up.ID, "describe"), nil), http.StatusServiceUnavailable, conloomapi.CodeModelUnavailable)
-	if e.Message != "未配置识图模型" {
-		t.Errorf("no vision message = %q", e.Message)
+	if e.Message != "未配置识图模型" || e.Retryable {
+		t.Errorf("no vision error = %+v, want 未配置识图模型, not retryable", e)
 	}
 	if n := len(h.audits("persona.appearance.describe")); n != 0 {
 		t.Errorf("describe audits after failure = %d, want 0", n)
@@ -400,21 +401,26 @@ func TestDescribeAPI_ResultsAndErrors(t *testing.T) {
 	}
 
 	for _, c := range []struct {
-		name   string
-		err    error
-		status int
-		code   string
+		name      string
+		err       error
+		status    int
+		code      string
+		retryable bool
 	}{
-		{"unknown image", fmt.Errorf("lookup: %w", store.ErrNotFound), http.StatusNotFound, conloomapi.CodeNotFound},
-		{"timeout", fmt.Errorf("model vision: %w", context.DeadlineExceeded), http.StatusGatewayTimeout, conloomapi.CodeModelUnavailable},
-		{"admission", errors.New("admission vision: request exceeds token budget"), http.StatusBadGateway, conloomapi.CodeModelUnavailable},
+		{"unknown image", fmt.Errorf("lookup: %w", store.ErrNotFound), http.StatusNotFound, conloomapi.CodeNotFound, false},
+		{"timeout", fmt.Errorf("model vision: %w", context.DeadlineExceeded), http.StatusGatewayTimeout, conloomapi.CodeModelUnavailable, true},
+		{"admission", errors.New("admission vision: request exceeds token budget"), http.StatusBadGateway, conloomapi.CodeModelUnavailable, false},
 		{"upstream", fmt.Errorf("model vision: %w", &openai.StatusError{Code: 500, Body: `{"echo":"data:image/jpeg;base64,/9j/4AAQ"}`}),
-			http.StatusBadGateway, conloomapi.CodeModelUnavailable},
+			http.StatusBadGateway, conloomapi.CodeModelUnavailable, false},
+		{"no vision model", fmt.Errorf("describe: %w", core.ErrNoVision), http.StatusServiceUnavailable, conloomapi.CodeModelUnavailable, false},
 	} {
 		fake.describe = func(context.Context, string) (string, error) { return "", c.err }
 		e := errorBody(t, describe(), c.status, c.code)
 		if strings.Contains(e.Message, "budget") || strings.Contains(e.Message, "status") {
 			t.Errorf("%s: message %q leaks the cause", c.name, e.Message)
+		}
+		if e.Retryable != c.retryable {
+			t.Errorf("%s: retryable = %v, want %v", c.name, e.Retryable, c.retryable)
 		}
 	}
 	if l := logs.String(); strings.Contains(l, "base64") || !strings.Contains(l, "vision model answered status 500") ||

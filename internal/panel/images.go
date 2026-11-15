@@ -129,10 +129,10 @@ func (s *Server) getImage(w http.ResponseWriter, r *http.Request, _ *Session) {
 
 // describeImage asks the vision model to describe the appearance shown by the
 // persona image {id} and answers {text}, which is not stored. An unknown
-// image is 404; no vision model is 503 MODEL_UNAVAILABLE; a description not
-// done in time is 504 and another failure of the model 502, both
-// MODEL_UNAVAILABLE. An upstream error status is logged without the response
-// body, which may echo the request's image.
+// image is 404; no vision model is a 503 MODEL_UNAVAILABLE that is not
+// retryable; a description not done in time is a retryable 504 and another
+// failure of the model 502, both MODEL_UNAVAILABLE. An upstream error status
+// is logged without the response body, which may echo the request's image.
 func (s *Server) describeImage(w http.ResponseWriter, r *http.Request, sess *Session) {
 	if s.d.Appearance == nil {
 		s.writeError(w, r, http.StatusServiceUnavailable, conloomapi.CodeInternal, "appearance descriptions are not available")

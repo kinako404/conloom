@@ -501,6 +501,8 @@ func TestFail_WriteErrors(t *testing.T) {
 			http.StatusConflict, conloomapi.CodeChatBusy, "bot is being deleted", true},
 		{fmt.Errorf("%w: %w", core.ErrChatBusy, store.ErrBotHasData),
 			http.StatusConflict, conloomapi.CodeChatBusy, "the chat's cancelled tasks are still stopping; try again", true},
+		{fmt.Errorf("describe: %w", core.ErrNoVision),
+			http.StatusServiceUnavailable, conloomapi.CodeModelUnavailable, "未配置识图模型", false},
 	} {
 		r := httptest.NewRequest(http.MethodPut, "http://"+testHost+"/panel/api/x", nil)
 		w := httptest.NewRecorder()
