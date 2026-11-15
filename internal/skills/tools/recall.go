@@ -767,9 +767,9 @@ func mergeGroups(groups []recallGroup) []recallGroup {
 }
 
 // renderGroups renders groups in time order, each under its header line
-// (groupHeader) and separated by a blank line, within recallMaxRunes. Groups are filled best
-// score first; a group that does not fit keeps its hits first and then the
-// lines nearest to them.
+// (groupHeader) and separated by a blank line, within recallMaxRunes. Groups
+// are filled best score first; a group that does not fit keeps its hits
+// first and then the lines nearest to them.
 func renderGroups(groups []recallGroup, loc *time.Location) string {
 	order := make([]int, len(groups))
 	for i := range order {

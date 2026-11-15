@@ -25,7 +25,8 @@ var scopeMergeTables = []string{
 // already under its scope:
 //   - the summary is the one consolidated last (latest last_run_at), and the
 //     cursor the largest, so nothing a chat consolidated is consolidated again;
-//   - each member keeps the row updated last, forget time included;
+//   - each member keeps the note and affinity of the row updated last, and the
+//     latest forget time of any of its rows, so no forget is undone;
 //   - every revision and bar change is kept;
 //   - the status is the one ending last, still marked as set in its chat,
 //     whose status_return timer stays; the other chats' status_return timers
@@ -113,6 +114,13 @@ func mergeIntoScope(ctx context.Context, tx *sql.Tx, scope string, chats []strin
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE group_memory SET cursor_seq = ? WHERE conversation_key = ?`, cursor, scope); err != nil {
+		return nil, err
+	}
+	// Every row of a member gets the latest forget time of any of them, so the
+	// row kept for its note and affinity keeps that forget too.
+	if _, err := tx.ExecContext(ctx, `UPDATE member_memory SET forgotten_at = (SELECT MAX(m.forgotten_at) FROM member_memory m
+		WHERE m.conversation_key IN (`+in+`) AND m.platform_user_id = member_memory.platform_user_id)
+		WHERE conversation_key IN (`+in+`)`, append(slices.Clone(args), args...)...); err != nil {
 		return nil, err
 	}
 	if err := keepNewest(ctx, tx, "member_memory", "platform_user_id", "updated_at DESC, version DESC", keys, scope, ""); err != nil {

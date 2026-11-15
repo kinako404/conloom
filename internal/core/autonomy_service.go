@@ -19,7 +19,8 @@ import (
 )
 
 const (
-	// autonomyEvents is how many of a chat's newest bar changes State shows.
+	// autonomyEvents is how many of the newest bar changes of a chat's memory
+	// scope State shows.
 	autonomyEvents = 50
 	// maxBarReasonRunes bounds the reason of a bar set through the panel or
 	// the API, as adjust_buff bounds the model's.

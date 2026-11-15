@@ -32,11 +32,13 @@ func groupRow(summary string, cursor int64, runAt time.Time) string {
 		VALUES (?1, '%s', %d, '%s', '', '%s')`, summary, cursor, fmtTime(runAt), fmtTime(runAt))
 }
 
-func memberRow(user, note string, affinity, version int, updated time.Time) string {
+// memberRow is a member row of user updated at updated, forgotten at
+// forgotten (zero for never).
+func memberRow(user, note string, affinity, version int, updated, forgotten time.Time) string {
 	return fmt.Sprintf(`INSERT INTO member_memory (conversation_key, platform_user_id, display_name, note, affinity,
 		last_interaction_day, model_delta_day, model_delta_sum, decay_steps, forgotten_at, version, updated_at)
 		VALUES (?1, '%s', '小明', '%s', %d, '2026-11-15', '', 0, 0, '%s', %d, '%s')`,
-		user, note, affinity, fmtTime(time.Time{}), version, fmtTime(updated))
+		user, note, affinity, fmtTime(forgotten), version, fmtTime(updated))
 }
 
 func revisionRow(user, value string) string {
@@ -106,22 +108,25 @@ func TestMigrateScope_MergeRules(t *testing.T) {
 	seedConversations(t, db, a, b, quiet, single)
 	scope, singleScope := store.MemoryScopeKey(a.Key), store.MemoryScopeKey(single.Key)
 	early, late := migrateAt.Add(-3*time.Hour), migrateAt.Add(-time.Hour)
+	// 小明 was forgotten in A and his row in B, never forgotten, was updated
+	// later; 小红 was forgotten in both, last in A, whose row is older.
+	forgotA, forgotOld, forgotNew := early.Add(-30*time.Minute), early.Add(-2*time.Hour), early.Add(-10*time.Minute)
 
 	legacyRows(t, db, a.Key,
 		groupRow("A 里聊了钢琴", 40, early),
-		memberRow("20001", "A 的笔记", 30, 3, early), memberRow("29999", "小红的笔记", 10, 1, early),
+		memberRow("20001", "A 的笔记", 30, 3, early, forgotA), memberRow("29999", "小红在 A 的笔记", 10, 1, early, forgotNew),
 		revisionRow("20001", "A 的笔记"), revisionRow("", "A 里聊了钢琴"),
 		statusRow("洗澡", migrateAt.Add(10*time.Minute)),
 		buffRow("心情", 40, early), buffRow("精力", 20, early),
 		buffEventRow("心情", "A 里的事"))
 	legacyRows(t, db, b.Key,
 		groupRow("B 里聊了考试", 25, late),
-		memberRow("20001", "B 的笔记", 50, 2, late),
+		memberRow("20001", "B 的笔记", 50, 2, late, time.Time{}), memberRow("29999", "小红在 B 的笔记", 20, 1, late, forgotOld),
 		revisionRow("20001", "B 的笔记"),
 		statusRow("做饭", migrateAt.Add(30*time.Minute)),
 		buffRow("心情", 80, late),
 		buffEventRow("心情", "B 里的事"))
-	legacyRows(t, db, single.Key, groupRow("只有一个聊天", 9, early), memberRow("20001", "唯一的笔记", 60, 4, early))
+	legacyRows(t, db, single.Key, groupRow("只有一个聊天", 9, early), memberRow("20001", "唯一的笔记", 60, 4, early, time.Time{}))
 	for _, chat := range []string{a.Key, b.Key} {
 		armTimers(t, db, testTimer(chat, store.TimerStatusReturn, migrateAt.Add(10*time.Minute)))
 	}
@@ -142,11 +147,12 @@ func TestMigrateScope_MergeRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m := members["20001"]; m.Note != "B 的笔记" || m.Affinity == nil || *m.Affinity != 50 || m.Version != 2 {
-		t.Errorf("小明 in the scope = %+v, want B's row (updated last)", m)
+	if m := members["20001"]; m.Note != "B 的笔记" || m.Affinity == nil || *m.Affinity != 50 || m.Version != 2 ||
+		!m.ForgottenAt.Equal(forgotA) {
+		t.Errorf("小明 in the scope = %+v, want B's row (updated last) keeping the forget done in A at %v", m, forgotA)
 	}
-	if m := members["29999"]; m.Note != "小红的笔记" {
-		t.Errorf("小红 in the scope = %+v, want A's only row", m)
+	if m := members["29999"]; m.Note != "小红在 B 的笔记" || m.Affinity == nil || *m.Affinity != 20 || !m.ForgottenAt.Equal(forgotNew) {
+		t.Errorf("小红 in the scope = %+v, want B's row with the later forget done in A at %v", m, forgotNew)
 	}
 	if revs, err := db.ListMemoryRevisions(ctx, scope, "20001"); err != nil || len(revs) != 2 {
 		t.Errorf("小明's scope revisions = %+v, %v; want both kept", revs, err)
@@ -237,7 +243,7 @@ func TestMigrateScope_PlatformUntouched(t *testing.T) {
 	seedConversations(t, db, platformGroup, platformPrivate, a)
 	for _, key := range []string{testConvKey, testPrivateKey, a.Key} {
 		legacyRows(t, db, key, groupRow("聊了很多", 7, migrateAt.Add(-time.Hour)),
-			memberRow("20001", "笔记", 20, 1, migrateAt.Add(-time.Hour)), revisionRow("20001", "笔记"),
+			memberRow("20001", "笔记", 20, 1, migrateAt.Add(-time.Hour), time.Time{}), revisionRow("20001", "笔记"),
 			statusRow("洗澡", migrateAt.Add(time.Hour)), buffRow("心情", 70, migrateAt), buffEventRow("心情", "开心"))
 		armTimers(t, db, testTimer(key, store.TimerStatusReturn, migrateAt.Add(time.Hour)))
 	}
