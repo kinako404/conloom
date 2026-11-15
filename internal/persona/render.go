@@ -46,14 +46,18 @@ var (
 )
 
 // Render describes p in natural Chinese: the style and behavior lines, then
-// the character description, speaking style and example exchanges when set,
-// each section after a blank line. The output depends only on p; a persona
-// without those texts renders as the three lines alone.
+// the character description, appearance, speaking style and example exchanges
+// when set, each section after a blank line. The output depends only on p; a
+// persona without those texts renders as the three lines alone. The
+// appearance image never enters the output.
 func Render(p conloomapi.PersonaDoc) string {
 	var b strings.Builder
 	b.WriteString(renderLines(p))
 	if d := strings.TrimSpace(p.Description); d != "" {
 		b.WriteString("\n\n角色设定：\n" + d)
+	}
+	if a := strings.TrimSpace(p.Appearance); a != "" {
+		b.WriteString("\n\n外貌：\n" + a)
 	}
 	if s := strings.TrimSpace(p.SpeakingStyle); s != "" {
 		b.WriteString("\n\n说话方式：\n" + s)

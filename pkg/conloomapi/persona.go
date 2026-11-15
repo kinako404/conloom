@@ -10,26 +10,31 @@ import (
 	"unicode/utf8"
 )
 
-// PersonaDoc is a persona. CharacterName, Description, SpeakingStyle and
-// Examples are optional; a set CharacterName is the bot's name in the
-// conversation. Adult, unless Minor is also set, makes ContentOpen possible
-// (see ModeFor); ContentRules and MemoryRules only take effect in it. Bars,
-// also optional, define the hidden bars of private chats (see EffectiveBars);
-// they never enter the system prompt.
+// PersonaDoc is a persona. CharacterName, Description, Appearance,
+// SpeakingStyle and Examples are optional; a set CharacterName is the bot's
+// name in the conversation. AppearanceImage, also optional, is the ID of an
+// appearance reference image that replies carry unless AppearanceImageSkip is
+// set; it never enters the system prompt. Adult, unless Minor is also set,
+// makes ContentOpen possible (see ModeFor); ContentRules and MemoryRules only
+// take effect in it. Bars, also optional, define the hidden bars of private
+// chats (see EffectiveBars); they never enter the system prompt.
 type PersonaDoc struct {
-	PersonaName     string           `json:"persona_name" yaml:"persona_name"`
-	TemplateVersion int              `json:"template_version" yaml:"template_version"`
-	Style           PersonaStyle     `json:"style" yaml:"style"`
-	Behavior        PersonaBehavior  `json:"behavior" yaml:"behavior"`
-	CharacterName   string           `json:"character_name,omitempty" yaml:"character_name,omitempty"`
-	Description     string           `json:"description,omitempty" yaml:"description,omitempty"`
-	SpeakingStyle   string           `json:"speaking_style,omitempty" yaml:"speaking_style,omitempty"`
-	Examples        []PersonaExample `json:"examples,omitempty" yaml:"examples,omitempty"`
-	Adult           bool             `json:"adult,omitempty" yaml:"adult,omitempty"`
-	Minor           bool             `json:"minor,omitempty" yaml:"minor,omitempty"`
-	ContentRules    string           `json:"content_rules,omitempty" yaml:"content_rules,omitempty"`
-	MemoryRules     string           `json:"memory_rules,omitempty" yaml:"memory_rules,omitempty"`
-	Bars            []PersonaBar     `json:"bars,omitempty" yaml:"bars,omitempty"`
+	PersonaName         string           `json:"persona_name" yaml:"persona_name"`
+	TemplateVersion     int              `json:"template_version" yaml:"template_version"`
+	Style               PersonaStyle     `json:"style" yaml:"style"`
+	Behavior            PersonaBehavior  `json:"behavior" yaml:"behavior"`
+	CharacterName       string           `json:"character_name,omitempty" yaml:"character_name,omitempty"`
+	Description         string           `json:"description,omitempty" yaml:"description,omitempty"`
+	Appearance          string           `json:"appearance,omitempty" yaml:"appearance,omitempty"`
+	AppearanceImage     string           `json:"appearance_image,omitempty" yaml:"appearance_image,omitempty"`
+	AppearanceImageSkip bool             `json:"appearance_image_skip,omitempty" yaml:"appearance_image_skip,omitempty"`
+	SpeakingStyle       string           `json:"speaking_style,omitempty" yaml:"speaking_style,omitempty"`
+	Examples            []PersonaExample `json:"examples,omitempty" yaml:"examples,omitempty"`
+	Adult               bool             `json:"adult,omitempty" yaml:"adult,omitempty"`
+	Minor               bool             `json:"minor,omitempty" yaml:"minor,omitempty"`
+	ContentRules        string           `json:"content_rules,omitempty" yaml:"content_rules,omitempty"`
+	MemoryRules         string           `json:"memory_rules,omitempty" yaml:"memory_rules,omitempty"`
+	Bars                []PersonaBar     `json:"bars,omitempty" yaml:"bars,omitempty"`
 }
 
 // PersonaExample is one example exchange: a member's message and the reply.
@@ -52,6 +57,7 @@ type PersonaBar struct {
 const (
 	MaxCharacterNameRunes  = 20
 	MaxDescriptionRunes    = 2000
+	MaxAppearanceRunes     = 800
 	MaxSpeakingStyleRunes  = 1000
 	MaxPersonaExamples     = 8
 	MaxExampleRunes        = 200
@@ -161,6 +167,20 @@ func breaksBarName(r rune) bool {
 	return unicode.IsSpace(r) || breaksName(r)
 }
 
+// isImageID reports whether s has the form of an image ID: 64 lowercase
+// hexadecimal characters.
+func isImageID(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range []byte(s) {
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // Validate reports every rule violation, each prefixed with its snake_case field path.
 func (p PersonaDoc) Validate() error {
 	var errs []error
@@ -206,6 +226,10 @@ func (p PersonaDoc) Validate() error {
 		fail("character_name must be a single line without control or zero-width characters")
 	}
 	maxRunes("description", p.Description, MaxDescriptionRunes)
+	maxRunes("appearance", p.Appearance, MaxAppearanceRunes)
+	if p.AppearanceImage != "" && !isImageID(p.AppearanceImage) {
+		fail("appearance_image must be an image ID of 64 lowercase hex characters")
+	}
 	maxRunes("speaking_style", p.SpeakingStyle, MaxSpeakingStyleRunes)
 	maxRunes("content_rules", p.ContentRules, MaxContentRulesRunes)
 	maxRunes("memory_rules", p.MemoryRules, MaxMemoryRulesRunes)

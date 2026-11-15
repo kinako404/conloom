@@ -124,6 +124,9 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `behavior.technical_explanations` | `brief` \| `clear_and_practical` \| `detailed` | 技术解释的详细程度 |
 | `character_name` | ≤20 字，单行 | 角色名。设置后就是机器人在使用这个人格的会话里的名字：system prompt 的“你是{名字}”、上下文里的“你（名字）”、回复的回声清洗和 `/help` 都改用它；不设时用 `bots[].name` |
 | `description` | ≤2000 字 | 角色设定，渲染为“角色设定：”一段 |
+| `appearance` | ≤800 字 | 外貌描述，渲染为“外貌：”一段，位于“角色设定”之后、“说话方式”之前 |
+| `appearance_image` | 64 位小写十六进制 | 外观参考图的图片 ID（图片内容的 SHA-256），不是文件路径或网址。图片在面板上传，上传后由面板填入这个字段；图片 ID 不进系统提示 |
+| `appearance_image_skip` | 布尔，默认 `false` | 为 `true` 时回复不附带外观参考图 |
 | `speaking_style` | ≤1000 字 | 说话方式，渲染为“说话方式：”一段 |
 | `examples` | ≤8 组；每组 `user`、`reply` 非空且各 ≤200 字 | 示例对话，渲染为“群友：… / 你：…”，并注明只示范语气和分寸、不要照搬 |
 | `adult` | 布尔，默认 `false` | 成年人设。与 `minor` 同时为 `true` 时报错 |
@@ -132,7 +135,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `memory_rules` | ≤1000 字 | 记忆规则，只在开放模式下生效：替换记忆整理提示词的第 6 条；为空则省略这一条 |
 | `bars` | ≤4 条 | 私聊的隐藏状态条，见下面的“状态条” |
 
-`character_name` 以下四个文本字段，以及 `content_rules`、`memory_rules`、`bars`，都可以省略。字数按字符计（去掉首尾空白后），超出时启动校验和 `PUT …/persona` 都会拒绝并指出字段。文本可以用 YAML 多行块（`|`）书写，示例见 `conloom.example.yaml` 中的原创角色模板 `librarian`。
+`character_name`、`description`、`appearance`、`speaking_style`、`examples`，`appearance_image`、`appearance_image_skip`，以及 `content_rules`、`memory_rules`、`bars`，都可以省略。字数按字符计（去掉首尾空白后），超出时启动校验和 `PUT …/persona` 都会拒绝并指出字段；`appearance_image` 不为空又不是 64 位小写十六进制时同样拒绝。文本可以用 YAML 多行块（`|`）书写，示例见 `conloom.example.yaml` 中的原创角色模板 `librarian`。
 
 ### 状态条
 

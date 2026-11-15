@@ -218,6 +218,78 @@ func TestRender_TextFields(t *testing.T) {
 	}
 }
 
+const testImageID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func TestRender_Appearance(t *testing.T) {
+	want := "人格：灯塔看守\n" +
+		"说话风格：语气温暖亲切，乐于回应大家。偶尔可以轻松幽默一下。表达清楚，不绕弯子也不生硬。通常一两句话，尽量简短。不使用表情符号。只回应别人说的，不主动展开话题。\n" +
+		"行为习惯：默认回复简短，一两句话就好。可以适当使用网络梗。只在确实需要澄清时偶尔追问。技术问题讲清楚、讲实用，给出能直接用的做法。\n" +
+		"\n角色设定：\n苔灯是海边小镇的灯塔看守，十几岁，做事认真，喜欢收集贝壳。\n她把群友当成镇上的邻居。\n" +
+		"\n外貌：\n短发，常穿一件蓝色雨衣。\n背着装贝壳的帆布包。\n" +
+		"\n说话方式：\n说话轻快，句子短，偶尔用“呐”结尾。\n" +
+		"\n示例对话（只示范语气和分寸，不要照搬内容）：\n" +
+		"群友：今天好累\n你：辛苦啦，喝口热水歇一会儿吧。\n" +
+		"群友：你会修电脑吗\n你：唔，这个我不太在行呐，你先说说是哪里不对劲？"
+	p := testCharacter()
+	p.Appearance = " \n短发，常穿一件蓝色雨衣。\n背着装贝壳的帆布包。\n\n"
+	if got := Render(p); got != want {
+		t.Errorf("Render =\n%s\nwant\n%s", got, want)
+	}
+
+	only := conloomapi.DefaultPersona()
+	only.Appearance = "短发。"
+	if got, want := Render(only), legacyDefaultRender+"\n\n外貌：\n短发。"; got != want {
+		t.Errorf("Render with only appearance = %q, want %q", got, want)
+	}
+	only.SpeakingStyle = "说话慢吞吞。"
+	if got, want := Render(only), legacyDefaultRender+"\n\n外貌：\n短发。\n\n说话方式：\n说话慢吞吞。"; got != want {
+		t.Errorf("Render with appearance and speaking_style = %q, want %q", got, want)
+	}
+
+	blank := conloomapi.DefaultPersona()
+	blank.Appearance = " \n\t"
+	if got := Render(blank); got != legacyDefaultRender {
+		t.Errorf("Render with blank appearance =\n%q\nwant the legacy render", got)
+	}
+}
+
+func TestSystemPrompt_AppearanceImageNotRendered(t *testing.T) {
+	ctx := context.Background()
+	privateKey := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "20001")
+	withAppearance := testCharacter()
+	withAppearance.Appearance = "短发，常穿一件蓝色雨衣。"
+	for _, base := range []conloomapi.PersonaDoc{conloomapi.DefaultPersona(), testCharacter(), withAppearance} {
+		for _, skip := range []bool{false, true} {
+			withImage := base
+			withImage.AppearanceImage, withImage.AppearanceImageSkip = testImageID, skip
+			if err := Validate(withImage); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+			if got, want := Render(withImage), Render(base); got != want {
+				t.Errorf("%s skip=%v: Render with an image =\n%s\nwant\n%s", base.PersonaName, skip, got, want)
+			}
+			for _, key := range []string{testConvKey, privateKey} {
+				plain := NewService(newTestStore(t), map[string]conloomapi.PersonaDoc{"t": base})
+				imaged := NewService(newTestStore(t), map[string]conloomapi.PersonaDoc{"t": withImage})
+				want, err := plain.SystemPrompt(ctx, key, "t", "织语")
+				if err != nil {
+					t.Fatalf("SystemPrompt without an image: %v", err)
+				}
+				got, err := imaged.SystemPrompt(ctx, key, "t", "织语")
+				if err != nil {
+					t.Fatalf("SystemPrompt with an image: %v", err)
+				}
+				if got != want {
+					t.Errorf("%s skip=%v in %s: prompt with an image =\n%+v\nwant\n%+v", base.PersonaName, skip, key, got, want)
+				}
+				if strings.Contains(got.Text, testImageID) {
+					t.Errorf("%s skip=%v in %s: prompt mentions the image ID: %q", base.PersonaName, skip, key, got.Text)
+				}
+			}
+		}
+	}
+}
+
 func TestRender_DeterministicAndVaries(t *testing.T) {
 	p := conloomapi.DefaultPersona()
 	a, b := Render(p), Render(p)

@@ -188,3 +188,117 @@ bars:
 		t.Errorf("YAML bars = %+v, want %+v", doc.Bars, testBars())
 	}
 }
+
+const testImageID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func TestPersona_AppearanceValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*PersonaDoc)
+		wantErr string
+	}{
+		{"no appearance", func(*PersonaDoc) {}, ""},
+		{"appearance 800 runes", func(p *PersonaDoc) { p.Appearance = strings.Repeat("貌", 800) }, ""},
+		{"appearance 800 runes and blanks", func(p *PersonaDoc) { p.Appearance = " \n" + strings.Repeat("貌", 800) + "\n" }, ""},
+		{"appearance 801 runes", func(p *PersonaDoc) { p.Appearance = strings.Repeat("貌", 801) }, "appearance must be at most 800 characters, got 801"},
+		{"image id", func(p *PersonaDoc) { p.AppearanceImage = testImageID }, ""},
+		{"image id and skip", func(p *PersonaDoc) { p.AppearanceImage, p.AppearanceImageSkip = testImageID, true }, ""},
+		{"skip without image", func(p *PersonaDoc) { p.AppearanceImageSkip = true }, ""},
+		{"image id 63 chars", func(p *PersonaDoc) { p.AppearanceImage = testImageID[1:] }, "appearance_image must be"},
+		{"image id 65 chars", func(p *PersonaDoc) { p.AppearanceImage = testImageID + "0" }, "appearance_image must be"},
+		{"image id uppercase", func(p *PersonaDoc) { p.AppearanceImage = strings.ToUpper(testImageID) }, "appearance_image must be"},
+		{"image id not hex", func(p *PersonaDoc) { p.AppearanceImage = "g" + testImageID[1:] }, "appearance_image must be"},
+		{"image id with blanks", func(p *PersonaDoc) { p.AppearanceImage = " " + testImageID[1:] }, "appearance_image must be"},
+		{"image id blank", func(p *PersonaDoc) { p.AppearanceImage = " " }, "appearance_image must be"},
+		{"image id path", func(p *PersonaDoc) { p.AppearanceImage = "../" + testImageID[3:] }, "appearance_image must be"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := DefaultPersona()
+			tt.mutate(&p)
+			err := p.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+
+	p := DefaultPersona()
+	p.Style.Humor = -1
+	p.Appearance = strings.Repeat("貌", 801)
+	p.AppearanceImage = "not-an-id"
+	err := p.Validate()
+	if err == nil {
+		t.Fatal("Validate = nil, want errors")
+	}
+	for _, want := range []string{"style.humor", "appearance must be at most 800", "appearance_image must be"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
+func TestPersona_AppearanceJSONAndYAML(t *testing.T) {
+	const legacyJSON = `{"persona_name":"默认群友人格","template_version":1,` +
+		`"style":{"warmth":0.75,"humor":0.45,"directness":0.65,"verbosity":0.3,"emoji_usage":0.15,"proactivity":0.2},` +
+		`"behavior":{"default_reply_length":"short","allow_memes":true,"ask_followup_questions":"occasionally","technical_explanations":"clear_and_practical"}}`
+	b, err := json.Marshal(DefaultPersona())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != legacyJSON {
+		t.Errorf("JSON of DefaultPersona =\n%s\nwant\n%s", b, legacyJSON)
+	}
+	full := DefaultPersona()
+	full.CharacterName, full.Description, full.SpeakingStyle = "小明", "小明是一名学生。", "说话简短。"
+	full.Examples = []PersonaExample{{User: "在吗", Reply: "在"}}
+	full.Adult, full.ContentRules, full.MemoryRules, full.Bars = true, "规则", "记忆", testBars()
+	b, err = json.Marshal(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "appearance") {
+		t.Errorf("persona without appearance encodes an appearance key: %s", b)
+	}
+	y, err := yaml.Marshal(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(y), "appearance") {
+		t.Errorf("persona without appearance encodes an appearance key in YAML: %s", y)
+	}
+
+	p := DefaultPersona()
+	p.Appearance = "短发，常穿蓝色外套。"
+	p.AppearanceImage = testImageID
+	p.AppearanceImageSkip = true
+	b, err = json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `,"appearance":"短发，常穿蓝色外套。","appearance_image":"` + testImageID + `","appearance_image_skip":true`; !strings.Contains(string(b), want) {
+		t.Errorf("JSON %s missing %s", b, want)
+	}
+	var back PersonaDoc
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(back, p) {
+		t.Errorf("JSON round trip = %+v, want %+v", back, p)
+	}
+
+	var doc PersonaDoc
+	src := "persona_name: 测试人格\nappearance: |\n  短发，常穿蓝色外套。\nappearance_image: " + testImageID + "\nappearance_image_skip: true\n"
+	if err := yaml.Unmarshal([]byte(src), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Appearance != "短发，常穿蓝色外套。\n" || doc.AppearanceImage != testImageID || !doc.AppearanceImageSkip {
+		t.Errorf("YAML appearance fields = %q, %q, %v", doc.Appearance, doc.AppearanceImage, doc.AppearanceImageSkip)
+	}
+}
