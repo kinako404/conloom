@@ -28,8 +28,10 @@ var (
 	ErrTaskFinished   = errors.New("store: task already finished")
 	ErrReplyHandedOut = errors.New("store: reply already handed out")
 	ErrTimerGone      = errors.New("store: timer gone")
-	// ErrBuffDuplicate refuses an UpdateBuff of a bar its task already changed.
-	ErrBuffDuplicate = errors.New("store: bar already adjusted by this task")
+	// ErrBuffDuplicate refuses an UpdateBuff of a bar its task already
+	// adjusted, and a RemoveCustomBar or RemoveEffect of a name its task
+	// already removed.
+	ErrBuffDuplicate = errors.New("store: already changed this way by this task")
 	// ErrBuffNameTaken refuses an AddCustomBar or AddEffect of a name another
 	// task's bar or active effect holds; ErrBuffLimit one over its limit.
 	ErrBuffNameTaken = errors.New("store: buff name already in use")
@@ -326,9 +328,11 @@ type Store interface {
 	// GetBuffs returns the conversation's stored bar values ordered by Name,
 	// including bars its persona no longer has.
 	GetBuffs(ctx context.Context, convKey string) ([]BuffValue, error)
-	// UpdateBuff changes the conversation's bar name in one transaction. If
-	// ev.TaskID is set and that task already recorded a change (of any kind)
-	// of that name, nothing is written and it returns ErrBuffDuplicate.
+	// UpdateBuff changes the conversation's bar name in one transaction. A
+	// task makes each kind of change of a name at most once: if ev.TaskID is
+	// set and that task already adjusted (BuffKindAdjust) a bar of that name,
+	// nothing is written and it returns ErrBuffDuplicate; its other changes of
+	// the name, such as adding the bar, do not count.
 	// Otherwise it calls apply with the stored value (zero and found false
 	// without one), stores and returns apply's next under convKey and name (a
 	// zero UpdatedAt as now), and records ev under convKey and name as a
@@ -346,38 +350,38 @@ type Store interface {
 	// AddCustomBar adds b to b.ConversationKey in one transaction, with its
 	// value initial (a BuffValue at b.CreatedAt without day bookkeeping, which
 	// replaces a stored value of that name) and a BuffKindBarAdd change by the
-	// model whose Before and After are initial; a zero CreatedAt is stored as
-	// now. When the task b.TaskID already added a bar of that name, or holds
-	// it, nothing is written and it returns nil, so a re-run task adds it only
-	// once. Otherwise it returns ErrBuffNameTaken when another bar or an
-	// effect active at CreatedAt holds the name, and ErrBuffLimit when the
-	// conversation has limit bars already. The persona's bars are the
-	// caller's to check. A task records one change per name (see
-	// UpdateBuff): when b.TaskID already made another change of the name, the
-	// addition is recorded without a task.
+	// model and b.TaskID at b.CreatedAt whose Before and After are initial; a
+	// zero CreatedAt is stored as now. When the task b.TaskID already added a
+	// bar of that name (see UpdateBuff), or holds it, nothing is written and
+	// it returns nil, so a re-run task adds it only once. Otherwise it returns
+	// ErrBuffNameTaken when another bar or an effect active at CreatedAt holds
+	// the name, and ErrBuffLimit when the conversation has limit bars already.
+	// The persona's bars are the caller's to check.
 	AddCustomBar(ctx context.Context, b CustomBar, initial float64, limit int) error
 	// RemoveCustomBar deletes the conversation's bot-created bar name and its
-	// value, records a BuffKindBarRemove change by source and taskID at now
-	// whose Before and After are the value as last stored, and reports
-	// whether there was such a bar. When taskID already made a change of the
-	// name, the removal is recorded without a task.
-	RemoveCustomBar(ctx context.Context, convKey, name, source, taskID string) (bool, error)
+	// value, records a BuffKindBarRemove change by source and taskID at now (a
+	// zero now as the current time) whose Before and After are the value as
+	// last stored, and reports whether there was such a bar. When there is
+	// one but taskID already removed a bar of that name (see UpdateBuff),
+	// nothing is written and it returns ErrBuffDuplicate.
+	RemoveCustomBar(ctx context.Context, convKey, name, source, taskID string, now time.Time) (bool, error)
 	// ListCustomBars returns the conversation's bot-created bars in the order
 	// they were added.
 	ListCustomBars(ctx context.Context, convKey string) ([]CustomBar, error)
 	// AddEffect adds e to e.ConversationKey in one transaction, with a
-	// BuffKindEffectAdd change by the model at now; a zero StartedAt is stored
-	// as now. An effect whose UntilAt is not after now has run out: one of
-	// e's name is replaced. When the task e.TaskID already added an effect of
-	// that name, or holds an active one, nothing is written and it returns
-	// nil. Otherwise it returns ErrBuffNameTaken when a bot-created bar or
-	// another active effect holds the name, and ErrBuffLimit when limit
-	// effects are active. It is recorded as AddCustomBar records an addition.
+	// BuffKindEffectAdd change by the model and e.TaskID at now; a zero
+	// StartedAt is stored as now. An effect whose UntilAt is not after now has
+	// run out: one of e's name is replaced. When the task e.TaskID already
+	// added an effect of that name, or holds an active one, nothing is written
+	// and it returns nil. Otherwise it returns ErrBuffNameTaken when a
+	// bot-created bar or another active effect holds the name, and
+	// ErrBuffLimit when limit effects are active.
 	AddEffect(ctx context.Context, e Effect, limit int, now time.Time) error
 	// RemoveEffect deletes the conversation's effect name, active or run out,
-	// records a BuffKindEffectRemove change as RemoveCustomBar does, and
-	// reports whether there was such an effect.
-	RemoveEffect(ctx context.Context, convKey, name, source, taskID string) (bool, error)
+	// records a BuffKindEffectRemove change by source and taskID at now as
+	// RemoveCustomBar does (ErrBuffDuplicate included), and reports whether
+	// there was such an effect.
+	RemoveEffect(ctx context.Context, convKey, name, source, taskID string, now time.Time) (bool, error)
 	// ListEffects returns the conversation's effects active at now, ordered
 	// by StartedAt.
 	ListEffects(ctx context.Context, convKey string, now time.Time) ([]Effect, error)

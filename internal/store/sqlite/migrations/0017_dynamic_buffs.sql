@@ -27,3 +27,9 @@ CREATE INDEX conversation_effects_until ON conversation_effects (until_at);
 -- What a bar change was: adjust (of a value) | bar_add | bar_remove |
 -- effect_add | effect_remove.
 ALTER TABLE conversation_buff_events ADD COLUMN kind TEXT NOT NULL DEFAULT 'adjust';
+
+-- A task makes each kind of change of a name at most once, so a re-run task
+-- changes nothing twice; it may add a bar and then adjust or remove it.
+-- Existing rows are all adjustments, unique by (task_id, name) already.
+DROP INDEX conversation_buff_events_task;
+CREATE UNIQUE INDEX conversation_buff_events_task ON conversation_buff_events (task_id, name, kind) WHERE task_id <> '';

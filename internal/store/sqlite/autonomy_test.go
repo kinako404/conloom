@@ -789,12 +789,12 @@ func TestBuffs_DuplicateTask(t *testing.T) {
 func TestBuffs_DuplicateCheckUsesTaskIndex(t *testing.T) {
 	db := newTestDB(t)
 	var detail string
-	err := db.r.QueryRow(`EXPLAIN QUERY PLAN `+buffTaskChangesQuery, "task_1", "心情").
+	err := db.r.QueryRow(`EXPLAIN QUERY PLAN `+buffTaskChangesQuery, "task_1", "心情", store.BuffKindAdjust).
 		Scan(new(int), new(int), new(int), &detail)
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}
-	if want := "SEARCH conversation_buff_events USING COVERING INDEX conversation_buff_events_task (task_id=? AND name=?)"; detail != want {
+	if want := "SEARCH conversation_buff_events USING COVERING INDEX conversation_buff_events_task (task_id=? AND name=? AND kind=?)"; detail != want {
 		t.Fatalf("query plan = %q, want %q", detail, want)
 	}
 }
@@ -960,9 +960,13 @@ func TestMigration0012_OnlyAddsTables(t *testing.T) {
 	}
 }
 
-// dynamicAt is the time the bot-created bar and effect tests start at, in
-// the past: removals are recorded at the current time.
+// dynamicAt is the time the bot-created bar and effect tests start at.
 var dynamicAt = time.Date(2026, 11, 14, 20, 0, 0, 0, time.UTC)
+
+// minute returns dynamicAt plus n minutes.
+func minute(n int) time.Time {
+	return dynamicAt.Add(time.Duration(n) * time.Minute)
+}
 
 func hungerBar(key, taskID string, at time.Time) store.CustomBar {
 	return store.CustomBar{ConversationKey: key, Name: "饥饿", Description: "肚子饿的程度", TaskID: taskID, Baseline: 30,
@@ -1065,14 +1069,14 @@ func TestCustomBars_AddListRemove(t *testing.T) {
 
 	// A bar it did not add, such as a persona bar's value, is no custom bar.
 	setBuff(t, db, key, "心情", 60, 65, store.BuffEvent{Source: store.BuffSourcePanel, CreatedAt: dynamicAt})
-	if ok, err := db.RemoveCustomBar(ctx, key, "心情", store.BuffSourcePanel, ""); err != nil || ok {
+	if ok, err := db.RemoveCustomBar(ctx, key, "心情", store.BuffSourcePanel, "", minute(5)); err != nil || ok {
 		t.Fatalf("RemoveCustomBar of a persona bar = %v, %v; want false", ok, err)
 	}
-	if ok, err := db.RemoveCustomBar(ctx, other, "饥饿", store.BuffSourcePanel, ""); err != nil || ok {
+	if ok, err := db.RemoveCustomBar(ctx, other, "饥饿", store.BuffSourcePanel, "", minute(5)); err != nil || ok {
 		t.Fatalf("RemoveCustomBar in another conversation = %v, %v; want false", ok, err)
 	}
 
-	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, ""); err != nil || !ok {
+	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, "", minute(5)); err != nil || !ok {
 		t.Fatalf("RemoveCustomBar = %v, %v; want true", ok, err)
 	}
 	if got := listCustomBars(t, db, key); !sameCustomBars(got, []store.CustomBar{sleepy}) {
@@ -1081,13 +1085,13 @@ func TestCustomBars_AddListRemove(t *testing.T) {
 	if got := getBuffs(t, db, key); len(got) != 2 || got[0].Name != "困意" || got[1].Name != "心情" {
 		t.Fatalf("values after removing 饥饿 = %+v, want 困意 and 心情", got)
 	}
-	removed := listBuffEvents(t, db, key, 1)
-	if len(removed) != 1 || removed[0].Kind != store.BuffKindBarRemove || removed[0].Name != "饥饿" || removed[0].TaskID != "" ||
-		removed[0].Source != store.BuffSourcePanel || removed[0].Before != 45 || removed[0].After != 45 || removed[0].CreatedAt.IsZero() {
-		t.Fatalf("newest event = %+v, want the panel's removal of 饥饿 at 45", removed)
+	wantRemoved := []store.BuffEvent{{ConversationKey: key, Name: "饥饿", Kind: store.BuffKindBarRemove,
+		Source: store.BuffSourcePanel, Before: 45, After: 45, CreatedAt: minute(5)}}
+	if got := listBuffEvents(t, db, key, 1); !sameBuffEvents(got, wantRemoved) {
+		t.Fatalf("newest event = %+v, want the panel's removal of 饥饿 at 45: %+v", got, wantRemoved)
 	}
 	events := len(listBuffEvents(t, db, key, 50))
-	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, ""); err != nil || ok {
+	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, "", minute(6)); err != nil || ok {
 		t.Fatalf("second RemoveCustomBar = %v, %v; want false", ok, err)
 	}
 	if n := len(listBuffEvents(t, db, key, 50)); n != events {
@@ -1128,7 +1132,7 @@ func TestCustomBars_IdempotentPerTask(t *testing.T) {
 	}
 
 	// A re-run of the task after the bar was removed adds it no more.
-	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, ""); err != nil || !ok {
+	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, "", minute(2)); err != nil || !ok {
 		t.Fatalf("RemoveCustomBar = %v, %v", ok, err)
 	}
 	addBar(t, db, hunger, 45, 6)
@@ -1138,28 +1142,57 @@ func TestCustomBars_IdempotentPerTask(t *testing.T) {
 	if got := eventSummary(t, db, key); !slices.Equal(got, []string{"bar_remove 饥饿 ", "bar_add 饥饿 task_1"}) {
 		t.Fatalf("events after a re-run of the task = %v", got)
 	}
+}
 
-	// A task that added a bar can remove it again; the removal is recorded
-	// without the task, which already has its change of the name.
-	addBar(t, db, hungerBar(key, "task_3", dynamicAt.Add(2*time.Minute)), 50, 6)
-	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourceModel, "task_3"); err != nil || !ok {
+func TestCustomBars_TaskChangesEachKindOnce(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	key := privKey("20001")
+
+	// A task can add a bar, adjust it and remove it, each once.
+	addBar(t, db, hungerBar(key, "task_3", minute(0)), 50, 6)
+	adjust := store.BuffEvent{TaskID: "task_3", Source: store.BuffSourceModel, Reason: "饿了", CreatedAt: minute(1)}
+	setBuff(t, db, key, "饥饿", 50, 60, adjust)
+	keep := func(cur store.BuffValue, _ bool) (store.BuffValue, float64, error) { return cur, cur.Value, nil }
+	if _, err := db.UpdateBuff(ctx, key, "饥饿", adjust, keep); !errors.Is(err, store.ErrBuffDuplicate) {
+		t.Fatalf("second adjustment by the task err = %v, want ErrBuffDuplicate", err)
+	}
+	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourceModel, "task_3", minute(2)); err != nil || !ok {
 		t.Fatalf("RemoveCustomBar by the task that added it = %v, %v; want true", ok, err)
 	}
-	if got, want := eventSummary(t, db, key), []string{"bar_remove 饥饿 ", "bar_remove 饥饿 ", "bar_add 饥饿 task_3",
-		"bar_add 饥饿 task_1"}; !slices.Equal(got, want) {
-		t.Fatalf("events = %v, want %v: task_3's removal without the task", got, want)
-	}
-	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourceModel, "task_3"); err != nil || ok {
-		t.Fatalf("second RemoveCustomBar by the task = %v, %v; want false", ok, err)
+	want := []string{"bar_remove 饥饿 task_3", "adjust 饥饿 task_3", "bar_add 饥饿 task_3"}
+	if got := eventSummary(t, db, key); !slices.Equal(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
 	}
 
-	// A task that removed a bar records its removal under its ID.
-	addBar(t, db, hungerBar(key, "task_4", dynamicAt.Add(3*time.Minute)), 50, 6)
-	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourceModel, "task_5"); err != nil || !ok {
-		t.Fatalf("RemoveCustomBar by task_5 = %v, %v", ok, err)
+	// A re-run of the task changes nothing.
+	addBar(t, db, hungerBar(key, "task_3", minute(3)), 50, 6)
+	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourceModel, "task_3", minute(3)); err != nil || ok {
+		t.Fatalf("RemoveCustomBar in a re-run of the task = %v, %v; want false", ok, err)
 	}
-	if got := eventSummary(t, db, key)[0]; got != "bar_remove 饥饿 task_5" {
-		t.Fatalf("newest event = %q, want task_5's removal", got)
+	if got := listCustomBars(t, db, key); len(got) != 0 {
+		t.Fatalf("bars after a re-run of the task = %+v, want none", got)
+	}
+	if got := eventSummary(t, db, key); !slices.Equal(got, want) {
+		t.Fatalf("events after a re-run of the task = %v, want %v", got, want)
+	}
+
+	// Another task adds the bar back; the task that removed it once cannot
+	// remove it a second time.
+	addBar(t, db, hungerBar(key, "task_4", minute(4)), 50, 6)
+	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourceModel, "task_3", minute(5)); !errors.Is(err, store.ErrBuffDuplicate) || ok {
+		t.Fatalf("second removal by the task = %v, %v; want ErrBuffDuplicate", ok, err)
+	}
+	if got := listCustomBars(t, db, key); len(got) != 1 || got[0].TaskID != "task_4" {
+		t.Fatalf("bars after the refused removal = %+v, want task_4's 饥饿 kept", got)
+	}
+	for _, ev := range listBuffEvents(t, db, key, 50) {
+		if ev.TaskID == "" {
+			t.Errorf("event %+v without its task", ev)
+		}
+	}
+	if n := len(eventSummary(t, db, key)); n != 4 {
+		t.Fatalf("events = %d, want 4", n)
 	}
 }
 
@@ -1195,7 +1228,7 @@ func TestCustomBars_Limit(t *testing.T) {
 		t.Fatalf("bar with limit 0 err = %v, want ErrBuffLimit", err)
 	}
 
-	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, ""); err != nil || !ok {
+	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, "", minute(1)); err != nil || !ok {
 		t.Fatalf("RemoveCustomBar = %v, %v", ok, err)
 	}
 	addBar(t, db, bar("口渴", "task_3"), 30, 2)
@@ -1265,19 +1298,21 @@ func TestEffects_AddListRemove(t *testing.T) {
 		t.Fatalf("values = %+v, want effects to have none", got)
 	}
 
-	if ok, err := db.RemoveEffect(ctx, other, "着凉", store.BuffSourcePanel, ""); err != nil || ok {
+	if ok, err := db.RemoveEffect(ctx, other, "着凉", store.BuffSourcePanel, "", minute(5)); err != nil || ok {
 		t.Fatalf("RemoveEffect in another conversation = %v, %v; want false", ok, err)
 	}
-	if ok, err := db.RemoveEffect(ctx, key, "着凉", store.BuffSourceModel, "task_3"); err != nil || !ok {
+	if ok, err := db.RemoveEffect(ctx, key, "着凉", store.BuffSourceModel, "task_3", minute(5)); err != nil || !ok {
 		t.Fatalf("RemoveEffect = %v, %v; want true", ok, err)
 	}
 	if got := listEffects(t, db, key, dynamicAt.Add(2*time.Minute)); !sameEffects(got, []store.Effect{full}) {
 		t.Fatalf("effects after removing 着凉 = %+v, want only 吃饱了", got)
 	}
-	if got := eventSummary(t, db, key)[0]; got != "effect_remove 着凉 task_3" {
-		t.Fatalf("newest event = %q, want task_3's removal of 着凉", got)
+	wantRemoved := []store.BuffEvent{{ConversationKey: key, Name: "着凉", Kind: store.BuffKindEffectRemove, TaskID: "task_3",
+		Source: store.BuffSourceModel, CreatedAt: minute(5)}}
+	if got := listBuffEvents(t, db, key, 1); !sameBuffEvents(got, wantRemoved) {
+		t.Fatalf("newest event = %+v, want task_3's removal of 着凉: %+v", got, wantRemoved)
 	}
-	if ok, err := db.RemoveEffect(ctx, key, "着凉", store.BuffSourceModel, "task_4"); err != nil || ok {
+	if ok, err := db.RemoveEffect(ctx, key, "着凉", store.BuffSourceModel, "task_4", minute(6)); err != nil || ok {
 		t.Fatalf("second RemoveEffect = %v, %v; want false", ok, err)
 	}
 	if n := len(eventSummary(t, db, key)); n != 3 {
@@ -1331,21 +1366,24 @@ func TestEffects_IdempotentAndExpiredReplaced(t *testing.T) {
 		t.Fatalf("events = %v", got)
 	}
 
-	// A task can remove an effect and add it again; the addition is
-	// recorded without the task, which already has its change of the name,
-	// and a re-run of the task adds it no more.
-	if ok, err := db.RemoveEffect(ctx, key, "着凉", store.BuffSourceModel, "task_3"); err != nil || !ok {
+	// A task can remove an effect and add it again, each once and under its
+	// ID; a re-run of the task changes nothing.
+	if ok, err := db.RemoveEffect(ctx, key, "着凉", store.BuffSourceModel, "task_3", later.Add(30*time.Second)); err != nil || !ok {
 		t.Fatalf("RemoveEffect = %v, %v", ok, err)
 	}
 	longer := testEffect(key, "着凉", "task_3", later.Add(time.Minute), 3*time.Hour)
 	addEffect(t, db, longer, 6, longer.StartedAt)
 	addEffect(t, db, longer, 6, longer.StartedAt.Add(time.Minute))
+	if ok, err := db.RemoveEffect(ctx, key, "着凉", store.BuffSourceModel, "task_3",
+		longer.StartedAt.Add(time.Minute)); !errors.Is(err, store.ErrBuffDuplicate) || ok {
+		t.Fatalf("second removal by task_3 = %v, %v; want ErrBuffDuplicate", ok, err)
+	}
 	if got := listEffects(t, db, key, longer.StartedAt.Add(time.Minute)); !sameEffects(got, []store.Effect{longer}) {
 		t.Fatalf("effects after task_3 added 着凉 again = %+v, want its new one", got)
 	}
-	events := eventSummary(t, db, key)
-	if len(events) != 4 || !slices.Contains(events, "effect_remove 着凉 task_3") || !slices.Contains(events, "effect_add 着凉 ") {
-		t.Fatalf("events = %v, want task_3's removal and an addition without a task", events)
+	want := []string{"effect_add 着凉 task_3", "effect_remove 着凉 task_3", "effect_add 着凉 task_2", "effect_add 着凉 task_1"}
+	if got := eventSummary(t, db, key); !slices.Equal(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
 	}
 }
 
@@ -1441,13 +1479,19 @@ func TestMigration0017_AddsTablesAndEventKind(t *testing.T) {
 			t.Errorf("%s columns %v, want %v", table, afterCols[table], want)
 		}
 	}
+	// The task index is replaced by one per kind; the table changed only by
+	// gaining its column.
+	const taskIndex = "CREATE UNIQUE INDEX conversation_buff_events_task ON conversation_buff_events (task_id, name, kind) WHERE task_id <> ''"
+	if got := afterObjects["conversation_buff_events_task"]; got != taskIndex {
+		t.Errorf("task index = %s, want %s", got, taskIndex)
+	}
 	var added []string
 	for name, sql := range afterObjects {
 		prev, ok := beforeObjects[name]
 		switch {
 		case !ok:
 			added = append(added, name)
-		case prev != sql && name != "conversation_buff_events":
+		case prev != sql && name != "conversation_buff_events" && name != "conversation_buff_events_task":
 			t.Errorf("%s changed:\n before %s\n after  %s", name, prev, sql)
 		}
 	}
@@ -1466,5 +1510,19 @@ func TestMigration0017_AddsTablesAndEventKind(t *testing.T) {
 	}
 	if got := listBuffEvents(t, db, key, 10); len(got) != 1 || got[0].Kind != store.BuffKindAdjust || got[0].After != 65 {
 		t.Fatalf("event kept from before = %+v, want an adjustment", got)
+	}
+
+	insert := func(kind string) error {
+		_, err := db.w.Exec(`INSERT INTO conversation_buff_events (conversation_key, name, task_id, source, before, after, reason, created_at, kind)
+			VALUES (?, '心情', 'task_1', 'model', 0, 0, '', '', ?)`, key, kind)
+		return err
+	}
+	if err := insert(store.BuffKindAdjust); !isUniqueViolation(err) {
+		t.Fatalf("second adjustment of a task for one bar err = %v, want a unique violation", err)
+	}
+	for _, kind := range []string{store.BuffKindBarAdd, store.BuffKindBarRemove} {
+		if err := insert(kind); err != nil {
+			t.Fatalf("%s of the task for the bar it adjusted: %v", kind, err)
+		}
 	}
 }
