@@ -1,18 +1,30 @@
 import { h, mount, errorBox, empty, table, kv } from '../lib/dom.js';
-import { get, post, put, del, isAbort } from '../lib/api.js';
+import { get, post, put, del, upload, isAbort } from '../lib/api.js';
 import { go, href } from '../lib/router.js';
-import { fmtTime, label } from '../lib/format.js';
+import { fmtTime } from '../lib/format.js';
 import { personaForm } from './personaform.js';
 
-// SOURCE labels where a template comes from (persona.TemplateSource).
-const SOURCE = { db: '数据库', builtin: '内置' };
+// BUILTIN is the source of the built-in default persona, shown while no
+// default is stored (persona.TemplateSource).
+const BUILTIN = 'builtin';
 
 // TEMPLATE_NAME is the form of a template name.
 const TEMPLATE_NAME = /^[a-z0-9_-]{1,32}$/;
 
+// MAX_IMPORT_MIB is the largest file an import takes.
+const MAX_IMPORT_MIB = 64;
+
+// EXPORT_ALL downloads every template as one file.
+const EXPORT_ALL = 'api/persona-templates/export';
+
+// TEMPLATE_EXISTS is the error code of an import some of whose names stored
+// templates have; the error's names lists them.
+const TEMPLATE_EXISTS = 'TEMPLATE_EXISTS';
+
 const EXISTING_CHATS = '改模板不影响已经在用它的会话：会话第一次回复时复制一份模板，之后各自独立。要更新已有会话，到会话的“人设”页点“套用模板”。';
 
-// flash is a success message shown once after a write moves to a page.
+// flash is a success message, text or nodes, shown once after a write moves
+// to a page.
 let flash = '';
 
 function takeFlash() {
@@ -45,6 +57,11 @@ function templatePath(name, ...rest) {
   return ['persona-templates', encodeURIComponent(name), ...rest].join('/');
 }
 
+// exportLink downloads template name as a file the server names.
+function exportLink(name, attrs) {
+  return h('a', { ...attrs, href: 'api/' + templatePath(name, 'export'), download: true }, '导出');
+}
+
 // botLabel names a bot: a panel bot as 名字（面板）, a config bot by its name
 // and ID.
 function botLabel(b) {
@@ -69,23 +86,143 @@ async function exists(name) {
   return (res.templates || []).some((t) => t.name === name);
 }
 
+// importSummary tells under which names an import stored its templates,
+// created or overwritten, with the file's name of a renamed one.
+function importSummary(list) {
+  const named = (t) => (t.name === t.requested ? t.name : `${t.name}（文件里是 ${t.requested}）`);
+  const created = list.filter((t) => t.created).map(named);
+  const overwritten = list.filter((t) => !t.created).map(named);
+  return [
+    h('div', null, `已导入 ${list.length} 个模板。`),
+    created.length ? h('div', null, `新建：${created.join('、')}`) : null,
+    overwritten.length ? h('div', null, `覆盖：${overwritten.join('、')}`) : null,
+  ];
+}
+
+// importer imports an exported file: the 导入 button picks it, msg shows the
+// progress and errors, and when names in the file are taken the dialog asks
+// whether to overwrite those templates or import under new names. done(list)
+// runs with the imported templates.
+function importer(done) {
+  const msg = h('div');
+  const file = h('input', { type: 'file', accept: 'application/json,.json', hidden: true });
+  const button = h('button', { type: 'button', onclick: () => file.click() }, '导入');
+  const dialog = h('dialog', { class: 'card dialog' });
+  let busy = false;
+  dialog.addEventListener('cancel', (e) => {
+    if (busy) e.preventDefault();
+  });
+
+  const send = async (body, mode) => {
+    const res = await upload('persona-templates/import', body, { on_conflict: mode });
+    done(res.templates || []);
+  };
+
+  const ask = (body, names) => {
+    const status = h('div');
+    const cancel = h('button', { type: 'button', autofocus: true, onclick: () => dialog.close() }, '取消');
+    const overwrite = h('button', { type: 'button', class: 'danger' }, '覆盖');
+    const rename = h('button', { type: 'button' }, '改名导入');
+    const choose = (mode) => async () => {
+      busy = true;
+      overwrite.disabled = true;
+      rename.disabled = true;
+      cancel.disabled = true;
+      mount(status, h('p', { class: 'muted' }, '正在导入…'));
+      try {
+        await send(body, mode);
+        dialog.close();
+      } catch (err) {
+        if (!isAbort(err)) mount(status, errorBox(err));
+      } finally {
+        busy = false;
+        overwrite.disabled = false;
+        rename.disabled = false;
+        cancel.disabled = false;
+      }
+    };
+    overwrite.addEventListener('click', choose('overwrite'));
+    rename.addEventListener('click', choose('rename'));
+    mount(dialog,
+      h('h2', null, '有同名的模板'),
+      h('p', null, '文件里这些模板的名字已经有模板在用：'),
+      h('ul', { class: 'names' }, names.map((n) => h('li', { class: 'mono' }, n))),
+      h('p', { class: 'hint' }, '覆盖：用文件里的内容替换这些模板。改名导入：这些模板以“名字-2”这样没被占用的名字导入，已有的模板不变。文件里的其他模板照常导入；取消则什么都不导入。'),
+      status,
+      h('div', { class: 'toolbar' }, overwrite, rename, cancel));
+    dialog.showModal();
+  };
+
+  file.addEventListener('change', async () => {
+    const f = file.files[0];
+    file.value = '';
+    if (!f) return;
+    if (f.size > MAX_IMPORT_MIB * 1024 * 1024) {
+      fail(msg, `导入文件不能超过 ${MAX_IMPORT_MIB} MiB`);
+      return;
+    }
+    button.disabled = true;
+    mount(msg, h('p', { class: 'muted' }, `正在导入 ${f.name}…`));
+    try {
+      let text;
+      try {
+        text = await f.text();
+      } catch (err) {
+        fail(msg, `读取文件失败：${err.message}`);
+        return;
+      }
+      const body = new Blob([text], { type: 'application/json' });
+      try {
+        await send(body, 'fail');
+      } catch (err) {
+        if (err.status !== 409 || err.code !== TEMPLATE_EXISTS) throw err;
+        mount(msg);
+        ask(body, err.names);
+      }
+    } catch (err) {
+      if (!isAbort(err)) mount(msg, errorBox(err));
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  return { button, file, msg, dialog };
+}
+
 export async function templatesView(ctx) {
   const res = await get('persona-templates', null, ctx.signal);
   const all = res.templates || [];
+  const imp = importer((list) => {
+    if (ctx.signal.aborted) return;
+    flash = importSummary(list);
+    go('#/templates');
+  });
   ctx.show(
     h('h1', null, '人设模板'),
     takeFlash(),
+    h('div', { class: 'toolbar' },
+      h('a', { class: 'button', href: EXPORT_ALL, download: true }, '导出全部'),
+      imp.button, imp.file),
+    h('p', { class: 'hint' }, `导出的是 JSON 文件，参考图在文件里。导入时选导出的文件，单个模板或全部模板的都可以，最大 ${MAX_IMPORT_MIB} MiB；模板多、参考图大时，“导出全部”的文件可能超过这个上限，没法整个导入，这时请逐个导出。`),
+    imp.msg,
     h('p', { class: 'hint' }, EXISTING_CHATS),
     h('p', { class: 'hint' }, '新建模板：打开一个模板，点“复制为新模板”。'),
     all.length ? table([
-      { title: '模板', cell: (t) => h('a', { href: href('templates', t.name) }, t.name) },
+      {
+        title: '模板',
+        cell: (t) => [
+          h('a', { href: href('templates', t.name) }, t.name),
+          t.source === BUILTIN ? [' ', h('span', { class: 'badge', title: '内置的默认人设，还没有保存过' }, '内置')] : null,
+        ],
+      },
       { title: '人设名', cell: (t) => t.persona_name || '—' },
       { title: '角色名', cell: (t) => t.character_name || '—' },
-      { title: '来源', cell: (t) => label(SOURCE, t.source) },
       { title: '参考图', cell: (t) => (t.appearance_image ? '有' : '—') },
       { title: '默认模板用于', class: 'text', cell: users },
       { title: '在线修改', class: 'nowrap', cell: updated },
-    ], all) : empty('没有模板'));
+      { title: '', class: 'nowrap', cell: (t) => exportLink(t.name) },
+    ], all) : empty('没有模板'),
+    imp.dialog);
 }
 
 export async function templateView(ctx) {
@@ -140,12 +277,13 @@ export async function templateView(ctx) {
     takeFlash(),
     h('section', { class: 'card' },
       kv([
-        ['来源', label(SOURCE, t.source)],
+        t.source === BUILTIN ? ['来源', '内置的默认人设，还没有保存过'] : null,
         ['默认模板用于', users(t)],
         ['在线修改', updated(t)],
       ]),
       h('p', { class: 'hint' }, EXISTING_CHATS),
-      h('div', { class: 'toolbar' }, reset, remove, copy),
+      h('div', { class: 'toolbar' }, reset, remove, copy,
+        exportLink(name, { class: 'button', title: '下载保存过的版本，表单里没保存的修改不在里面' })),
       actionMsg),
     h('section', { class: 'card' }, h('h2', null, '编辑模板'), form.el),
   );

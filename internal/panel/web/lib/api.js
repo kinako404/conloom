@@ -8,12 +8,15 @@ let csrfToken = '';
 let user = '';
 let timezone = null;
 
+// ApiError is a failed call. names lists the names an error is about, as the
+// stored templates an import's names clash with; it is empty for most errors.
 export class ApiError extends Error {
-  constructor(status, code, message, retryAfter) {
+  constructor(status, code, message, retryAfter, names) {
     super(message);
     this.status = status;
     this.code = code;
     this.retryAfter = retryAfter;
+    this.names = names || [];
   }
 }
 
@@ -118,7 +121,7 @@ async function send(method, path, { body, blob, params, signal } = {}) {
   if (!res.ok) {
     const e = (data && data.error) || {};
     throw new ApiError(res.status, e.code || '', e.message || `请求失败（HTTP ${res.status}）`,
-      res.headers.get('Retry-After'));
+      res.headers.get('Retry-After'), e.names);
   }
   return data;
 }
@@ -127,8 +130,9 @@ export const get = (path, params, signal) => request('GET', path, { params, sign
 export const post = (path, body) => request('POST', path, { body });
 export const put = (path, body) => request('PUT', path, { body });
 export const del = (path) => request('DELETE', path);
-// upload posts blob, a file, as the raw request body.
-export const upload = (path, blob) => request('POST', path, { blob });
+// upload posts blob, a file, as the raw request body, with params as the
+// query.
+export const upload = (path, blob, params) => request('POST', path, { blob, params });
 
 export async function loadSession(signal) {
   const sess = await request('GET', 'session', { signal });

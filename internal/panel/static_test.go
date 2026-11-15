@@ -4,6 +4,8 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -193,5 +195,58 @@ func TestStatic_ServesTemplatesViews(t *testing.T) {
 	}
 	if w := get("/panel/views/conversation.js"); strings.Contains(w.Body.String(), "function barsEditor(") {
 		t.Error("/panel/views/conversation.js still has its own bars editor")
+	}
+}
+
+func TestStatic_TemplatesExportImport(t *testing.T) {
+	h := staticHandler(t, web.FS)
+	get := func(target string) string {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: %d", target, w.Code)
+		}
+		return w.Body.String()
+	}
+	js := get("/panel/views/templates.js")
+	for _, want := range []string{
+		// Downloads are same-origin links the browser saves.
+		"const EXPORT_ALL = 'api/persona-templates/export';",
+		"href: 'api/' + templatePath(name, 'export'), download: true",
+		"href: EXPORT_ALL, download: true }, '导出全部')",
+		"}, '导出')",
+		// Import: the file as the raw body, first with fail, then the dialog.
+		"upload('persona-templates/import', body, { on_conflict: mode })",
+		"await f.text()", "type: 'application/json'", "send(body, 'fail')",
+		"const TEMPLATE_EXISTS = 'TEMPLATE_EXISTS';", "err.names",
+		"'覆盖')", "'改名导入')", "'取消')", "choose('overwrite')", "choose('rename')",
+		"新建：", "覆盖：", "可能超过这个上限",
+		"'恢复为内置默认')", "'内置'",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("/panel/views/templates.js lacks %q", want)
+		}
+	}
+	for _, gone := range []string{"恢复为配置文件版本", "配置文件", "数据库", "fetch("} {
+		if strings.Contains(js, gone) {
+			t.Errorf("/panel/views/templates.js still has %q", gone)
+		}
+	}
+	m := regexp.MustCompile(`const MAX_IMPORT_MIB = (\d+);`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("/panel/views/templates.js has no MAX_IMPORT_MIB")
+	}
+	if want := strconv.Itoa(maxImportBytes >> 20); m[1] != want {
+		t.Errorf("MAX_IMPORT_MIB = %s, want maxImportBytes in MiB %s", m[1], want)
+	}
+
+	api := get("/panel/lib/api.js")
+	for _, want := range []string{
+		"this.names = names || [];", "res.headers.get('Retry-After'), e.names)",
+		"export const upload = (path, blob, params) => request('POST', path, { blob, params });",
+	} {
+		if !strings.Contains(api, want) {
+			t.Errorf("/panel/lib/api.js lacks %q", want)
+		}
 	}
 }
