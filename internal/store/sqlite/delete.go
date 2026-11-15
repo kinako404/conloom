@@ -20,6 +20,7 @@ var conversationTables = []string{
 	"conversation_members", "proactive_log", "group_memory", "member_memory", "memory_revisions",
 	"memory_chunks", "memory_chunk_state", "memory_chunk_rebuild", "memory_chunk_forgets",
 	"conversation_status", "conversation_timers", "conversation_buffs", "conversation_buff_events",
+	"conversation_custom_bars", "conversation_effects",
 }
 
 func (db *DB) DeleteConversation(ctx context.Context, convKey string) error {
@@ -72,6 +73,7 @@ var scopeTables = []string{
 	"group_memory", "member_memory", "memory_revisions",
 	"memory_chunks", "memory_chunk_state", "memory_chunk_rebuild", "memory_chunk_forgets",
 	"conversation_status", "conversation_timers", "conversation_buffs", "conversation_buff_events",
+	"conversation_custom_bars", "conversation_effects",
 }
 
 func (db *DB) DeleteScope(ctx context.Context, scopeKey string) error {

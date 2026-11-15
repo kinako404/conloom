@@ -11,10 +11,11 @@ import (
 	"github.com/kinako404/conloom/internal/store"
 )
 
-// autonomyTables hold a private conversation's status, timers, bar values
-// and bar changes; a shared panel memory scope holds all but timers, which
-// stay with each of its chats.
-var autonomyTables = []string{"conversation_status", "conversation_timers", "conversation_buffs", "conversation_buff_events"}
+// autonomyTables hold a private conversation's status, timers, bar values,
+// bar changes, bot-created bars and effects; a shared panel memory scope
+// holds all but timers, which stay with each of its chats.
+var autonomyTables = []string{"conversation_status", "conversation_timers", "conversation_buffs", "conversation_buff_events",
+	"conversation_custom_bars", "conversation_effects"}
 
 var knownTimerKinds = []store.TimerKind{store.TimerStatusReturn, store.TimerInitiate, store.TimerFollowUp}
 
@@ -24,11 +25,24 @@ const timerCols = `conversation_key, kind, bot_instance_id, platform_user_id, du
 
 const buffCols = `conversation_key, name, value, day, day_delta, updated_at`
 
-const buffEventCols = `conversation_key, name, task_id, source, before, after, reason, created_at`
+const buffEventCols = `conversation_key, name, task_id, source, before, after, reason, created_at, kind`
+
+const customBarCols = `conversation_key, name, baseline, half_life_seconds, description, task_id, created_at`
+
+const effectCols = `conversation_key, name, description, started_at, until_at, task_id`
 
 // buffTaskChangesQuery counts the changes a task (a non-empty task_id) made
 // to a bar, through the partial unique index on (task_id, name).
 const buffTaskChangesQuery = `SELECT COUNT(*) FROM conversation_buff_events WHERE task_id = ? AND name = ? AND task_id <> ''`
+
+// buffTaskChangeKindQuery finds the kind of the change a task made to a name,
+// through the same index; the index allows a task one change per name.
+const buffTaskChangeKindQuery = `SELECT kind FROM conversation_buff_events WHERE task_id = ? AND name = ? AND task_id <> ''`
+
+const (
+	customBarTaskQuery    = `SELECT task_id FROM conversation_custom_bars WHERE conversation_key = ? AND name = ?`
+	activeEffectTaskQuery = `SELECT task_id FROM conversation_effects WHERE conversation_key = ? AND name = ? AND until_at > ?`
+)
 
 // SetStatus stores a zero UpdatedAt as now.
 func (db *DB) SetStatus(ctx context.Context, s store.ConversationStatus, ret *store.ConversationTimer) error {
@@ -305,9 +319,8 @@ func (db *DB) UpdateBuff(ctx context.Context, convKey, name string, ev store.Buf
 			convKey, name, next.Value, next.Day, next.DayDelta, fmtTime(next.UpdatedAt)); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO conversation_buff_events (`+buffEventCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			convKey, name, ev.TaskID, ev.Source, before, next.Value, ev.Reason, fmtTime(nowIfZero(ev.CreatedAt)))
-		return err
+		ev.ConversationKey, ev.Name, ev.Kind, ev.Before, ev.After = convKey, name, store.BuffKindAdjust, before, next.Value
+		return insertBuffEvent(ctx, tx, ev)
 	})
 	if err != nil {
 		return store.BuffValue{}, err
@@ -330,7 +343,7 @@ func (db *DB) ListBuffEvents(ctx context.Context, convKey string, limit int) ([]
 		var e store.BuffEvent
 		var created string
 		if err := rows.Scan(&e.ID, &e.ConversationKey, &e.Name, &e.TaskID, &e.Source, &e.Before, &e.After, &e.Reason,
-			&created); err != nil {
+			&created, &e.Kind); err != nil {
 			return nil, err
 		}
 		if e.CreatedAt, err = parseTime(created); err != nil {
@@ -347,6 +360,249 @@ func (db *DB) PurgeBuffEvents(ctx context.Context, before time.Time) (int64, err
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+func (db *DB) AddCustomBar(ctx context.Context, b store.CustomBar, initial float64, limit int) error {
+	if b.ConversationKey == "" || b.Name == "" {
+		return errors.New("add bar: empty conversation key or name")
+	}
+	b.CreatedAt = nowIfZero(b.CreatedAt)
+	return db.inTx(ctx, func(tx *sql.Tx) error {
+		recorded, err := taskChangeKind(ctx, tx, b.TaskID, b.Name)
+		if err != nil || recorded == store.BuffKindBarAdd {
+			return err
+		}
+		holder, found, err := queryString(ctx, tx, customBarTaskQuery, b.ConversationKey, b.Name)
+		switch {
+		case err != nil:
+			return err
+		case found && b.TaskID != "" && holder == b.TaskID:
+			return nil
+		case found:
+			return store.ErrBuffNameTaken
+		}
+		if _, found, err := queryString(ctx, tx, activeEffectTaskQuery, b.ConversationKey, b.Name, fmtTime(b.CreatedAt)); err != nil {
+			return err
+		} else if found {
+			return store.ErrBuffNameTaken
+		}
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_custom_bars WHERE conversation_key = ?`,
+			b.ConversationKey).Scan(&n); err != nil {
+			return err
+		}
+		if n >= limit {
+			return store.ErrBuffLimit
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_custom_bars (`+customBarCols+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			b.ConversationKey, b.Name, b.Baseline, int64(b.HalfLife/time.Second), b.Description, b.TaskID,
+			fmtTime(b.CreatedAt)); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_buffs (`+buffCols+`) VALUES (?, ?, ?, '', 0, ?)
+			ON CONFLICT (conversation_key, name) DO UPDATE SET value = excluded.value, day = excluded.day,
+				day_delta = excluded.day_delta, updated_at = excluded.updated_at`,
+			b.ConversationKey, b.Name, initial, fmtTime(b.CreatedAt)); err != nil {
+			return err
+		}
+		return insertBuffEvent(ctx, tx, store.BuffEvent{ConversationKey: b.ConversationKey, Name: b.Name, Kind: store.BuffKindBarAdd,
+			TaskID: changeTask(b.TaskID, recorded), Source: store.BuffSourceModel, Before: initial, After: initial,
+			CreatedAt: b.CreatedAt})
+	})
+}
+
+func (db *DB) RemoveCustomBar(ctx context.Context, convKey, name, source, taskID string) (bool, error) {
+	var removed bool
+	err := db.inTx(ctx, func(tx *sql.Tx) error {
+		n, err := execCount(ctx, tx, `DELETE FROM conversation_custom_bars WHERE conversation_key = ? AND name = ?`, convKey, name)
+		if err != nil || n == 0 {
+			return err
+		}
+		removed = true
+		var value float64
+		err = tx.QueryRowContext(ctx, `SELECT value FROM conversation_buffs WHERE conversation_key = ? AND name = ?`,
+			convKey, name).Scan(&value)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM conversation_buffs WHERE conversation_key = ? AND name = ?`,
+			convKey, name); err != nil {
+			return err
+		}
+		return insertTaskEvent(ctx, tx, store.BuffEvent{ConversationKey: convKey, Name: name, Kind: store.BuffKindBarRemove,
+			TaskID: taskID, Source: source, Before: value, After: value})
+	})
+	if err != nil {
+		return false, err
+	}
+	return removed, nil
+}
+
+func (db *DB) ListCustomBars(ctx context.Context, convKey string) ([]store.CustomBar, error) {
+	rows, err := db.r.QueryContext(ctx, `SELECT `+customBarCols+` FROM conversation_custom_bars
+		WHERE conversation_key = ? ORDER BY created_at, rowid`, convKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.CustomBar
+	for rows.Next() {
+		var b store.CustomBar
+		var halfLife int64
+		var created string
+		if err := rows.Scan(&b.ConversationKey, &b.Name, &b.Baseline, &halfLife, &b.Description, &b.TaskID, &created); err != nil {
+			return nil, err
+		}
+		b.HalfLife = time.Duration(halfLife) * time.Second
+		if b.CreatedAt, err = parseTime(created); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) AddEffect(ctx context.Context, e store.Effect, limit int, now time.Time) error {
+	if e.ConversationKey == "" || e.Name == "" {
+		return errors.New("add effect: empty conversation key or name")
+	}
+	if e.StartedAt.IsZero() {
+		e.StartedAt = now
+	}
+	return db.inTx(ctx, func(tx *sql.Tx) error {
+		recorded, err := taskChangeKind(ctx, tx, e.TaskID, e.Name)
+		if err != nil || recorded == store.BuffKindEffectAdd {
+			return err
+		}
+		holder, found, err := queryString(ctx, tx, activeEffectTaskQuery, e.ConversationKey, e.Name, fmtTime(now))
+		switch {
+		case err != nil:
+			return err
+		case found && e.TaskID != "" && holder == e.TaskID:
+			return nil
+		case found:
+			return store.ErrBuffNameTaken
+		}
+		if _, found, err := queryString(ctx, tx, customBarTaskQuery, e.ConversationKey, e.Name); err != nil {
+			return err
+		} else if found {
+			return store.ErrBuffNameTaken
+		}
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_effects WHERE conversation_key = ? AND until_at > ?`,
+			e.ConversationKey, fmtTime(now)).Scan(&n); err != nil {
+			return err
+		}
+		if n >= limit {
+			return store.ErrBuffLimit
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_effects (`+effectCols+`) VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT (conversation_key, name) DO UPDATE SET description = excluded.description,
+				started_at = excluded.started_at, until_at = excluded.until_at, task_id = excluded.task_id`,
+			e.ConversationKey, e.Name, e.Description, fmtTime(e.StartedAt), fmtTime(e.UntilAt), e.TaskID); err != nil {
+			return err
+		}
+		return insertBuffEvent(ctx, tx, store.BuffEvent{ConversationKey: e.ConversationKey, Name: e.Name,
+			Kind: store.BuffKindEffectAdd, TaskID: changeTask(e.TaskID, recorded), Source: store.BuffSourceModel, CreatedAt: now})
+	})
+}
+
+func (db *DB) RemoveEffect(ctx context.Context, convKey, name, source, taskID string) (bool, error) {
+	var removed bool
+	err := db.inTx(ctx, func(tx *sql.Tx) error {
+		n, err := execCount(ctx, tx, `DELETE FROM conversation_effects WHERE conversation_key = ? AND name = ?`, convKey, name)
+		if err != nil || n == 0 {
+			return err
+		}
+		removed = true
+		return insertTaskEvent(ctx, tx, store.BuffEvent{ConversationKey: convKey, Name: name, Kind: store.BuffKindEffectRemove,
+			TaskID: taskID, Source: source})
+	})
+	if err != nil {
+		return false, err
+	}
+	return removed, nil
+}
+
+func (db *DB) ListEffects(ctx context.Context, convKey string, now time.Time) ([]store.Effect, error) {
+	rows, err := db.r.QueryContext(ctx, `SELECT `+effectCols+` FROM conversation_effects
+		WHERE conversation_key = ? AND until_at > ? ORDER BY started_at, rowid`, convKey, fmtTime(now))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.Effect
+	for rows.Next() {
+		var e store.Effect
+		var started, until string
+		if err := rows.Scan(&e.ConversationKey, &e.Name, &e.Description, &started, &until, &e.TaskID); err != nil {
+			return nil, err
+		}
+		if e.StartedAt, err = parseTime(started); err != nil {
+			return nil, err
+		}
+		if e.UntilAt, err = parseTime(until); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) PurgeExpiredEffects(ctx context.Context, now time.Time) (int, error) {
+	return execCount(ctx, db.w, `DELETE FROM conversation_effects WHERE until_at <= ?`, fmtTime(now))
+}
+
+// insertBuffEvent records ev under its ConversationKey and Name, a zero
+// CreatedAt as now.
+func insertBuffEvent(ctx context.Context, tx *sql.Tx, ev store.BuffEvent) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO conversation_buff_events (`+buffEventCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ev.ConversationKey, ev.Name, ev.TaskID, ev.Source, ev.Before, ev.After, ev.Reason, fmtTime(nowIfZero(ev.CreatedAt)), ev.Kind)
+	return err
+}
+
+// insertTaskEvent records ev as insertBuffEvent does, under ev.TaskID unless
+// that task already made a change of ev.Name, then without a task.
+func insertTaskEvent(ctx context.Context, tx *sql.Tx, ev store.BuffEvent) error {
+	recorded, err := taskChangeKind(ctx, tx, ev.TaskID, ev.Name)
+	if err != nil {
+		return err
+	}
+	ev.TaskID = changeTask(ev.TaskID, recorded)
+	return insertBuffEvent(ctx, tx, ev)
+}
+
+// taskChangeKind returns the kind of the change task made of name, or ""
+// when it made none or task is empty.
+func taskChangeKind(ctx context.Context, q queryer, task, name string) (string, error) {
+	if task == "" {
+		return "", nil
+	}
+	kind, _, err := queryString(ctx, q, buffTaskChangeKindQuery, task, name)
+	return kind, err
+}
+
+// changeTask returns the task to record a change under: task, or "" when it
+// already made a change of the name, of kind recorded (see taskChangeKind).
+func changeTask(task, recorded string) string {
+	if recorded != "" {
+		return ""
+	}
+	return task
+}
+
+// queryString returns the single text column of the row query finds, and
+// whether it finds one.
+func queryString(ctx context.Context, q queryer, query string, args ...any) (string, bool, error) {
+	var s string
+	err := q.QueryRowContext(ctx, query, args...).Scan(&s)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return s, true, nil
 }
 
 // deleteAutonomy deletes the conversation's rows in autonomyTables.

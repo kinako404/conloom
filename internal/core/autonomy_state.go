@@ -56,7 +56,7 @@ func (o *Orchestrator) stateBlock(ctx context.Context, task store.TaskRecord, bo
 			bars = append(bars, autonomy.StateBar{Name: b.Name, Description: b.Description, Value: barValue(b, cur, found, now)})
 		}
 	}
-	return autonomy.RenderState(status, bars, o.loc)
+	return autonomy.RenderState(status, bars, nil, now, o.loc)
 }
 
 // storedBar finds the bar name among the stored values of a conversation.

@@ -288,12 +288,13 @@ func TestDeleteConversation_SharedStatusOfItsChat(t *testing.T) {
 	if n := len(listTimers(t, db, b.Key)); n != 0 {
 		t.Errorf("timers of the deleted B = %d", n)
 	}
-	if got := autonomyCounts(t, db, scope); got["conversation_buffs"] != 1 || got["conversation_buff_events"] != 1 {
-		t.Errorf("scope's bars after deleting chats = %v, want them kept", got)
+	if got := autonomyCounts(t, db, scope); got["conversation_buffs"] != 1 || got["conversation_buff_events"] != 1 ||
+		got["conversation_custom_bars"] != 1 || got["conversation_effects"] != 1 {
+		t.Errorf("scope's bars and effects after deleting chats = %v, want them kept", got)
 	}
 }
 
-// seedScopeRows stores one row under key in every table of scopeTables.
+// seedScopeRows stores one row under key in every table of scopeKeyedTables.
 func seedScopeRows(t *testing.T, db *DB, key string) {
 	t.Helper()
 	at := fmtTime(time.Date(2026, 11, 14, 20, 0, 0, 0, time.UTC))
@@ -317,6 +318,10 @@ func seedScopeRows(t *testing.T, db *DB, key string) {
 		`INSERT INTO conversation_buffs (conversation_key, name, value, day, day_delta, updated_at) VALUES (?1, '心情', 65, '2026-11-14', 5, ?2)`,
 		`INSERT INTO conversation_buff_events (conversation_key, name, task_id, source, before, after, reason, created_at)
 			VALUES (?1, '心情', '', 'panel', 60, 65, '', ?2)`,
+		`INSERT INTO conversation_custom_bars (conversation_key, name, baseline, half_life_seconds, description, task_id, created_at)
+			VALUES (?1, '饥饿', 30, 21600, '', 'task_1', ?2)`,
+		`INSERT INTO conversation_effects (conversation_key, name, description, started_at, until_at, task_id)
+			VALUES (?1, '着凉', '', ?2, ?2, 'task_2')`,
 	} {
 		if _, err := db.w.Exec(seed, key, at); err != nil {
 			t.Fatalf("seed %s: %v", seed, err)
@@ -324,11 +329,20 @@ func seedScopeRows(t *testing.T, db *DB, key string) {
 	}
 }
 
-// scopeRowCounts counts the rows under key in every table of scopeTables.
+// scopeKeyedTables are the tables seedScopeRows stores a row in, which
+// DeleteScope deletes from.
+var scopeKeyedTables = []string{
+	"group_memory", "member_memory", "memory_revisions",
+	"memory_chunks", "memory_chunk_state", "memory_chunk_rebuild", "memory_chunk_forgets",
+	"conversation_status", "conversation_timers", "conversation_buffs", "conversation_buff_events",
+	"conversation_custom_bars", "conversation_effects",
+}
+
+// scopeRowCounts counts the rows under key in every table of scopeKeyedTables.
 func scopeRowCounts(t *testing.T, db *DB, key string) map[string]int {
 	t.Helper()
 	out := map[string]int{}
-	for _, table := range scopeTables {
+	for _, table := range scopeKeyedTables {
 		var n int
 		if err := db.r.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE conversation_key = ?`, key).Scan(&n); err != nil {
 			t.Fatalf("count %s: %v", table, err)

@@ -235,7 +235,7 @@ func TestWake_StatusReturnSends(t *testing.T) {
 	req := wakeRequest(t, env)
 	last := lastContent(req)
 	directive := CopyDirectiveStatusReturn("洗澡")
-	state := autonomy.RenderState(nil, defaultStateBars(60, 70), env.o.loc)
+	state := autonomy.RenderState(nil, defaultStateBars(60, 70), nil, time.Time{}, env.o.loc)
 	if !strings.HasPrefix(last, state+"\n\n") || !strings.HasSuffix(last, "\n"+directive) || !strings.Contains(last, "我去洗个澡") {
 		t.Fatalf("last user message = %q, want the state block, the history and then the directive", last)
 	}

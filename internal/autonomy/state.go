@@ -2,6 +2,7 @@ package autonomy
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -27,13 +28,20 @@ type StateBar struct {
 	Value             float64
 }
 
+// StateEffect is a passing condition of the bot that runs out at UntilAt.
+type StateEffect struct {
+	Name, Description string
+	UntilAt           time.Time
+}
+
 // RenderState renders the hidden state block injected into private replies:
-// the status line when st is set, then a line per bar showing its band, with
-// times in loc. The activity and descriptions are flattened to one line
+// the status line when st is set, then a line per bar showing its band, then
+// one line with the effects still running at now and the time each has left,
+// with times in loc. The activity and descriptions are flattened to one line
 // without 【】 or control characters. It returns "" when there is nothing to
-// show. Over 300 runes it drops all descriptions, then trailing bars, then
-// shortens the activity.
-func RenderState(st *StateStatus, bars []StateBar, loc *time.Location) string {
+// show. Over 300 runes it drops all descriptions, then trailing effects,
+// then trailing bars, then shortens the activity.
+func RenderState(st *StateStatus, bars []StateBar, effects []StateEffect, now time.Time, loc *time.Location) string {
 	var status *StateStatus
 	if st != nil {
 		s := *st
@@ -46,28 +54,41 @@ func RenderState(st *StateStatus, bars []StateBar, loc *time.Location) string {
 	for i := range bars {
 		bars[i].Description = oneLine(bars[i].Description)
 	}
+	var running []StateEffect
+	for _, e := range effects {
+		if e.UntilAt.After(now) {
+			e.Description = oneLine(e.Description)
+			running = append(running, e)
+		}
+	}
+	effects = running
 
-	block := renderState(status, bars, true, loc)
+	block := renderState(status, bars, effects, true, now, loc)
 	fits := func() bool { return utf8.RuneCountInString(block) <= maxStateRunes }
 	if fits() {
 		return block
 	}
-	block = renderState(status, bars, false, loc)
+	block = renderState(status, bars, effects, false, now, loc)
+	for !fits() && len(effects) > 0 {
+		effects = effects[:len(effects)-1]
+		block = renderState(status, bars, effects, false, now, loc)
+	}
 	for !fits() && len(bars) > 0 {
 		bars = bars[:len(bars)-1]
-		block = renderState(status, bars, false, loc)
+		block = renderState(status, bars, nil, false, now, loc)
 	}
 	if !fits() && status != nil {
 		activity := []rune(status.Activity)
 		over := utf8.RuneCountInString(block) - maxStateRunes
 		status.Activity = strings.TrimSpace(string(activity[:max(len(activity)-over, 0)]))
-		block = renderState(status, nil, false, loc)
+		block = renderState(status, nil, nil, false, now, loc)
 	}
 	return block
 }
 
-func renderState(st *StateStatus, bars []StateBar, withDescriptions bool, loc *time.Location) string {
-	if st == nil && len(bars) == 0 {
+func renderState(st *StateStatus, bars []StateBar, effects []StateEffect, withDescriptions bool, now time.Time,
+	loc *time.Location) string {
+	if st == nil && len(bars) == 0 && len(effects) == 0 {
 		return ""
 	}
 	var b strings.Builder
@@ -84,8 +105,45 @@ func renderState(st *StateStatus, bars []StateBar, withDescriptions bool, loc *t
 		}
 		b.WriteString("\n")
 	}
+	for i, e := range effects {
+		if i == 0 {
+			b.WriteString("效果：")
+		} else {
+			b.WriteString("、")
+		}
+		b.WriteString(e.Name + "（" + timeLeft(e.UntilAt.Sub(now)))
+		if withDescriptions && e.Description != "" {
+			b.WriteString("；" + e.Description)
+		}
+		b.WriteString("）")
+	}
+	if len(effects) > 0 {
+		b.WriteString("\n")
+	}
 	b.WriteString(stateFooter)
 	return b.String()
+}
+
+// timeLeft words d, a positive time an effect has left, rounded up to the
+// minute below a day and to the hour from a day on: "还剩约 1 小时 20 分",
+// "还剩约 30 分", "还剩约 2 天 3 小时".
+func timeLeft(d time.Duration) string {
+	minutes := int((d + time.Minute - 1) / time.Minute)
+	var parts []string
+	part := func(n int, unit string) {
+		if n > 0 {
+			parts = append(parts, strconv.Itoa(n)+" "+unit)
+		}
+	}
+	if minutes >= 24*60 {
+		hours := (minutes + 59) / 60
+		part(hours/24, "天")
+		part(hours%24, "小时")
+	} else {
+		part(minutes/60, "小时")
+		part(minutes%60, "分")
+	}
+	return "还剩约 " + strings.Join(parts, " ")
 }
 
 // oneLine flattens s to one trimmed line: whitespace runs, line breaks

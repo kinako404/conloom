@@ -408,17 +408,55 @@ const (
 	BuffSourceAPI   = "api"
 )
 
-// BuffEvent records one change of a bar from Before to After. Source is one
-// of the BuffSource* constants; TaskID is the task that made the change,
-// empty for none.
+// Kinds of a BuffEvent: a bar's value adjusted, a bot-created bar added or
+// removed, an effect added or removed.
+const (
+	BuffKindAdjust       = "adjust"
+	BuffKindBarAdd       = "bar_add"
+	BuffKindBarRemove    = "bar_remove"
+	BuffKindEffectAdd    = "effect_add"
+	BuffKindEffectRemove = "effect_remove"
+)
+
+// BuffEvent records one change of a bar or effect name, of one of the
+// BuffKind* kinds; an adjustment changed a bar's value from Before to After.
+// Source is one of the BuffSource* constants; TaskID is the task that made
+// the change, empty for none.
 type BuffEvent struct {
 	ID              int64
 	ConversationKey string
 	Name            string
+	Kind            string
 	TaskID          string
 	Source          string
 	Before          float64
 	After           float64
 	Reason          string
 	CreatedAt       time.Time
+}
+
+// CustomBar is a hidden bar a bot added itself to a private conversation,
+// kept like the persona's bars: its value and changes are a BuffValue and
+// BuffEvents of Name. It goes back to Baseline with half-life HalfLife.
+// TaskID is the task that added it.
+type CustomBar struct {
+	ConversationKey string
+	Name            string
+	Description     string
+	TaskID          string
+	Baseline        int
+	HalfLife        time.Duration
+	CreatedAt       time.Time
+}
+
+// Effect is a passing condition a bot gave itself in a private conversation,
+// from StartedAt until UntilAt, when it runs out. TaskID is the task that
+// added it.
+type Effect struct {
+	ConversationKey string
+	Name            string
+	Description     string
+	TaskID          string
+	StartedAt       time.Time
+	UntilAt         time.Time
 }

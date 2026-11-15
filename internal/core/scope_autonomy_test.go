@@ -129,7 +129,7 @@ func TestScope_StatusSharedReturnInOrigin(t *testing.T) {
 	clock.set(started.Add(5 * time.Minute))
 	inB := env.panelReply(t, b, "你在干嘛")
 	block := autonomy.RenderState(&autonomy.StateStatus{Activity: "洗澡", StartedAt: started, UntilAt: until},
-		defaultStateBars(60, 70), env.o.loc)
+		defaultStateBars(60, 70), nil, time.Time{}, env.o.loc)
 	if !strings.Contains(inB, block) {
 		t.Fatalf("B's request lacks the status set in A:\n%s\nwant\n%s", inB, block)
 	}
@@ -193,7 +193,7 @@ func TestScope_BarsShared(t *testing.T) {
 
 	env.panelReply(t, a, goodNews)
 	inB := env.panelReply(t, b, "在吗")
-	if block := autonomy.RenderState(nil, defaultStateBars(65, 70), env.o.loc); !strings.Contains(inB, block) {
+	if block := autonomy.RenderState(nil, defaultStateBars(65, 70), nil, time.Time{}, env.o.loc); !strings.Contains(inB, block) {
 		t.Fatalf("B's request lacks the bar A's reply changed:\n%s\nwant\n%s", inB, block)
 	}
 	env.panelReply(t, b, goodNews)

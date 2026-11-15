@@ -89,7 +89,7 @@ func TestState_InjectedInPrivate(t *testing.T) {
 
 	req := env.statePrivateRequest(t, clock, "洗完了吗")
 	want := autonomy.RenderState(&autonomy.StateStatus{Activity: "洗澡", StartedAt: started, UntilAt: until},
-		defaultStateBars(autonomy.Decay(82, 60, 6*time.Hour, 6*time.Hour), 70), env.o.loc)
+		defaultStateBars(autonomy.Decay(82, 60, 6*time.Hour, 6*time.Hour), 70), nil, time.Time{}, env.o.loc)
 	for _, line := range []string{"正在：洗澡（10:50 开始，预计 11:20 结束", "心情：偏高", "精力：偏高"} {
 		if !strings.Contains(want, line) {
 			t.Fatalf("test block lacks %q:\n%s", line, want)
@@ -123,7 +123,7 @@ func TestState_BarsNeedBuffSkill(t *testing.T) {
 	env.seedBar(t, key, "心情", 10, now)
 
 	req := env.statePrivateRequest(t, clock, "在吗")
-	want := autonomy.RenderState(&autonomy.StateStatus{Activity: "洗澡", StartedAt: started, UntilAt: until}, nil, env.o.loc)
+	want := autonomy.RenderState(&autonomy.StateStatus{Activity: "洗澡", StartedAt: started, UntilAt: until}, nil, nil, time.Time{}, env.o.loc)
 	if last := lastContent(req); !strings.HasPrefix(last, want+"\n\n【当前消息】") {
 		t.Fatalf("last user message = %q, want it to start with the status only\n%s", last, want)
 	}
@@ -151,7 +151,7 @@ func TestState_IgnoresRemovedBars(t *testing.T) {
 	want := autonomy.RenderState(nil, []autonomy.StateBar{
 		{Name: "耐心", Description: bars[0].Description, Value: 50},
 		{Name: "精力", Description: bars[1].Description, Value: 15},
-	}, env.o.loc)
+	}, nil, time.Time{}, env.o.loc)
 	if last := lastContent(req); !strings.HasPrefix(last, want+"\n\n【当前消息】") {
 		t.Fatalf("last user message = %q, want it to start with the persona's bars in its order\n%s", last, want)
 	}

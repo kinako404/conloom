@@ -30,6 +30,10 @@ var (
 	ErrTimerGone      = errors.New("store: timer gone")
 	// ErrBuffDuplicate refuses an UpdateBuff of a bar its task already changed.
 	ErrBuffDuplicate = errors.New("store: bar already adjusted by this task")
+	// ErrBuffNameTaken refuses an AddCustomBar or AddEffect of a name another
+	// task's bar or active effect holds; ErrBuffLimit one over its limit.
+	ErrBuffNameTaken = errors.New("store: buff name already in use")
+	ErrBuffLimit     = errors.New("store: too many buffs")
 	// ErrBotHasData refuses a DeletePanelBot of a bot that still has
 	// conversations, tasks or outbox actions.
 	ErrBotHasData = errors.New("store: bot still has conversations")
@@ -209,15 +213,16 @@ type Store interface {
 	// is consolidated again. A conversation without a memory row gets one. Its
 	// semantic search chunks that start before at are deleted, and those
 	// running past at queued to be rebuilt. The conversation's status, timers,
-	// bar values and bar changes are deleted too. It is ForgetPrivateScope of
-	// the conversation as its own scope and only chat.
+	// bar values, bar changes, bot-created bars and effects are deleted too.
+	// It is ForgetPrivateScope of the conversation as its own scope and only
+	// chat.
 	ForgetPrivate(ctx context.Context, convKey, userID string, at time.Time) error
 	// ForgetPrivateScope is ForgetPrivate for the memory scope scopeKey (see
 	// MemoryScopeKey) of the private chats chats: the member, summary, summary
-	// revisions, cursor, status, bar values and bar changes are those under
-	// scopeKey, the cursor moves up to the newest message of any of chats, and
-	// the chunks and timers of each of chats are dealt with as ForgetPrivate
-	// deals with its conversation's.
+	// revisions, cursor, status, bar values, bar changes, bot-created bars and
+	// effects are those under scopeKey, the cursor moves up to the newest
+	// message of any of chats, and the chunks and timers of each of chats are
+	// dealt with as ForgetPrivate deals with its conversation's.
 	ForgetPrivateScope(ctx context.Context, scopeKey string, chats []string, userID string, at time.Time) error
 	// ForgetMember clears the user's memory, marks it forgotten at at (creating
 	// the row if needed) and deletes the user's revisions in the conversation.
@@ -322,14 +327,15 @@ type Store interface {
 	// including bars its persona no longer has.
 	GetBuffs(ctx context.Context, convKey string) ([]BuffValue, error)
 	// UpdateBuff changes the conversation's bar name in one transaction. If
-	// ev.TaskID is set and that task already changed a bar of that name,
-	// nothing is written and it returns ErrBuffDuplicate. Otherwise it calls
-	// apply with the stored value (zero and found false without one), stores
-	// and returns apply's next under convKey and name (a zero UpdatedAt as
-	// now), and records ev under convKey and name with Before apply's before
-	// (the value next replaced, such as the stored value decayed to now),
-	// After next.Value and a zero CreatedAt as now; ev.Before and ev.After are
-	// not used. When apply fails nothing is written and its error is returned.
+	// ev.TaskID is set and that task already recorded a change (of any kind)
+	// of that name, nothing is written and it returns ErrBuffDuplicate.
+	// Otherwise it calls apply with the stored value (zero and found false
+	// without one), stores and returns apply's next under convKey and name (a
+	// zero UpdatedAt as now), and records ev under convKey and name as a
+	// BuffKindAdjust with Before apply's before (the value next replaced, such
+	// as the stored value decayed to now), After next.Value and a zero
+	// CreatedAt as now; ev.Kind, ev.Before and ev.After are not used. When
+	// apply fails nothing is written and its error is returned.
 	UpdateBuff(ctx context.Context, convKey, name string, ev BuffEvent,
 		apply func(cur BuffValue, found bool) (next BuffValue, before float64, err error)) (BuffValue, error)
 	// ListBuffEvents returns the conversation's newest up to limit bar changes,
@@ -337,9 +343,50 @@ type Store interface {
 	ListBuffEvents(ctx context.Context, convKey string, limit int) ([]BuffEvent, error)
 	// PurgeBuffEvents deletes bar changes created before before.
 	PurgeBuffEvents(ctx context.Context, before time.Time) (int64, error)
+	// AddCustomBar adds b to b.ConversationKey in one transaction, with its
+	// value initial (a BuffValue at b.CreatedAt without day bookkeeping, which
+	// replaces a stored value of that name) and a BuffKindBarAdd change by the
+	// model whose Before and After are initial; a zero CreatedAt is stored as
+	// now. When the task b.TaskID already added a bar of that name, or holds
+	// it, nothing is written and it returns nil, so a re-run task adds it only
+	// once. Otherwise it returns ErrBuffNameTaken when another bar or an
+	// effect active at CreatedAt holds the name, and ErrBuffLimit when the
+	// conversation has limit bars already. The persona's bars are the
+	// caller's to check. A task records one change per name (see
+	// UpdateBuff): when b.TaskID already made another change of the name, the
+	// addition is recorded without a task.
+	AddCustomBar(ctx context.Context, b CustomBar, initial float64, limit int) error
+	// RemoveCustomBar deletes the conversation's bot-created bar name and its
+	// value, records a BuffKindBarRemove change by source and taskID at now
+	// whose Before and After are the value as last stored, and reports
+	// whether there was such a bar. When taskID already made a change of the
+	// name, the removal is recorded without a task.
+	RemoveCustomBar(ctx context.Context, convKey, name, source, taskID string) (bool, error)
+	// ListCustomBars returns the conversation's bot-created bars in the order
+	// they were added.
+	ListCustomBars(ctx context.Context, convKey string) ([]CustomBar, error)
+	// AddEffect adds e to e.ConversationKey in one transaction, with a
+	// BuffKindEffectAdd change by the model at now; a zero StartedAt is stored
+	// as now. An effect whose UntilAt is not after now has run out: one of
+	// e's name is replaced. When the task e.TaskID already added an effect of
+	// that name, or holds an active one, nothing is written and it returns
+	// nil. Otherwise it returns ErrBuffNameTaken when a bot-created bar or
+	// another active effect holds the name, and ErrBuffLimit when limit
+	// effects are active. It is recorded as AddCustomBar records an addition.
+	AddEffect(ctx context.Context, e Effect, limit int, now time.Time) error
+	// RemoveEffect deletes the conversation's effect name, active or run out,
+	// records a BuffKindEffectRemove change as RemoveCustomBar does, and
+	// reports whether there was such an effect.
+	RemoveEffect(ctx context.Context, convKey, name, source, taskID string) (bool, error)
+	// ListEffects returns the conversation's effects active at now, ordered
+	// by StartedAt.
+	ListEffects(ctx context.Context, convKey string, now time.Time) ([]Effect, error)
+	// PurgeExpiredEffects deletes the effects that have run out at now and
+	// returns how many it deleted.
+	PurgeExpiredEffects(ctx context.Context, now time.Time) (int, error)
 	// DeleteConversation deletes everything stored under convKey (messages and their
 	// keyword index rows, tasks, outbox actions, personas, policies, members, memory,
-	// chunks, proactive log, status, timers, bars, users only referenced by this
+	// chunks, proactive log, status, timers, bars, effects, users only referenced by this
 	// conversation, events of it) except model_calls and audit_events, then the
 	// conversation row. For a panel chat it also deletes the status of its shared
 	// memory scope when that was set in the chat; the rest of the scope stays.
@@ -347,7 +394,8 @@ type Store interface {
 	DeleteConversation(ctx context.Context, convKey string) error
 	// DeleteScope deletes everything stored under the shared panel memory scope
 	// scopeKey (summary and cursor, members with their forget times, revisions,
-	// chunk records, status, timers, bar values and bar changes), for a panel
+	// chunk records, status, timers, bar values, bar changes, bot-created bars
+	// and effects), for a panel
 	// bot whose chats are gone. It returns ErrBotHasData, with nothing deleted,
 	// while the bot still has panel chats; a key that is not a shared scope
 	// (IsSharedScope) is an error.
