@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/obs"
@@ -47,12 +48,12 @@ func builtinTools(d toolDeps) []skills.Tool {
 // current persona version, created from its bot's persona template when it
 // has none, as the core does.
 type personaSource struct {
-	cfg      *config.Config
+	bots     *botdir.Directory
 	personas *persona.Service
 }
 
 func (p personaSource) Persona(ctx context.Context, botInstanceID, convKey string) (conloomapi.PersonaDoc, error) {
-	bot, ok := p.cfg.Bot(botInstanceID)
+	bot, ok := p.bots.Bot(botInstanceID)
 	if !ok {
 		return conloomapi.PersonaDoc{}, fmt.Errorf("app: unknown bot %q", botInstanceID)
 	}

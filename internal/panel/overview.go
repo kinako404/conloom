@@ -83,11 +83,12 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request, _ *Session) {
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
-// overviewBots lists the configured bots with when each last called the core.
+// overviewBots lists every bot with when its adapter last called the core.
 func (s *Server) overviewBots() []overviewBot {
 	seen := s.d.Presence.Snapshot()
-	bots := make([]overviewBot, 0, len(s.d.Config.Bots))
-	for _, b := range s.d.Config.Bots {
+	all := s.d.Bots.All()
+	bots := make([]overviewBot, 0, len(all))
+	for _, b := range all {
 		bot := overviewBot{ID: b.ID, Platform: b.Platform, Name: b.Name}
 		if at, ok := seen[b.ID]; ok {
 			at = at.UTC()

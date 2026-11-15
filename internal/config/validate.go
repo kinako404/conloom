@@ -135,6 +135,9 @@ func (c *Config) ValidateServe() error {
 			p.addf(path+".id", "duplicate bot id %q", b.ID)
 		}
 		botIDs[b.ID] = true
+		if strings.HasPrefix(b.ID, PanelBotIDPrefix) {
+			p.addf(path+".id", "%q is reserved for bots created in the panel", PanelBotIDPrefix)
+		}
 		p.required(path+".platform", b.Platform)
 		if b.Platform == conloomapi.PlatformPanel {
 			p.addf(path+".platform", "%q is reserved for chats held in the panel", b.Platform)

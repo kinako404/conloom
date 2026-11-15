@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/kinako404/conloom/internal/admission"
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/persona"
@@ -119,8 +120,9 @@ type consLimits struct {
 	messages, members int
 }
 
-// ConsolidatorDeps are a Consolidator's collaborators. A nil Metrics, Logger
-// or Now uses a private registry, a discarding logger or time.Now; a nil
+// ConsolidatorDeps are a Consolidator's collaborators. Bots is the bot
+// directory a conversation's bot is looked up in. A nil Metrics, Logger or
+// Now uses a private registry, a discarding logger or time.Now; a nil
 // Location is UTC and a nil Usage records no model calls.
 type ConsolidatorDeps struct {
 	Store     store.Store
@@ -129,6 +131,7 @@ type ConsolidatorDeps struct {
 	Personas  *persona.Service
 	Policies  *policy.Service
 	Config    *config.Config
+	Bots      *botdir.Directory
 	Metrics   *obs.Metrics
 	Logger    *slog.Logger
 	Location  *time.Location
@@ -745,7 +748,7 @@ func (c *Consolidator) chat(ctx context.Context, p *router.Profile, convKey stri
 // currentPersona returns the conversation's current persona and the bot's
 // name under it.
 func (c *Consolidator) currentPersona(ctx context.Context, convKey string) (conloomapi.PersonaDoc, string, error) {
-	bot, ok := c.d.Config.Bot(consBotID(convKey))
+	bot, ok := c.d.Bots.Bot(consBotID(convKey))
 	if !ok {
 		return conloomapi.PersonaDoc{}, "", fmt.Errorf("memory: no configured bot for %s", convKey)
 	}

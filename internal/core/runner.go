@@ -246,7 +246,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 			return skip("wake evaluation dropped: no longer allowed")
 		}
 	}
-	bot, ok := o.cfg.Bot(task.BotInstanceID)
+	bot, ok := o.bots.Bot(task.BotInstanceID)
 	if !ok {
 		return fail(conloomapi.CodeInternal, CopyUnavailable, fmt.Errorf("unknown bot %q", task.BotInstanceID))
 	}

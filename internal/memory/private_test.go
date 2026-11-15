@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/provider/openai"
 	"github.com/kinako404/conloom/internal/store"
@@ -589,7 +590,7 @@ func TestScheduler_OnlyAllowedPrivateChats(t *testing.T) {
 			e.policies.WithPrivateDefaults(private)
 			cfg := &config.Config{Bots: []config.BotConfig{{ID: "bot_test", PrivateChat: mode, Admins: []string{"29999"},
 				EnabledConversations: []conloomapi.ConversationRef{{Type: conloomapi.ConvPrivate, PlatformID: "20001"}}}}}
-			e.sched = NewScheduler(SchedulerDeps{Store: e.st, Policies: e.policies, Runner: e.runner, Config: cfg})
+			e.sched = NewScheduler(SchedulerDeps{Store: e.st, Policies: e.policies, Runner: e.runner, Bots: botdir.New(cfg.Bots)})
 			for i, user := range users {
 				key := store.ConversationKey("bot_test", "qq", conloomapi.ConvPrivate, "private_"+user)
 				pmid := fmt.Sprintf("%d", 910000+i)

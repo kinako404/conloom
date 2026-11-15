@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/persona"
@@ -326,7 +327,7 @@ func TestPutPersona_TemplateAndRollback(t *testing.T) {
 	nine := 9
 	errorBody(t, h.write(http.MethodPut, path, conloomapi.PersonaPut{RollbackTo: &nine}), http.StatusNotFound, conloomapi.CodeNotFound)
 
-	h.cfg.Bots = nil
+	h.srv.d.Bots = botdir.New(nil)
 	errorBody(t, h.write(http.MethodPut, path, conloomapi.PersonaPut{Template: "cat"}), http.StatusNotFound, conloomapi.CodeNotFound)
 }
 

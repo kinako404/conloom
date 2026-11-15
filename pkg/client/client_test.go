@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/kinako404/conloom/internal/admission"
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/gateway"
@@ -94,6 +95,7 @@ func newGateway(t *testing.T) string {
 	ob := outbox.New(st, outbox.Config{}, metrics, nil)
 	personas := persona.NewService(st, cfg.PersonaTemplates)
 	policies := policy.NewService(st, cfg.DefaultGroupPolicy)
+	bots := botdir.New(cfg.Bots)
 	o, err := core.New(core.Deps{
 		Store:     st,
 		Router:    router.New([]*router.Profile{{Role: router.RoleShort, Config: p, Client: openai.New(p, nil)}}, router.BreakerConfig{}, time.Now),
@@ -104,6 +106,7 @@ func newGateway(t *testing.T) string {
 		Notifier:  ob,
 		Metrics:   metrics,
 		Config:    cfg,
+		Bots:      bots,
 	})
 	if err != nil {
 		t.Fatalf("core.New: %v", err)
@@ -111,7 +114,7 @@ func newGateway(t *testing.T) string {
 	t.Cleanup(o.Close)
 	srv := httptest.NewServer(gateway.New(gateway.Deps{
 		Orchestrator: o, Outbox: ob, Personas: personas, Policies: policies, Store: st,
-		Config: cfg, Metrics: promhttp.HandlerFor(reg, promhttp.HandlerOpts{}),
+		Config: cfg, Bots: bots, Metrics: promhttp.HandlerFor(reg, promhttp.HandlerOpts{}),
 	}).Handler())
 	t.Cleanup(srv.Close)
 	return srv.URL

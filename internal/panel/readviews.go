@@ -83,7 +83,7 @@ func (s *Server) getPersona(w http.ResponseWriter, r *http.Request, _ *Session) 
 		resp.Current = &cur
 	case errors.Is(err, store.ErrNotFound):
 		name := "default"
-		if bot, ok := s.d.Config.Bot(conv.BotInstanceID); ok && bot.PersonaTemplate != "" {
+		if bot, ok := s.d.Bots.Bot(conv.BotInstanceID); ok && bot.PersonaTemplate != "" {
 			name = bot.PersonaTemplate
 		}
 		resp.PendingTemplate = &name

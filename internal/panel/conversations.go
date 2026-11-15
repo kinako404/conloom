@@ -31,14 +31,14 @@ type conversationView struct {
 	PersonaVersion         *int       `json:"persona_version"`
 }
 
-// botView is a configured bot, one a panel chat can be started with.
+// botView is a bot of the directory, one a panel chat can be started with.
 type botView struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	Platform string `json:"platform"`
 }
 
-// listConversations lists every stored conversation and the configured bots.
+// listConversations lists every stored conversation and every bot.
 func (s *Server) listConversations(w http.ResponseWriter, r *http.Request, _ *Session) {
 	stats, err := s.d.Store.ConversationStats(r.Context())
 	if err != nil {
@@ -54,8 +54,9 @@ func (s *Server) listConversations(w http.ResponseWriter, r *http.Request, _ *Se
 		}
 		out = append(out, v)
 	}
-	bots := make([]botView, 0, len(s.d.Config.Bots))
-	for _, b := range s.d.Config.Bots {
+	all := s.d.Bots.All()
+	bots := make([]botView, 0, len(all))
+	for _, b := range all {
 		bots = append(bots, botView{ID: b.ID, Name: b.Name, Platform: b.Platform})
 	}
 	s.writeJSON(w, http.StatusOK, struct {
@@ -111,7 +112,7 @@ func (s *Server) conversationView(ctx context.Context, st store.ConversationStat
 	if st.Type == conloomapi.ConvPrivate {
 		v.ProactiveLevel = p.Proactive.Private.EffectiveLevel()
 	}
-	if bot, ok := s.d.Config.Bot(st.BotInstanceID); ok {
+	if bot, ok := s.d.Bots.Bot(st.BotInstanceID); ok {
 		v.BotName = bot.Name
 	}
 	persona, err := s.d.Store.LatestPersona(ctx, st.Key)

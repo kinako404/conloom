@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/persona"
@@ -52,7 +53,7 @@ func newStoreHarness(t *testing.T, bots []config.BotConfig, templates map[string
 	sh.personas = persona.NewService(db, templates)
 	sh.memAdmin = memory.NewAdmin(memory.AdminDeps{Store: db, Policies: sh.policies, Now: func() time.Time { return h.now }})
 	d := h.srv.d
-	d.Store, d.Policies, d.Personas, d.MemoryAdmin = db, sh.policies, sh.personas, sh.memAdmin
+	d.Bots, d.Store, d.Policies, d.Personas, d.MemoryAdmin = botdir.New(bots), db, sh.policies, sh.personas, sh.memAdmin
 	if mutate != nil {
 		mutate(&d)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/kinako404/conloom/internal/admission"
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/embedding"
@@ -90,9 +91,9 @@ type App struct {
 
 // New loads the skills, opens the database in the configured data directory
 // (creating the directory if needed), registers the configured bots and wires
-// every component, with the web panel when the config has a panel section. An
-// invalid skill configuration is an error wrapping skills.ErrInvalid. The
-// caller must Close the App.
+// every component to one bot directory, with the web panel when the config
+// has a panel section. An invalid skill configuration is an error wrapping
+// skills.ErrInvalid. The caller must Close the App.
 func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -139,6 +140,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		limits[name] = admission.Limits{MaxConcurrency: p.Runtime.MaxConcurrency, TokenBudget: p.Runtime.GPUKVCacheTokens}
 	}
 
+	bots := botdir.New(cfg.Bots)
 	metrics := obs.NewMetrics(opts.Registry)
 	loc := location(cfg.Server.Timezone)
 	rt := router.New(profiles, router.BreakerConfig{}, now)
@@ -160,6 +162,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Personas:  personas,
 		Policies:  policies,
 		Config:    cfg,
+		Bots:      bots,
 		Metrics:   metrics,
 		Logger:    logger,
 		Location:  loc,
@@ -171,7 +174,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Store:    st,
 		Policies: policies,
 		Runner:   cons,
-		Config:   cfg,
+		Bots:     bots,
 		Metrics:  metrics,
 		Logger:   logger,
 		Location: loc,
@@ -185,14 +188,14 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		emb := embedding.New(*e, nil)
 		indexer = vector.NewIndexer(vector.IndexerDeps{Interval: opts.EmbeddingInterval, Store: st,
 			Embedder: usage.NewEmbedder(emb, rec, store.PurposeEmbedIndex), Policies: policies, Reviewer: reviewer,
-			IsCommand: isCommand, Location: loc, Config: cfg, Metrics: metrics, Logger: logger})
+			IsCommand: isCommand, Location: loc, Bots: bots, Metrics: metrics, Logger: logger})
 		vectors = vector.NewSearcher(vector.SearcherDeps{Store: st, Embedder: usage.NewEmbedder(emb, rec, store.PurposeEmbedQuery),
 			MinScore: e.MinScore, Margin: vector.DefaultMargin, Metrics: metrics, Logger: logger})
 		logger.Info("semantic search enabled", "embedding_model", e.Model, "batch_size", e.BatchSize)
 	}
 	tools := opts.Tools
 	if tools == nil {
-		tools = builtinTools(toolDeps{Store: st, Policies: policies, Personas: personaSource{cfg: cfg, personas: personas},
+		tools = builtinTools(toolDeps{Store: st, Policies: policies, Personas: personaSource{bots: bots, personas: personas},
 			Reviewer: reviewer, Metrics: metrics, Vectors: vectors})
 	}
 	skillReg, err := registerSkills(cfg, loadedSkills, tools)
@@ -210,6 +213,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Metrics:       metrics,
 		Logger:        logger,
 		Config:        cfg,
+		Bots:          bots,
 		Location:      loc,
 		Now:           now,
 		MemoryTrigger: sched,
@@ -225,6 +229,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	if cfg.Panel != nil {
 		panelHandler = panel.New(panel.Deps{
 			Config:      cfg,
+			Bots:        bots,
 			Sessions:    st,
 			Audit:       st,
 			Assets:      web.FS,
@@ -256,6 +261,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Policies:     policies,
 		Store:        st,
 		Config:       cfg,
+		Bots:         bots,
 		Metrics:      promhttp.HandlerFor(opts.Registry, promhttp.HandlerOpts{}),
 		Logger:       logger,
 		Memory:       sched,

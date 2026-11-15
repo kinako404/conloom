@@ -25,7 +25,7 @@ func newAutonomyHarness(t *testing.T) *writeHarness {
 		o, err := core.New(core.Deps{
 			Store: d.Store.(*sqlite.DB), Router: router.New(nil, router.BreakerConfig{}, time.Now),
 			Admission: admission.New(nil), Personas: d.Personas, Policies: d.Policies,
-			Reviewer: review.New(nil, review.Options{}), Config: d.Config, Location: time.UTC, Now: d.Now,
+			Reviewer: review.New(nil, review.Options{}), Config: d.Config, Bots: d.Bots, Location: time.UTC, Now: d.Now,
 		})
 		if err != nil {
 			t.Fatalf("core.New: %v", err)

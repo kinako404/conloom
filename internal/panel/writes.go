@@ -137,13 +137,13 @@ func (s *Server) resumePolicy(w http.ResponseWriter, r *http.Request, sess *Sess
 }
 
 // putPersona replaces, rolls back or applies a template to the persona; a
-// replaced persona is recorded with the bot's configured template.
+// replaced persona is recorded with the bot's persona template.
 func (s *Server) putPersona(w http.ResponseWriter, r *http.Request, sess *Session) {
 	conv, ok := s.conversation(w, r)
 	if !ok {
 		return
 	}
-	bot, ok := s.d.Config.Bot(conv.BotInstanceID)
+	bot, ok := s.d.Bots.Bot(conv.BotInstanceID)
 	if !ok {
 		s.writeError(w, r, http.StatusNotFound, conloomapi.CodeNotFound, "bot not configured")
 		return

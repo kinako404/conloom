@@ -120,6 +120,10 @@ type APIToken struct {
 	Scopes        []string `yaml:"scopes"`
 }
 
+// PanelBotIDPrefix starts the ID of every bot created in the panel; config bot
+// IDs may not start with it.
+const PanelBotIDPrefix = "panel-"
+
 type BotConfig struct {
 	ID                   string                       `yaml:"id"`
 	Platform             string                       `yaml:"platform"`

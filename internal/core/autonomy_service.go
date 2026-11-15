@@ -215,7 +215,7 @@ func (s *AutonomyService) bars(ctx context.Context, conv store.ConversationRecor
 		return nil, err
 	}
 	name := "default"
-	if bot, ok := s.o.cfg.Bot(conv.BotInstanceID); ok && bot.PersonaTemplate != "" {
+	if bot, ok := s.o.bots.Bot(conv.BotInstanceID); ok && bot.PersonaTemplate != "" {
 		name = bot.PersonaTemplate
 	}
 	doc, ok := s.o.cfg.PersonaTemplates[name]

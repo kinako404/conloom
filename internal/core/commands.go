@@ -51,7 +51,7 @@ func (o *Orchestrator) runStoredCommand(ctx context.Context, task store.TaskReco
 }
 
 func (o *Orchestrator) execCommand(ctx context.Context, task store.TaskRecord, triggers []store.MessageRecord) (string, error) {
-	bot, ok := o.cfg.Bot(task.BotInstanceID)
+	bot, ok := o.bots.Bot(task.BotInstanceID)
 	if !ok {
 		return "", fmt.Errorf("core: unknown bot %q", task.BotInstanceID)
 	}

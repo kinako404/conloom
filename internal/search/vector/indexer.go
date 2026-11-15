@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/embedding"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/skills/tools"
@@ -64,9 +64,10 @@ type Store interface {
 
 // IndexerDeps are what the Indexer needs. Reviewer and IsCommand are those of
 // recall (tools.RecallDeps), so that chunks hold only what recall may show;
-// Location renders the chunks' times. Config decides, like for memory
-// consolidation, which private chats are embedded (config.BotConfig.PrivateAllowed);
-// without it all are. Metrics and Logger may be nil.
+// Location renders the chunks' times. Bots, the bot directory, decides, like
+// for memory consolidation, which private chats are embedded
+// (config.BotConfig.PrivateAllowed); without it all are. Metrics and Logger
+// may be nil.
 type IndexerDeps struct {
 	// Interval is how often Start runs a round, roundInterval when 0.
 	Interval  time.Duration
@@ -76,7 +77,7 @@ type IndexerDeps struct {
 	Reviewer  tools.OutputReviewer
 	IsCommand func(text, prefix string) bool
 	Location  *time.Location
-	Config    *config.Config
+	Bots      *botdir.Directory
 	Metrics   *obs.Metrics
 	Logger    *slog.Logger
 }
@@ -231,10 +232,10 @@ func (ix *Indexer) RunOnce(ctx context.Context) error {
 // privateAllowed reports whether c is not a private chat, or one whose user
 // the bot's private_chat setting still allows.
 func (ix *Indexer) privateAllowed(c store.ConversationRecord) bool {
-	if ix.d.Config == nil || c.Type != conloomapi.ConvPrivate {
+	if ix.d.Bots == nil || c.Type != conloomapi.ConvPrivate {
 		return true
 	}
-	bot, ok := ix.d.Config.Bot(c.BotInstanceID)
+	bot, ok := ix.d.Bots.Bot(c.BotInstanceID)
 	return ok && bot.PrivateAllowed(c.Platform, c.PlatformConversationID)
 }
 

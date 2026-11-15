@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -18,10 +19,11 @@ const (
 )
 
 func (s *Server) configView(w http.ResponseWriter, r *http.Request, _ *Session) {
-	s.writeJSON(w, http.StatusOK, map[string]any{"config": redactedConfig(s.d.Config)})
+	s.writeJSON(w, http.StatusOK, map[string]any{"config": redactedConfig(s.d.Config, s.d.Bots)})
 }
 
-// redactedConfig is the configuration in effect, keyed as in the YAML file.
+// redactedConfig is the configuration in effect, keyed as in the YAML file,
+// with the bots of bots: the config file's, then those created in the panel.
 // It is built field by field from an explicit list, so a field added to the
 // configuration is left out until it is listed here; secrets only show
 // whether they are set, and URLs go through redactURL.
@@ -31,14 +33,14 @@ func (s *Server) configView(w http.ResponseWriter, r *http.Request, _ *Session) 
 // endpoints and hold no credentials.
 // TestConfigView_PassThroughTypesHaveNoSecretFields fails if either type
 // gains a field that looks like one.
-func redactedConfig(c *config.Config) map[string]any {
+func redactedConfig(c *config.Config, bots *botdir.Directory) map[string]any {
 	return map[string]any{
 		"server": map[string]any{
 			"listen": c.Server.Listen, "timezone": c.Server.Timezone, "metrics_enabled": c.Server.MetricsEnabled,
 		},
 		"storage":                map[string]any{"data_dir": c.Storage.DataDir},
 		"api_tokens":             apiTokensView(c.APITokens),
-		"bots":                   botsView(c.Bots),
+		"bots":                   botsView(bots.All()),
 		"model_profiles":         modelProfilesView(c.ModelProfiles),
 		"persona_templates":      c.PersonaTemplates,
 		"default_group_policy":   c.DefaultGroupPolicy,
@@ -110,6 +112,9 @@ func apiTokensView(tokens []config.APIToken) []map[string]any {
 	return out
 }
 
+// botsView shows bots as keyed in the YAML file; a bot created in the panel
+// is marked with "source": "panel". Config bots may not be on the panel
+// platform, so it tells them apart within the one listing.
 func botsView(bots []config.BotConfig) []map[string]any {
 	out := make([]map[string]any, 0, len(bots))
 	for _, b := range bots {
@@ -117,11 +122,15 @@ func botsView(bots []config.BotConfig) []map[string]any {
 		for _, c := range b.EnabledConversations {
 			convs = append(convs, map[string]any{"type": c.Type, "platform_id": c.PlatformID})
 		}
-		out = append(out, map[string]any{
+		v := map[string]any{
 			"id": b.ID, "platform": b.Platform, "name": b.Name, "platform_self_id": b.PlatformSelfID,
 			"admins": strs(b.Admins), "enabled_conversations": convs, "private_chat": b.PrivateChat,
 			"persona_template": b.PersonaTemplate, "skills": strs(b.Skills),
-		})
+		}
+		if b.Platform == conloomapi.PlatformPanel {
+			v["source"] = "panel"
+		}
+		out = append(out, v)
 	}
 	return out
 }

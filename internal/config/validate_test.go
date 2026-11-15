@@ -193,6 +193,25 @@ func TestSecrets_IncludePanelPasswordHashes(t *testing.T) {
 	}
 }
 
+func TestValidate_PanelPrefixReserved(t *testing.T) {
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	cfg.Bots[0].ID = "panel-a1b2c3d4"
+	err := cfg.ValidateServe()
+	if want := `bots[0].id: "panel-" is reserved for bots created in the panel`; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want containing %q", err, want)
+	}
+	for _, id := range []string{"panelbot", "my-panel-bot", "Panel-main"} {
+		cfg := mustLoad(t, "testdata/valid.yaml")
+		cfg.Bots[0].ID = id
+		for i := range cfg.APITokens {
+			cfg.APITokens[i].BotInstanceID = id
+		}
+		if err := cfg.ValidateServe(); err != nil {
+			t.Errorf("bot id %q: %v", id, err)
+		}
+	}
+}
+
 func TestValidate_PanelPlatformIsReserved(t *testing.T) {
 	cfg := mustLoad(t, "testdata/valid.yaml")
 	cfg.Bots[0].Platform = conloomapi.PlatformPanel

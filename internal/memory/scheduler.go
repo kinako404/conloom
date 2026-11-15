@@ -10,7 +10,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/policy"
 	"github.com/kinako404/conloom/internal/store"
@@ -24,15 +24,15 @@ const (
 )
 
 // SchedulerDeps are the Scheduler's collaborators. Store, Policies and Runner
-// are required. Config decides which private chats may be consolidated (see
-// config.BotConfig.PrivateAllowed); without it all may. Nil Metrics are
-// registered on a private registry, a nil Logger discards, a nil Location is
-// UTC and a nil Now is time.Now.
+// are required. Bots, the bot directory, decides which private chats may be
+// consolidated (see config.BotConfig.PrivateAllowed); without it all may. Nil
+// Metrics are registered on a private registry, a nil Logger discards, a nil
+// Location is UTC and a nil Now is time.Now.
 type SchedulerDeps struct {
 	Store    store.Store
 	Policies *policy.Service
 	Runner   Runner
-	Config   *config.Config
+	Bots     *botdir.Directory
 	Metrics  *obs.Metrics
 	Logger   *slog.Logger
 	Location *time.Location
@@ -361,10 +361,10 @@ func (s *Scheduler) decayGroup(ctx context.Context, convKey, today string) {
 // user the bot's private_chat setting still allows.
 func (s *Scheduler) privateAllowed(ctx context.Context, convKey string) bool {
 	parts := strings.SplitN(convKey, ":", 4)
-	if s.d.Config == nil || len(parts) != 4 || parts[2] != conloomapi.ConvPrivate {
+	if s.d.Bots == nil || len(parts) != 4 || parts[2] != conloomapi.ConvPrivate {
 		return true
 	}
-	bot, ok := s.d.Config.Bot(parts[0])
+	bot, ok := s.d.Bots.Bot(parts[0])
 	if !ok {
 		return false
 	}

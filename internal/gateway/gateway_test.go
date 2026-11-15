@@ -23,6 +23,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/kinako404/conloom/internal/admission"
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/gateway"
@@ -168,6 +169,7 @@ func newTestServerWith(t *testing.T, opts serverOpts) *testServer {
 	ob := outbox.New(st, outbox.Config{}, metrics, nil)
 	personas := persona.NewService(st, cfg.PersonaTemplates)
 	policies := policy.NewService(st, cfg.DefaultGroupPolicy)
+	bots := botdir.New(cfg.Bots)
 	o, err := core.New(core.Deps{
 		Store:     st,
 		Router:    router.New(profiles, router.BreakerConfig{}, time.Now),
@@ -179,6 +181,7 @@ func newTestServerWith(t *testing.T, opts serverOpts) *testServer {
 		Metrics:   metrics,
 		Logger:    logger,
 		Config:    cfg,
+		Bots:      bots,
 	})
 	if err != nil {
 		t.Fatalf("core.New: %v", err)
@@ -191,7 +194,7 @@ func newTestServerWith(t *testing.T, opts serverOpts) *testServer {
 	}
 	deps := gateway.Deps{
 		Orchestrator: o, Outbox: ob, Personas: personas, Policies: policies, Store: st,
-		Config: cfg, Metrics: metricsHandler, Logger: logger,
+		Config: cfg, Bots: bots, Metrics: metricsHandler, Logger: logger,
 	}
 	if opts.deps != nil {
 		opts.deps(&deps)

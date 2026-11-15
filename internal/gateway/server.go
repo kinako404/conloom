@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"runtime/debug"
 
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/ids"
@@ -20,7 +21,8 @@ import (
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
-// Deps are the gateway's collaborators. Metrics is served at /metrics when
+// Deps are the gateway's collaborators. Bots is the bot directory a token's
+// bot is looked up in. Metrics is served at /metrics when
 // Config.Server.MetricsEnabled is set; a nil Logger discards. Memory starts
 // consolidations asked for through the API; when nil they are accepted but
 // nothing runs. Counters records affinity changes made through the API; nil
@@ -35,6 +37,7 @@ type Deps struct {
 	Policies     *policy.Service
 	Store        store.Store
 	Config       *config.Config
+	Bots         *botdir.Directory
 	Metrics      http.Handler
 	Logger       *slog.Logger
 	Memory       interface{ Trigger(convKey string) }

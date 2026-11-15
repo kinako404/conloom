@@ -60,9 +60,10 @@ func (s *Server) decodeBody(w http.ResponseWriter, r *http.Request, v any) bool 
 	return true
 }
 
-// bot returns the token's bot, reporting a 404 response itself when it is not configured.
+// bot returns the token's bot, reporting a 404 response itself when it is not
+// in the directory.
 func (s *Server) bot(w http.ResponseWriter, r *http.Request, tok *token) (config.BotConfig, bool) {
-	bot, ok := s.d.Config.Bot(tok.botID)
+	bot, ok := s.d.Bots.Bot(tok.botID)
 	if !ok {
 		s.writeError(w, r, http.StatusNotFound, conloomapi.CodeNotFound, "bot not configured", false, nil)
 	}

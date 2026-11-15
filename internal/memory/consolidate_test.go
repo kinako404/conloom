@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/kinako404/conloom/internal/admission"
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/persona"
@@ -199,6 +200,7 @@ func newConsEnv(t *testing.T, opts consOpts) *consEnv {
 		Personas:  persona.NewService(e.st, map[string]conloomapi.PersonaDoc{"default": doc}),
 		Policies:  policy.NewService(e.st, defaults),
 		Config:    cfg,
+		Bots:      botdir.New(cfg.Bots),
 		Metrics:   obs.NewMetrics(e.reg),
 		Logger:    slog.New(slog.NewTextHandler(e.logs, nil)),
 		Now:       e.clock,

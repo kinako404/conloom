@@ -68,7 +68,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request, _ *Session) {
 // maxTaskCalls bounds the model calls listed with a task.
 const maxTaskCalls = maxPageLimit
 
-// getTask returns a task of a configured bot with its actions and model
+// getTask returns a task of any bot with its actions and model
 // calls (newest first).
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request, _ *Session) {
 	id := r.PathValue("id")
@@ -102,10 +102,10 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request, _ *Session) {
 	}{newTaskView(task), task.Meta, actions, callViews})
 }
 
-// findTask looks the task up among the configured bots' tasks; tasks are
-// stored per bot.
+// findTask looks the task up among every bot's tasks; tasks are stored per
+// bot.
 func (s *Server) findTask(ctx context.Context, id string) (store.TaskRecord, error) {
-	for _, b := range s.d.Config.Bots {
+	for _, b := range s.d.Bots.All() {
 		t, err := s.d.Store.GetTask(ctx, b.ID, id)
 		if !errors.Is(err, store.ErrNotFound) {
 			return t, err

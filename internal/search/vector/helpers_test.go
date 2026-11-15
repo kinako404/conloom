@@ -17,6 +17,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/embedding"
 	"github.com/kinako404/conloom/internal/obs"
@@ -196,8 +197,12 @@ func newEnv(t *testing.T) *env {
 }
 
 func (e *env) indexer(model string, batch int) *Indexer {
+	var bots *botdir.Directory
+	if e.cfg != nil {
+		bots = botdir.New(e.cfg.Bots)
+	}
 	ix := NewIndexer(IndexerDeps{Store: e.st, Embedder: e.emb.client(model, batch), Policies: overridden{e},
-		Reviewer: review.New(nil, review.Options{}), Location: shanghai, Metrics: e.metrics, Config: e.cfg,
+		Reviewer: review.New(nil, review.Options{}), Location: shanghai, Metrics: e.metrics, Bots: bots,
 		Logger: slog.New(slog.NewTextHandler(e.logs, nil))})
 	ix.now = func() time.Time { return e.now }
 	return ix

@@ -117,7 +117,7 @@ func (o *Orchestrator) memCmdMember(ctx context.Context, task store.TaskRecord) 
 }
 
 func (o *Orchestrator) memCmdBotName(ctx context.Context, task store.TaskRecord) (string, error) {
-	bot, _ := o.cfg.Bot(task.BotInstanceID)
+	bot, _ := o.bots.Bot(task.BotInstanceID)
 	pv, err := o.personas.Current(ctx, task.ConversationKey, bot.PersonaTemplate)
 	if err != nil {
 		return "", err

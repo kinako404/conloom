@@ -18,6 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/kinako404/conloom/internal/admission"
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/ids"
 	"github.com/kinako404/conloom/internal/memory"
@@ -59,12 +60,12 @@ func (ns Notifiers) Notify(botID string) {
 }
 
 // Deps are the Orchestrator's collaborators. Store, Router, Admission,
-// Personas, Policies, Reviewer and Config are required. A nil Notifier does
-// nothing, nil Metrics are registered on a private registry, a nil Logger
-// discards, a nil Location is Config.Server.Timezone (falling back to
-// Asia/Shanghai, then UTC), a nil Now is time.Now, a nil MemoryTrigger
-// does nothing, nil Skills offer the model no tools and a nil Usage records
-// no model calls.
+// Personas, Policies, Reviewer, Config and Bots are required; Bots is the
+// directory every bot is looked up in. A nil Notifier does nothing, nil
+// Metrics are registered on a private registry, a nil Logger discards, a nil
+// Location is Config.Server.Timezone (falling back to Asia/Shanghai, then
+// UTC), a nil Now is time.Now, a nil MemoryTrigger does nothing, nil Skills
+// offer the model no tools and a nil Usage records no model calls.
 type Deps struct {
 	Store     store.Store
 	Router    *router.Router
@@ -76,6 +77,7 @@ type Deps struct {
 	Metrics   *obs.Metrics
 	Logger    *slog.Logger
 	Config    *config.Config
+	Bots      *botdir.Directory
 	Location  *time.Location
 	Now       func() time.Time
 
@@ -97,6 +99,7 @@ type Orchestrator struct {
 	metrics  *obs.Metrics
 	log      *slog.Logger
 	cfg      *config.Config
+	bots     *botdir.Directory
 	loc      *time.Location
 	now      func() time.Time
 
@@ -183,7 +186,7 @@ func New(d Deps) (*Orchestrator, error) {
 	}{
 		{"Store", d.Store == nil}, {"Router", d.Router == nil}, {"Admission", d.Admission == nil},
 		{"Personas", d.Personas == nil}, {"Policies", d.Policies == nil}, {"Reviewer", d.Reviewer == nil},
-		{"Config", d.Config == nil},
+		{"Config", d.Config == nil}, {"Bots", d.Bots == nil},
 	} {
 		if r.missing {
 			return nil, fmt.Errorf("core: Deps.%s is required", r.name)
@@ -192,7 +195,7 @@ func New(d Deps) (*Orchestrator, error) {
 	o := &Orchestrator{
 		st: d.Store, router: d.Router, adm: d.Admission, personas: d.Personas, policies: d.Policies,
 		reviewer: d.Reviewer, notifier: d.Notifier, metrics: d.Metrics, log: d.Logger, cfg: d.Config,
-		loc: d.Location, now: d.Now, memTrigger: d.MemoryTrigger, skills: d.Skills, usage: d.Usage,
+		bots: d.Bots, loc: d.Location, now: d.Now, memTrigger: d.MemoryTrigger, skills: d.Skills, usage: d.Usage,
 		limiter:   NewRateLimiter(),
 		owners:    map[string]*taskOwner{},
 		ftsRetry:  ftsBackfillRetry,
@@ -425,7 +428,7 @@ func (o *Orchestrator) submitOn(ctx context.Context, botID, idemKey string, body
 	if !errors.Is(err, store.ErrNotFound) {
 		return conloomapi.EventAccepted{}, false, err
 	}
-	bot, ok := o.cfg.Bot(botID)
+	bot, ok := o.bots.Bot(botID)
 	if !ok {
 		return conloomapi.EventAccepted{}, false, fmt.Errorf("core: unknown bot %q", botID)
 	}

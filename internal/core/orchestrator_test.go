@@ -19,6 +19,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/kinako404/conloom/internal/admission"
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/persona"
@@ -361,6 +362,7 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 		Metrics:   obs.NewMetrics(env.reg),
 		Logger:    slog.New(slog.NewTextHandler(env.logs, nil)),
 		Config:    cfg,
+		Bots:      botdir.New(cfg.Bots),
 		Now:       opts.now,
 		Skills:    opts.skills,
 	})

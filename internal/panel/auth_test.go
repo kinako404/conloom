@@ -18,6 +18,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/store"
@@ -165,6 +166,7 @@ func newHarness(t *testing.T, mutate func(*config.PanelConfig)) *harness {
 	}
 	h.srv = New(Deps{
 		Config:   h.cfg,
+		Bots:     botdir.New(nil),
 		Sessions: h.sessions,
 		Audit:    h.audit,
 		Assets:   fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>织语</title>")}},

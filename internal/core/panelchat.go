@@ -53,7 +53,7 @@ func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text
 	if strings.TrimSpace(text) == "" || utf8.RuneCountInString(text) > panelTextMax {
 		return "", ErrBadText
 	}
-	bot, ok := o.cfg.Bot(conv.BotInstanceID)
+	bot, ok := o.bots.Bot(conv.BotInstanceID)
 	if !ok {
 		return "", fmt.Errorf("%w: bot %q is not configured", store.ErrNotFound, conv.BotInstanceID)
 	}
@@ -151,7 +151,7 @@ func (o *Orchestrator) panelDisplayName(ctx context.Context, conv store.Conversa
 // most panelNameMax characters), and returns its conversation key. An unknown
 // bot is store.ErrNotFound.
 func (o *Orchestrator) CreatePanelChat(ctx context.Context, botID, panelUser, displayName string) (convKey string, err error) {
-	if _, ok := o.cfg.Bot(botID); !ok {
+	if _, ok := o.bots.Bot(botID); !ok {
 		return "", fmt.Errorf("%w: bot %q is not configured", store.ErrNotFound, botID)
 	}
 	convID := ids.New("panel")

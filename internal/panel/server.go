@@ -15,6 +15,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/ids"
 	"github.com/kinako404/conloom/internal/memory"
@@ -36,8 +37,9 @@ type Auditor interface {
 	InsertAudit(ctx context.Context, a store.AuditEvent) error
 }
 
-// Deps are the panel's collaborators. Config.Panel must be non-nil. Assets is
-// the web root, with index.html at the top. A nil Metrics records nothing, a
+// Deps are the panel's collaborators. Config.Panel and Bots, the bot
+// directory, must be non-nil. Assets is the web root, with index.html at the
+// top. A nil Metrics records nothing, a
 // nil Logger discards and a nil Now is time.Now.
 //
 // The fields after Now serve the API beyond logging in. Memory starts a
@@ -48,6 +50,7 @@ type Auditor interface {
 // answer 503 while they are nil.
 type Deps struct {
 	Config   *config.Config
+	Bots     *botdir.Directory
 	Sessions SessionStore
 	Audit    Auditor
 	Assets   fs.FS

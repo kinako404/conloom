@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -181,6 +183,36 @@ func TestConfigView_NegativeUsageRetentionAndEmptyURL(t *testing.T) {
 	}
 	if got := jsonAt(t, resp.Config, "adapters", "mock", "core_url"); got != "" {
 		t.Errorf("empty core_url shown as %q, want empty", got)
+	}
+}
+
+func TestConfigView_PanelBotsMarked(t *testing.T) {
+	h := newOverviewHarness(t, nil)
+	h.srv.d.Bots.SetPanel([]botdir.PanelEntry{{Bot: botdir.PanelBotConfig(store.PanelBot{
+		ID: "panel-a1b2c3d4", Name: "小红", PersonaTemplate: "default", Skills: []string{"time"}})}})
+
+	var resp struct {
+		Config struct {
+			Bots []map[string]any `json:"bots"`
+		} `json:"config"`
+	}
+	h.getJSON("/panel/api/config", &resp)
+	bots := resp.Config.Bots
+	if len(bots) != 3 || bots[0]["id"] != "qq-main" || bots[1]["id"] != "tg-main" {
+		t.Fatalf("bots = %v, want qq-main, tg-main, then the panel bot", bots)
+	}
+	for _, b := range bots[:2] {
+		if _, ok := b["source"]; ok {
+			t.Errorf("config bot %v has a source", b["id"])
+		}
+	}
+	want := map[string]any{
+		"id": "panel-a1b2c3d4", "platform": "panel", "name": "小红", "platform_self_id": "", "admins": []any{},
+		"enabled_conversations": []any{}, "private_chat": "admins", "persona_template": "default",
+		"skills": []any{"time"}, "source": "panel",
+	}
+	if !reflect.DeepEqual(bots[2], want) {
+		t.Errorf("panel bot = %#v, want %#v", bots[2], want)
 	}
 }
 

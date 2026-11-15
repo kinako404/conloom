@@ -526,7 +526,7 @@ func unansweredAllows(kind store.TimerKind, started, total int) bool {
 // userID on platform: proactive replies are on, the private level is not off
 // and the chat is not paused, and the user may still chat privately.
 func (o *Orchestrator) mayStart(pol conloomapi.GroupPolicy, botID, platform, userID string) bool {
-	bot, ok := o.cfg.Bot(botID)
+	bot, ok := o.bots.Bot(botID)
 	return ok && pol.Proactive.Enabled && autonomy.DailyCap(pol.Proactive.Private.EffectiveLevel()) > 0 &&
 		pol.Concurrency.MaxInteractiveRequests != 0 && privateAllowed(bot, platform, userID)
 }

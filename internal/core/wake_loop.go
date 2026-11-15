@@ -284,7 +284,7 @@ func (o *Orchestrator) dueStatusReturn(ctx context.Context, t store.Conversation
 		return err
 	}
 	pol := pv.Policy
-	bot, ok := o.cfg.Bot(t.BotInstanceID)
+	bot, ok := o.bots.Bot(t.BotInstanceID)
 	if !ok || !pol.Proactive.Enabled || pol.Concurrency.MaxInteractiveRequests == 0 ||
 		!privateAllowed(bot, conv.Platform, t.PlatformUserID) {
 		return end(wakeDropped, "not_allowed")
