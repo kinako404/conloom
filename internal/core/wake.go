@@ -17,6 +17,7 @@ import (
 	"github.com/kinako404/conloom/internal/autonomy"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/ids"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -670,7 +671,7 @@ func (o *Orchestrator) withholdWake(ctx context.Context, task store.TaskRecord, 
 		withhold("user_message", true)
 		return
 	}
-	rows, err := o.st.GetMemberMemories(ctx, task.ConversationKey, []string{task.ActorPlatformUserID})
+	rows, err := o.st.GetMemberMemories(ctx, memory.ScopeKeyOf(task.ConversationKey), []string{task.ActorPlatformUserID})
 	if err != nil {
 		fail(err)
 		return

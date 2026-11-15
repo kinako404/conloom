@@ -83,17 +83,18 @@ func (s *Server) memoryChanged(w http.ResponseWriter, r *http.Request, err error
 	return false
 }
 
-// consolidateMemory asks for a consolidation of the conversation; it is
-// refused as memory.ConsolidateAllowed decides: 409 MEMORY_DISABLED while
-// memory is off and 409 PAUSED while the conversation is paused.
+// consolidateMemory asks for a consolidation of the conversation's memory
+// scope; it is refused as memory.ConsolidateAllowed decides under the policy
+// the memory follows (memory.Admin.Policy): 409 MEMORY_DISABLED while memory
+// is off and 409 PAUSED while the conversation is paused.
 func (s *Server) consolidateMemory(w http.ResponseWriter, r *http.Request, tok *token) {
 	conv, ok := s.memoryConversation(w, r, tok)
 	if !ok {
 		return
 	}
-	pv, err := s.d.Policies.Current(r.Context(), conv.Key)
+	pol, err := s.d.MemoryAdmin.Policy(r.Context(), conv)
 	if err == nil {
-		err = memory.ConsolidateAllowed(pv.Policy)
+		err = memory.ConsolidateAllowed(pol)
 	}
 	if err != nil {
 		s.fail(w, r, err)

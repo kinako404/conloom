@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 
@@ -9,11 +10,13 @@ import (
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
-// consBatchInput is what one batch is planned from. Messages are ordered by
-// seq. Members holds the stored memory of every member that speaks, is
-// replied to or is mentioned, keyed by user ID. ReplyTargets maps message IDs
-// to the stored messages replied to; MentionUsers and MentionNames map
-// mentioned actor IDs to user IDs and display names.
+// consBatchInput is what one batch is planned from. ConversationKey is the
+// memory scope's key. Messages are ordered by seq. Members holds the stored
+// memory of every member that speaks, is replied to or is mentioned, keyed by
+// user ID. ReplyTargets maps message IDs to the stored messages replied to;
+// MentionUsers and MentionNames map mentioned actor IDs to user IDs and
+// display names. ChatLabels, set for a scope of several chats, maps each
+// chat's key to the label its lines start with (see consChatLabels).
 type consBatchInput struct {
 	ConversationKey string
 	Messages        []store.MessageRecord
@@ -21,6 +24,7 @@ type consBatchInput struct {
 	ReplyTargets    map[string]store.MessageRecord
 	MentionUsers    map[string]string
 	MentionNames    map[string]string
+	ChatLabels      map[string]string
 	BotName         string
 	Location        *time.Location
 	Unnamed         string
@@ -62,7 +66,8 @@ type consAppearance struct {
 // first appearance (speaker, reply target, then mentions) and takes messages
 // while the prompt stays within Budget and the batch shows at most MaxMembers
 // members (no limit when 0), always at least one kept message. Hidden
-// messages up to the cut are covered by the batch too.
+// messages up to the cut are covered by the batch too. With ChatLabels each
+// line starts with its chat's label.
 func consPlanBatch(in consBatchInput) consBatch {
 	hidden := func(userID string, at time.Time) bool {
 		m, ok := in.Members[userID]
@@ -140,6 +145,12 @@ func consPlanBatch(in consBatchInput) consBatch {
 		Unnamed:      in.Unnamed,
 	})
 
+	if in.ChatLabels != nil {
+		for k, rec := range kept {
+			lines[k] = in.ChatLabels[rec.ConversationKey] + lines[k]
+		}
+	}
+
 	b := consBatch{Tokens: in.BaseTokens}
 	names := map[string]string{}
 	inBatch := map[string]bool{}
@@ -175,6 +186,22 @@ func consPlanBatch(in consBatchInput) consBatch {
 		}
 	}
 	return b
+}
+
+// consChatLabel is the label a line of the nth chat (from 1) of a shared
+// scope's batch starts with.
+const consChatLabel = "〔对话%d〕"
+
+// consChatLabels numbers the chats of msgs in order of their first message:
+// it maps each chat's key to its consChatLabel.
+func consChatLabels(msgs []store.MessageRecord) map[string]string {
+	labels := map[string]string{}
+	for _, m := range msgs {
+		if _, ok := labels[m.ConversationKey]; !ok {
+			labels[m.ConversationKey] = fmt.Sprintf(consChatLabel, len(labels)+1)
+		}
+	}
+	return labels
 }
 
 // member is userID's stored memory, or an empty row for it.

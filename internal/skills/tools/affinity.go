@@ -24,8 +24,8 @@ type AffinityDeps struct {
 type affinityTool struct{ d AffinityDeps }
 
 // NewGetAffinity returns the get_affinity tool: the speaker's affinity tier
-// and value in the conversation, such as "好感：熟悉（52/100）". It takes no
-// arguments and ignores any it is given.
+// and value in the conversation's memory scope (memory.ScopeKeyOf), such as
+// "好感：熟悉（52/100）". It takes no arguments and ignores any it is given.
 func NewGetAffinity(d AffinityDeps) skills.Tool { return &affinityTool{d: d} }
 
 // MaxResultRunes declares that get_affinity answers with one sentence.
@@ -50,7 +50,7 @@ func (t *affinityTool) Call(ctx context.Context, inv skills.Invocation, _ json.R
 	if !pv.Policy.Memory.Affinity {
 		return "这个会话没有开启好感度。", nil
 	}
-	rows, err := t.d.Store.GetMemberMemories(ctx, inv.ConversationKey, []string{inv.PlatformUserID})
+	rows, err := t.d.Store.GetMemberMemories(ctx, memory.ScopeKeyOf(inv.ConversationKey), []string{inv.PlatformUserID})
 	if err != nil {
 		return "", err
 	}

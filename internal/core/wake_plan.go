@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kinako404/conloom/internal/autonomy"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -94,7 +95,7 @@ func (o *Orchestrator) nextInitiate(ctx context.Context, convKey string, spoke t
 	case started > 0:
 		return nil, true, "follow_up", nil
 	}
-	rows, err := o.st.GetMemberMemories(ctx, convKey, []string{user})
+	rows, err := o.st.GetMemberMemories(ctx, memory.ScopeKeyOf(convKey), []string{user})
 	if err != nil {
 		return nil, false, "", err
 	}
@@ -169,7 +170,7 @@ func (o *Orchestrator) privateProactiveStatus(ctx context.Context, convKey strin
 		return conloomapi.AutonomyProactive{}, err
 	}
 	user := conv.PlatformConversationID
-	rows, err := o.st.GetMemberMemories(ctx, convKey, []string{user})
+	rows, err := o.st.GetMemberMemories(ctx, memory.ScopeKeyOf(convKey), []string{user})
 	if err != nil {
 		return conloomapi.AutonomyProactive{}, err
 	}

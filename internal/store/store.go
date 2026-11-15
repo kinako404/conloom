@@ -174,6 +174,11 @@ type Store interface {
 	// taskID and returns how many it deleted.
 	DeleteProactiveLog(ctx context.Context, convKey, taskID string) (int, error)
 	PurgeProactiveLog(ctx context.Context, before time.Time) (int, error)
+	// GetGroupMemory, PutGroupMemory, GetMemberMemories, ListMemberMemories,
+	// ApplyMemoryWrite, ForgetMember and ListMemoryRevisions key memory by its
+	// scope (see MemoryScopeKey): where they say conversation they mean the
+	// scope its caller mapped the conversation's key to.
+
 	// GetGroupMemory returns ErrNotFound when the conversation has no memory row.
 	GetGroupMemory(ctx context.Context, convKey string) (GroupMemory, error)
 	// PutGroupMemory inserts g or replaces the conversation's row; UpdatedAt is set to now.
@@ -196,8 +201,16 @@ type Store interface {
 	// is consolidated again. A conversation without a memory row gets one. Its
 	// semantic search chunks that start before at are deleted, and those
 	// running past at queued to be rebuilt. The conversation's status, timers,
-	// bar values and bar changes are deleted too.
+	// bar values and bar changes are deleted too. It is ForgetPrivateScope of
+	// the conversation as its own scope and only chat.
 	ForgetPrivate(ctx context.Context, convKey, userID string, at time.Time) error
+	// ForgetPrivateScope is ForgetPrivate for the memory scope scopeKey (see
+	// MemoryScopeKey) of the private chats chats: the member, summary, summary
+	// revisions and cursor are those under scopeKey, the cursor moves up to
+	// the newest message of any of chats, and the chunks, status, timers and
+	// bars of each of chats are dealt with as ForgetPrivate deals with its
+	// conversation's.
+	ForgetPrivateScope(ctx context.Context, scopeKey string, chats []string, userID string, at time.Time) error
 	// ForgetMember clears the user's memory, marks it forgotten at at (creating
 	// the row if needed) and deletes the user's revisions in the conversation.
 	// The conversation's semantic search chunks holding a message the user sent
@@ -211,11 +224,25 @@ type Store interface {
 	// MessagesAfter returns up to limit messages with Seq > afterSeq ordered by
 	// Seq ascending (none when limit <= 0).
 	MessagesAfter(ctx context.Context, convKey string, afterSeq int64, limit int) ([]MessageRecord, error)
+	// MessagesAfterIn is MessagesAfter over the messages of all of convKeys
+	// together (none without convKeys).
+	MessagesAfterIn(ctx context.Context, convKeys []string, afterSeq int64, limit int) ([]MessageRecord, error)
 	// CountMessagesAfter counts the conversation's messages with Seq > afterSeq.
 	CountMessagesAfter(ctx context.Context, convKey string, afterSeq int64) (int, error)
+	// CountMessagesAfterIn is CountMessagesAfter over all of convKeys.
+	CountMessagesAfterIn(ctx context.Context, convKeys []string, afterSeq int64) (int, error)
 	// BacklogCursor returns the seq after which exactly backlog of the
 	// conversation's messages remain, or 0 when it has no more than backlog.
 	BacklogCursor(ctx context.Context, convKey string, backlog int) (int64, error)
+	// BacklogCursorIn is BacklogCursor over the messages of all of convKeys
+	// together.
+	BacklogCursorIn(ctx context.Context, convKeys []string, backlog int) (int64, error)
+	// LatestChat returns which of convKeys has the newest message, or "" when
+	// none of them has a message.
+	LatestChat(ctx context.Context, convKeys []string) (string, error)
+	// PanelChatKeys returns the keys of the bot's panel chats (PlatformPanel,
+	// private), which share its panel memory scope, ordered by key.
+	PanelChatKeys(ctx context.Context, botID string) ([]string, error)
 	// UserIDsForActors maps each of actorIDs to the platform user ID of its
 	// newest member message in the conversation; actors without one are absent.
 	UserIDsForActors(ctx context.Context, convKey string, actorIDs []string) (map[string]string, error)

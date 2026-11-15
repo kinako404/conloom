@@ -622,7 +622,7 @@ func TestScheduler_OnlyAllowedPrivateChats(t *testing.T) {
 				got = append(got, strings.TrimPrefix(c.convKey, "bot_test:qq:private:private_"))
 			}
 			slices.Sort(got)
-			w := append(slices.Clone(want), panelKey)
+			w := append(slices.Clone(want), ScopeKeyOf(panelKey))
 			slices.Sort(w)
 			if !slices.Equal(got, w) {
 				t.Fatalf("consolidated %v, want %v", got, w)

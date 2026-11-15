@@ -39,7 +39,9 @@ func memCopyFor(private bool) memCopy {
 // Admins can set their own affinity with /好感度 设 n, +n or -n.
 // /记忆 摘要 shows the summary: to anyone in a private chat, only to admins in
 // a group, where /记忆 群 does the same. Admins can also start a
-// consolidation (/记忆 整理, refused while the conversation is paused).
+// consolidation (/记忆 整理, refused while the conversation is paused). All of
+// them act on the memory scope of the conversation (memory.ScopeKeyOf), which
+// all panel chats of a bot share.
 func (o *Orchestrator) memCmd(ctx context.Context, task store.TaskRecord, isAdmin bool, command string,
 	triggers []store.MessageRecord) (string, error) {
 	private := convType(task.ConversationKey) == conloomapi.ConvPrivate
@@ -96,7 +98,7 @@ func (o *Orchestrator) memCmd(ctx context.Context, task store.TaskRecord, isAdmi
 		if !private && !isAdmin {
 			return CopyAdminOnly, nil
 		}
-		g, err := o.st.GetGroupMemory(ctx, task.ConversationKey)
+		g, err := o.st.GetGroupMemory(ctx, memory.ScopeKeyOf(task.ConversationKey))
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return "", err
 		}
@@ -108,8 +110,9 @@ func (o *Orchestrator) memCmd(ctx context.Context, task store.TaskRecord, isAdmi
 	return cp.usage, nil
 }
 
+// memCmdMember reads the sender's row in the conversation's memory scope.
 func (o *Orchestrator) memCmdMember(ctx context.Context, task store.TaskRecord) (store.MemberMemory, error) {
-	got, err := o.st.GetMemberMemories(ctx, task.ConversationKey, []string{task.ActorPlatformUserID})
+	got, err := o.st.GetMemberMemories(ctx, memory.ScopeKeyOf(task.ConversationKey), []string{task.ActorPlatformUserID})
 	if err != nil {
 		return store.MemberMemory{}, err
 	}

@@ -44,8 +44,10 @@ func memoryBlockMaxRunes(profiles map[string]config.ModelProfile, factor float64
 type injectPerson struct{ userID, name string }
 
 // injectMemory renders the memory block for a task whose policy has memory
-// on. In a group (memory.RenderBlock) it holds the group summary and the notes
-// of the speaker, then of the member the current message replies to and the
+// on, from the memory scope of its conversation (memory.ScopeKeyOf), which
+// all panel chats of a bot share. In a group (memory.RenderBlock) it holds
+// the group summary and the notes of the speaker, then of the member the
+// current message replies to and the
 // members it mentions, at most injectMaxOthers of them; in a private chat
 // (memory.RenderPrivateBlock) the conversation summary and only the speaker's
 // note. Others' notes leave out what they asked the bot to remember
@@ -86,8 +88,9 @@ func (o *Orchestrator) injectMemory(ctx context.Context, task store.TaskRecord, 
 			return warn("resolve mentioned members", err)
 		}
 	}
+	scope := memory.ScopeKeyOf(task.ConversationKey)
 	summary := ""
-	switch g, err := o.st.GetGroupMemory(ctx, task.ConversationKey); {
+	switch g, err := o.st.GetGroupMemory(ctx, scope); {
 	case err == nil:
 		summary = g.Summary
 	case !errors.Is(err, store.ErrNotFound):
@@ -100,7 +103,7 @@ func (o *Orchestrator) injectMemory(ctx context.Context, task store.TaskRecord, 
 	rows := known
 	if !private || rows == nil {
 		var err error
-		if rows, err = o.st.GetMemberMemories(ctx, task.ConversationKey, ids); err != nil {
+		if rows, err = o.st.GetMemberMemories(ctx, scope, ids); err != nil {
 			return warn("load member memories", err)
 		}
 	}
@@ -180,10 +183,11 @@ func injectName(name, userID string) string {
 
 // noteInteraction applies the affinity rules (memory.ApplyInteraction) to the
 // sender of a group task addressed to the bot, or of a private chat task,
-// whose reply was sent, when the policy has memory and affinity on. A message
-// the bot starts itself (a wake task) is no interaction. The day is the local
-// date in o.loc; the sender's display name is refreshed from the newest
-// trigger. Errors are only logged.
+// whose reply was sent, when the policy has memory and affinity on, in the
+// memory scope of the task's conversation (see memory.UpdateMember). A
+// message the bot starts itself (a wake task) is no interaction. The day is
+// the local date in o.loc; the sender's display name is refreshed from the
+// newest trigger. Errors are only logged.
 func (o *Orchestrator) noteInteraction(ctx context.Context, task store.TaskRecord, out outcome, sent bool) {
 	direct := out.conv.Type == conloomapi.ConvPrivate || out.conv.Type == conloomapi.ConvGroup && out.addressed
 	if !direct || !sent || out.status != conloomapi.TaskSucceeded || len(out.triggers) == 0 || isWake(task.Meta.Trigger) {

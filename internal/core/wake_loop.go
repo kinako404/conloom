@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kinako404/conloom/internal/autonomy"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -172,7 +173,7 @@ func (o *Orchestrator) checkStart(ctx context.Context, t store.ConversationTimer
 		return drop("not_allowed")
 	}
 
-	rows, err := o.st.GetMemberMemories(ctx, key, []string{t.PlatformUserID})
+	rows, err := o.st.GetMemberMemories(ctx, memory.ScopeKeyOf(key), []string{t.PlatformUserID})
 	if err != nil {
 		return wakeVerdict{}, err
 	}
@@ -289,7 +290,7 @@ func (o *Orchestrator) dueStatusReturn(ctx context.Context, t store.Conversation
 		!privateAllowed(bot, conv.Platform, t.PlatformUserID) {
 		return end(wakeDropped, "not_allowed")
 	}
-	rows, err := o.st.GetMemberMemories(ctx, key, []string{t.PlatformUserID})
+	rows, err := o.st.GetMemberMemories(ctx, memory.ScopeKeyOf(key), []string{t.PlatformUserID})
 	if err != nil {
 		return err
 	}

@@ -207,8 +207,9 @@ type RememberRequest struct {
 	Reason                               string
 }
 
-// Remember appends what a member asked to remember to their note (see
-// AppendRemembered) within the conversation's note limit, with a note
+// Remember appends what a member asked to remember to their note in the
+// conversation's memory scope (see AppendRemembered and UpdateMember) within
+// the conversation's note limit, with a note
 // revision from the command source. The content has its whitespace collapsed
 // and must be 1..RememberMaxRunes runes; contact details and identity numbers
 // are refused, and the rest goes through the review of incoming messages and

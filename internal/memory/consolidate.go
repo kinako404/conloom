@@ -176,18 +176,22 @@ func NewConsolidator(d ConsolidatorDeps) *Consolidator {
 		failures: map[string]int{}, backoff: map[string]time.Time{}, limits: map[string]consLimits{}, fitted: map[string][3]int{}}
 }
 
-// Run consolidates up to maxBatchesPerRun batches of the conversation's
-// messages after its cursor, advancing the cursor after each batch is
-// written. It skips the run when the conversation's bot is not in the
-// directory (a deleted panel bot), when memory is off, during a failure
-// backoff (unless manual), when there is nothing new, when no long-context
-// model is available or when admission stays busy. Batches are limited by the long
-// model's input budget and, through consMemberCap, by its reserved output. A
-// failed model call or truncated or unreadable output keeps the cursor,
-// records the failure category and returns an error; a cancelled ctx keeps
-// the cursor and is not a failure.
+// Run consolidates up to maxBatchesPerRun batches of the messages after the
+// cursor of the memory scope of convKey (ScopeKeyOf), advancing the cursor
+// after each batch is written. A shared panel scope reads the messages of all
+// its chats in seq order, each line marked with its chat when there are
+// several (see consPlanBatch), under the policy and persona of its newest
+// chat. It skips the run when the conversation's bot is not in the directory
+// (a deleted panel bot), when memory is off, during a failure backoff (unless
+// manual), when there is nothing new, when no long-context model is available
+// or when admission stays busy. Batches are limited by the long model's input
+// budget and, through consMemberCap, by its reserved output. A failed model
+// call or truncated or unreadable output keeps the cursor, records the
+// failure category and returns an error; a cancelled ctx keeps the cursor and
+// is not a failure.
 func (c *Consolidator) Run(ctx context.Context, convKey string, manual bool) (Result, error) {
 	start := time.Now()
+	convKey = ScopeKeyOf(convKey)
 	res, promptTokens, err := c.run(ctx, convKey, manual)
 	runs := c.d.Metrics.MemoryConsolidations
 	switch {
@@ -212,7 +216,18 @@ func (c *Consolidator) run(ctx context.Context, convKey string, manual bool) (Re
 	if !ok {
 		return Result{Skipped: "unknown_bot"}, 0, nil
 	}
-	pv, err := c.d.Policies.Current(ctx, convKey)
+	sc, err := resolveScope(ctx, c.d.Store, convKey)
+	if err != nil {
+		return Result{}, 0, err
+	}
+	lead, err := sc.lead(ctx, c.d.Store)
+	if err != nil {
+		return Result{}, 0, err
+	}
+	if lead == "" {
+		return Result{Skipped: "no_messages"}, 0, nil
+	}
+	pv, err := c.d.Policies.Current(ctx, lead)
 	if err != nil {
 		return Result{}, 0, err
 	}
@@ -230,11 +245,14 @@ func (c *Consolidator) run(ctx context.Context, convKey string, manual bool) (Re
 	if err != nil {
 		return Result{}, 0, err
 	}
-	doc, botName, err := c.currentPersona(ctx, convKey, bot)
+	doc, botName, err := c.currentPersona(ctx, lead, bot)
 	if err != nil {
 		return Result{}, 0, err
 	}
 	style := consStyleForPersona(convKey, doc, mp)
+	if sc.multiChat() {
+		style = style.acrossChats()
+	}
 
 	var res Result
 	promptTokens := 0
@@ -245,14 +263,14 @@ func (c *Consolidator) run(ctx context.Context, convKey string, manual bool) (Re
 				return res, promptTokens, err
 			}
 		}
-		msgs, err := c.d.Store.MessagesAfter(ctx, convKey, g.CursorSeq, c.messageLimit(convKey))
+		msgs, err := sc.messagesAfter(ctx, c.d.Store, g.CursorSeq, c.messageLimit(convKey))
 		if err != nil {
 			return res, promptTokens, err
 		}
 		if len(msgs) == 0 {
 			break
 		}
-		out, err := c.batch(ctx, &g, mp, style, botName, msgs, runStart)
+		out, err := c.batch(ctx, &g, sc, lead, mp, style, botName, msgs, runStart)
 		if err != nil {
 			return res, promptTokens, err
 		}
@@ -288,13 +306,13 @@ type consOutcome struct {
 // before the model call ("forgotten": nothing written, the cursor left
 // where it is), and one whose member is forgotten during the call writes no
 // summary (store.MemoryWrite's SummaryGuards) and never moves the cursor
-// back. style is the conversation's consolidation style under its current
-// persona.
-func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conloomapi.MemoryPolicy, style consStyle,
-	botName string, msgs []store.MessageRecord, runStart time.Time) (consOutcome, error) {
+// back. sc is g's scope and lead the chat whose policy and persona apply;
+// style is the scope's consolidation style under that persona.
+func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, sc scope, lead string, mp conloomapi.MemoryPolicy,
+	style consStyle, botName string, msgs []store.MessageRecord, runStart time.Time) (consOutcome, error) {
 	convKey := g.ConversationKey
 	private := convTypeOf(convKey) == conloomapi.ConvPrivate
-	in, err := c.gather(ctx, convKey, msgs)
+	in, err := c.gather(ctx, sc, msgs)
 	if err != nil {
 		return consOutcome{}, err
 	}
@@ -351,7 +369,7 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 		}
 		return consOutcome{}, c.fail(ctx, *g, consErrAdmission, err, openai.ChatResponse{})
 	}
-	resp, err := c.chat(ctx, p, convKey, prompt, d.MaxOutputTokens)
+	resp, err := c.chat(ctx, p, lead, prompt, d.MaxOutputTokens)
 	lease.Release()
 	if err != nil {
 		if ctx.Err() != nil {
@@ -406,12 +424,14 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, mp conlo
 	return consOutcome{messages: b.Messages, membersUpdated: updated, promptTokens: resp.PromptTokens}, nil
 }
 
-// gather loads what planning msgs needs: reply targets in the conversation,
-// mentioned actors' user IDs and names, and the stored memory of every member
-// involved.
-func (c *Consolidator) gather(ctx context.Context, convKey string, msgs []store.MessageRecord) (consBatchInput, error) {
-	in := consBatchInput{ConversationKey: convKey, Messages: msgs}
-	var replyIDs, actors, userIDs []string
+// gather loads what planning msgs needs: reply targets in the scope's chats,
+// mentioned actors' user IDs and names (looked up in the chat that mentions
+// them), the stored memory of every member involved in the scope and, for a
+// scope of several chats, the label of each chat.
+func (c *Consolidator) gather(ctx context.Context, sc scope, msgs []store.MessageRecord) (consBatchInput, error) {
+	in := consBatchInput{ConversationKey: sc.key, Messages: msgs}
+	var replyIDs, userIDs, chats []string
+	actors := map[string][]string{}
 	seen := map[string]bool{}
 	add := func(list *[]string, kind, v string) {
 		if v != "" && !seen[kind+v] {
@@ -425,19 +445,20 @@ func (c *Consolidator) gather(ctx context.Context, convKey string, msgs []store.
 		}
 		add(&replyIDs, "r", m.ReplyTo)
 		for _, mention := range m.Mentions {
-			if mention.Type == "user" {
-				add(&actors, "a", mention.ID)
+			if mention.Type == "user" && mention.ID != "" && !slices.Contains(actors[m.ConversationKey], mention.ID) {
+				add(&chats, "c", m.ConversationKey)
+				actors[m.ConversationKey] = append(actors[m.ConversationKey], mention.ID)
 			}
 		}
 	}
 	if len(replyIDs) > 0 {
-		found, err := c.d.Store.GetMessages(ctx, consBotID(convKey), replyIDs)
+		found, err := c.d.Store.GetMessages(ctx, consBotID(sc.key), replyIDs)
 		if err != nil {
 			return consBatchInput{}, err
 		}
 		in.ReplyTargets = make(map[string]store.MessageRecord, len(found))
 		for _, t := range found {
-			if t.ConversationKey != convKey {
+			if !sc.has(t.ConversationKey) {
 				continue
 			}
 			in.ReplyTargets[t.ID] = t
@@ -446,24 +467,43 @@ func (c *Consolidator) gather(ctx context.Context, convKey string, msgs []store.
 			}
 		}
 	}
-	if len(actors) > 0 {
-		var err error
-		if in.MentionUsers, err = c.d.Store.UserIDsForActors(ctx, convKey, actors); err != nil {
+	for _, chat := range chats {
+		users, err := c.d.Store.UserIDsForActors(ctx, chat, actors[chat])
+		if err != nil {
 			return consBatchInput{}, err
 		}
-		for _, userID := range in.MentionUsers {
-			add(&userIDs, "u", userID)
-		}
-		if in.MentionNames, err = c.d.Store.LatestDisplayNames(ctx, convKey, actors); err != nil {
+		names, err := c.d.Store.LatestDisplayNames(ctx, chat, actors[chat])
+		if err != nil {
 			return consBatchInput{}, err
+		}
+		if in.MentionUsers == nil {
+			in.MentionUsers, in.MentionNames = users, names
+		} else {
+			mergeMissing(in.MentionUsers, users)
+			mergeMissing(in.MentionNames, names)
+		}
+		for _, a := range actors[chat] {
+			add(&userIDs, "u", users[a])
 		}
 	}
-	members, err := c.d.Store.GetMemberMemories(ctx, convKey, userIDs)
+	members, err := c.d.Store.GetMemberMemories(ctx, sc.key, userIDs)
 	if err != nil {
 		return consBatchInput{}, err
 	}
 	in.Members = members
+	if sc.multiChat() {
+		in.ChatLabels = consChatLabels(msgs)
+	}
 	return in, nil
+}
+
+// mergeMissing adds the entries of src whose keys dst lacks.
+func mergeMissing(dst, src map[string]string) {
+	for k, v := range src {
+		if _, ok := dst[k]; !ok {
+			dst[k] = v
+		}
+	}
 }
 
 // consEntry is the model's entry for a batch member whose row the batch

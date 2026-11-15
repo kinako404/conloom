@@ -33,14 +33,16 @@ func (u MemberUpdate) AffinityChanged() bool {
 	return u.Written && affinityValue(u.Before.Affinity) != affinityValue(u.After.Affinity)
 }
 
-// UpdateMember reads the user's memory row (an empty one at version 0 if none
-// exists), lets edit change it, and writes it back if edit returns write. The
-// write records a revision with source and edit's reason for each of the note
-// and affinity that changed. Identity, version and ForgottenAt are kept from
-// the row read whatever edit does. On a version conflict it reads again and
-// reruns edit, up to 3 attempts in all, then returns ErrUpdateConflict.
+// UpdateMember reads the user's memory row in the memory scope of convKey
+// (ScopeKeyOf; an empty row at version 0 if none exists), lets edit change it,
+// and writes it back if edit returns write. The write records a revision with
+// source and edit's reason for each of the note and affinity that changed.
+// Identity, version and ForgottenAt are kept from the row read whatever edit
+// does. On a version conflict it reads again and reruns edit, up to 3
+// attempts in all, then returns ErrUpdateConflict.
 func UpdateMember(ctx context.Context, st MemberStore, convKey, userID, source string,
 	edit func(m *store.MemberMemory) (reason string, write bool)) (MemberUpdate, error) {
+	convKey = ScopeKeyOf(convKey)
 	for range updateAttempts {
 		got, err := st.GetMemberMemories(ctx, convKey, []string{userID})
 		if err != nil {

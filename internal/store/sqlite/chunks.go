@@ -43,8 +43,9 @@ func (db *DB) ChunkState(ctx context.Context, convKey string) (store.ChunkState,
 	return s, err
 }
 
-// ForgetStamp identifies the forgetting done in the conversation so far: it
-// changes whenever a member of it is forgotten.
+// ForgetStamp identifies the forgetting done in the conversation's memory
+// scope (store.MemoryScopeKey) so far: it changes whenever a member of it is
+// forgotten.
 func (db *DB) ForgetStamp(ctx context.Context, convKey string) (string, error) {
 	return forgetStamp(ctx, db.r, convKey)
 }
@@ -57,7 +58,8 @@ func forgetStamp(ctx context.Context, q queryer, convKey string) (string, error)
 	var s string
 	err := q.QueryRowContext(ctx, `SELECT COALESCE(group_concat(platform_user_id || '@' || forgotten_at, ','), '') FROM (
 		SELECT platform_user_id, forgotten_at FROM member_memory
-		WHERE conversation_key = ? AND forgotten_at > ? ORDER BY platform_user_id)`, convKey, zeroTime).Scan(&s)
+		WHERE conversation_key = ? AND forgotten_at > ? ORDER BY platform_user_id)`,
+		store.MemoryScopeKey(convKey), zeroTime).Scan(&s)
 	return s, err
 }
 
@@ -240,8 +242,9 @@ func (db *DB) LoadChunks(ctx context.Context, convKey, model string, afterID int
 
 // ReconcileForgottenChunks applies forgetting to the chunks for every
 // forgotten member whose forgetting they have not seen yet (a binary without
-// semantic search forgot them), as ForgetMember or ForgetPrivate would have,
-// and returns how many members it handled. Running it again changes nothing.
+// semantic search forgot them), as ForgetMember, ForgetPrivate or, to every
+// chat of a shared panel scope, ForgetPrivateScope would have, and returns how
+// many members it handled. Running it again changes nothing.
 func (db *DB) ReconcileForgottenChunks(ctx context.Context) (int, error) {
 	n := 0
 	err := db.inTx(ctx, func(tx *sql.Tx) error {
@@ -271,9 +274,13 @@ func (db *DB) ReconcileForgottenChunks(ctx context.Context) (int, error) {
 			if err != nil {
 				return err
 			}
-			if parts := strings.SplitN(f.convKey, ":", 4); len(parts) == 4 && parts[2] == conloomapi.ConvPrivate {
+			parts := strings.SplitN(f.convKey, ":", 4)
+			switch {
+			case store.IsSharedScope(f.convKey):
+				err = forgetScopeChunks(ctx, tx, f.convKey, parts[0], f.userID, at)
+			case len(parts) == 4 && parts[2] == conloomapi.ConvPrivate:
 				err = forgetPrivateChunks(ctx, tx, f.convKey, f.userID, at)
-			} else {
+			default:
 				err = forgetMemberChunks(ctx, tx, f.convKey, f.userID, at)
 			}
 			if err != nil {
@@ -308,6 +315,22 @@ func forgetPrivateChunks(ctx context.Context, tx *sql.Tx, convKey, userID string
 		return err
 	}
 	return chunksForgot(ctx, tx, convKey, userID, at)
+}
+
+// forgetScopeChunks does forgetPrivateChunks in every panel chat of botID,
+// whose shared memory scope is scopeKey, and records the forget under
+// scopeKey too.
+func forgetScopeChunks(ctx context.Context, tx *sql.Tx, scopeKey, botID, userID string, at time.Time) error {
+	chats, err := panelChatKeys(ctx, tx, botID)
+	if err != nil {
+		return err
+	}
+	for _, chat := range chats {
+		if err := forgetPrivateChunks(ctx, tx, chat, userID, at); err != nil {
+			return err
+		}
+	}
+	return chunksForgot(ctx, tx, scopeKey, userID, at)
 }
 
 // chunksForgot records that the chunks have seen the user forgotten at at.

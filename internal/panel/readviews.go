@@ -142,13 +142,14 @@ type memoryRevisionView struct {
 }
 
 // listMemoryRevisions returns the user_id member's revisions oldest first, or
-// the summary's without user_id.
+// the summary's without user_id, in the conversation's memory scope
+// (memory.ScopeKey).
 func (s *Server) listMemoryRevisions(w http.ResponseWriter, r *http.Request, _ *Session) {
 	conv, ok := s.memoryConversation(w, r)
 	if !ok {
 		return
 	}
-	revs, err := s.d.Store.ListMemoryRevisions(r.Context(), conv.Key, r.URL.Query().Get("user_id"))
+	revs, err := s.d.Store.ListMemoryRevisions(r.Context(), memory.ScopeKey(conv), r.URL.Query().Get("user_id"))
 	if err != nil {
 		s.fail(w, r, err)
 		return

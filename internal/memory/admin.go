@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -54,8 +55,10 @@ type AdminDeps struct {
 }
 
 // Admin shows and corrects a conversation's memory on behalf of an admin, for
-// both the API and the web panel. Edits and forgets work whether or not
-// memory is on, so admins can correct frozen data.
+// both the API and the web panel. The memory is that of the conversation's
+// scope (ScopeKey), shared by all panel chats of a bot, and follows the policy
+// of the scope's newest chat (see Policy). Edits and forgets work whether or
+// not memory is on, so admins can correct frozen data.
 type Admin struct {
 	d AdminDeps
 }
@@ -67,25 +70,46 @@ func NewAdmin(d AdminDeps) *Admin {
 	return &Admin{d: d}
 }
 
-// View is the conversation's memory: whether it is in effect, the summary,
-// the members that have a note or an affinity and the limits in effect.
+// Policy returns the policy conv's memory follows: that of the chat of the
+// newest message in its memory scope, or conv's own when no chat of the scope
+// has a message (always conv's own for a conversation that is its own scope).
+func (a *Admin) Policy(ctx context.Context, conv store.ConversationRecord) (conloomapi.GroupPolicy, error) {
+	sc, err := resolveScope(ctx, a.d.Store, conv.Key)
+	if err != nil {
+		return conloomapi.GroupPolicy{}, err
+	}
+	lead, err := sc.lead(ctx, a.d.Store)
+	if err != nil {
+		return conloomapi.GroupPolicy{}, err
+	}
+	pv, err := a.d.Policies.Current(ctx, cmp.Or(lead, conv.Key))
+	if err != nil {
+		return conloomapi.GroupPolicy{}, err
+	}
+	return pv.Policy, nil
+}
+
+// View is the memory of conv's scope: whether it is in effect, the summary,
+// the members that have a note or an affinity and the limits in effect, all
+// under Policy.
 func (a *Admin) View(ctx context.Context, conv store.ConversationRecord) (conloomapi.MemoryState, error) {
-	pv, err := a.d.Policies.Current(ctx, conv.Key)
+	pol, err := a.Policy(ctx, conv)
 	if err != nil {
 		return conloomapi.MemoryState{}, err
 	}
-	g, err := a.d.Store.GetGroupMemory(ctx, conv.Key)
+	key := ScopeKey(conv)
+	g, err := a.d.Store.GetGroupMemory(ctx, key)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return conloomapi.MemoryState{}, err
 	}
-	members, err := a.d.Store.ListMemberMemories(ctx, conv.Key)
+	members, err := a.d.Store.ListMemberMemories(ctx, key)
 	if err != nil {
 		return conloomapi.MemoryState{}, err
 	}
 	state := conloomapi.MemoryState{
-		ConversationID: conv.ID, Enabled: pv.Policy.Memory.Enabled && pv.Policy.Concurrency.AllowLongRequests,
+		ConversationID: conv.ID, Enabled: pol.Memory.Enabled && pol.Concurrency.AllowLongRequests,
 		Summary: g.Summary, CursorSeq: g.CursorSeq, LastError: g.LastError, Members: []conloomapi.MemberMemoryState{},
-		SummaryMaxChars: SummaryLimit(pv.Policy.Memory, conv.Type), NoteMaxChars: NoteLimit(pv.Policy.Memory, conv.Type),
+		SummaryMaxChars: SummaryLimit(pol.Memory, conv.Type), NoteMaxChars: NoteLimit(pol.Memory, conv.Type),
 	}
 	if !g.LastRunAt.IsZero() {
 		at := g.LastRunAt
@@ -99,9 +123,9 @@ func (a *Admin) View(ctx context.Context, conv store.ConversationRecord) (conloo
 	return state, nil
 }
 
-// EditMember sets userID's note, affinity or both in conv, creating the
-// member's row if needed. The note is trimmed and limited by NoteLimit under
-// the conversation's current memory policy, the affinity must be in [0, 100]
+// EditMember sets userID's note, affinity or both in conv's memory scope,
+// creating the member's row if needed. The note is trimmed and limited by
+// NoteLimit under the memory policy of Policy, the affinity must be in [0, 100]
 // and at least one of them must be given; otherwise the error wraps
 // ErrInvalid. Changes are recorded as revisions from
 // source, counted as affinity changes from source and audited as
@@ -115,18 +139,19 @@ func (a *Admin) EditMember(ctx context.Context, conv store.ConversationRecord, u
 	var note string
 	if put.Note != nil {
 		note = strings.TrimSpace(*put.Note)
-		pv, err := a.d.Policies.Current(ctx, conv.Key)
+		pol, err := a.Policy(ctx, conv)
 		if err != nil {
 			return conloomapi.MemberMemoryState{}, err
 		}
-		if limit, n := NoteLimit(pv.Policy.Memory, conv.Type), utf8.RuneCountInString(note); n > limit {
+		if limit, n := NoteLimit(pol.Memory, conv.Type), utf8.RuneCountInString(note); n > limit {
 			return conloomapi.MemberMemoryState{}, fmt.Errorf("%w: note must be at most %d characters, got %d", ErrInvalid, limit, n)
 		}
 	}
 	if put.Affinity != nil && Clamp(*put.Affinity) != *put.Affinity {
 		return conloomapi.MemberMemoryState{}, fmt.Errorf("%w: affinity must be in [0, 100], got %d", ErrInvalid, *put.Affinity)
 	}
-	upd, err := UpdateMember(ctx, a.d.Store, conv.Key, userID, source, func(m *store.MemberMemory) (string, bool) {
+	key := ScopeKey(conv)
+	upd, err := UpdateMember(ctx, a.d.Store, key, userID, source, func(m *store.MemberMemory) (string, bool) {
 		changed := false
 		if put.Note != nil && m.Note != note {
 			m.Note, changed = note, true
@@ -156,7 +181,7 @@ func (a *Admin) EditMember(ctx context.Context, conv store.ConversationRecord, u
 			Fields []string `json:"fields"`
 		}{userID, fields})
 	}
-	got, err := a.d.Store.GetMemberMemories(ctx, conv.Key, []string{userID})
+	got, err := a.d.Store.GetMemberMemories(ctx, key, []string{userID})
 	if err != nil {
 		return conloomapi.MemberMemoryState{}, err
 	}
@@ -167,13 +192,13 @@ func (a *Admin) EditMember(ctx context.Context, conv store.ConversationRecord, u
 	return memberState(m), auditErr
 }
 
-// ForgetMember forgets userID in conv as /忘记我 does (Forget, which also
-// clears a private conversation's summary) and audits it as "memory.forget"
-// by actor. A forgotten affinity is counted as an affinity change from
-// source. A failed audit is returned wrapping ErrAudit; the member is
-// forgotten all the same.
+// ForgetMember forgets userID in conv's memory scope as /忘记我 does
+// (Forget, which also clears a private conversation's summary) and audits it
+// as "memory.forget" by actor. A forgotten affinity is counted as an affinity
+// change from source. A failed audit is returned wrapping ErrAudit; the
+// member is forgotten all the same.
 func (a *Admin) ForgetMember(ctx context.Context, conv store.ConversationRecord, userID, source, actor string) error {
-	before, err := a.d.Store.GetMemberMemories(ctx, conv.Key, []string{userID})
+	before, err := a.d.Store.GetMemberMemories(ctx, ScopeKey(conv), []string{userID})
 	if err != nil {
 		return err
 	}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 const groupMemoryCols = `conversation_key, summary, cursor_seq, last_run_at, last_error, updated_at`
@@ -196,32 +197,48 @@ func storedSummary(ctx context.Context, tx *sql.Tx, convKey string) (string, err
 }
 
 func (db *DB) ForgetPrivate(ctx context.Context, convKey, userID string, at time.Time) error {
+	return db.ForgetPrivateScope(ctx, convKey, []string{convKey}, userID, at)
+}
+
+func (db *DB) ForgetPrivateScope(ctx context.Context, scopeKey string, chats []string, userID string, at time.Time) error {
 	if userID == "" {
 		return errors.New("forget private member: empty user ID")
 	}
 	return db.inTx(ctx, func(tx *sql.Tx) error {
-		if err := forgetMember(ctx, tx, convKey, userID, at); err != nil {
+		if err := forgetMember(ctx, tx, scopeKey, userID, at); err != nil {
 			return err
 		}
-		if err := forgetPrivateChunks(ctx, tx, convKey, userID, at); err != nil {
-			return err
+		for _, chat := range chats {
+			if err := forgetPrivateChunks(ctx, tx, chat, userID, at); err != nil {
+				return err
+			}
+			if err := deleteAutonomy(ctx, tx, chat); err != nil {
+				return err
+			}
 		}
-		if err := deleteAutonomy(ctx, tx, convKey); err != nil {
-			return err
+		// The scope's own record matches its member row, so reconciling
+		// (ReconcileForgottenChunks) knows its chats' chunks saw this forget.
+		if !slices.Contains(chats, scopeKey) {
+			if err := chunksForgot(ctx, tx, scopeKey, userID, at); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM memory_revisions WHERE conversation_key = ? AND platform_user_id = '' AND field = ?`,
-			convKey, store.FieldSummary); err != nil {
+			scopeKey, store.FieldSummary); err != nil {
 			return err
 		}
 		var newest int64
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM messages WHERE conversation_key = ?`,
-			convKey).Scan(&newest); err != nil {
-			return err
+		if len(chats) > 0 {
+			in, args := inList(chats)
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM messages WHERE conversation_key IN (`+in+`)`,
+				args...).Scan(&newest); err != nil {
+				return err
+			}
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO group_memory (`+groupMemoryCols+`) VALUES (?, '', ?, ?, '', ?)
 			ON CONFLICT (conversation_key) DO UPDATE SET summary = '', cursor_seq = `+cursorForward+`,
 				updated_at = excluded.updated_at`,
-			convKey, newest, fmtTime(time.Time{}), fmtTime(time.Now()))
+			scopeKey, newest, fmtTime(time.Time{}), fmtTime(time.Now()))
 		return err
 	})
 }
@@ -353,30 +370,87 @@ func (db *DB) PurgeMemoryRevisions(ctx context.Context, before time.Time) (int, 
 }
 
 func (db *DB) MessagesAfter(ctx context.Context, convKey string, afterSeq int64, limit int) ([]store.MessageRecord, error) {
-	if limit <= 0 {
+	return db.MessagesAfterIn(ctx, []string{convKey}, afterSeq, limit)
+}
+
+func (db *DB) MessagesAfterIn(ctx context.Context, convKeys []string, afterSeq int64, limit int) ([]store.MessageRecord, error) {
+	if limit <= 0 || len(convKeys) == 0 {
 		return nil, nil
 	}
+	in, args := inList(convKeys)
 	return db.queryMessages(ctx, `SELECT `+messageCols+` FROM messages
-		WHERE conversation_key = ? AND seq > ? ORDER BY seq LIMIT ?`, convKey, afterSeq, limit)
+		WHERE conversation_key IN (`+in+`) AND seq > ? ORDER BY seq LIMIT ?`, append(args, afterSeq, limit)...)
 }
 
 func (db *DB) CountMessagesAfter(ctx context.Context, convKey string, afterSeq int64) (int, error) {
+	return db.CountMessagesAfterIn(ctx, []string{convKey}, afterSeq)
+}
+
+func (db *DB) CountMessagesAfterIn(ctx context.Context, convKeys []string, afterSeq int64) (int, error) {
+	if len(convKeys) == 0 {
+		return 0, nil
+	}
+	in, args := inList(convKeys)
 	var n int
-	err := db.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE conversation_key = ? AND seq > ?`,
-		convKey, afterSeq).Scan(&n)
+	err := db.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE conversation_key IN (`+in+`) AND seq > ?`,
+		append(args, afterSeq)...).Scan(&n)
 	return n, err
 }
 
-// BacklogCursor counts the conversation's own messages, since seq is shared
-// by all conversations.
 func (db *DB) BacklogCursor(ctx context.Context, convKey string, backlog int) (int64, error) {
+	return db.BacklogCursorIn(ctx, []string{convKey}, backlog)
+}
+
+// BacklogCursorIn counts the conversations' own messages, since seq is shared
+// by all conversations.
+func (db *DB) BacklogCursorIn(ctx context.Context, convKeys []string, backlog int) (int64, error) {
+	if len(convKeys) == 0 {
+		return 0, nil
+	}
+	in, args := inList(convKeys)
 	var seq int64
-	err := db.r.QueryRowContext(ctx, `SELECT seq FROM messages WHERE conversation_key = ?
-		ORDER BY seq DESC LIMIT 1 OFFSET ?`, convKey, backlog).Scan(&seq)
+	err := db.r.QueryRowContext(ctx, `SELECT seq FROM messages WHERE conversation_key IN (`+in+`)
+		ORDER BY seq DESC LIMIT 1 OFFSET ?`, append(args, backlog)...).Scan(&seq)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
 	return seq, err
+}
+
+func (db *DB) LatestChat(ctx context.Context, convKeys []string) (string, error) {
+	if len(convKeys) == 0 {
+		return "", nil
+	}
+	in, args := inList(convKeys)
+	var key string
+	err := db.r.QueryRowContext(ctx, `SELECT conversation_key FROM messages
+		WHERE seq = (SELECT MAX(seq) FROM messages WHERE conversation_key IN (`+in+`))`, args...).Scan(&key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return key, err
+}
+
+func (db *DB) PanelChatKeys(ctx context.Context, botID string) ([]string, error) {
+	return panelChatKeys(ctx, db.r, botID)
+}
+
+func panelChatKeys(ctx context.Context, q rowsQueryer, botID string) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `SELECT key FROM conversations
+		WHERE bot_instance_id = ? AND platform = ? AND type = ? ORDER BY key`, botID, store.PlatformPanel, conloomapi.ConvPrivate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		out = append(out, key)
+	}
+	return out, rows.Err()
 }
 
 func (db *DB) UserIDsForActors(ctx context.Context, convKey string, actorIDs []string) (map[string]string, error) {

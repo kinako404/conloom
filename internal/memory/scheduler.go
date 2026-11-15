@@ -41,9 +41,11 @@ type SchedulerDeps struct {
 }
 
 // Scheduler runs consolidations one at a time on a single worker goroutine:
-// group and private conversations that are due on every check, conversations
-// an admin triggered, and the daily
-// affinity decay and revision purge.
+// the memory scopes of group and private conversations that are due on every
+// check, each once, scopes an admin triggered, and the daily affinity decay
+// and revision purge. A conversation is its own scope but for panel chats,
+// which share their bot's (see ScopeKey); a shared scope follows the policy of
+// its newest chat.
 type Scheduler struct {
 	d SchedulerDeps
 
@@ -104,9 +106,11 @@ func (s *Scheduler) Close() {
 	}
 }
 
-// Trigger queues a manual consolidation of convKey without waiting for it;
-// triggers of a conversation that is already queued are merged.
+// Trigger queues a manual consolidation of the memory scope of convKey
+// (ScopeKeyOf) without waiting for it; triggers of a scope that is already
+// queued are merged.
 func (s *Scheduler) Trigger(convKey string) {
+	convKey = ScopeKeyOf(convKey)
 	s.mu.Lock()
 	if !s.queued[convKey] {
 		s.queued[convKey] = true
@@ -119,9 +123,10 @@ func (s *Scheduler) Trigger(convKey string) {
 	}
 }
 
-// PolicyChanged marks convKey's cursor to skip ahead to its backlog when the
-// newest policy version turns memory on and the one before had it off or had
-// no memory section. The worker applies the skip before the group's next run.
+// PolicyChanged marks the cursor of convKey's memory scope to skip ahead to
+// its backlog when the conversation's newest policy version turns memory on
+// and the one before had it off or had no memory section. The worker applies
+// the skip before the scope's next run.
 func (s *Scheduler) PolicyChanged(convKey string) {
 	versions, err := s.d.Store.ListPolicyVersions(s.ctx, convKey)
 	if err != nil {
@@ -132,7 +137,7 @@ func (s *Scheduler) PolicyChanged(convKey string) {
 		return
 	}
 	s.mu.Lock()
-	s.jump[convKey] = true
+	s.jump[ScopeKeyOf(convKey)] = true
 	s.mu.Unlock()
 }
 
@@ -170,30 +175,44 @@ func (s *Scheduler) runTriggered(ctx context.Context) {
 	}
 }
 
-// tick consolidates every group and private conversation that is due.
+// tick consolidates every memory scope of group and private conversations
+// that is due.
 func (s *Scheduler) tick(ctx context.Context) {
-	convs, err := s.conversations(ctx)
+	scopes, err := s.scopes(ctx)
 	if err != nil {
 		s.logError(ctx, "memory: list conversations failed", "error", err)
 		return
 	}
-	for _, c := range convs {
+	for _, key := range scopes {
 		if ctx.Err() != nil {
 			return
 		}
-		s.consolidate(ctx, c.Key, false)
+		s.consolidate(ctx, key, false)
 	}
 }
 
-// consolidate runs the Runner for convKey if its bot is in the directory,
-// memory is on, the conversation is not paused and, for a private chat, the
-// bot still chats with that user privately; a scheduled run also needs the
-// conversation to be due.
+// consolidate runs the Runner for the memory scope convKey if its bot is in
+// the directory, memory is on, the conversation is not paused and, for a
+// private chat, the bot still chats with that user privately, a shared scope
+// deciding by the policy of its newest chat; a scheduled run also needs the
+// scope to be due.
 func (s *Scheduler) consolidate(ctx context.Context, convKey string, manual bool) {
 	if !s.botServes(ctx, convKey) {
 		return
 	}
-	pv, err := s.d.Policies.Current(ctx, convKey)
+	sc, err := resolveScope(ctx, s.d.Store, convKey)
+	if err != nil {
+		s.logError(ctx, "memory: list the scope's chats failed", "conversation", convKey, "error", err)
+		return
+	}
+	lead, err := sc.lead(ctx, s.d.Store)
+	if err != nil || lead == "" {
+		if err != nil {
+			s.logError(ctx, "memory: find the scope's newest chat failed", "conversation", convKey, "error", err)
+		}
+		return
+	}
+	pv, err := s.d.Policies.Current(ctx, lead)
 	if err != nil {
 		s.logError(ctx, "memory: read policy failed", "conversation", convKey, "error", err)
 		return
@@ -202,13 +221,13 @@ func (s *Scheduler) consolidate(ctx context.Context, convKey string, manual bool
 	if !memoryOn(p) || p.Concurrency.MaxInteractiveRequests == 0 {
 		return
 	}
-	g, err := s.ensureCursor(ctx, convKey, p.Memory.Backlog)
+	g, err := s.ensureCursor(ctx, sc, p.Memory.Backlog)
 	if err != nil {
 		s.logError(ctx, "memory: prepare cursor failed", "conversation", convKey, "error", err)
 		return
 	}
 	if !manual {
-		pending, err := s.d.Store.CountMessagesAfter(ctx, convKey, g.CursorSeq)
+		pending, err := sc.countAfter(ctx, s.d.Store, g.CursorSeq)
 		if err != nil {
 			s.logError(ctx, "memory: count new messages failed", "conversation", convKey, "error", err)
 			return
@@ -230,27 +249,28 @@ func (s *Scheduler) consolidate(ctx context.Context, convKey string, manual bool
 		"batches", res.Batches, "messages", res.Messages, "members", res.MembersUpdated, "skipped", res.Skipped)
 }
 
-// ensureCursor returns convKey's memory row. A group without one gets a new
-// row whose cursor leaves backlog messages to consolidate; a group whose
-// memory was just turned back on has its cursor moved up to that point.
-func (s *Scheduler) ensureCursor(ctx context.Context, convKey string, backlog int) (store.GroupMemory, error) {
-	g, err := s.d.Store.GetGroupMemory(ctx, convKey)
+// ensureCursor returns the memory row of sc. A scope without one gets a new
+// row whose cursor leaves backlog messages of its chats to consolidate; a
+// scope whose memory was just turned back on has its cursor moved up to that
+// point.
+func (s *Scheduler) ensureCursor(ctx context.Context, sc scope, backlog int) (store.GroupMemory, error) {
+	g, err := s.d.Store.GetGroupMemory(ctx, sc.key)
 	fresh := errors.Is(err, store.ErrNotFound)
 	if err != nil && !fresh {
 		return store.GroupMemory{}, err
 	}
 	s.mu.Lock()
-	jump := s.jump[convKey]
+	jump := s.jump[sc.key]
 	s.mu.Unlock()
 	if !fresh && !jump {
 		return g, nil
 	}
-	cursor, err := s.d.Store.BacklogCursor(ctx, convKey, backlog)
+	cursor, err := sc.backlogCursor(ctx, s.d.Store, backlog)
 	if err != nil {
 		return store.GroupMemory{}, err
 	}
 	if fresh {
-		g = store.GroupMemory{ConversationKey: convKey, CursorSeq: cursor}
+		g = store.GroupMemory{ConversationKey: sc.key, CursorSeq: cursor}
 	} else {
 		g.CursorSeq = max(g.CursorSeq, cursor)
 	}
@@ -258,7 +278,7 @@ func (s *Scheduler) ensureCursor(ctx context.Context, convKey string, backlog in
 		return store.GroupMemory{}, err
 	}
 	s.mu.Lock()
-	delete(s.jump, convKey)
+	delete(s.jump, sc.key)
 	s.mu.Unlock()
 	return g, nil
 }
@@ -283,20 +303,20 @@ func (s *Scheduler) dailyIfNewDay(ctx context.Context) {
 	s.daily(ctx)
 }
 
-// daily applies affinity decay in every conversation with memory and affinity on,
-// then purges revisions older than 30 days.
+// daily applies affinity decay in every memory scope with memory and affinity
+// on, then purges revisions older than 30 days.
 func (s *Scheduler) daily(ctx context.Context) {
 	now := s.d.Now()
 	today := LocalDay(now, s.d.Location)
-	convs, err := s.conversations(ctx)
+	scopes, err := s.scopes(ctx)
 	if err != nil {
 		s.logError(ctx, "memory: list conversations failed", "error", err)
 	}
-	for _, c := range convs {
+	for _, key := range scopes {
 		if ctx.Err() != nil {
 			return
 		}
-		s.decayGroup(ctx, c.Key, today)
+		s.decayGroup(ctx, key, today)
 	}
 	n, err := s.d.Store.PurgeMemoryRevisions(ctx, now.Add(-revisionRetention))
 	if err != nil {
@@ -321,8 +341,38 @@ func (s *Scheduler) conversations(ctx context.Context) ([]store.ConversationReco
 	return all, nil
 }
 
+// scopes lists the memory scopes of the group conversations, then of the
+// private ones, each once, as far as conversations listed them.
+func (s *Scheduler) scopes(ctx context.Context) ([]string, error) {
+	convs, err := s.conversations(ctx)
+	seen := make(map[string]bool, len(convs))
+	keys := make([]string, 0, len(convs))
+	for _, c := range convs {
+		if key := ScopeKey(c); !seen[key] {
+			seen[key] = true
+			keys = append(keys, key)
+		}
+	}
+	return keys, err
+}
+
+// decayGroup applies affinity decay to the members of the memory scope
+// convKey when its policy, a shared scope's newest chat's, has memory and
+// affinity on.
 func (s *Scheduler) decayGroup(ctx context.Context, convKey, today string) {
-	pv, err := s.d.Policies.Current(ctx, convKey)
+	sc, err := resolveScope(ctx, s.d.Store, convKey)
+	if err != nil {
+		s.logError(ctx, "memory: list the scope's chats failed", "conversation", convKey, "error", err)
+		return
+	}
+	lead, err := sc.lead(ctx, s.d.Store)
+	if err != nil || lead == "" {
+		if err != nil {
+			s.logError(ctx, "memory: find the scope's newest chat failed", "conversation", convKey, "error", err)
+		}
+		return
+	}
+	pv, err := s.d.Policies.Current(ctx, lead)
 	if err != nil {
 		s.logError(ctx, "memory: read policy failed", "conversation", convKey, "error", err)
 		return
@@ -360,9 +410,10 @@ func (s *Scheduler) decayGroup(ctx context.Context, convKey, today string) {
 }
 
 // botServes reports whether convKey's bot is in the directory and, for a
-// private chat, its private_chat setting still allows the chat's user. A
-// conversation of a bot no longer in the directory, such as a deleted panel
-// bot, is skipped quietly.
+// private chat, its private_chat setting still allows the chat's user; panel
+// chats, and so a shared panel scope, are always allowed. A conversation of a
+// bot no longer in the directory, such as a deleted panel bot, is skipped
+// quietly.
 func (s *Scheduler) botServes(ctx context.Context, convKey string) bool {
 	parts := strings.SplitN(convKey, ":", 4)
 	if s.d.Bots == nil || len(parts) != 4 {
@@ -373,7 +424,7 @@ func (s *Scheduler) botServes(ctx context.Context, convKey string) bool {
 		s.d.Logger.Debug("memory: skipped a conversation of a bot no longer in the directory", "conversation", convKey)
 		return false
 	}
-	if parts[2] != conloomapi.ConvPrivate {
+	if parts[2] != conloomapi.ConvPrivate || IsSharedScope(convKey) {
 		return true
 	}
 	conv, err := s.d.Store.GetConversation(ctx, parts[0], parts[3])

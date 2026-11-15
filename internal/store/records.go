@@ -228,8 +228,10 @@ type ProactiveLogEntry struct {
 	CreatedAt       time.Time
 }
 
-// GroupMemory is a conversation's rolling summary and how far consolidation
-// has read; CursorSeq is the last consolidated messages.seq.
+// GroupMemory is a memory scope's rolling summary and how far consolidation
+// has read; CursorSeq is the last consolidated messages.seq. ConversationKey
+// is the scope's key (see MemoryScopeKey), the conversation's own but for
+// panel chats.
 type GroupMemory struct {
 	ConversationKey string
 	Summary         string
@@ -239,8 +241,8 @@ type GroupMemory struct {
 	UpdatedAt       time.Time
 }
 
-// MemberMemory is what the bot remembers about one user in one conversation.
-// A nil Affinity means none yet. Day fields hold local dates as "2006-01-02",
+// MemberMemory is what the bot remembers about one user in one memory scope
+// (ConversationKey, see MemoryScopeKey). A nil Affinity means none yet. Day fields hold local dates as "2006-01-02",
 // empty when unset. Version increases on every write and is used for
 // optimistic checks.
 type MemberMemory struct {

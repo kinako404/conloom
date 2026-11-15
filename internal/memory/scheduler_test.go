@@ -61,7 +61,11 @@ func (r *schedRunner) Run(ctx context.Context, convKey string, manual bool) (Res
 	if err != nil {
 		return Result{}, err
 	}
-	pending, err := r.st.CountMessagesAfter(ctx, convKey, g.CursorSeq)
+	sc, err := resolveScope(ctx, r.st, convKey)
+	if err != nil {
+		return Result{}, err
+	}
+	pending, err := sc.countAfter(ctx, r.st, g.CursorSeq)
 	if err != nil {
 		return Result{}, err
 	}

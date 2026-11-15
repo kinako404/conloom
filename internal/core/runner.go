@@ -15,6 +15,7 @@ import (
 	"github.com/kinako404/conloom/internal/admission"
 	"github.com/kinako404/conloom/internal/contextbuilder"
 	"github.com/kinako404/conloom/internal/ids"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/provider/openai"
 	"github.com/kinako404/conloom/internal/review"
@@ -478,11 +479,13 @@ func (o *Orchestrator) history(ctx context.Context, convKey string, maxRecent in
 	return history, nil
 }
 
-// privateSpeakerRow reads the memory row of a private task's sender, keyed by
-// user ID (empty when there is none): its ForgottenAt cuts the context, and
-// injectMemory reuses it. A read error is logged and leaves both alone.
+// privateSpeakerRow reads the memory row of a private task's sender in the
+// conversation's memory scope (memory.ScopeKeyOf), keyed by user ID (empty
+// when there is none): its ForgottenAt, from a forget in any chat of the
+// scope, cuts the context, and injectMemory reuses it. A read error is logged
+// and leaves both alone.
 func (o *Orchestrator) privateSpeakerRow(ctx context.Context, task store.TaskRecord) map[string]store.MemberMemory {
-	rows, err := o.st.GetMemberMemories(ctx, task.ConversationKey, []string{task.ActorPlatformUserID})
+	rows, err := o.st.GetMemberMemories(ctx, memory.ScopeKeyOf(task.ConversationKey), []string{task.ActorPlatformUserID})
 	if err != nil {
 		o.log.Warn("load private member memory failed", "task_id", task.ID, "conversation", task.ConversationKey, "error", err)
 		return nil

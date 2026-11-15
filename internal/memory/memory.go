@@ -20,8 +20,9 @@ type Result struct {
 	Skipped                           string
 }
 
-// Runner consolidates one conversation's new messages; manual is true when an
-// admin asked for the run.
+// Runner consolidates the new messages of one memory scope (see ScopeKey),
+// given by its key or by the key of one of its conversations; manual is true
+// when an admin asked for the run.
 type Runner interface {
 	Run(ctx context.Context, convKey string, manual bool) (Result, error)
 }

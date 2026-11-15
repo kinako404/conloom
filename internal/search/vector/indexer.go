@@ -10,6 +10,7 @@ import (
 
 	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/embedding"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/skills/tools"
 	"github.com/kinako404/conloom/internal/store"
@@ -271,7 +272,7 @@ func (ix *Indexer) conversation(ctx context.Context, convKey, convType, model st
 	if err != nil {
 		return 0, err
 	}
-	members, err := ix.d.Store.ListMemberMemories(ctx, convKey)
+	members, err := ix.d.Store.ListMemberMemories(ctx, memory.ScopeKeyOf(convKey))
 	if err != nil {
 		return 0, err
 	}

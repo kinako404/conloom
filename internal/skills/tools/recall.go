@@ -112,8 +112,10 @@ type recallTool struct {
 // Never shown are commands and the bot's replies to them, messages blocked
 // by the conversation's review, the current turn (the trigger messages, or
 // without them the speaker's messages of the last two minutes) and messages
-// hidden by forgetting: in private chats everything before the speaker was
-// forgotten, in groups what each forgotten member said before then. The rest
+// hidden by forgetting, as the conversation's memory scope
+// (memory.ScopeKeyOf) records it: in private chats everything before the
+// speaker was forgotten, in groups what each forgotten member said before
+// then. The rest
 // is shown with contact details redacted (memory.RedactContactOrID) and the
 // review's output rules applied, and a message hit only counts when that text
 // or its sender's shown name still holds a search term.
@@ -172,7 +174,7 @@ func (t *recallTool) Call(ctx context.Context, inv skills.Invocation, args json.
 	if !on {
 		return "这个会话没有开启记忆。", nil
 	}
-	members, err := t.d.Store.ListMemberMemories(ctx, inv.ConversationKey)
+	members, err := t.d.Store.ListMemberMemories(ctx, memory.ScopeKeyOf(inv.ConversationKey))
 	if err != nil {
 		return "", err
 	}
