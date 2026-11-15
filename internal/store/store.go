@@ -134,8 +134,9 @@ type Store interface {
 	// PurgePersonaImages deletes the images created before createdBefore that
 	// are not in keep and that no persona template and no persona version, of
 	// any age, names as its appearance image, and returns how many it deleted.
-	// keep lists the images referenced elsewhere, such as by the persona
-	// templates of the config file.
+	// A row whose persona is not valid JSON references no image. keep lists
+	// the images referenced elsewhere, such as by the persona templates of the
+	// config file.
 	PurgePersonaImages(ctx context.Context, createdBefore time.Time, keep []string) (int, error)
 	// ListPersonaTemplates returns the templates written online ordered by
 	// Name. A row it cannot read does not fail the list: it is left out of

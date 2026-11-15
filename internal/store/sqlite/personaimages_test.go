@@ -222,6 +222,47 @@ func TestPersonaImages_PurgeKeepsReferenced(t *testing.T) {
 	purge([]string{}, 0)
 }
 
+func TestPersonaImages_PurgeSkipsMalformedPersonas(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	now := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	cutoff := now.Add(-7 * 24 * time.Hour)
+	old := cutoff.Add(-24 * time.Hour)
+	byVersion, byTemplate, unreferenced := fakeImage("version", old), fakeImage("template", old), fakeImage("unreferenced", old)
+	for _, img := range []store.PersonaImage{byVersion, byTemplate, unreferenced} {
+		putImage(t, db, img)
+	}
+	putTemplate(t, db, store.PersonaTemplateRecord{Name: "teacher", Persona: personaWithImage(byTemplate.ID), UpdatedBy: "panel:admin"})
+	if _, err := db.w.ExecContext(ctx, `INSERT INTO persona_templates (name, persona, updated_by, created_at, updated_at)
+		VALUES ('broken', '{"appearance_image":', 'panel:admin', ?, ?)`, fmtTime(now), fmtTime(now)); err != nil {
+		t.Fatalf("insert malformed template: %v", err)
+	}
+	for _, pv := range []store.PersonaVersion{
+		{ConversationKey: privKey("20001"), Persona: personaWithImage(byVersion.ID)},
+		{ConversationKey: privKey("29999"), Persona: conloomapi.DefaultPersona()},
+	} {
+		pv.TemplateName, pv.UpdatedBy = "default", "panel:admin"
+		if _, err := db.AppendPersonaVersion(ctx, pv); err != nil {
+			t.Fatalf("AppendPersonaVersion: %v", err)
+		}
+	}
+	if _, err := db.w.ExecContext(ctx, `UPDATE persona_versions SET persona = 'not json' WHERE conversation_key = ?`, privKey("29999")); err != nil {
+		t.Fatalf("corrupt persona version: %v", err)
+	}
+
+	if n, err := db.PurgePersonaImages(ctx, cutoff, nil); err != nil || n != 1 {
+		t.Fatalf("PurgePersonaImages with malformed rows = %d, %v; want 1", n, err)
+	}
+	for name, c := range map[string]struct {
+		img  store.PersonaImage
+		kept bool
+	}{"by version": {byVersion, true}, "by template": {byTemplate, true}, "unreferenced": {unreferenced, false}} {
+		if got := imageExists(t, db, c.img.ID); got != c.kept {
+			t.Errorf("image %s kept = %v, want %v", name, got, c.kept)
+		}
+	}
+}
+
 func TestPersonaImages_ReuploadRestartsGrace(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)

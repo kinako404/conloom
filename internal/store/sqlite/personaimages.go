@@ -57,12 +57,17 @@ func (db *DB) PurgePersonaImages(ctx context.Context, createdBefore time.Time, k
 	return execCount(ctx, db.w, `DELETE FROM persona_images WHERE created_at < ? AND id NOT IN (
 		SELECT value FROM json_each(?)
 		UNION
-		SELECT json_extract(persona, '$.appearance_image') FROM persona_templates
-		WHERE json_extract(persona, '$.appearance_image') IS NOT NULL
-		UNION
-		SELECT json_extract(persona, '$.appearance_image') FROM persona_versions
-		WHERE json_extract(persona, '$.appearance_image') IS NOT NULL)`, fmtTime(createdBefore), string(kept))
+		SELECT image FROM (
+			SELECT `+personaImageRef+` AS image FROM persona_templates
+			UNION ALL
+			SELECT `+personaImageRef+` FROM persona_versions)
+		WHERE image IS NOT NULL)`, fmtTime(createdBefore), string(kept))
 }
+
+// personaImageRef is the appearance image of a row's persona, NULL when it has
+// none or the persona is not valid JSON: one malformed row must not make every
+// purge fail. CASE, unlike AND, is evaluated in order.
+const personaImageRef = `CASE WHEN json_valid(persona) THEN json_extract(persona, '$.appearance_image') END`
 
 func (db *DB) ListPersonaTemplates(ctx context.Context) ([]store.PersonaTemplateRecord, []store.UnreadablePersonaTemplate, error) {
 	rows, err := db.r.QueryContext(ctx, `SELECT name, persona, updated_by, created_at, updated_at

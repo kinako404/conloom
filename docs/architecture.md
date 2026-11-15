@@ -156,7 +156,7 @@ NapCat      Adapter                 Core                          SQLite        
 - **启动**：`app.New` 在 `NewService` 之后立即调用 `LoadTemplates`，早于面板 bot 的载入。读不出来的行（JSON 损坏、时间格式不对）和不合格的行（名字或内容不合规则）各记一条警告并跳过，不阻止启动，库里的行也不改；这样的行可以用 `DeleteTemplate` 删掉，或用 `PutTemplate` 覆盖。加载时不检查图片是否存在。
 - **配置 bot**：仍然只在配置校验时检查 `persona_template` 是否在配置文件里；运行时取的是目录里的同名模板，可能是在线覆盖后的版本。
 - **图片 ID**：所有写人设的路径——`PutTemplate` 和 `Update`（面板和 Bearer API 的 `PUT …/persona`，包括套用模板和回滚，以及 `/persona use`）——在 `appearance_image` 不为空时查 `persona_images` 表，图片不存在就返回 400（`ErrInvalid`）。建第 1 版时直接复制模板，不再检查。
-- **清理图片时保留的 ID**：`ReferencedImages()` 列出模板引用的图片 ID，包括所有配置模板的（被在线覆盖的也算，恢复配置版本时还要用）。`PurgePersonaImages(createdBefore, keep)` 只删创建早于 `createdBefore`、不在 `keep` 里、也没有任何在线模板或人设版本（不论新旧）引用的图片。核心的维护任务（启动时一次，之后每小时）以“现在减 7 天”和 `ReferencedImages()` 调用它，删除条数计入 `cleanup_deleted_total{table="persona_images"}`。
+- **清理图片时保留的 ID**：`ReferencedImages()` 列出模板引用的图片 ID，包括所有配置模板的（被在线覆盖的也算，恢复配置版本时还要用）。`PurgePersonaImages(createdBefore, keep)` 只删创建早于 `createdBefore`、不在 `keep` 里、也没有任何在线模板或人设版本（不论新旧）引用的图片；人设不是合法 JSON 的行（`json_valid` 为假）当作没有引用，不会让整次清理出错。核心的维护任务（启动时一次，之后每小时）以“现在减 7 天”和 `ReferencedImages()` 调用它，删除条数计入 `cleanup_deleted_total{table="persona_images"}`。
 - **面板接口**：`/panel/api/persona-templates` 的写操作调用上面三个方法，成功后让 `PanelBotService.Load` 重新发布面板 bot，引用的模板重新出现时“模板已不存在”的说明随之消失。上传图片和生成外观介绍各自一次只处理一个请求（解码 2500 万像素的图要几百 MB 内存），另一个请求同时到达时直接返回 409，不排队。
 
 ## 3. 任务模型
