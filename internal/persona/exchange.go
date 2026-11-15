@@ -1,8 +1,10 @@
 package persona
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -21,15 +23,55 @@ import (
 const (
 	ExchangeFormat  = "conloom.persona-template"
 	ExchangeVersion = 1
+	// MaxExchangeTemplates is the most templates an exchange file may have.
+	MaxExchangeTemplates = 200
 )
+
+// ErrTooManyTemplates refuses an exchange file of more than
+// MaxExchangeTemplates templates. It wraps ErrInvalid.
+var ErrTooManyTemplates = fmt.Errorf("%w: 一个文件最多 %d 个模板", ErrInvalid, MaxExchangeTemplates)
 
 // ExchangeFile is a file of exported persona templates, which Import reads.
 // One template and the whole catalog are exported alike.
 type ExchangeFile struct {
-	Format     string             `json:"format"`
-	Version    int                `json:"version"`
-	ExportedAt time.Time          `json:"exported_at"`
-	Templates  []ExchangeTemplate `json:"templates"`
+	Format     string            `json:"format"`
+	Version    int               `json:"version"`
+	ExportedAt time.Time         `json:"exported_at"`
+	Templates  ExchangeTemplates `json:"templates"`
+}
+
+// ExchangeTemplates are the templates of an ExchangeFile. Decoded from JSON,
+// they must be an array, or null for none, of templates without unknown
+// fields; decoding stops with ErrTooManyTemplates at the first template over
+// MaxExchangeTemplates, before it is read.
+type ExchangeTemplates []ExchangeTemplate
+
+func (ts *ExchangeTemplates) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	tok, err := dec.Token()
+	switch {
+	case err != nil:
+		return err
+	case tok == nil:
+		*ts = nil
+		return nil
+	case tok != json.Delim('['):
+		return errors.New("json: templates must be a JSON array")
+	}
+	var out ExchangeTemplates
+	for dec.More() {
+		if len(out) == MaxExchangeTemplates {
+			return ErrTooManyTemplates
+		}
+		var t ExchangeTemplate
+		if err := dec.Decode(&t); err != nil {
+			return err
+		}
+		out = append(out, t)
+	}
+	*ts = out
+	return nil
 }
 
 // ExchangeTemplate is a persona template of an ExchangeFile. Persona keeps
@@ -150,14 +192,17 @@ func (s *Service) exportTemplate(ctx context.Context, name string, doc conloomap
 // "default" is no conflict: an imported "default" is stored in its place.
 //
 // The whole file is checked first. A wrong format or version, a file without
-// templates and an unknown mode are ErrInvalid. Problems of templates are
-// ErrInvalidTemplate, all reported together: a name that breaks the rule for
-// new templates (see PutTemplate) or that the file used before, an embedded
-// image that is not standard base64 or that imaging.Process refuses (its
-// declared MIME is not used), a persona that fails Validate, and one naming
-// an image neither embedded in the file nor uploaded. An embedded image is
-// stored as uploaded, and its ID, the sha256 of its bytes, replaces the
-// persona's appearance_image.
+// templates and an unknown mode are ErrInvalid, and a file of more than
+// MaxExchangeTemplates templates is ErrTooManyTemplates, before any template
+// is checked. Problems of templates are ErrInvalidTemplate, the first 20
+// reported together and the rest counted as "等 N 处", N the number of all of
+// them: a name that breaks the rule for new templates (see PutTemplate) or
+// that the file used before, an embedded image that is not standard base64
+// or that imaging.Process refuses (its declared MIME is not used), a persona
+// that fails Validate or ValidateContent, and one naming an image neither
+// embedded in the file nor uploaded. An embedded image is stored as uploaded,
+// and its ID, the sha256 of its bytes, replaces the persona's
+// appearance_image.
 //
 // The images and templates are stored in one transaction and published
 // together; then the function set with SetOnImport is called.
@@ -175,6 +220,8 @@ func (s *Service) Import(ctx context.Context, f ExchangeFile, mode ConflictMode,
 		return nil, fmt.Errorf("%w: version must be %d, got %d", ErrInvalid, ExchangeVersion, f.Version)
 	case len(f.Templates) == 0:
 		return nil, fmt.Errorf("%w: the file has no templates", ErrInvalid)
+	case len(f.Templates) > MaxExchangeTemplates:
+		return nil, ErrTooManyTemplates
 	}
 	templates, images, err := s.checkImport(ctx, f.Templates)
 	if err != nil {
@@ -203,6 +250,10 @@ type importTemplate struct {
 	name string
 	doc  conloomapi.PersonaDoc
 }
+
+// maxReportedProblems is the most problems of templates an import lists; the
+// rest are only counted.
+const maxReportedProblems = 20
 
 // checkImport checks the templates of an import (see Import) and returns
 // them with their embedded images, each image once.
@@ -263,6 +314,9 @@ func (s *Service) checkImport(ctx context.Context, templates []ExchangeTemplate)
 			problems = append(problems, fmt.Errorf("templates[%d] %.40q: %w", i, t.Name, errors.Join(errs...)))
 		}
 		out[i] = importTemplate{name: t.Name, doc: doc}
+	}
+	if n := len(problems); n > maxReportedProblems {
+		problems = append(problems[:maxReportedProblems], fmt.Errorf("等 %d 处", n))
 	}
 	if len(problems) > 0 {
 		return nil, nil, fmt.Errorf("%w: %w", ErrInvalidTemplate, errors.Join(problems...))

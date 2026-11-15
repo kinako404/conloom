@@ -180,8 +180,20 @@ func (s *Server) exportAllTemplates(w http.ResponseWriter, r *http.Request, sess
 
 // exportTemplates answers the persona templates names, all of them when
 // none, as an exchange file (see persona.Service.Export) to save as
-// filename, and audits the export for target with the names exported.
+// filename, and audits the export for target with the names exported. HEAD
+// only answers the headers, or 404 for an unknown name: it neither builds the
+// file nor audits an export.
 func (s *Server) exportTemplates(w http.ResponseWriter, r *http.Request, sess *Session, names []string, target, filename string) {
+	if r.Method == http.MethodHead {
+		for _, name := range names {
+			if _, ok := s.d.Personas.Template(name); !ok {
+				s.writeError(w, r, http.StatusNotFound, conloomapi.CodeNotFound, "not found")
+				return
+			}
+		}
+		writeDownloadHeaders(w, filename)
+		return
+	}
 	f, err := s.d.Personas.Export(r.Context(), names)
 	if err != nil {
 		s.fail(w, r, err)
@@ -194,12 +206,18 @@ func (s *Server) exportTemplates(w http.ResponseWriter, r *http.Request, sess *S
 	s.audit(r, sess, "", "persona.template.export", target, struct {
 		Templates []string `json:"templates"`
 	}{exported})
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Disposition", attachment(filename))
-	w.WriteHeader(http.StatusOK)
+	writeDownloadHeaders(w, filename)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(f)
+}
+
+// writeDownloadHeaders answers 200 with the headers of a JSON file to save as
+// filename.
+func writeDownloadHeaders(w http.ResponseWriter, filename string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", attachment(filename))
+	w.WriteHeader(http.StatusOK)
 }
 
 // attachment is the Content-Disposition of a download saved as filename. A
@@ -230,12 +248,18 @@ type importedTemplate struct {
 // on_conflict, fail by default, overwrite or rename, decides what happens to
 // a template whose name a stored template has; with fail, such names are 409
 // TEMPLATE_EXISTS listing them. A body over 64 MiB is 413; one that is not one
-// JSON value of known fields, and a file Import refuses, are 400. Once the
-// body is read, the import takes the image upload slot and holds it until
-// Import has returned: while another upload or import holds it, the request
-// is a retryable 409 CHAT_BUSY. The import is audited with the names, never
-// the personas or images.
+// JSON value of known fields, or has more than persona.MaxExchangeTemplates
+// templates, and a file Import refuses, are 400. Before it reads the body,
+// the import takes the image upload slot, and it holds it until Import has
+// returned, so at most one import file is in memory: while another upload or
+// import holds it, the request is a retryable 409 CHAT_BUSY, its body unread.
+// The import is audited with the names, never the personas or images.
 func (s *Server) importTemplates(w http.ResponseWriter, r *http.Request, sess *Session) {
+	release, ok := s.tryImageSlot(w, r, s.imageUploads)
+	if !ok {
+		return
+	}
+	defer release()
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxImportBytes))
 	if mbe := (*http.MaxBytesError)(nil); errors.As(err, &mbe) {
 		s.writeError(w, r, http.StatusRequestEntityTooLarge, conloomapi.CodeInvalidEvent,
@@ -247,15 +271,16 @@ func (s *Server) importTemplates(w http.ResponseWriter, r *http.Request, sess *S
 		return
 	}
 	var f persona.ExchangeFile
-	if err := decodeJSON(bytes.NewReader(data), &f); err != nil {
+	err = decodeJSON(bytes.NewReader(data), &f)
+	if errors.Is(err, persona.ErrTooManyTemplates) {
+		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
+			fmt.Sprintf("一个文件最多 %d 个模板", persona.MaxExchangeTemplates))
+		return
+	}
+	if err != nil {
 		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "invalid JSON body: "+err.Error())
 		return
 	}
-	release, ok := s.tryImageSlot(w, r, s.imageUploads)
-	if !ok {
-		return
-	}
-	defer release()
 	mode := persona.ConflictMode(r.URL.Query().Get("on_conflict"))
 	if mode == "" {
 		mode = persona.ConflictFail

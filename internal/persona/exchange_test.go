@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"image"
 	"image/color"
@@ -149,7 +150,7 @@ func TestExchange_RoundTripSameImageID(t *testing.T) {
 		f.ExportedAt.Location() != time.UTC {
 		t.Errorf("exported file header = %q v%d at %v", f.Format, f.Version, f.ExportedAt)
 	}
-	want := []ExchangeTemplate{
+	want := ExchangeTemplates{
 		{Name: "cat", Persona: cat},
 		{Name: "default", Persona: conloomapi.DefaultPersona()},
 		{Name: "lighthouse", Persona: lighthouse, AppearanceImage: &ExchangeImage{MIME: "image/png", Data: base64.StdEncoding.EncodeToString(data)}},
@@ -210,7 +211,7 @@ func TestExport_BuiltinDefault(t *testing.T) {
 	st := newTestStore(t)
 	svc := NewService(st)
 	loadTemplates(t, svc)
-	builtin := []ExchangeTemplate{{Name: "default", Persona: conloomapi.DefaultPersona()}}
+	builtin := ExchangeTemplates{{Name: "default", Persona: conloomapi.DefaultPersona()}}
 	for _, names := range [][]string{nil, {}, {"default"}, {"default", "default"}} {
 		f, err := svc.Export(ctx, names)
 		if err != nil {
@@ -229,7 +230,7 @@ func TestExport_BuiltinDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	f, err := svc.Export(ctx, []string{"default"})
-	if err != nil || !reflect.DeepEqual(f.Templates, []ExchangeTemplate{{Name: "default", Persona: stored}}) {
+	if err != nil || !reflect.DeepEqual(f.Templates, ExchangeTemplates{{Name: "default", Persona: stored}}) {
 		t.Errorf("Export of the stored default = %+v, %v; want the stored one", f.Templates, err)
 	}
 }
@@ -251,7 +252,7 @@ func TestExport_MissingImage(t *testing.T) {
 	}
 	without := gone
 	without.AppearanceImage = ""
-	if !reflect.DeepEqual(f.Templates, []ExchangeTemplate{{Name: "migrated", Persona: without}}) {
+	if !reflect.DeepEqual(f.Templates, ExchangeTemplates{{Name: "migrated", Persona: without}}) {
 		t.Errorf("exported = %+v, want the persona without its missing image", f.Templates)
 	}
 	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), gone.AppearanceImage) {
@@ -510,6 +511,117 @@ func TestImport_RejectsWrongFormatOrVersion(t *testing.T) {
 	if _, err := svc.Import(ctx, good, ConflictFail, "panel:admin"); err != nil {
 		t.Errorf("Import of the good file: %v", err)
 	}
+}
+
+// exchangeJSON is an exchange file whose templates are the JSON values
+// entries.
+func exchangeJSON(entries []string) []byte {
+	return []byte(`{"format":"conloom.persona-template","version":1,"exported_at":"2026-11-15T04:00:00Z","templates":[` +
+		strings.Join(entries, ",") + "]}")
+}
+
+// tinyEntries are n minimal templates t000, t001, … as JSON values.
+func tinyEntries(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = fmt.Sprintf(`{"name":"t%03d","persona":{}}`, i)
+	}
+	return out
+}
+
+func TestExchangeFile_DecodeStopsOverMaxTemplates(t *testing.T) {
+	var f ExchangeFile
+	if err := json.Unmarshal(exchangeJSON(tinyEntries(200)), &f); err != nil || len(f.Templates) != 200 ||
+		f.Templates[199].Name != "t199" {
+		t.Fatalf("decode of 200 templates = %d templates, %v; want all of them", len(f.Templates), err)
+	}
+
+	// Were the template over the limit decoded, its unknown field would be
+	// the error, or the wrong type of the one after it.
+	over := append(tinyEntries(200), `{"name":"t200","persona":{},"extra":1}`, `{"name":5}`)
+	f = ExchangeFile{}
+	err := json.Unmarshal(exchangeJSON(over), &f)
+	if !errors.Is(err, ErrTooManyTemplates) || !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "一个文件最多 200 个模板") {
+		t.Errorf("decode of 202 templates err = %v, want ErrTooManyTemplates", err)
+	}
+	if len(f.Templates) != 0 {
+		t.Errorf("decode of 202 templates kept %d of them", len(f.Templates))
+	}
+
+	for _, c := range []struct{ name, templates, want string }{
+		{"unknown field", `[{"name":"a","persona":{},"extra":1}]`, "unknown field"},
+		{"unknown persona field", `[{"name":"a","persona":{"extra":1}}]`, "unknown field"},
+		{"wrong type", `[{"name":5}]`, "cannot unmarshal"},
+		{"object", `{"name":"a"}`, "templates must be a JSON array"},
+		{"string", `"a"`, "templates must be a JSON array"},
+	} {
+		var f ExchangeFile
+		raw := `{"format":"conloom.persona-template","version":1,"templates":` + c.templates + `}`
+		if err := json.Unmarshal([]byte(raw), &f); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want it to say %q", c.name, err, c.want)
+		}
+	}
+	f = ExchangeFile{Templates: ExchangeTemplates{{Name: "old"}}}
+	if err := json.Unmarshal([]byte(`{"templates":null}`), &f); err != nil || f.Templates != nil {
+		t.Errorf("decode of null templates = %+v, %v; want none", f.Templates, err)
+	}
+	if err := json.Unmarshal([]byte(`{"templates":[]}`), &f); err != nil || len(f.Templates) != 0 {
+		t.Errorf("decode of no templates = %+v, %v; want none", f.Templates, err)
+	}
+}
+
+func TestImport_TooManyTemplates(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := newServiceWith(t, st, nil)
+	imports := countImports(svc)
+	// Every template is wrong, but the file is refused for its size before
+	// any of them is looked at.
+	bad := ExchangeTemplate{Name: "Bad Name", Persona: tagged("坏"), AppearanceImage: &ExchangeImage{MIME: "image/png", Data: "!!!"}}
+	f := exchangeFile(slices.Repeat([]ExchangeTemplate{bad}, MaxExchangeTemplates+1)...)
+	for _, mode := range []ConflictMode{ConflictFail, ConflictOverwrite, ConflictRename} {
+		results, err := svc.Import(ctx, f, mode, "panel:admin")
+		if !errors.Is(err, ErrTooManyTemplates) || !errors.Is(err, ErrInvalid) || errors.Is(err, ErrInvalidTemplate) || results != nil {
+			t.Fatalf("Import (%s) of 201 templates = %+v, %v; want ErrTooManyTemplates", mode, results, err)
+		}
+		if strings.Contains(err.Error(), "templates[") || len(err.Error()) > 100 {
+			t.Errorf("Import (%s) of 201 templates err = %v, want no template checked", mode, err)
+		}
+	}
+	checkUnchanged(t, st, svc, []string{})
+	if n := imports(); n != 0 {
+		t.Errorf("OnImport called %d times by refused imports", n)
+	}
+}
+
+func TestImport_ProblemListCapped(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := newServiceWith(t, st, nil)
+	for _, c := range []struct {
+		n    int
+		more string
+	}{{20, ""}, {21, "等 21 处"}, {MaxExchangeTemplates, "等 200 处"}} {
+		templates := make([]ExchangeTemplate, c.n)
+		for i := range templates {
+			templates[i] = exchangeTemplate(fmt.Sprintf("Bad%d", i), tagged("坏"), nil)
+		}
+		_, err := svc.Import(ctx, exchangeFile(templates...), ConflictFail, "panel:admin")
+		if !errors.Is(err, ErrInvalidTemplate) {
+			t.Fatalf("Import of %d bad templates err = %v, want ErrInvalidTemplate", c.n, err)
+		}
+		msg := err.Error()
+		if got := strings.Count(msg, "name must be"); got != 20 {
+			t.Errorf("Import of %d bad templates lists %d problems, want the first 20: %s", c.n, got, msg)
+		}
+		if !strings.Contains(msg, `templates[19] "Bad19"`) || strings.Contains(msg, "templates[20]") {
+			t.Errorf("Import of %d bad templates err = %s, want templates[0] to [19]", c.n, msg)
+		}
+		if c.more == "" && strings.Contains(msg, "等") || c.more != "" && !strings.HasSuffix(msg, "\n"+c.more) {
+			t.Errorf("Import of %d bad templates err ends %q, want %q", c.n, msg[max(0, len(msg)-40):], c.more)
+		}
+	}
+	checkUnchanged(t, st, svc, []string{})
 }
 
 func TestImport_DuplicateNamesInFile(t *testing.T) {

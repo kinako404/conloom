@@ -152,7 +152,7 @@ panel:
 - **恢复和删除**：`default` 只能“恢复为内置默认”（`POST …/reset`，删掉数据库里的 `default`），不能删除，删除返回 403。其他模板只能删除，恢复返回 400；还有 bot（配置 bot 或面板 bot）用它作默认模板时返回 409 `TEMPLATE_IN_USE`，`message` 列出这些 bot（如“bot 织语（qq-main）、小红 还在用这个模板”，配置 bot 带 ID），先把这些 bot 改用别的模板。
 - **已有会话不变**：会话第一次回复时把模板复制成自己的人设，之后各自独立。改模板只影响之后新建的会话；要更新已有会话，在会话的“人设”页套用模板。
 - **bot**：模板写入、恢复、删除或导入后，配置 bot 和面板 bot 按新的目录重新生效：引用的模板重新出现时，“人设模板“x”已不存在”的说明随之消失。
-- **导出**：`GET persona-templates/{name}/export` 下载一个模板，`GET persona-templates/export` 下载全部模板（没有保存过 `default` 时包括内置的那份）。响应是 JSON 文件（`Content-Disposition: attachment`），文件名分别是 `persona-<模板名>.json` 和 `persona-templates-<YYYYMMDD>.json`（`server.timezone` 的当地日期）；模板不存在返回 404。两种导出格式相同，只是 `templates` 里的项数不同：
+- **导出**：`GET persona-templates/{name}/export` 下载一个模板，`GET persona-templates/export` 下载全部模板（没有保存过 `default` 时包括内置的那份）。响应是 JSON 文件（`Content-Disposition: attachment`），文件名分别是 `persona-<模板名>.json` 和 `persona-templates-<YYYYMMDD>.json`（`server.timezone` 的当地日期）；模板不存在返回 404。`HEAD` 只返回这些响应头（模板不存在时同样是 404），不生成文件，也不写审计。两种导出格式相同，只是 `templates` 里的项数不同：
 
   ```json
   {"format":"conloom.persona-template","version":1,"exported_at":"2026-11-15T04:00:00Z",
@@ -161,13 +161,13 @@ panel:
   ```
 
   外观图以原图的标准 base64 嵌在文件里，没有参考图时省略 `appearance_image`；人设保留原来的图片 ID。文件里没有操作者和修改时间。模板引用的图片已经不存在时（从旧配置文件迁移来的模板可能这样），导出的人设去掉这个 ID，服务端记一条警告。
-- **导入**：`POST persona-templates/import?on_conflict=` 的请求体就是导出的文件本身（不是表单），单个模板和全部模板的文件都可以，最多 64 MiB，超过返回 413。先整体检查，任何一项不合格就返回 400，一项都不写：`format` 和 `version` 必须是上面的值；不能有多余的字段；模板名必须是 1–32 个小写字母、数字、`-` 或 `_`，不能是 `export` 或 `import`，同一个文件里不能重名；人设的校验和修改模板相同（字数上限，`minor` 和 `adult` 不能同时为真）；内嵌的图片必须是标准 base64，格式和尺寸的要求同上传图片（按字节判断类型，不看 `mime`）；没有内嵌图片的人设引用的图片必须已经上传过，或者内嵌在同一个文件的其他模板里。内嵌图片按上传处理，ID 按内容重算，写进人设的 `appearance_image`。
+- **导入**：`POST persona-templates/import?on_conflict=` 的请求体就是导出的文件本身（不是表单），单个模板和全部模板的文件都可以，最多 64 MiB，超过返回 413。一个文件最多 200 个模板：解析到第 201 个就停下，返回 400“一个文件最多 200 个模板”，不再检查其中的模板。先整体检查，任何一项不合格就返回 400，一项都不写，说明里最多列出前 20 处问题，更多时最后注明“等 N 处”（N 是问题总数）：`format` 和 `version` 必须是上面的值；不能有多余的字段；模板名必须是 1–32 个小写字母、数字、`-` 或 `_`，不能是 `export` 或 `import`，同一个文件里不能重名；人设的校验和修改模板相同（字数上限，`minor` 和 `adult` 不能同时为真）；内嵌的图片必须是标准 base64，格式和尺寸的要求同上传图片（按字节判断类型，不看 `mime`）；没有内嵌图片的人设引用的图片必须已经上传过，或者内嵌在同一个文件的其他模板里。内嵌图片按上传处理，ID 按内容重算，写进人设的 `appearance_image`。
   - 同名：只有数据库里已存的模板算同名，内置的 `default` 不算（导入的 `default` 直接存进数据库，取代内置的那份）。`on_conflict` 决定怎么处理：`fail`（默认）返回 409 `TEMPLATE_EXISTS`，`error.names` 列出同名的模板，什么都不写；`overwrite` 覆盖同名模板；`rename` 改名导入，用 `名字-2`、`名字-3`……中第一个没被占用的（文件里的名字也算占用），超过 32 个字符时先截短名字。其他值返回 400。
   - 图片和模板在一个事务里写入。返回 `{"templates":[{"name","requested","created"}]}`，按文件里的顺序：`name` 是最后用的名字，`requested` 是文件里的名字，`created` 为 false 表示覆盖了已有模板。
 - **上传图片**：`POST persona-images` 的请求体就是图片文件本身（不是表单），最多 8 MiB，超过返回 413。格式按文件开头的字节判断，不看 `Content-Type`，只接受 PNG 和 JPEG；宽和高都不能超过 8000 像素、总共不超过 2500 万像素，先读文件头检查尺寸、再解码，不合格返回 400，什么都不存。有透明部分的 PNG 铺在白底上；JPEG 的方向标记（EXIF orientation）不处理，按像素原样使用。服务器存原图，另存一份长边不超过 768 像素、质量 85 的 JPEG 给回复模型用，返回 201 `{"id","width","height","reply_tokens"}`：`id` 是原图内容的 SHA-256（同一张图再传一次得到同一个 ID），`reply_tokens` 是缩小图按 `ceil(宽/28) × ceil(高/28) + 2` 估算的 token。
 - **取图**：`GET persona-images/{id}` 默认返回缩小图（`image/jpeg`），`?size=original` 返回原图（按上传时识别的类型）。
 - **生成外观介绍**：`POST persona-images/{id}/describe` 把原图缩到长边不超过 1536 像素发给识图模型 `model_profiles.vision`（见 [配置：model_profiles](configuration.md#model_profiles)），返回 `{"text"}`，不自动保存，确认后写进人设的“外观描述”再保存。没有配置 `vision` 时返回 503 `MODEL_UNAVAILABLE`“未配置识图模型”（`retryable: false`，重试没有用，要改配置）；40 秒内没有完成返回 504（`retryable: true`）、模型调用失败返回 502，都是 `MODEL_UNAVAILABLE`，细节只写日志；图片不存在返回 404。用量按用途 `vision` 记录。
-- **一次一张**：解码一张大图要几百 MB 内存，所以上传和生成外观介绍各自同时只处理一个请求，导入模板和上传共用一个名额，从开始处理文件里的图片到导入结束一直占着；另一个请求同时到达时直接返回 409 `CHAT_BUSY`（`retryable: true`）“正在处理另一张图片，请稍后”，不排队。
+- **一次一张**：解码一张大图要几百 MB 内存，所以上传和生成外观介绍各自同时只处理一个请求，导入模板和上传共用一个名额。导入在读请求体之前就占上这个名额，直到导入结束（文件上传的时间也算在内），所以同时只有一个导入文件在内存里；被拒的导入不读请求体。另一个请求同时到达时直接返回 409 `CHAT_BUSY`（`retryable: true`）“正在处理另一张图片，请稍后”，不排队。
 - **清理**：没有被任何模板或会话人设版本（包括历史版本）引用的图片，上传满 7 天后由每小时的维护任务删除。刚上传、还没保存进人设的图片有这 7 天的余地；同一张图再上传一次重新计时。
 - **审计**：模板写入、恢复、删除分别写 `persona.template.put`、`persona.template.reset`、`persona.template.delete`，目标是模板名，`put` 的内容是写入后的来源 `source`、是否新建 `created` 和原因 `reason`。导出写 `persona.template.export`，目标是模板名（导出全部时为空），内容是导出的模板名 `templates`。导入成功时写 `persona.template.import`，目标为空，内容是冲突方式 `on_conflict`、新建的 `created` 和覆盖的 `overwritten`（都是最后用的名字），改过名时另有 `renamed`（文件里的名字对应最后用的名字）；人设内容和图片不进审计。上传写 `persona.image.upload`，目标是图片 ID，内容是类型、宽高、字节数和 `reply_tokens`。生成外观介绍成功时写 `persona.appearance.describe`，目标是图片 ID，内容只有生成文字的字数 `chars`。都不属于某个 bot（`bot_instance_id` 为空），图片内容和生成的文字都不进审计和日志。
 
@@ -265,8 +265,8 @@ panel:
 | `GET conversations/{key}/autonomy` | 私聊的状态、状态条、最近的状态条变化和主动找人的情况，与 `GET /api/v1/conversations/{id}/autonomy` 相同（见 [HTTP API：自主状态](api.md#自主状态)）；不是私聊返回 400 |
 | `GET persona-templates` | 人设模板目录 `templates`，按名字排序。每项 `name`、`source`（`db` 或 `builtin`）、`persona_name`、`character_name`、`appearance_image`（没有参考图时为空字符串）、`users`（运行时用它作默认模板的 bot，每项 `id`、`name`、`source`，没有时为空列表）、`updated_by` 和 `updated_at`（最后写入的人和时间，内置的 `default` 为空字符串和 `null`） |
 | `GET persona-templates/{name}` | 单个模板：列表里的字段，加上整份人设 `persona`；不存在返回 404 |
-| `GET persona-templates/{name}/export` | 下载这个模板的导出文件 `persona-<模板名>.json`，不存在返回 404；写审计 `persona.template.export`。见 [人设模板和外观参考图](#人设模板和外观参考图) |
-| `GET persona-templates/export` | 下载全部模板的导出文件 `persona-templates-<YYYYMMDD>.json`（`server.timezone` 的当地日期）；写审计 `persona.template.export` |
+| `GET persona-templates/{name}/export` | 下载这个模板的导出文件 `persona-<模板名>.json`，不存在返回 404；写审计 `persona.template.export`（`HEAD` 只返回响应头，不写审计）。见 [人设模板和外观参考图](#人设模板和外观参考图) |
+| `GET persona-templates/export` | 下载全部模板的导出文件 `persona-templates-<YYYYMMDD>.json`（`server.timezone` 的当地日期）；写审计 `persona.template.export`（`HEAD` 只返回响应头，不写审计） |
 | `GET persona-images/{id}?size=` | 图片本身：`size` 为 `reply`（默认，缩小图，`image/jpeg`）或 `original`（原图，`image/png` 或 `image/jpeg`）；其他值返回 400，图片不存在返回 404 |
 | `GET tasks?status=&bot=&conversation=&before=&limit=` | 任务列表 |
 | `GET tasks/{id}` | 任务详情：任务、meta、动作、模型调用 |
@@ -295,7 +295,7 @@ panel:
 | `PUT persona-templates/{name}` | 请求 `{"persona","reason"}`（`persona` 必填，是整份人设，`reason` 只进审计），覆盖同名模板或新建模板；返回模板，格式同 `GET persona-templates/{name}`，新建时 201，否则 200。名字或内容不合规则、图片不存在返回 400 |
 | `POST persona-templates/{name}/reset` | 只对 `default` 有效：删掉数据库里的 `default`，返回内置的默认人设；没有保存过时照样返回 200。其他名字返回 400 |
 | `DELETE persona-templates/{name}` | 删除模板，返回 204；`default` 返回 403 `FORBIDDEN`，还有 bot 在用返回 409 `TEMPLATE_IN_USE`（`message` 列出这些 bot），不存在返回 404 |
-| `POST persona-templates/import?on_conflict=` | 请求体是导出的文件本身，最多 64 MiB；`on_conflict` 为 `fail`（默认）、`overwrite` 或 `rename`。返回 `{"templates":[{"name","requested","created"}]}`；超过 64 MiB 返回 413，文件有任何问题返回 400、一项都不写，`fail` 时有同名模板返回 409 `TEMPLATE_EXISTS`（`names` 列出它们），正在处理另一张图片时返回 409 `CHAT_BUSY`。见 [人设模板和外观参考图](#人设模板和外观参考图) |
+| `POST persona-templates/import?on_conflict=` | 请求体是导出的文件本身，最多 64 MiB；`on_conflict` 为 `fail`（默认）、`overwrite` 或 `rename`。返回 `{"templates":[{"name","requested","created"}]}`；超过 64 MiB 返回 413，超过 200 个模板或文件有任何问题返回 400、一项都不写，`fail` 时有同名模板返回 409 `TEMPLATE_EXISTS`（`names` 列出它们），正在处理另一张图片时返回 409 `CHAT_BUSY`。见 [人设模板和外观参考图](#人设模板和外观参考图) |
 | `POST persona-images` | 请求体是 PNG 或 JPEG 文件本身，最多 8 MiB，返回 201 `{"id","width","height","reply_tokens"}`；超过 8 MiB 返回 413，格式或尺寸不合格返回 400，正在处理另一张图片时返回 409 `CHAT_BUSY`。见 [人设模板和外观参考图](#人设模板和外观参考图) |
 | `POST persona-images/{id}/describe` | 用识图模型生成外观介绍，返回 `{"text"}`，不保存；图片不存在返回 404，正在生成另一张时返回 409 `CHAT_BUSY`，没有配置 `vision` 返回 503、超时 504、模型调用失败 502（都是 `MODEL_UNAVAILABLE`） |
 

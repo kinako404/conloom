@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -467,6 +470,36 @@ func TestTemplatesAPI_ExportHeadersAndBody(t *testing.T) {
 	}
 }
 
+func TestTemplatesAPI_ExportHead(t *testing.T) {
+	h := newBotsHarness(t)
+	// HEAD answers the headers of the download without building the file or
+	// auditing an export.
+	paths := []string{templatePath("cat", "export"), templatePath("default", "export"), templatesExportPath}
+	heads := make([]*httptest.ResponseRecorder, len(paths))
+	for i, p := range paths {
+		heads[i] = h.do(http.MethodHead, p, "", withCookie(h.cookie))
+	}
+	w := h.do(http.MethodHead, templatePath("nope", "export"), "", withCookie(h.cookie))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("HEAD of an unknown template's export = %d, want 404", w.Code)
+	}
+	if n := len(h.audits("persona.template.export")); n != 0 {
+		t.Errorf("HEAD wrote %d export audits, want none", n)
+	}
+	for i, p := range paths {
+		head, get := heads[i], h.get(p)
+		if head.Code != http.StatusOK || head.Body.Len() != 0 {
+			t.Errorf("HEAD %s = %d with %d bytes, want 200 without a body", p, head.Code, head.Body.Len())
+		}
+		for _, k := range []string{"Content-Type", "Content-Disposition", "Cache-Control"} {
+			if got, want := head.Header().Get(k), get.Header().Get(k); got != want || want == "" {
+				t.Errorf("HEAD %s %s = %q, want %q as GET", p, k, got, want)
+			}
+		}
+	}
+	checkTemplateAudits(t, h, "persona.template.export", "cat", "default", "")
+}
+
 func TestTemplatesAPI_ExportAll(t *testing.T) {
 	h := newBotsHarness(t)
 	h.srv.d.Location = time.FixedZone("UTC+8", 8*60*60)
@@ -683,6 +716,44 @@ func TestTemplatesAPI_ImportHoldsImageSlot(t *testing.T) {
 	decodeUpload(t, h.upload(png, "image/png"))
 }
 
+// readSpy is a request body that records whether it was read.
+type readSpy struct {
+	io.Reader
+	read atomic.Bool
+}
+
+func (r *readSpy) Read(p []byte) (int, error) {
+	r.read.Store(true)
+	return r.Reader.Read(p)
+}
+
+func TestTemplatesAPI_ImportBusyBeforeReadingBody(t *testing.T) {
+	h := newBotsHarness(t)
+	raw := mustJSON(t, exchangeFile(persona.ExchangeTemplate{Name: "owl", Persona: lighthousePersona()}))
+	post := func(body *readSpy) *httptest.ResponseRecorder {
+		return h.do(http.MethodPost, importPath(""), "", withCookie(h.cookie), withCSRF(h.csrf),
+			func(r *http.Request) { r.Body, r.ContentLength = io.NopCloser(body), int64(len(raw)) })
+	}
+
+	// While another image is processed, an import is refused before its body
+	// is read, so waiting imports hold no file in memory.
+	h.srv.imageUploads <- struct{}{}
+	busy := &readSpy{Reader: strings.NewReader(raw)}
+	e := errorBody(t, post(busy), http.StatusConflict, conloomapi.CodeChatBusy)
+	if !e.Retryable || e.Message != "正在处理另一张图片，请稍后" {
+		t.Errorf("busy import = %+v", e)
+	}
+	if busy.read.Load() {
+		t.Error("busy import read the request body")
+	}
+	<-h.srv.imageUploads
+
+	free := &readSpy{Reader: strings.NewReader(raw)}
+	if got := decodeImport(t, post(free)); !reflect.DeepEqual(got, []importedResp{{"owl", "owl", true}}) || !free.read.Load() {
+		t.Errorf("import with the slot free = %+v, body read %v", got, free.read.Load())
+	}
+}
+
 func TestTemplatesAPI_ImportTooLarge413(t *testing.T) {
 	h := newBotsHarness(t)
 	// A good file, padded to one byte over the limit.
@@ -697,6 +768,49 @@ func TestTemplatesAPI_ImportTooLarge413(t *testing.T) {
 	}
 	if n := len(h.audits("persona.template.import")); n != 0 {
 		t.Errorf("import audits = %d, want 0", n)
+	}
+}
+
+func TestTemplatesAPI_ImportTooManyTemplates(t *testing.T) {
+	h := newBotsHarness(t)
+	imports := 0
+	load := h.srv.d.PanelBots.Load
+	h.personas.SetOnImport(func(ctx context.Context) error {
+		imports++
+		return load(ctx)
+	})
+	before := h.templates()
+	// Every template has a wrong name and an image that is not base64, and
+	// the one over the limit an unknown field: the file is refused for its
+	// size alone, before any template is checked.
+	entries := make([]string, persona.MaxExchangeTemplates+1)
+	for i := range entries {
+		entries[i] = fmt.Sprintf(`{"name":"Bad %d","persona":{},"appearance_image":{"mime":"image/png","data":"%%%%%%"}}`, i)
+	}
+	entries[persona.MaxExchangeTemplates] = `{"name":"t200","persona":{},"extra":1}`
+	body := `{"format":"conloom.persona-template","version":1,"exported_at":"2026-11-15T04:00:00Z","templates":[` +
+		strings.Join(entries, ",") + `]}`
+	for _, mode := range []string{"", "overwrite", "rename"} {
+		e := errorBody(t, h.write(http.MethodPost, importPath(mode), body), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+		if e.Message != "一个文件最多 200 个模板" || e.Retryable {
+			t.Errorf("import (%q) of 201 templates = %+v, want 一个文件最多 200 个模板", mode, e)
+		}
+	}
+	if after := h.templates(); !reflect.DeepEqual(after, before) {
+		t.Errorf("templates after refused imports = %+v, want %+v", after, before)
+	}
+	if n := len(h.audits("persona.template.import")); n != 0 || imports != 0 {
+		t.Errorf("refused imports: %d audits, %d imports; want none", n, imports)
+	}
+
+	// 200 templates are imported.
+	full := make([]persona.ExchangeTemplate, persona.MaxExchangeTemplates)
+	for i := range full {
+		full[i] = persona.ExchangeTemplate{Name: fmt.Sprintf("t%03d", i), Persona: lighthousePersona()}
+	}
+	if got := decodeImport(t, h.write(http.MethodPost, importPath(""), mustJSON(t, exchangeFile(full...)))); len(got) != 200 ||
+		got[199] != (importedResp{"t199", "t199", true}) {
+		t.Errorf("import of 200 templates = %d results, want all of them created", len(got))
 	}
 }
 
