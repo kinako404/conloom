@@ -80,8 +80,8 @@ func cutBlock(s string, header, line *regexp.Regexp) (string, bool) {
 }
 
 // StripTranscriptPrefix removes the prompt's transcript formatting that a
-// model echoed at the start of its reply: the AppearanceLabel line,
-// repeated "[HH:MM] 名字：" prefixes
+// model echoed at the start of its reply: the AppearanceLabel line, repeated
+// "[HH:MM] 名字：" prefixes
 // (with or without their "（回复 …）" and "（@了 …）" annotations), the
 // 【当前消息】 and 【近期消息…】 header lines, the 【你记得的事…】 header with the
 // summary, note and closing lines after it, the 【你的状态…】 header with the
