@@ -10,11 +10,14 @@ import (
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
-// MessageHit is a message found by SearchMessages. A higher Score is more
-// relevant; scores are only comparable within one search.
+// MessageHit is a message found by SearchMessages or SearchMessagesIn. A
+// higher Score is more relevant; scores are only comparable within one
+// search. ConversationKey is the message's conversation, set by
+// SearchMessagesIn only.
 type MessageHit struct {
-	Seq   int64
-	Score float64
+	ConversationKey string
+	Seq             int64
+	Score           float64
 }
 
 var (
@@ -259,6 +262,10 @@ type Store interface {
 	// first by bm25 and newest first among equals, and returns up to limit of
 	// them after skipping offset.
 	SearchMessages(ctx context.Context, convKey string, terms []string, r search.Range, offset, limit int) ([]MessageHit, error)
+	// SearchMessagesIn is SearchMessages over the messages of all of convKeys
+	// together (the chats of a shared memory scope), each hit with its
+	// ConversationKey; none without convKeys.
+	SearchMessagesIn(ctx context.Context, convKeys []string, terms []string, r search.Range, offset, limit int) ([]MessageHit, error)
 	// MessagesAround returns the conversation's messages with fromSeq <= Seq <=
 	// toSeq, plus up to before messages preceding them and up to after
 	// following them, ordered by Seq ascending.

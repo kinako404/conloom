@@ -55,6 +55,7 @@ const (
 	recallReplyWindow = 2 * time.Minute
 	recallDateLayout  = "2006-01-02"
 	recallNotFound    = "没有找到相关的聊天记录。"
+	recallOtherChat   = "（另一段聊天）"
 	recallNoName      = "一位群友"
 	recallBadDate     = "after 和 before 需要是 YYYY-MM-DD 格式的日期。"
 )
@@ -65,7 +66,9 @@ var recallVectorTimeout = 3 * time.Second
 
 // RecallStore is the part of store.Store that recall reads.
 type RecallStore interface {
+	memory.ScopeStore
 	SearchMessages(ctx context.Context, convKey string, terms []string, r search.Range, offset, limit int) ([]store.MessageHit, error)
+	SearchMessagesIn(ctx context.Context, convKeys []string, terms []string, r search.Range, offset, limit int) ([]store.MessageHit, error)
 	MessagesAround(ctx context.Context, convKey string, fromSeq, toSeq int64, before, after int) ([]store.MessageRecord, error)
 	ListMemberMemories(ctx context.Context, convKey string) ([]store.MemberMemory, error)
 }
@@ -97,19 +100,20 @@ type recallTool struct {
 // invocation's conversation when memory is in effect, optionally within a
 // range of local dates.
 //
-// The keyword index gives the best 50 messages and, when Vectors is set,
-// semantic search the best 6 stretches, which may come from any chat of the
-// conversation's memory scope (every panel chat of the bot for a panel chat;
-// search.VectorSearcher) and are shown from their own chat; reciprocal rank
-// fusion (k = 60) with a slight preference for newer hits ranks them,
-// overlapping hits of one chat counting together and stretches only semantic
-// search found at half weight. In a private chat whose speaker was forgotten,
-// both searches start at that time. Candidates are expanded in turn until 6
-// groups can be shown, reading up to 3 more pages of keyword hits when the
-// first leaves fewer: a message hit with 2 messages of context on either
-// side, a stretch whole, groups that touch merged, each group under a
-// "—— YYYY-MM-DD ——" line, in time order, as "[MM-DD HH:MM] 名字：正文"
-// lines, at most 1500 runes, without any IDs.
+// Both searches cover the conversation's memory scope (memory.ScopeChats):
+// a panel chat searches every panel chat of its bot, any other conversation
+// itself. The keyword index gives the best 50 messages and, when Vectors is
+// set, semantic search the best 6 stretches, each shown from its own chat;
+// reciprocal rank fusion (k = 60) with a slight preference for newer hits
+// ranks them, overlapping hits of one chat counting together and stretches
+// only semantic search found at half weight. In a private chat whose speaker
+// was forgotten, both searches start at that time. Candidates are expanded
+// in turn until 6 groups can be shown, reading up to 3 more pages of keyword
+// hits when the first leaves fewer: a message hit with 2 messages of context
+// on either side, a stretch whole, groups of one chat that touch merged, each
+// group under a "—— YYYY-MM-DD ——" line, or "—— YYYY-MM-DD（另一段聊天）——"
+// for one from another chat of the scope, in time order, as
+// "[MM-DD HH:MM] 名字：正文" lines, at most 1500 runes, without any IDs.
 //
 // Never shown are commands and the bot's replies to them, messages blocked
 // by the conversation's review, the current turn (the trigger messages, or
@@ -176,13 +180,18 @@ func (t *recallTool) Call(ctx context.Context, inv skills.Invocation, args json.
 	if !on {
 		return "这个会话没有开启记忆。", nil
 	}
-	members, err := t.d.Store.ListMemberMemories(ctx, memory.ScopeKeyOf(inv.ConversationKey))
+	scope := memory.ScopeKeyOf(inv.ConversationKey)
+	members, err := t.d.Store.ListMemberMemories(ctx, scope)
+	if err != nil {
+		return "", err
+	}
+	chats, err := memory.ScopeChats(ctx, t.d.Store, scope)
 	if err != nil {
 		return "", err
 	}
 	rng = sinceForgotten(rng, members, inv)
 	terms := search.Terms(query, keywords)
-	keyword, err := t.keywordHits(ctx, inv.ConversationKey, terms, rng, 0)
+	keyword, err := t.keywordHits(ctx, inv.ConversationKey, chats, terms, rng, 0)
 	if err != nil {
 		return "", err
 	}
@@ -211,7 +220,7 @@ func (t *recallTool) Call(ctx context.Context, inv skills.Invocation, args json.
 		return "", err
 	}
 	for page := 1; page <= recallMorePages && len(groups) < t.maxGroups && len(keyword) == recallKeywordHits; page++ {
-		if keyword, err = t.keywordHits(ctx, inv.ConversationKey, terms, rng, page*recallKeywordHits); err != nil {
+		if keyword, err = t.keywordHits(ctx, inv.ConversationKey, chats, terms, rng, page*recallKeywordHits); err != nil {
 			return "", err
 		}
 		if err := expand(fuse(keyword, page*recallKeywordHits, nil)); err != nil {
@@ -304,14 +313,26 @@ func sinceForgotten(r search.Range, members []store.MemberMemory, inv skills.Inv
 	return r
 }
 
-// keywordHits searches the keyword index from offset, timing it as path
-// "keyword".
-func (t *recallTool) keywordHits(ctx context.Context, convKey string, terms []string, r search.Range, offset int) ([]store.MessageHit, error) {
+// keywordHits searches the keyword index of chats, the chats of convKey's
+// memory scope, from offset, timing it as path "keyword". Hits in convKey
+// itself come without their ConversationKey.
+func (t *recallTool) keywordHits(ctx context.Context, convKey string, chats, terms []string, r search.Range, offset int) ([]store.MessageHit, error) {
 	if len(terms) == 0 {
 		return nil, nil
 	}
 	start := time.Now()
-	hits, err := t.d.Store.SearchMessages(ctx, convKey, terms, r, offset, recallKeywordHits)
+	var hits []store.MessageHit
+	var err error
+	if len(chats) == 1 && chats[0] == convKey {
+		hits, err = t.d.Store.SearchMessages(ctx, convKey, terms, r, offset, recallKeywordHits)
+	} else {
+		hits, err = t.d.Store.SearchMessagesIn(ctx, chats, terms, r, offset, recallKeywordHits)
+		for i := range hits {
+			if hits[i].ConversationKey == convKey {
+				hits[i].ConversationKey = ""
+			}
+		}
+	}
 	if t.d.Metrics != nil {
 		t.d.Metrics.SearchSeconds.WithLabelValues("keyword").Observe(time.Since(start).Seconds())
 	}
@@ -355,17 +376,18 @@ type recallCandidate struct {
 // fuse ranks keyword and vector hits by reciprocal rank fusion: a hit at
 // rank i of its list scores 1/(recallRRFK+i+1), the keyword hits' ranks
 // starting at keywordRank (for later pages), and hits of one chat whose seq
-// ranges overlap become one candidate with their scores added. Keyword hits
-// are of the invocation's own conversation, as are vector hits without a
-// ConversationKey. A candidate only semantic search found counts
-// recallVectorOnlyWeight of its score. Each candidate's score is then raised
-// by up to recallRecencyWeight for being newer than the others. Candidates
-// come best first, newer first among equals.
+// ranges overlap become one candidate with their scores added. Hits without a
+// ConversationKey are of the invocation's own conversation. A candidate only
+// semantic search found counts recallVectorOnlyWeight of its score. Each
+// candidate's score is then raised by up to recallRecencyWeight for being
+// newer than the others. Candidates come best first, newer first among
+// equals.
 func fuse(keyword []store.MessageHit, keywordRank int, vector []search.Hit) []recallCandidate {
 	rrf := func(rank int) float64 { return 1 / float64(recallRRFK+rank+1) }
 	var cands []recallCandidate
 	for i, h := range keyword {
-		cands = append(cands, recallCandidate{from: h.Seq, to: h.Seq, anchors: []int64{h.Seq}, score: rrf(keywordRank + i)})
+		cands = append(cands, recallCandidate{conv: h.ConversationKey, from: h.Seq, to: h.Seq, anchors: []int64{h.Seq},
+			score: rrf(keywordRank + i)})
 	}
 	for i, h := range vector {
 		from, to := min(h.FromSeq, h.ToSeq), max(h.FromSeq, h.ToSeq)
@@ -744,8 +766,8 @@ func mergeGroups(groups []recallGroup) []recallGroup {
 	return merged
 }
 
-// renderGroups renders groups in time order, each under its date line and
-// separated by a blank line, within recallMaxRunes. Groups are filled best
+// renderGroups renders groups in time order, each under its header line
+// (groupHeader) and separated by a blank line, within recallMaxRunes. Groups are filled best
 // score first; a group that does not fit keeps its hits first and then the
 // lines nearest to them.
 func renderGroups(groups []recallGroup, loc *time.Location) string {
@@ -755,11 +777,11 @@ func renderGroups(groups []recallGroup, loc *time.Location) string {
 	}
 	slices.SortStableFunc(order, func(a, b int) int { return cmp.Compare(groups[b].score, groups[a].score) })
 
-	headerRunes := utf8.RuneCountInString(dateHeader(time.Time{}, loc))
 	kept := make([][]int, len(groups))
 	used := 0
 	for _, gi := range order {
 		g := groups[gi]
+		headerRunes := utf8.RuneCountInString(groupHeader(g, time.Time{}, loc))
 		hitIdx := make([]int, 0, len(g.hits))
 		for i, e := range g.entries {
 			if slices.Contains(g.hits, e.seq) {
@@ -795,7 +817,7 @@ func renderGroups(groups []recallGroup, loc *time.Location) string {
 			continue
 		}
 		slices.Sort(kept[gi])
-		lines := []string{dateHeader(g.entries[kept[gi][0]].at, loc)}
+		lines := []string{groupHeader(g, g.entries[kept[gi][0]].at, loc)}
 		for _, i := range kept[gi] {
 			lines = append(lines, recallLine(g.entries[i], loc))
 		}
@@ -804,9 +826,15 @@ func renderGroups(groups []recallGroup, loc *time.Location) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// dateHeader is the line above a group: its first message's local date.
-func dateHeader(at time.Time, loc *time.Location) string {
-	return "—— " + at.In(loc).Format(recallDateLayout) + " ——"
+// groupHeader is the line above g, whose first shown message is at: that
+// local date, and for a group from another chat of the memory scope
+// recallOtherChat after it.
+func groupHeader(g recallGroup, at time.Time, loc *time.Location) string {
+	date := at.In(loc).Format(recallDateLayout)
+	if g.conv != "" {
+		return "—— " + date + recallOtherChat + "——"
+	}
+	return "—— " + date + " ——"
 }
 
 func distance(i int, hits []int) int {

@@ -24,6 +24,11 @@ func indexMessage(ctx context.Context, tx *sql.Tx, seq int64, convKey, displayNa
 // phrase. Tokens hold only letters and digits, so quoting them is enough to
 // keep FTS5 syntax out.
 func matchExpr(convKey string, terms []string) string {
+	return matchExprIn([]string{convKey}, terms)
+}
+
+// matchExprIn is matchExpr for the messages of any of convKeys.
+func matchExprIn(convKeys []string, terms []string) string {
 	var phrases []string
 	for _, term := range terms {
 		tokens, prefix := search.TermPhrase(term)
@@ -38,10 +43,18 @@ func matchExpr(convKey string, terms []string) string {
 			phrases = append(phrases, p)
 		}
 	}
-	if len(phrases) == 0 {
+	if len(phrases) == 0 || len(convKeys) == 0 {
 		return ""
 	}
-	return `conv : "` + search.ConversationMark(convKey) + `" AND seg : (` + strings.Join(phrases, " OR ") + `)`
+	marks := make([]string, len(convKeys))
+	for i, key := range convKeys {
+		marks[i] = `"` + search.ConversationMark(key) + `"`
+	}
+	conv := marks[0]
+	if len(marks) > 1 {
+		conv = "(" + strings.Join(marks, " OR ") + ")"
+	}
+	return `conv : ` + conv + ` AND seg : (` + strings.Join(phrases, " OR ") + `)`
 }
 
 // ftsRank is the bm25 of a message_fts row, counting the seg column only.
@@ -71,6 +84,44 @@ func (db *DB) SearchMessages(ctx context.Context, convKey string, terms []string
 	}
 	query += ` ORDER BY ` + ftsRank + `, m.seq DESC LIMIT ? OFFSET ?`
 	return db.rankedHits(ctx, query, append(args, limit, max(offset, 0))...)
+}
+
+// SearchMessagesIn always joins the messages, which give each hit's
+// conversation.
+func (db *DB) SearchMessagesIn(ctx context.Context, convKeys []string, terms []string, r search.Range, offset, limit int) ([]store.MessageHit, error) {
+	match := matchExprIn(convKeys, terms)
+	if match == "" || limit <= 0 {
+		return nil, nil
+	}
+	in, keyArgs := inList(convKeys)
+	query := `SELECT m.seq, m.conversation_key, ` + ftsRank + ` FROM message_fts JOIN messages m ON m.seq = message_fts.rowid
+		WHERE message_fts MATCH ? AND m.conversation_key IN (` + in + `)`
+	args := append([]any{match}, keyArgs...)
+	if !r.After.IsZero() {
+		query += ` AND m.occurred_at >= ?`
+		args = append(args, fmtTime(r.After))
+	}
+	if !r.Before.IsZero() {
+		query += ` AND m.occurred_at < ?`
+		args = append(args, fmtTime(r.Before))
+	}
+	query += ` ORDER BY ` + ftsRank + `, m.seq DESC LIMIT ? OFFSET ?`
+	rows, err := db.r.QueryContext(ctx, query, append(args, limit, max(offset, 0))...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var hits []store.MessageHit
+	for rows.Next() {
+		var h store.MessageHit
+		var bm25 float64
+		if err := rows.Scan(&h.Seq, &h.ConversationKey, &bm25); err != nil {
+			return nil, err
+		}
+		h.Score = -bm25
+		hits = append(hits, h)
+	}
+	return hits, rows.Err()
 }
 
 // rankedHits runs query, which selects a seq and its bm25, into hits scored
