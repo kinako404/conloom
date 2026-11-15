@@ -14,6 +14,9 @@ const TEMPLATE_NAME = /^[a-z0-9_-]{1,32}$/;
 // MAX_IMPORT_MIB is the largest file an import takes.
 const MAX_IMPORT_MIB = 64;
 
+// MAX_IMPORT_TEMPLATES is the most templates an imported file may hold.
+const MAX_IMPORT_TEMPLATES = 200;
+
 // EXPORT_ALL downloads every template as one file.
 const EXPORT_ALL = 'api/persona-templates/export';
 
@@ -102,7 +105,9 @@ function importSummary(list) {
 // importer imports an exported file: the 导入 button picks it, msg shows the
 // progress and errors, and when names in the file are taken the dialog asks
 // whether to overwrite those templates or import under new names. done(list)
-// runs with the imported templates.
+// runs with the imported templates. Esc does not close the dialog while its
+// import runs; should the browser close it anyway, msg shows the progress
+// and any error instead.
 function importer(done) {
   const msg = h('div');
   const file = h('input', { type: 'file', accept: 'application/json,.json', hidden: true });
@@ -111,6 +116,9 @@ function importer(done) {
   let busy = false;
   dialog.addEventListener('cancel', (e) => {
     if (busy) e.preventDefault();
+  });
+  dialog.addEventListener('close', () => {
+    if (busy) mount(msg, h('p', { class: 'muted' }, '正在导入…'));
   });
 
   const send = async (body, mode) => {
@@ -133,7 +141,7 @@ function importer(done) {
         await send(body, mode);
         dialog.close();
       } catch (err) {
-        if (!isAbort(err)) mount(status, errorBox(err));
+        if (!isAbort(err)) mount(dialog.open ? status : msg, errorBox(err));
       } finally {
         busy = false;
         overwrite.disabled = false;
@@ -203,7 +211,7 @@ export async function templatesView(ctx) {
     h('div', { class: 'toolbar' },
       h('a', { class: 'button', href: EXPORT_ALL, download: true }, '导出全部'),
       imp.button, imp.file),
-    h('p', { class: 'hint' }, `导出的是 JSON 文件，参考图在文件里。导入时选导出的文件，单个模板或全部模板的都可以，最大 ${MAX_IMPORT_MIB} MiB；模板多、参考图大时，“导出全部”的文件可能超过这个上限，没法整个导入，这时请逐个导出。`),
+    h('p', { class: 'hint' }, `导出的是 JSON 文件，参考图在文件里。导入时选导出的文件，单个模板或全部模板的都可以，最大 ${MAX_IMPORT_MIB} MiB、最多 ${MAX_IMPORT_TEMPLATES} 个模板；模板多、参考图大时，“导出全部”的文件可能超过这个上限，没法整个导入，这时请逐个导出。`),
     imp.msg,
     h('p', { class: 'hint' }, EXISTING_CHATS),
     h('p', { class: 'hint' }, '新建模板：打开一个模板，点“复制为新模板”。'),
@@ -220,7 +228,7 @@ export async function templatesView(ctx) {
       { title: '参考图', cell: (t) => (t.appearance_image ? '有' : '—') },
       { title: '默认模板用于', class: 'text', cell: users },
       { title: '在线修改', class: 'nowrap', cell: updated },
-      { title: '', class: 'nowrap', cell: (t) => exportLink(t.name) },
+      { title: '导出', class: 'nowrap', cell: (t) => exportLink(t.name) },
     ], all) : empty('没有模板'),
     imp.dialog);
 }

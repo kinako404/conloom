@@ -16,6 +16,7 @@ import (
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/panel/web"
+	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/internal/store"
 )
 
@@ -221,6 +222,10 @@ func TestStatic_TemplatesExportImport(t *testing.T) {
 		"const TEMPLATE_EXISTS = 'TEMPLATE_EXISTS';", "err.names",
 		"'覆盖')", "'改名导入')", "'取消')", "choose('overwrite')", "choose('rename')",
 		"新建：", "覆盖：", "可能超过这个上限",
+		// Esc does not close the dialog of a running import; if the browser
+		// closes it anyway, the page shows the progress and the error.
+		"if (busy) e.preventDefault();", "dialog.addEventListener('close'", "mount(dialog.open ? status : msg, errorBox(err))",
+		"{ title: '导出', class: 'nowrap', cell: (t) => exportLink(t.name) }",
 		"'恢复为内置默认')", "'内置'",
 	} {
 		if !strings.Contains(js, want) {
@@ -238,6 +243,10 @@ func TestStatic_TemplatesExportImport(t *testing.T) {
 	}
 	if want := strconv.Itoa(maxImportBytes >> 20); m[1] != want {
 		t.Errorf("MAX_IMPORT_MIB = %s, want maxImportBytes in MiB %s", m[1], want)
+	}
+	m = regexp.MustCompile(`const MAX_IMPORT_TEMPLATES = (\d+);`).FindStringSubmatch(js)
+	if want := strconv.Itoa(persona.MaxExchangeTemplates); m == nil || m[1] != want {
+		t.Errorf("MAX_IMPORT_TEMPLATES = %v, want persona.MaxExchangeTemplates %s", m, want)
 	}
 
 	api := get("/panel/lib/api.js")
