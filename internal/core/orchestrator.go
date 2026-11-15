@@ -158,6 +158,8 @@ type Orchestrator struct {
 	// panelBots is the service over the panel bots, which also marks the
 	// bots being deleted.
 	panelBots *PanelBotService
+	// describeTimeout bounds DescribeAppearance.
+	describeTimeout time.Duration
 }
 
 // taskOwner is the one party in this process allowed to execute and complete
@@ -206,6 +208,7 @@ func New(d Deps) (*Orchestrator, error) {
 		wakeEvery: wakePollInterval,
 
 		panelDeleteWait: cancelWait,
+		describeTimeout: describeTimeout,
 
 		cleanupBatch: defaultCleanupBatch, cleanupMaxBatches: defaultCleanupMaxBatches,
 	}
@@ -269,12 +272,15 @@ func displayLocation(tz string) *time.Location {
 	return time.UTC
 }
 
-// maxTokenFactor is the largest configured estimate factor, used to size the
+// maxTokenFactor is the largest configured estimate factor of the profiles
+// replies may be routed to (all but the vision profile), used to size the
 // base prompt before a profile is chosen.
 func maxTokenFactor(profiles map[string]config.ModelProfile) float64 {
 	f := 0.0
-	for _, p := range profiles {
-		f = max(f, p.TokenEstimateFactor)
+	for name, p := range profiles {
+		if name != string(router.RoleVision) {
+			f = max(f, p.TokenEstimateFactor)
+		}
 	}
 	if f <= 0 {
 		return 1

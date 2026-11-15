@@ -85,7 +85,10 @@ type testOpts struct {
 	// shortTools and longTools, when set, replace short and long with
 	// handlers that may answer with tool calls.
 	shortTools, longTools func(req map[string]any) fakeopenai.Reply
-	configure             func(*config.Config)
+	// vision, when set, adds a vision profile (a copy of long_context taking
+	// images) served by it.
+	vision    handlerFunc
+	configure func(*config.Config)
 	// now is the orchestrator's clock; nil means time.Now.
 	now func() time.Time
 	// skills is the orchestrator's skill registry; nil offers no tools.
@@ -101,6 +104,7 @@ type testEnv struct {
 	policies *policy.Service
 	short    *fakeopenai.Server
 	long     *fakeopenai.Server
+	vision   *fakeopenai.Server
 	notifier *memNotifier
 	logs     *syncBuffer
 	reg      *prometheus.Registry
@@ -327,6 +331,12 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
+	if opts.vision != nil {
+		env.vision = fakeopenai.New(t, opts.vision)
+		p := cfg.ModelProfiles[string(router.RoleLong)]
+		p.Endpoint, p.Model, p.APIKey, p.Modalities = env.vision.URL, "vision-model", "test-key-vision", []string{"text", "image"}
+		cfg.ModelProfiles[string(router.RoleVision)] = p
+	}
 	if opts.configure != nil {
 		opts.configure(cfg)
 	}
@@ -343,7 +353,7 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 
 	var profiles []*router.Profile
 	limits := map[string]admission.Limits{}
-	for _, role := range []router.Role{router.RoleShort, router.RoleLong} {
+	for _, role := range []router.Role{router.RoleShort, router.RoleLong, router.RoleVision} {
 		p, ok := cfg.ModelProfiles[string(role)]
 		if !ok {
 			continue

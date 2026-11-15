@@ -112,6 +112,7 @@ export const PURPOSE = {
   memory: '记忆整理',
   embed_index: '向量索引',
   embed_query: '向量查询',
+  vision: '识图',
 };
 
 export const OUTCOME = {

@@ -172,6 +172,9 @@ func (c *Config) ValidateServe() error {
 	if _, ok := c.ModelProfiles["short_context"]; !ok {
 		p.addf("model_profiles.short_context", "is required")
 	}
+	if v, ok := c.ModelProfiles["vision"]; ok && !slices.Contains(v.Modalities, "image") {
+		p.addf("model_profiles.vision.modalities", "must include image")
+	}
 	for _, name := range slices.Sorted(maps.Keys(c.ModelProfiles)) {
 		mp := c.ModelProfiles[name]
 		path := "model_profiles." + name

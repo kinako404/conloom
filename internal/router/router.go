@@ -18,6 +18,9 @@ type Role string
 const (
 	RoleShort Role = "short_context"
 	RoleLong  Role = "long_context"
+	// RoleVision describes images, such as a persona's appearance reference;
+	// Route never chooses it.
+	RoleVision Role = "vision"
 )
 
 const (
@@ -104,7 +107,8 @@ func New(profiles []*Profile, bc BreakerConfig, now func() time.Time) *Router {
 }
 
 // Route prefers the short-context profile when the base prompt fits it and
-// falls back to the long-context profile otherwise.
+// falls back to the long-context profile otherwise. It never chooses any
+// other profile, such as RoleVision.
 func (r *Router) Route(req Request) (Decision, error) {
 	short := r.candidate(RoleShort, req)
 	var long *Profile
@@ -147,15 +151,23 @@ func fit(p *Profile, req Request, reason string) (Decision, bool) {
 	}, true
 }
 
+// Profile returns the first profile with role, regardless of its breaker.
+func (r *Router) Profile(role Role) (*Profile, bool) {
+	i := slices.IndexFunc(r.profiles, func(p *Profile) bool { return p.Role == role })
+	if i < 0 {
+		return nil, false
+	}
+	return r.profiles[i], true
+}
+
 func (r *Router) candidate(role Role, req Request) *Profile {
 	if slices.Contains(req.Exclude, role) || r.BreakerOpen(role) {
 		return nil
 	}
-	i := slices.IndexFunc(r.profiles, func(p *Profile) bool { return p.Role == role })
-	if i < 0 {
+	p, ok := r.Profile(role)
+	if !ok {
 		return nil
 	}
-	p := r.profiles[i]
 	if req.NeedsImage && !slices.Contains(p.Config.Modalities, "image") {
 		return nil
 	}

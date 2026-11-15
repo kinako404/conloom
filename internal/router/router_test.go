@@ -26,6 +26,15 @@ func longProfile() *Profile {
 	}}
 }
 
+func visionProfile() *Profile {
+	return &Profile{Role: RoleVision, Config: config.ModelProfile{
+		Model:      "vision-model",
+		Modalities: []string{"text", "image"},
+		Context:    config.ContextLimits{NativeWindow: 2000000, ConfiguredWindow: 2000000, SoftInputBudget: 1000000, ReservedOutputTokens: 4096, SafetyMarginTokens: 1024},
+		Privacy:    config.Privacy{DataLocation: "remote", AllowSensitiveContent: true},
+	}}
+}
+
 type clock struct{ t time.Time }
 
 func (c *clock) now() time.Time { return c.t }
@@ -161,6 +170,53 @@ func TestRoute_Exclude(t *testing.T) {
 	}
 	if _, err := r.Route(Request{BaseTokens: 1000, AllowLong: true, Exclude: []Role{RoleShort, RoleLong}}); !errors.Is(err, ErrNoProfile) {
 		t.Fatalf("err = %v, want ErrNoProfile", err)
+	}
+}
+
+func TestRouter_NeverRoutesVision(t *testing.T) {
+	textOnly := func(p *Profile) *Profile {
+		p.Config.Modalities = []string{"text"}
+		return p
+	}
+	vision := visionProfile()
+	r, _ := newRouter(vision, textOnly(shortProfile()), textOnly(longProfile()))
+	if d := mustRoute(t, r, Request{BaseTokens: 1000, AllowLong: true}); d.Profile.Role != RoleShort {
+		t.Errorf("Role = %s, want short", d.Profile.Role)
+	}
+	for _, tc := range []struct {
+		name string
+		req  Request
+		want error
+	}{
+		{"needs image", Request{BaseTokens: 1000, NeedsImage: true, AllowLong: true}, ErrNoProfile},
+		{"too large for short and long", Request{BaseTokens: 1_500_000, AllowLong: true}, ErrContextTooLarge},
+		{"short and long excluded", Request{BaseTokens: 1000, AllowLong: true, Exclude: []Role{RoleShort, RoleLong}}, ErrNoProfile},
+	} {
+		if d, err := r.Route(tc.req); !errors.Is(err, tc.want) {
+			t.Errorf("%s: Route = %+v, %v; want %v", tc.name, d, err, tc.want)
+		}
+	}
+	for range 3 {
+		r.ReportFailure(RoleShort)
+		r.ReportFailure(RoleLong)
+	}
+	if d, err := r.Route(Request{BaseTokens: 1000, AllowLong: true}); !errors.Is(err, ErrNoProfile) {
+		t.Errorf("short and long breakers open: Route = %+v, %v; want ErrNoProfile", d, err)
+	}
+
+	only, _ := newRouter(visionProfile())
+	if d, err := only.Route(Request{BaseTokens: 1000, NeedsImage: true, AllowLong: true}); !errors.Is(err, ErrNoProfile) {
+		t.Errorf("vision only: Route = %+v, %v; want ErrNoProfile", d, err)
+	}
+
+	if p, ok := r.Profile(RoleVision); !ok || p != vision {
+		t.Errorf("Profile(vision) = %v, %v; want the vision profile", p, ok)
+	}
+	if p, ok := r.Profile(RoleShort); !ok || p.Role != RoleShort {
+		t.Errorf("Profile(short) = %v, %v", p, ok)
+	}
+	if p, ok := only.Profile(RoleLong); ok || p != nil {
+		t.Errorf("Profile(long) without one = %v, %v; want nil, false", p, ok)
 	}
 }
 

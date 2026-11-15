@@ -7,6 +7,7 @@ const (
 	PurposeMemory     = "memory"
 	PurposeEmbedIndex = "embed_index"
 	PurposeEmbedQuery = "embed_query"
+	PurposeVision     = "vision"
 )
 
 const (

@@ -212,6 +212,41 @@ func TestValidate_PanelPrefixReserved(t *testing.T) {
 	}
 }
 
+func TestValidate_VisionNeedsImageModality(t *testing.T) {
+	withVision := func(modalities ...string) *Config {
+		cfg := mustLoad(t, "testdata/valid.yaml")
+		p := cfg.ModelProfiles["short_context"]
+		p.Model, p.Modalities = "fake-vision", modalities
+		cfg.ModelProfiles["vision"] = p
+		return cfg
+	}
+	if err := withVision("text", "image").ValidateServe(); err != nil {
+		t.Fatalf("vision with image modality: %v", err)
+	}
+	for _, modalities := range [][]string{nil, {"text"}} {
+		err := withVision(modalities...).ValidateServe()
+		if want := "model_profiles.vision.modalities: must include image"; err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("modalities %v: err = %v, want containing %q", modalities, err, want)
+		}
+	}
+	cfg := withVision("image")
+	p := cfg.ModelProfiles["vision"]
+	p.Context.SoftInputBudget = 0
+	cfg.ModelProfiles["vision"] = p
+	if err := cfg.ValidateServe(); err == nil || !strings.Contains(err.Error(), "model_profiles.vision.context.soft_input_budget") {
+		t.Errorf("vision without soft_input_budget: err = %v, want the generic profile checks", err)
+	}
+	for _, name := range []string{"short_context", "long_context"} {
+		cfg := mustLoad(t, "testdata/valid.yaml")
+		p := cfg.ModelProfiles[name]
+		p.Modalities = []string{"text"}
+		cfg.ModelProfiles[name] = p
+		if err := cfg.ValidateServe(); err != nil {
+			t.Errorf("text-only %s: %v", name, err)
+		}
+	}
+}
+
 func TestValidate_PanelPlatformIsReserved(t *testing.T) {
 	cfg := mustLoad(t, "testdata/valid.yaml")
 	cfg.Bots[0].Platform = conloomapi.PlatformPanel

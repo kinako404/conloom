@@ -36,7 +36,7 @@ ConLoom 是一个用 Go 编写的群聊对话智能体框架：平台适配器�
 - **轮（turn）**：在聊会话的参与者没有 @ 机器人时连续说的几句话，合并成一个任务交给模型判断。
 - **Outbox（发件箱）**：持久化的出站动作队列。核心写入，适配器拉取、发送后回 ACK（确认）。
 - **`[[SKIP]]`**：给模型的跳过标记。输出里带这个标记，整条回复就丢弃，不会发到群里。
-- **Model Profile**：一个模型的完整配置。代码按 `short_context` / `long_context` 两个角色选择 Profile，不写死厂商或模型名。
+- **Model Profile**：一个模型的完整配置。代码按 `short_context` / `long_context` 两个角色选择回复用的 Profile，另有可选的识图角色 `vision`，不写死厂商或模型名。
 
 ## 1. 部署拓扑
 
@@ -462,7 +462,8 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 
 ### 5.3 路由和熔断
 
-- `Route`（`internal/router/router.go:108`）：短上下文模型装得下就用它；装不下、且群策略允许长请求（`concurrency.allow_long_requests`）时用长上下文模型。私聊算敏感会话，只能用允许敏感内容的 Profile。
+- `Route`（`internal/router/router.go:112`）：短上下文模型装得下就用它；装不下、且群策略允许长请求（`concurrency.allow_long_requests`）时用长上下文模型。私聊算敏感会话，只能用允许敏感内容的 Profile。
+- **识图模型** `vision`（可选）：`Route` 从不选它，只有生成外观介绍（`Orchestrator.DescribeAppearance`，`internal/core/describe.go`）通过 `Router.Profile` 取用。流程：读外观参考图的原图，缩到长边不超过 1536 像素、编码成 JPEG，和固定的中文提示（150–400 字、只写看得见的外观、第三人称、不加标题和列表、不写图里的文字、画师和背景）一起作为唯一一条 user 消息（图片段在前）发出；先申请 `vision` 的准入名额，读图、缩图、排队和调用合起来最多 40 秒，超时返回 `context.DeadlineExceeded`；用量按用途 `vision` 记录，成功和失败都记；只返回去掉思考段（`CleanOutput`）后的最终回答，客户端不读单独返回的推理字段。识图调用不计入熔断。没有配置 `vision` 时返回 `ErrNoVision`。估算 token 的系数取各 Profile 最大值时不算 `vision`。
 - **熔断**按角色计：连续失败 3 次打开，30 秒后半开，一次成功清零。参数写死在代码里，不能配置。
 - **任何一次调用失败**（包括输出为空、直接对话的输出只剩聊天记录格式）都会排除这个角色重新路由一次（`internal/core/runner.go:280`），所以一个任务最多调用两次模型；带工具的回复每次可能包含几轮请求，重路由后从已有的工具进度继续（5.6）。
 - 客户端（`internal/provider/openai`）只用非流式 `/chat/completions`；网络错误、429、5xx 最多重试 `max_retries` 次（默认 2）。消息带图片（`ChatMessage.Images`）时 `content` 写成数组，图片段（`image_url`）在前、文字段在后；不带图时仍是字符串，请求体和以前逐字节相同。
@@ -713,9 +714,10 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 指标在进程重启后归零，`model call` 日志也不便统计，所以每次模型调用另在库里记一行明细，供面板的用量页使用。代码在 `internal/usage`，表由迁移 `0008_model_calls.sql` 创建。
 
 - **表 `model_calls`**：每次调用一行，列为 `at`（调用开始时间）、`bot_instance_id`、`conversation_key`、`task_id`（记忆整理和后台生成向量没有任务时为空）、`purpose`、`role`、`model`、`prompt_tokens`、`completion_tokens`、`reasoning_tokens`、`estimated_tokens`（发请求前的估算，只有 `chat` 有）、`latency_ms`、`outcome`（`ok` / `error` / `timeout` / `canceled`）、`finish_reason`。索引有 `at`、`task_id`（只含非空的），以及一个按 UTC 15 分钟时间槽和各维度排列、包含全部统计列的覆盖索引，统计时不用排序也不用回表。
-- **记录点**（4 处）：
+- **记录点**（5 处）：
   - `internal/core/runner.go` 的模型调用记 `chat`，成功和失败都记，带工具的回复每轮请求一行；
   - `internal/memory/consolidate.go` 的整理调用记 `memory`；
+  - `internal/core/describe.go` 的识图调用记 `vision`，`role` 为 `vision`，没有 bot、会话和任务；
   - 向量调用经 `internal/usage` 的向量装饰器记录：`internal/search/vector` 的后台生成（`indexer.go`）记 `embed_index`，检索时把查询句转成向量（`searcher.go`）记 `embed_query`，`role` 为 `embedding`，token 取向量服务响应里的 `usage.prompt_tokens`（没有就记 0）。没配置 `embedding` 时不创建装饰器。
 - **归属**：`usage.WithAttribution(ctx, bot, convKey, taskID)` 把来源放进 ctx。Runner 执行任务时放入，所以工具调用里的查询向量化（如 recall）自动带上任务；Indexer 处理每个会话时放入会话。`vector.Embedder` 接口不变，装饰器从 ctx 里取归属。
 - **写入**（`usage.Recorder`）：`Record` 不阻塞，把记录放进容量 4096 的通道；后台协程攒够 200 条或每 2 秒，在一个事务里批量插入。通道满或已开始关闭时丢弃并计入 `usage_dropped_total`；写库失败记 warn 日志、计入 `usage_write_errors_total`，这一批丢弃。`App.Close` 在调度、编排和向量后台都停下以后、关库之前调用 `Recorder.Close`，最多等 5 秒写完剩下的；超时没写完的记录丢弃，只记一条 warn 日志（`queued model calls not written before shutdown`），不算关闭失败，`App.Close` 只返回关库的错误。现有的 `model call` 日志和 `model_*` 指标不变。

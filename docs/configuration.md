@@ -92,6 +92,8 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 
 按角色配置模型。只有 `short_context`（必需）和 `long_context`（可选）两个名字会被路由使用：短上下文模型装得下就用它，装不下且群策略允许时用长上下文模型。路由与熔断细节见 [架构 5.3 节](architecture.md#53-路由和熔断)。
 
+`vision`（可选）是识图模型，只用来根据外观参考图生成外观描述（面板里的"生成外观介绍"），回复永远不会路由到它。字段和其他配置相同，同样要通过下表的检查，另外 `modalities` 必须包含 `image`。它有自己的并发名额（`runtime.max_concurrency`），输出预留 `context.reserved_output_tokens` 作为请求的 `max_tokens`（推理模型的思考也算在内，要留足）；一次识图最多 40 秒，用量按用途 `vision` 记录。估算 token 用的系数取各配置的最大值时不算它。没有配置时，生成外观介绍会提示未配置识图模型。
+
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `provider` | `openai_compatible` | 目前唯一支持的值 |
