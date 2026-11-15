@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kinako404/conloom/internal/embedding"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/search"
 	"github.com/kinako404/conloom/internal/store"
@@ -37,6 +38,7 @@ const (
 
 // ChunkReader is what the Searcher reads; *sqlite.DB is one.
 type ChunkReader interface {
+	memory.ScopeStore
 	ChunkStamp(ctx context.Context, convKey, model string, upToID int64) (store.ChunkStamp, error)
 	LoadChunks(ctx context.Context, convKey, model string, afterID int64) ([]store.MemoryChunk, error)
 }
@@ -59,9 +61,10 @@ type SearcherDeps struct {
 // Searcher is a search.VectorSearcher over the chunks of the embedder's
 // model. It keeps the vectors of the last 8 conversations searched in
 // memory, brought up to date with the stored chunks at every search, so new
-// chunks are found and deleted ones never are. After 3 queries in a row fail
-// to be embedded it returns no hits without asking the service for a minute,
-// then lets one query through to try it.
+// chunks are found and deleted ones never are, nor are those of a chat no
+// longer in the memory scope searched. After 3 queries in a row fail to be
+// embedded it returns no hits without asking the service for a minute, then
+// lets one query through to try it.
 type Searcher struct {
 	d   SearcherDeps
 	now func() time.Time
@@ -104,10 +107,12 @@ type entry struct {
 	chunks         []cached
 }
 
-// Search returns the up to limit chunks of convKey that overlap r (a chunk
-// ending at After counts, one starting at Before does not) and are
-// closest to query by cosine similarity, at least MinScore and within Margin
-// of the best, best first. It logs the best scores at debug level, never the
+// Search returns the up to limit chunks of the chats of convKey's memory
+// scope (memory.ScopeChats: every panel chat of the bot for a panel chat,
+// convKey alone otherwise) that overlap r (a chunk ending at After counts,
+// one starting at Before does not) and are closest to query by cosine
+// similarity, at least MinScore and within Margin of the best, best first,
+// each with its chat. It logs the best scores at debug level, never the
 // query or any text. When the query cannot be embedded in time it logs why
 // and returns no hits, without an error; so it does while the breaker is
 // open.
@@ -141,17 +146,23 @@ func (s *Searcher) Search(ctx context.Context, convKey, query string, r search.R
 	if qnorm == 0 {
 		return nil, nil
 	}
-	e, err := s.load(ctx, convKey, model)
+	chats, err := memory.ScopeChats(ctx, s.d.Store, memory.ScopeKeyOf(convKey))
 	if err != nil {
 		return nil, err
 	}
 	var hits []search.Hit
-	for _, c := range e.chunks {
-		if len(c.vec) != len(q) || c.norm == 0 ||
-			!r.After.IsZero() && c.endAt.Before(r.After) || !r.Before.IsZero() && !c.startAt.Before(r.Before) {
-			continue
+	for _, chat := range chats {
+		e, err := s.load(ctx, chat, model)
+		if err != nil {
+			return nil, err
 		}
-		hits = append(hits, search.Hit{FromSeq: c.from, ToSeq: c.to, Score: dot(q, c.vec) / (qnorm * c.norm)})
+		for _, c := range e.chunks {
+			if len(c.vec) != len(q) || c.norm == 0 ||
+				!r.After.IsZero() && c.endAt.Before(r.After) || !r.Before.IsZero() && !c.startAt.Before(r.Before) {
+				continue
+			}
+			hits = append(hits, search.Hit{ConversationKey: chat, FromSeq: c.from, ToSeq: c.to, Score: dot(q, c.vec) / (qnorm * c.norm)})
+		}
 	}
 	slices.SortFunc(hits, func(a, b search.Hit) int {
 		return cmp.Or(cmp.Compare(b.Score, a.Score), cmp.Compare(b.ToSeq, a.ToSeq))

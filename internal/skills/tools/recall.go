@@ -98,11 +98,13 @@ type recallTool struct {
 // range of local dates.
 //
 // The keyword index gives the best 50 messages and, when Vectors is set,
-// semantic search the best 6 stretches; reciprocal rank fusion (k = 60)
-// with a slight preference for newer hits ranks them, overlapping hits
-// counting together and stretches only semantic search found at half
-// weight. In a private chat whose speaker was forgotten, both
-// searches start at that time. Candidates are expanded in turn until 6
+// semantic search the best 6 stretches, which may come from any chat of the
+// conversation's memory scope (every panel chat of the bot for a panel chat;
+// search.VectorSearcher) and are shown from their own chat; reciprocal rank
+// fusion (k = 60) with a slight preference for newer hits ranks them,
+// overlapping hits of one chat counting together and stretches only semantic
+// search found at half weight. In a private chat whose speaker was forgotten,
+// both searches start at that time. Candidates are expanded in turn until 6
 // groups can be shown, reading up to 3 more pages of keyword hits when the
 // first leaves fewer: a message hit with 2 messages of context on either
 // side, a stretch whole, groups that touch merged, each group under a
@@ -191,7 +193,7 @@ func (t *recallTool) Call(ctx context.Context, inv skills.Invocation, args json.
 			if len(groups) == t.maxGroups {
 				return nil
 			}
-			if slices.ContainsFunc(seen, func(s recallCandidate) bool { return c.from <= s.to && s.from <= c.to }) {
+			if slices.ContainsFunc(seen, func(s recallCandidate) bool { return c.conv == s.conv && c.from <= s.to && s.from <= c.to }) {
 				continue
 			}
 			seen = append(seen, c)
@@ -316,8 +318,10 @@ func (t *recallTool) keywordHits(ctx context.Context, convKey string, terms []st
 	return hits, err
 }
 
-// vectorHits asks Vectors, when set, for the stretches closest to query. A
-// failure or timeout leaves recall to the keyword hits.
+// vectorHits asks Vectors, when set, for the stretches closest to query in
+// convKey's memory scope. A failure or timeout leaves recall to the keyword
+// hits. Hits in convKey itself come without their ConversationKey, as
+// keyword hits do.
 func (t *recallTool) vectorHits(ctx context.Context, convKey, query string, r search.Range) []search.Hit {
 	if t.d.Vectors == nil {
 		return nil
@@ -328,13 +332,20 @@ func (t *recallTool) vectorHits(ctx context.Context, convKey, query string, r se
 	if err != nil {
 		return nil
 	}
+	for i := range hits {
+		if hits[i].ConversationKey == convKey {
+			hits[i].ConversationKey = ""
+		}
+	}
 	return hits
 }
 
-// recallCandidate is a hit to show: the messages from..to, of which anchors
-// are keyword hits and, when vector is set, all of which are a stretch found
-// by semantic search.
+// recallCandidate is a hit to show: the messages from..to of conv, another
+// chat of the memory scope ("" for the invocation's own conversation), of
+// which anchors are keyword hits and, when vector is set, all of which are a
+// stretch found by semantic search.
 type recallCandidate struct {
+	conv     string
 	from, to int64
 	anchors  []int64
 	vector   bool
@@ -343,11 +354,13 @@ type recallCandidate struct {
 
 // fuse ranks keyword and vector hits by reciprocal rank fusion: a hit at
 // rank i of its list scores 1/(recallRRFK+i+1), the keyword hits' ranks
-// starting at keywordRank (for later pages), and hits whose seq ranges
-// overlap become one candidate with their scores added. A candidate only
-// semantic search found counts recallVectorOnlyWeight of its score. Each
-// candidate's score is then raised by up to recallRecencyWeight for being
-// newer than the others. Candidates come best first, newer first among equals.
+// starting at keywordRank (for later pages), and hits of one chat whose seq
+// ranges overlap become one candidate with their scores added. Keyword hits
+// are of the invocation's own conversation, as are vector hits without a
+// ConversationKey. A candidate only semantic search found counts
+// recallVectorOnlyWeight of its score. Each candidate's score is then raised
+// by up to recallRecencyWeight for being newer than the others. Candidates
+// come best first, newer first among equals.
 func fuse(keyword []store.MessageHit, keywordRank int, vector []search.Hit) []recallCandidate {
 	rrf := func(rank int) float64 { return 1 / float64(recallRRFK+rank+1) }
 	var cands []recallCandidate
@@ -356,12 +369,14 @@ func fuse(keyword []store.MessageHit, keywordRank int, vector []search.Hit) []re
 	}
 	for i, h := range vector {
 		from, to := min(h.FromSeq, h.ToSeq), max(h.FromSeq, h.ToSeq)
-		cands = append(cands, recallCandidate{from: from, to: to, vector: true, score: rrf(i)})
+		cands = append(cands, recallCandidate{conv: h.ConversationKey, from: from, to: to, vector: true, score: rrf(i)})
 	}
-	slices.SortStableFunc(cands, func(a, b recallCandidate) int { return cmp.Compare(a.from, b.from) })
+	slices.SortStableFunc(cands, func(a, b recallCandidate) int {
+		return cmp.Or(cmp.Compare(a.conv, b.conv), cmp.Compare(a.from, b.from))
+	})
 	var merged []recallCandidate
 	for _, c := range cands {
-		if n := len(merged); n > 0 && c.from <= merged[n-1].to {
+		if n := len(merged); n > 0 && c.conv == merged[n-1].conv && c.from <= merged[n-1].to {
 			last := &merged[n-1]
 			last.to = max(last.to, c.to)
 			last.anchors = append(last.anchors, c.anchors...)
@@ -402,10 +417,12 @@ type recallEntry struct {
 	name, body, search string
 }
 
-// recallGroup is what is shown for one or more candidates: entries in Seq
-// order, hits among them kept first when cutting, and the seqs of the
-// visible messages just before and after it (0 when unknown).
+// recallGroup is what is shown for one or more candidates of one chat (conv,
+// as recallCandidate): entries in Seq order, hits among them kept first when
+// cutting, and the seqs of the visible messages just before and after it (0
+// when unknown).
 type recallGroup struct {
+	conv       string
 	entries    []recallEntry
 	hits       []int64
 	score      float64
@@ -419,11 +436,11 @@ type recallGroup struct {
 // shown.
 func (t *recallTool) expand(ctx context.Context, inv skills.Invocation, pol conloomapi.GroupPolicy,
 	members []store.MemberMemory, terms []string, rng search.Range, c recallCandidate) (recallGroup, bool, error) {
-	entries, err := t.region(ctx, inv, pol, members, c.from, c.to)
+	entries, err := t.region(ctx, inv, pol, members, cmp.Or(c.conv, inv.ConversationKey), c.from, c.to)
 	if err != nil {
 		return recallGroup{}, false, err
 	}
-	g := recallGroup{score: c.score}
+	g := recallGroup{conv: c.conv, score: c.score}
 	lo, hi := len(entries), -1
 	for i, e := range entries {
 		if c.vector && e.seq >= c.from && e.seq <= c.to && inRange(e.at, rng) {
@@ -463,19 +480,20 @@ func holdsTerm(text string, terms []string) bool {
 	return false
 }
 
-// region loads the messages from..to of the invocation's conversation with
+// region loads the messages from..to of convKey, the invocation's
+// conversation or another chat of its memory scope, with
 // recallContext+recallMargin more on either side and returns those that may
 // be shown (withoutHidden, then without the current turn), as entries.
 func (t *recallTool) region(ctx context.Context, inv skills.Invocation, pol conloomapi.GroupPolicy,
-	members []store.MemberMemory, from, to int64) ([]recallEntry, error) {
+	members []store.MemberMemory, convKey string, from, to int64) ([]recallEntry, error) {
 	span := recallContext + recallMargin
-	msgs, err := t.d.Store.MessagesAround(ctx, inv.ConversationKey, from, to, span, span)
+	msgs, err := t.d.Store.MessagesAround(ctx, convKey, from, to, span, span)
 	if err != nil || len(msgs) == 0 {
 		return nil, err
 	}
 	atStart := slices.IndexFunc(msgs, func(m store.MessageRecord) bool { return m.Seq >= from }) < span
 	earlier := func(ctx context.Context, beforeSeq int64, n int) ([]store.MessageRecord, error) {
-		more, err := t.d.Store.MessagesAround(ctx, inv.ConversationKey, beforeSeq, beforeSeq, n, 0)
+		more, err := t.d.Store.MessagesAround(ctx, convKey, beforeSeq, beforeSeq, n, 0)
 		return slices.DeleteFunc(more, func(m store.MessageRecord) bool { return m.Seq >= beforeSeq }), err
 	}
 	kept, err := withoutHidden(ctx, msgs, atStart, earlier, t.isCommand(pol.Reply.CommandPrefix), members, inv)
@@ -692,14 +710,15 @@ func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// mergeGroups orders groups by time and merges those that overlap or touch,
-// adding their scores.
+// mergeGroups merges the groups of one chat that overlap or touch, adding
+// their scores, and orders them by time.
 func mergeGroups(groups []recallGroup) []recallGroup {
-	slices.SortStableFunc(groups, func(a, b recallGroup) int { return cmp.Compare(a.entries[0].seq, b.entries[0].seq) })
+	byStart := func(a, b recallGroup) int { return cmp.Compare(a.entries[0].seq, b.entries[0].seq) }
+	slices.SortStableFunc(groups, func(a, b recallGroup) int { return cmp.Or(cmp.Compare(a.conv, b.conv), byStart(a, b)) })
 	var merged []recallGroup
 	for _, g := range groups {
 		n := len(merged)
-		if n == 0 {
+		if n == 0 || merged[n-1].conv != g.conv {
 			merged = append(merged, g)
 			continue
 		}
@@ -721,6 +740,7 @@ func mergeGroups(groups []recallGroup) []recallGroup {
 			last.next = g.next
 		}
 	}
+	slices.SortStableFunc(merged, byStart)
 	return merged
 }
 

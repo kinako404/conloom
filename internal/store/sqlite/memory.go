@@ -218,8 +218,12 @@ func (db *DB) ForgetPrivateScope(ctx context.Context, scopeKey string, chats []s
 		}
 		// The scope's own record matches its member row, so reconciling
 		// (ReconcileForgottenChunks) knows its chats' chunks saw this forget.
+		// The scope holds the status, bars and bar changes of its chats.
 		if !slices.Contains(chats, scopeKey) {
 			if err := chunksForgot(ctx, tx, scopeKey, userID, at); err != nil {
+				return err
+			}
+			if err := deleteAutonomy(ctx, tx, scopeKey); err != nil {
 				return err
 			}
 		}

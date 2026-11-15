@@ -14,14 +14,16 @@ const PanelScopeID = store.PanelScopeID
 
 // ScopeKey returns the key conv's memory is kept under: its summary and
 // cursor, the notes, affinity and forget times of its members and their
-// revisions. All private chats on store.PlatformPanel of a bot share one
-// scope, "<bot>:panel:private:~shared", which parses like a key of a private
-// panel chat; every other conversation is its own scope, keyed by conv.Key.
-// Chat history, personas, policies, tasks, outbox and timers stay with each
+// revisions, the bot's status, bars and bar changes. Semantic search covers
+// the chunks of every chat of the scope (ScopeChats). All private chats on
+// store.PlatformPanel of a bot share one scope, "<bot>:panel:private:~shared"
+// (store.PanelScopeKey), which parses like a key of a private panel chat;
+// every other conversation is its own scope, keyed by conv.Key. Chat history
+// and its chunks, personas, policies, tasks, outbox and timers stay with each
 // conversation.
 func ScopeKey(conv store.ConversationRecord) string {
 	if conv.Platform == store.PlatformPanel && conv.Type == conloomapi.ConvPrivate {
-		return store.ConversationKey(conv.BotInstanceID, store.PlatformPanel, conloomapi.ConvPrivate, PanelScopeID)
+		return store.PanelScopeKey(conv.BotInstanceID)
 	}
 	return conv.Key
 }

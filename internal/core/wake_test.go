@@ -15,6 +15,7 @@ import (
 
 	"github.com/kinako404/conloom/internal/autonomy"
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/review"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -331,8 +332,8 @@ func TestWake_PanelChatStatusReturnNotCounted(t *testing.T) {
 	until := clock.now()
 	timer := store.ConversationTimer{ConversationKey: key, Kind: store.TimerStatusReturn, BotInstanceID: testBot,
 		PlatformUserID: PanelActorID("admin"), DueAt: until}
-	if err := env.st.SetStatus(ctx, store.ConversationStatus{ConversationKey: key, Activity: "洗澡", TaskID: "task_seed",
-		StartedAt: until.Add(-20 * time.Minute), UntilAt: until}, &timer); err != nil {
+	if err := env.st.SetStatus(ctx, store.ConversationStatus{ConversationKey: memory.ScopeKeyOf(key), OriginConversationKey: key,
+		Activity: "洗澡", TaskID: "task_seed", StartedAt: until.Add(-20 * time.Minute), UntilAt: until}, &timer); err != nil {
 		t.Fatal(err)
 	}
 	if err := env.o.fireTimer(ctx, timer); err != nil {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/kinako404/conloom/internal/autonomy"
 	"github.com/kinako404/conloom/internal/ids"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -31,7 +32,9 @@ const (
 var ErrInvalidBar = errors.New("core: invalid bar change")
 
 // AutonomyService shows and changes the hidden state of private chats, their
-// status and bars, for the panel and the API.
+// status and bars, for the panel and the API. The status, bars and bar
+// changes are those of the chat's memory scope (memory.ScopeKey): all panel
+// chats of a bot share them.
 type AutonomyService struct{ o *Orchestrator }
 
 // Autonomy returns the service over the orchestrator's private chats.
@@ -41,18 +44,20 @@ func (o *Orchestrator) Autonomy() *AutonomyService { return &AutonomyService{o: 
 // while it lasts, the bars of the chat's persona in its order at their values
 // decayed to now (their baselines when none is stored; stored bars the
 // persona no longer has are left out), the newest 50 bar changes first, and
-// how the bot starts the chat (privateProactiveStatus). It writes nothing,
-// not even the persona version a reply would create. A chat that does not
-// exist is store.ErrNotFound, another kind of conversation ErrNotPrivate.
+// how the bot starts the chat (privateProactiveStatus, with the chat's own
+// timers). It writes nothing, not even the persona version a reply would
+// create. A chat that does not exist is store.ErrNotFound, another kind of
+// conversation ErrNotPrivate.
 func (s *AutonomyService) State(ctx context.Context, convKey string) (conloomapi.AutonomyState, error) {
 	o := s.o
 	conv, err := s.privateChat(ctx, convKey)
 	if err != nil {
 		return conloomapi.AutonomyState{}, err
 	}
+	scope := memory.ScopeKey(conv)
 	now := o.now()
 	out := conloomapi.AutonomyState{Bars: []conloomapi.AutonomyBar{}, Events: []conloomapi.AutonomyBarEvent{}}
-	st, err := o.st.GetStatus(ctx, convKey)
+	st, err := o.st.GetStatus(ctx, scope)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 	case err != nil:
@@ -64,7 +69,7 @@ func (s *AutonomyService) State(ctx context.Context, convKey string) (conloomapi
 	if err != nil {
 		return conloomapi.AutonomyState{}, err
 	}
-	stored, err := o.st.GetBuffs(ctx, convKey)
+	stored, err := o.st.GetBuffs(ctx, scope)
 	if err != nil {
 		return conloomapi.AutonomyState{}, err
 	}
@@ -75,7 +80,7 @@ func (s *AutonomyService) State(ctx context.Context, convKey string) (conloomapi
 			Name: b.Name, Value: roundBar(v), Band: autonomy.Band(v), Baseline: b.Baseline, Description: b.Description,
 		})
 	}
-	events, err := o.st.ListBuffEvents(ctx, convKey, autonomyEvents)
+	events, err := o.st.ListBuffEvents(ctx, scope, autonomyEvents)
 	if err != nil {
 		return conloomapi.AutonomyState{}, err
 	}
@@ -133,7 +138,7 @@ func (s *AutonomyService) SetBar(ctx context.Context, convKey, name string, valu
 	now := o.now()
 	day := now.In(o.loc).Format(time.DateOnly)
 	var before float64
-	after, err := o.st.UpdateBuff(ctx, convKey, bar.Name, store.BuffEvent{Source: source, Reason: reason, CreatedAt: now},
+	after, err := o.st.UpdateBuff(ctx, memory.ScopeKey(conv), bar.Name, store.BuffEvent{Source: source, Reason: reason, CreatedAt: now},
 		func(cur store.BuffValue, found bool) (store.BuffValue, float64, error) {
 			before = barValue(bar, cur, found, now)
 			next := store.BuffValue{Value: float64(value), Day: day, UpdatedAt: now}
@@ -158,22 +163,23 @@ func (s *AutonomyService) SetBar(ctx context.Context, convKey, name string, valu
 
 // ClearStatus ends the status of the private chat convKey for actor at once,
 // as set_status with minutes 0 does: the status, expired or not, is deleted
-// with its status_return timer, so the bot does not come back to talk, and a
-// status return already queued finds no status and ends without a message.
-// It is audited as autonomy.status.clear, also when there was no status; a
-// failed audit is only logged. A chat that does not exist is
-// store.ErrNotFound, another kind of conversation ErrNotPrivate.
+// with the status_return timer of the chat it was set in, so the bot does not
+// come back to talk, and a status return already queued finds no status and
+// ends without a message. It is audited as autonomy.status.clear, also when
+// there was no status; a failed audit is only logged. A chat that does not
+// exist is store.ErrNotFound, another kind of conversation ErrNotPrivate.
 func (s *AutonomyService) ClearStatus(ctx context.Context, convKey, actor string) error {
 	o := s.o
 	conv, err := s.privateChat(ctx, convKey)
 	if err != nil {
 		return err
 	}
-	st, err := o.st.GetStatus(ctx, convKey)
+	scope := memory.ScopeKey(conv)
+	st, err := o.st.GetStatus(ctx, scope)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
-	cleared, err := o.st.ClearStatus(ctx, convKey, time.Time{})
+	cleared, err := o.st.ClearStatus(ctx, scope, time.Time{})
 	if err != nil {
 		return err
 	}

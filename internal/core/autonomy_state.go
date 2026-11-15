@@ -8,6 +8,7 @@ import (
 
 	"github.com/kinako404/conloom/internal/autonomy"
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -20,19 +21,21 @@ const (
 )
 
 // stateBlock returns the hidden state block (autonomy.RenderState) of a
-// private task: the conversation's status while it lasts and, when the bot
-// enables skillBuff, doc's bars (conloomapi.PersonaDoc.EffectiveBars) in
-// their order, each at its stored value decayed to now, or at its baseline
-// when none is stored. Stored bars doc does not have are left out. It is ""
-// for other conversations, when there is nothing to show, or when a read
-// fails, which is logged.
+// private task: the status of the conversation's memory scope
+// (memory.ScopeKey, shared by a bot's panel chats) while it lasts and, when
+// the bot enables skillBuff, doc's bars (conloomapi.PersonaDoc.EffectiveBars)
+// in their order, each at the scope's stored value decayed to now, or at its
+// baseline when none is stored. Stored bars doc does not have are left out.
+// It is "" for other conversations, when there is nothing to show, or when a
+// read fails, which is logged.
 func (o *Orchestrator) stateBlock(ctx context.Context, task store.TaskRecord, bot config.BotConfig, doc conloomapi.PersonaDoc) string {
 	if convType(task.ConversationKey) != conloomapi.ConvPrivate {
 		return ""
 	}
 	now := o.now()
+	scope := memory.ScopeKeyOf(task.ConversationKey)
 	var status *autonomy.StateStatus
-	st, err := o.st.GetStatus(ctx, task.ConversationKey)
+	st, err := o.st.GetStatus(ctx, scope)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 	case err != nil:
@@ -43,7 +46,7 @@ func (o *Orchestrator) stateBlock(ctx context.Context, task store.TaskRecord, bo
 	}
 	var bars []autonomy.StateBar
 	if slices.Contains(bot.Skills, skillBuff) {
-		stored, err := o.st.GetBuffs(ctx, task.ConversationKey)
+		stored, err := o.st.GetBuffs(ctx, scope)
 		if err != nil {
 			o.logStateError(task, err)
 			return ""

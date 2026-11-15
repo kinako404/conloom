@@ -96,9 +96,11 @@ type App struct {
 // New loads the skills, opens the database in the configured data directory
 // (creating the directory if needed), registers the configured bots, migrates
 // the persona templates of an old config file into the database once (see
-// migrateLegacyTemplates), loads the persona templates and wires every
-// component to one bot directory, which also holds the panel bots stored in
-// the database, with the web panel when the config has a panel section. An
+// migrateLegacyTemplates), merges the memory older versions kept per panel
+// chat into the bots' shared scopes once (migratePanelMemory), loads the
+// persona templates and wires every component to one bot directory, which
+// also holds the panel bots stored in the database, with the web panel when
+// the config has a panel section. An
 // invalid skill configuration is an error wrapping skills.ErrInvalid, and
 // persona_templates still in the config file after they were migrated one
 // wrapping store.ErrAlreadyMigrated. The caller must Close the App.
@@ -157,6 +159,10 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	personas.SetLogger(logger)
 	personas.SetTemplateUsers(bots.TemplateUsers)
 	if err := migrateLegacyTemplates(ctx, st, cfg.LegacyPersonaTemplates, now().UTC(), loc, logger); err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("app: %w", err)
+	}
+	if err := migratePanelMemory(ctx, st, now().UTC(), logger); err != nil {
 		_ = st.Close()
 		return nil, fmt.Errorf("app: %w", err)
 	}
@@ -349,6 +355,44 @@ func migrateLegacyTemplates(ctx context.Context, st *sqlite.DB, legacy map[strin
 	logger.Warn("the config file's persona templates are now in the database and managed in the web panel; "+
 		"remove persona_templates from the config file, or the next start fails",
 		"imported", len(imported), "skipped", len(skipped))
+	return nil
+}
+
+// migratePanelMemory merges the memory that older versions kept per panel
+// chat into the bots' shared panel memory scopes on the first start that has
+// shared scopes (see sqlite.DB.MigratePanelMemoryScope). It logs how many
+// chats each bot had merged and, when any were, audits the migration as
+// memory.scope.migrate; a failed audit is only logged.
+func migratePanelMemory(ctx context.Context, st *sqlite.DB, now time.Time, logger *slog.Logger) error {
+	merged, ran, err := st.MigratePanelMemoryScope(ctx, now)
+	if err != nil {
+		return fmt.Errorf("merge panel chat memory into shared scopes: %w", err)
+	}
+	if !ran {
+		return nil
+	}
+	type bot struct {
+		Bot   string `json:"bot"`
+		Chats int    `json:"chats"`
+	}
+	bots := make([]bot, 0, len(merged))
+	for _, m := range merged {
+		logger.Info("panel chat memory merged into the bot's shared scope", "bot", m.BotInstanceID, "chats", len(m.Chats))
+		bots = append(bots, bot{m.BotInstanceID, len(m.Chats)})
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	detail, err := json.Marshal(struct {
+		Bots []bot `json:"bots"`
+	}{bots})
+	if err == nil {
+		err = st.InsertAudit(ctx, store.AuditEvent{ID: ids.New("aud"), Kind: "memory.scope.migrate", Actor: "system",
+			Detail: string(detail), CreatedAt: now})
+	}
+	if err != nil {
+		logger.Error("panel chat memory merged but audit failed", "error", err)
+	}
 	return nil
 }
 

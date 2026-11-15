@@ -199,14 +199,16 @@ func (s *PanelBotService) Update(ctx context.Context, id string, in PanelBotInpu
 // Delete deletes the panel bot id for actor once confirmName, trimmed, is its
 // name. It marks the bot as being deleted, which refuses new chats, messages
 // in its chats and changes with ErrBotDeleting; deletes the bot's chats one
-// by one (DeletePanelChat); and then deletes the bot with what is left under
-// its ID, keeping its bot instance, model calls and audit events (see
-// store.Store.DeletePanelBot), removes it from the directory and audits it as
-// panel.bot.delete; a failed audit is only logged. If a chat's tasks do not
-// stop in time it stops there with ErrChatBusy: chats already deleted stay
-// deleted, the bot stays and is no longer marked, so a retry can finish.
-// A config bot is ErrConfigBot, a bot already being deleted ErrBotDeleting,
-// an unknown one store.ErrNotFound and the wrong name ErrInvalidBot.
+// by one (DeletePanelChat); deletes the memory its chats shared
+// (store.Store.DeleteScope of store.PanelScopeKey); and then deletes the bot
+// with what is left under its ID, keeping its bot instance, model calls and
+// audit events (see store.Store.DeletePanelBot), removes it from the
+// directory and audits it as panel.bot.delete; a failed audit is only
+// logged. If a chat's tasks do not stop in time it stops there with
+// ErrChatBusy: chats already deleted stay deleted, the bot stays and is no
+// longer marked, so a retry can finish. A config bot is ErrConfigBot, a bot
+// already being deleted ErrBotDeleting, an unknown one store.ErrNotFound and
+// the wrong name ErrInvalidBot.
 func (s *PanelBotService) Delete(ctx context.Context, id, confirmName, actor string) error {
 	name, err := s.beginDelete(ctx, id, confirmName)
 	if err != nil {
@@ -214,6 +216,13 @@ func (s *PanelBotService) Delete(ctx context.Context, id, confirmName, actor str
 	}
 	defer s.endDelete(id)
 	chats, err := s.deleteChats(ctx, id)
+	if err != nil {
+		return err
+	}
+	err = s.o.st.DeleteScope(ctx, store.PanelScopeKey(id))
+	if errors.Is(err, store.ErrBotHasData) {
+		return fmt.Errorf("%w: %w", ErrChatBusy, err)
+	}
 	if err != nil {
 		return err
 	}

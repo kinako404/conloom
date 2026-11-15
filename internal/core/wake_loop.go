@@ -187,7 +187,7 @@ func (o *Orchestrator) checkStart(ctx context.Context, t store.ConversationTimer
 			return drop("forgotten")
 		}
 	}
-	switch st, err := o.st.GetStatus(ctx, key); {
+	switch st, err := o.st.GetStatus(ctx, memory.ScopeKeyOf(key)); {
 	case errors.Is(err, store.ErrNotFound):
 	case err != nil:
 		return wakeVerdict{}, err
@@ -237,23 +237,28 @@ func (o *Orchestrator) checkStart(ctx context.Context, t store.ConversationTimer
 }
 
 // dueStatusReturn handles a due status return t (spec §7.4), which does not
-// look at the daily cap. Without a status, or with a newer one still lasting,
-// t is dropped. Otherwise the status ends, without a message, when it ended
-// more than wakeMissedGrace ago, when the chat is gone, proactive replies are
-// off, the chat is paused, its user may no longer chat privately or now is in
-// the chat's quiet hours (quietFor), when the user is asleep. While the chat
-// is busy (chatBusy, or fireTimer refusing) t is postponed by
-// statusReturnDelay, and the status ends once that would take it past
-// wakeMissedGrace after the status ended.
+// look at the daily cap. The status is that of the chat's memory scope.
+// Without a status, with one set in another chat of the scope, or with a
+// newer one still lasting, t is dropped. Otherwise the status ends, without a
+// message, when it ended more than wakeMissedGrace ago, when the chat is
+// gone, proactive replies are off, the chat is paused, its user may no longer
+// chat privately or now is in the chat's quiet hours (quietFor), when the
+// user is asleep. While the chat is busy (chatBusy, or fireTimer refusing) t
+// is postponed by statusReturnDelay, and the status ends once that would take
+// it past wakeMissedGrace after the status ended.
 func (o *Orchestrator) dueStatusReturn(ctx context.Context, t store.ConversationTimer) error {
 	now, key := o.now(), t.ConversationKey
-	st, err := o.st.GetStatus(ctx, key)
+	scope := memory.ScopeKeyOf(key)
+	st, err := o.st.GetStatus(ctx, scope)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		o.wakeOutcome(t, wakeDropped, "no_status")
 		return o.deleteTimer(ctx, t)
 	case err != nil:
 		return err
+	case st.Origin() != key:
+		o.wakeOutcome(t, wakeDropped, "other_chat")
+		return o.deleteTimer(ctx, t)
 	case st.UntilAt.After(now):
 		o.wakeOutcome(t, wakeDropped, "status_lasts")
 		return o.deleteTimer(ctx, t)
@@ -264,7 +269,7 @@ func (o *Orchestrator) dueStatusReturn(ctx context.Context, t store.Conversation
 	}
 	end := func(result, reason string) error {
 		o.wakeOutcome(t, result, reason)
-		cleared, err := o.st.ClearStatus(ctx, key, st.UntilAt)
+		cleared, err := o.st.ClearStatus(ctx, scope, st.UntilAt)
 		if err != nil || cleared {
 			return err
 		}

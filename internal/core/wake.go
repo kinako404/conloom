@@ -246,16 +246,18 @@ func (o *Orchestrator) fireTimer(ctx context.Context, t store.ConversationTimer)
 // staleWake follows up a wake task that Recover failed as stale, without a
 // message: an initiate, whose timer went when it fired, is planned again
 // (replanInitiate); a status return ends the status it returned from, which
-// had ended by the time the task was created, and leaves a newer one; a
-// follow-up is not tried again. Failures are logged.
+// had ended by the time the task was created, and leaves a newer one or one
+// set in another chat of the memory scope; a follow-up is not tried again.
+// Failures are logged.
 func (o *Orchestrator) staleWake(ctx context.Context, task store.TaskRecord) {
 	switch task.Meta.Trigger {
 	case TriggerInitiate:
 		o.replanInitiate(ctx, task.ConversationKey)
 	case TriggerStatusReturn:
-		st, err := o.st.GetStatus(ctx, task.ConversationKey)
-		if err == nil && !st.UntilAt.After(task.EventOccurredAt) {
-			_, err = o.st.ClearStatus(ctx, task.ConversationKey, st.UntilAt)
+		scope := memory.ScopeKeyOf(task.ConversationKey)
+		st, err := o.st.GetStatus(ctx, scope)
+		if err == nil && st.Origin() == task.ConversationKey && !st.UntilAt.After(task.EventOccurredAt) {
+			_, err = o.st.ClearStatus(ctx, scope, st.UntilAt)
 		}
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			o.log.Error("end status of a stale status return failed", "task_id", task.ID, "conversation", task.ConversationKey,
@@ -288,10 +290,10 @@ func timerRef(t store.ConversationTimer) store.TimerRef {
 // task wrote it, as cancelUnsentParts does for replies to the user. Each task
 // it cancels or cuts short is audited as wake.cancelled with reason; an
 // initiate or follow-up whose stored reply it cuts short no longer counts as
-// started (uncountWake). A status return it cancels ends the status too. It
-// holds the conversation's proactive lock, which a wake task's finish holds
-// while it stores its reply, so that reply is either withheld there or
-// cancelled here.
+// started (uncountWake). A status return it cancels ends the status too, if
+// it was set in this chat (clearOwnStatus). It holds the conversation's
+// proactive lock, which a wake task's finish holds while it stores its reply,
+// so that reply is either withheld there or cancelled here.
 func (o *Orchestrator) cancelWakes(ctx context.Context, convKey, userID, reason string) {
 	unlock := o.proactiveLocks.lock(convKey)
 	defer unlock()
@@ -350,10 +352,32 @@ func (o *Orchestrator) cancelWakes(ctx context.Context, convKey, userID, reason 
 		}
 	}
 	if endStatus {
-		if _, err := o.st.ClearStatus(ctx, convKey, time.Time{}); err != nil {
+		if err := o.clearOwnStatus(ctx, convKey); err != nil {
 			o.log.Error("end status of a cancelled status return failed", "conversation", convKey, "error", err)
 		}
 	}
+}
+
+// clearOwnStatus ends the status of convKey's memory scope, with its
+// status_return timer, if it was set in convKey, as a platform chat's own
+// status always was; a status set in another chat of the scope stays.
+func (o *Orchestrator) clearOwnStatus(ctx context.Context, convKey string) error {
+	scope := memory.ScopeKeyOf(convKey)
+	if scope == convKey {
+		_, err := o.st.ClearStatus(ctx, convKey, time.Time{})
+		return err
+	}
+	st, err := o.st.GetStatus(ctx, scope)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return nil
+	case err != nil:
+		return err
+	case st.Origin() != convKey:
+		return nil
+	}
+	_, err = o.st.ClearStatus(ctx, scope, st.UntilAt)
+	return err
 }
 
 // uncountWake takes back an initiate or follow-up whose stored reply
@@ -417,10 +441,11 @@ func wakeDirectiveName(name string) string {
 // wakeDirective is the hint that ends a wake task's context, by kind: an
 // initiate names the user, the local weekday and time and how long ago the
 // chat's last message in history was; a status return names the activity of
-// the conversation's status, which must have ended (a newer one may have
-// replaced it), and records its end in w. Initiates and follow-ups outside
-// ContentOpen get copyNoRomance. It reports false, after logging why, when
-// there is nothing to return from.
+// the status of the conversation's memory scope, which must have been set in
+// the conversation and have ended (a newer one, of this or another chat of
+// the scope, may have replaced it), and records its end in w. Initiates and
+// follow-ups outside ContentOpen get copyNoRomance. It reports false, after
+// logging why, when there is nothing to return from.
 func (o *Orchestrator) wakeDirective(ctx context.Context, task store.TaskRecord, w *wakeRun, mode conloomapi.ContentMode,
 	history []store.MessageRecord) (string, bool) {
 	name := wakeDirectiveName(w.name)
@@ -436,13 +461,17 @@ func (o *Orchestrator) wakeDirective(ctx context.Context, task store.TaskRecord,
 	case store.TimerFollowUp:
 		return CopyDirectiveFollowUp(name, protected), true
 	case store.TimerStatusReturn:
-		st, err := o.st.GetStatus(ctx, task.ConversationKey)
+		st, err := o.st.GetStatus(ctx, memory.ScopeKeyOf(task.ConversationKey))
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			o.log.Info("status return dropped: no status", "task_id", task.ID, "conversation", task.ConversationKey)
 			return "", false
 		case err != nil:
 			o.log.Warn("status return dropped: load status failed", "task_id", task.ID, "conversation", task.ConversationKey, "error", err)
+			return "", false
+		case st.Origin() != task.ConversationKey:
+			o.log.Info("status return dropped: a status set in another chat replaced it", "task_id", task.ID,
+				"conversation", task.ConversationKey)
 			return "", false
 		case st.UntilAt.After(o.now()):
 			o.log.Info("status return dropped: a newer status lasts", "task_id", task.ID, "conversation", task.ConversationKey)
@@ -699,11 +728,11 @@ func (o *Orchestrator) withholdWake(ctx context.Context, task store.TaskRecord, 
 // follow-up (armFollowUp); any other initiate or follow-up that was not
 // cancelled is logged as skipped, and an initiate is planned again
 // (replanInitiate, after the lock is released); a status return ends the
-// status it returned from, if it is still the conversation's, and once sent
-// is logged as such outside panel chats (which never start messages, so it
-// limits nothing there) and plans the next initiate again with the level's
-// gap counted from now (replanAfter), as its message is not stored until it
-// is delivered.
+// status it returned from, if it is still that of the conversation's memory
+// scope, and once sent is logged as such outside panel chats (which never
+// start messages, so it limits nothing there) and plans the next initiate
+// again with the level's gap counted from now (replanAfter), as its message
+// is not stored until it is delivered.
 func (o *Orchestrator) finishWake(ctx context.Context, task store.TaskRecord, out *outcome) (sent bool, err error) {
 	replan := false
 	var spoke time.Time
@@ -737,7 +766,7 @@ func (o *Orchestrator) finishWake(ctx context.Context, task store.TaskRecord, ou
 	switch w.kind {
 	case store.TimerStatusReturn:
 		if !w.statusUntil.IsZero() {
-			if _, err := o.st.ClearStatus(ctx, task.ConversationKey, w.statusUntil); err != nil {
+			if _, err := o.st.ClearStatus(ctx, memory.ScopeKeyOf(task.ConversationKey), w.statusUntil); err != nil {
 				o.log.Error("end status after its return failed", "task_id", task.ID, "error", err)
 			}
 		}

@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kinako404/conloom/internal/autonomy"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/skills"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -42,12 +43,13 @@ type adjustBuffTool struct {
 }
 
 // NewAdjustBuff returns the adjust_buff tool. In a private chat it changes
-// one of the persona's hidden bars (conloomapi.PersonaDoc.EffectiveBars) by a
-// non-zero delta, cut to ±10, on top of its value decayed to now (its
-// baseline when none is stored), keeping the bar's net change on the local
-// day within ±30 and its value within 0–100. A task changes each bar at most
-// once. The answer names the bar's band before and after, never a number; an
-// unknown name is answered with the persona's bars.
+// one of the persona's hidden bars (conloomapi.PersonaDoc.EffectiveBars),
+// kept in the chat's memory scope (memory.ScopeKey, shared by a bot's panel
+// chats), by a non-zero delta, cut to ±10, on top of its value decayed to now
+// (its baseline when none is stored), keeping the bar's net change on the
+// local day within ±30 and its value within 0–100. A task changes each bar at
+// most once. The answer names the bar's band before and after, never a
+// number; an unknown name is answered with the persona's bars.
 func NewAdjustBuff(st BuffStore, personas PersonaSource) skills.Tool {
 	return &adjustBuffTool{st: st, personas: personas}
 }
@@ -107,7 +109,7 @@ func (t *adjustBuffTool) Call(ctx context.Context, inv skills.Invocation, args j
 	now, loc := clock(inv)
 	day := now.In(loc).Format(time.DateOnly)
 	var before float64
-	after, err := t.st.UpdateBuff(ctx, inv.ConversationKey, bar.Name,
+	after, err := t.st.UpdateBuff(ctx, memory.ScopeKeyOf(inv.ConversationKey), bar.Name,
 		store.BuffEvent{TaskID: inv.TaskID, Source: store.BuffSourceModel, Reason: reason, CreatedAt: now},
 		func(cur store.BuffValue, found bool) (store.BuffValue, float64, error) {
 			before = float64(bar.Baseline)

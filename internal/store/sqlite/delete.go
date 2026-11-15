@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -52,8 +54,45 @@ func (db *DB) DeleteConversation(ctx context.Context, convKey string) error {
 				return err
 			}
 		}
+		// The chat's status_return timer went with its timers above.
+		if scope := store.MemoryScopeKey(convKey); store.IsSharedScope(scope) {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM conversation_status
+				WHERE conversation_key = ? AND origin_conversation_key = ?`, scope, convKey); err != nil {
+				return err
+			}
+		}
 		_, err = tx.ExecContext(ctx, `DELETE FROM conversations WHERE key = ?`, convKey)
 		return err
+	})
+}
+
+// scopeTables are the tables holding rows of a shared panel memory scope by
+// their conversation_key.
+var scopeTables = []string{
+	"group_memory", "member_memory", "memory_revisions",
+	"memory_chunks", "memory_chunk_state", "memory_chunk_rebuild", "memory_chunk_forgets",
+	"conversation_status", "conversation_timers", "conversation_buffs", "conversation_buff_events",
+}
+
+func (db *DB) DeleteScope(ctx context.Context, scopeKey string) error {
+	if !store.IsSharedScope(scopeKey) {
+		return fmt.Errorf("delete scope: %s is not a shared panel memory scope", scopeKey)
+	}
+	botID, _, _ := strings.Cut(scopeKey, ":")
+	return db.inTx(ctx, func(tx *sql.Tx) error {
+		chats, err := panelChatKeys(ctx, tx, botID)
+		if err != nil {
+			return err
+		}
+		if len(chats) > 0 {
+			return store.ErrBotHasData
+		}
+		for _, table := range scopeTables {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE conversation_key = ?`, scopeKey); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

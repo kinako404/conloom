@@ -12,12 +12,13 @@ import (
 )
 
 // autonomyTables hold a private conversation's status, timers, bar values
-// and bar changes.
+// and bar changes; a shared panel memory scope holds all but timers, which
+// stay with each of its chats.
 var autonomyTables = []string{"conversation_status", "conversation_timers", "conversation_buffs", "conversation_buff_events"}
 
 var knownTimerKinds = []store.TimerKind{store.TimerStatusReturn, store.TimerInitiate, store.TimerFollowUp}
 
-const statusCols = `conversation_key, activity, started_at, until_at, task_id, updated_at`
+const statusCols = `conversation_key, activity, started_at, until_at, task_id, updated_at, origin_conversation_key`
 
 const timerCols = `conversation_key, kind, bot_instance_id, platform_user_id, due_at, anchor_seq, lease_until, created_at`
 
@@ -34,40 +35,67 @@ func (db *DB) SetStatus(ctx context.Context, s store.ConversationStatus, ret *st
 	if s.ConversationKey == "" {
 		return errors.New("set status: empty conversation key")
 	}
+	origin := s.Origin()
 	var timer store.ConversationTimer
 	if ret != nil {
 		timer = *ret
 		if timer.ConversationKey == "" {
-			timer.ConversationKey = s.ConversationKey
+			timer.ConversationKey = origin
 		}
 		if timer.Kind == "" {
 			timer.Kind = store.TimerStatusReturn
 		}
-		if timer.ConversationKey != s.ConversationKey || timer.Kind != store.TimerStatusReturn {
-			return fmt.Errorf("set status of %s: return timer is %s of %s", s.ConversationKey, timer.Kind, timer.ConversationKey)
+		if timer.ConversationKey != origin || timer.Kind != store.TimerStatusReturn {
+			return fmt.Errorf("set status of %s in %s: return timer is %s of %s", s.ConversationKey, origin, timer.Kind,
+				timer.ConversationKey)
 		}
 	}
 	return db.inTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_status (`+statusCols+`) VALUES (?, ?, ?, ?, ?, ?)
+		prev, found, err := statusOrigin(ctx, tx, s.ConversationKey)
+		if err != nil {
+			return err
+		}
+		if found && prev != origin {
+			if _, err := deleteTimers(ctx, tx, prev, []store.TimerKind{store.TimerStatusReturn}); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_status (`+statusCols+`) VALUES (?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (conversation_key) DO UPDATE SET activity = excluded.activity, started_at = excluded.started_at,
-				until_at = excluded.until_at, task_id = excluded.task_id, updated_at = excluded.updated_at`,
+				until_at = excluded.until_at, task_id = excluded.task_id, updated_at = excluded.updated_at,
+				origin_conversation_key = excluded.origin_conversation_key`,
 			s.ConversationKey, s.Activity, fmtTime(s.StartedAt), fmtTime(s.UntilAt), s.TaskID,
-			fmtTime(nowIfZero(s.UpdatedAt))); err != nil {
+			fmtTime(nowIfZero(s.UpdatedAt)), s.OriginConversationKey); err != nil {
 			return err
 		}
 		if ret == nil {
-			_, err := deleteTimers(ctx, tx, s.ConversationKey, []store.TimerKind{store.TimerStatusReturn})
+			_, err := deleteTimers(ctx, tx, origin, []store.TimerKind{store.TimerStatusReturn})
 			return err
 		}
 		return armTimer(ctx, tx, timer)
 	})
 }
 
+// statusOrigin returns the chat the status of convKey was set in
+// (store.ConversationStatus.Origin), or convKey and false without a status.
+func statusOrigin(ctx context.Context, q queryer, convKey string) (string, bool, error) {
+	var origin string
+	err := q.QueryRowContext(ctx, `SELECT origin_conversation_key FROM conversation_status WHERE conversation_key = ?`,
+		convKey).Scan(&origin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return convKey, false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return store.ConversationStatus{ConversationKey: convKey, OriginConversationKey: origin}.Origin(), true, nil
+}
+
 func (db *DB) GetStatus(ctx context.Context, convKey string) (store.ConversationStatus, error) {
 	var s store.ConversationStatus
 	var started, until, updated string
 	err := db.r.QueryRowContext(ctx, `SELECT `+statusCols+` FROM conversation_status WHERE conversation_key = ?`, convKey).
-		Scan(&s.ConversationKey, &s.Activity, &started, &until, &s.TaskID, &updated)
+		Scan(&s.ConversationKey, &s.Activity, &started, &until, &s.TaskID, &updated, &s.OriginConversationKey)
 	if err != nil {
 		return store.ConversationStatus{}, notFound(err)
 	}
@@ -86,6 +114,10 @@ func (db *DB) GetStatus(ctx context.Context, convKey string) (store.Conversation
 func (db *DB) ClearStatus(ctx context.Context, convKey string, untilAt time.Time) (bool, error) {
 	var cleared bool
 	err := db.inTx(ctx, func(tx *sql.Tx) error {
+		origin, _, err := statusOrigin(ctx, tx, convKey)
+		if err != nil {
+			return err
+		}
 		query, args := `DELETE FROM conversation_status WHERE conversation_key = ?`, []any{convKey}
 		if !untilAt.IsZero() {
 			query += ` AND until_at = ?`
@@ -99,7 +131,7 @@ func (db *DB) ClearStatus(ctx context.Context, convKey string, untilAt time.Time
 		if !cleared && !untilAt.IsZero() {
 			return nil
 		}
-		_, err = deleteTimers(ctx, tx, convKey, []store.TimerKind{store.TimerStatusReturn})
+		_, err = deleteTimers(ctx, tx, origin, []store.TimerKind{store.TimerStatusReturn})
 		return err
 	})
 	if err != nil {

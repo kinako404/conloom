@@ -9,6 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/review"
 	"github.com/kinako404/conloom/internal/skills"
 	"github.com/kinako404/conloom/internal/store"
@@ -64,10 +65,12 @@ type setStatusTool struct {
 // NewSetStatus returns the set_status tool. In a private chat it records what
 // the bot is doing (CleanActivity'd, 1 to ActivityMaxRunes runes, through
 // OutputProtected unless the persona's content mode is open, then Output)
-// from now for 1 to StatusMaxMinutes minutes, replacing any earlier status,
-// together with a status_return timer due when it ends; 0 minutes ends the
-// current status and cancels its timer. Its answer says until when, and that
-// the bot will come back then, or, with proactive.enabled off, that the
+// from now for 1 to StatusMaxMinutes minutes, as the status of the chat's
+// memory scope (memory.ScopeKey, shared by a bot's panel chats) set in the
+// chat, replacing any earlier status, together with a status_return timer of
+// the chat due when it ends; 0 minutes ends the scope's current status and
+// cancels its timer, wherever it was set. Its answer says until when, and
+// that the bot will come back then, or, with proactive.enabled off, that the
 // status will simply end.
 func NewSetStatus(st StatusStore, pol PolicySource, personas PersonaSource, rv Reviewer) skills.Tool {
 	return &setStatusTool{st: st, policies: pol, personas: personas, reviewer: rv}
@@ -96,8 +99,9 @@ func (t *setStatusTool) Call(ctx context.Context, inv skills.Invocation, args js
 	if !ok || minutes < 0 || minutes > StatusMaxMinutes {
 		return statusBadMinutes, nil
 	}
+	scope := memory.ScopeKeyOf(inv.ConversationKey)
 	if minutes == 0 {
-		if _, err := t.st.ClearStatus(ctx, inv.ConversationKey, time.Time{}); err != nil {
+		if _, err := t.st.ClearStatus(ctx, scope, time.Time{}); err != nil {
 			return "", err
 		}
 		return statusEnded, nil
@@ -129,8 +133,8 @@ func (t *setStatusTool) Call(ctx context.Context, inv skills.Invocation, args js
 	now, loc := clock(inv)
 	until := now.Add(time.Duration(minutes) * time.Minute)
 	if err := t.st.SetStatus(ctx,
-		store.ConversationStatus{ConversationKey: inv.ConversationKey, Activity: activity, TaskID: inv.TaskID,
-			StartedAt: now, UntilAt: until},
+		store.ConversationStatus{ConversationKey: scope, OriginConversationKey: inv.ConversationKey, Activity: activity,
+			TaskID: inv.TaskID, StartedAt: now, UntilAt: until},
 		&store.ConversationTimer{ConversationKey: inv.ConversationKey, Kind: store.TimerStatusReturn,
 			BotInstanceID: inv.BotInstanceID, PlatformUserID: inv.PlatformUserID, DueAt: until}); err != nil {
 		return "", err

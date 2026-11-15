@@ -39,6 +39,11 @@ var (
 // when the config file's persona templates were migrated into the database.
 const MetaConfigTemplatesMigrated = "config_templates_migrated"
 
+// MetaPanelMemoryScoped is the database fact (app_meta key) holding when the
+// memory of panel chats, kept per chat by older versions, was merged into
+// their bots' shared scopes (see MemoryScopeKey).
+const MetaPanelMemoryScoped = "panel_memory_scoped"
+
 // ConversationKey returns the canonical "bot:platform:type:id" key of a conversation.
 func ConversationKey(botID, platform, convType, convID string) string {
 	return botID + ":" + platform + ":" + convType + ":" + convID
@@ -206,10 +211,10 @@ type Store interface {
 	ForgetPrivate(ctx context.Context, convKey, userID string, at time.Time) error
 	// ForgetPrivateScope is ForgetPrivate for the memory scope scopeKey (see
 	// MemoryScopeKey) of the private chats chats: the member, summary, summary
-	// revisions and cursor are those under scopeKey, the cursor moves up to
-	// the newest message of any of chats, and the chunks, status, timers and
-	// bars of each of chats are dealt with as ForgetPrivate deals with its
-	// conversation's.
+	// revisions, cursor, status, bar values and bar changes are those under
+	// scopeKey, the cursor moves up to the newest message of any of chats, and
+	// the chunks and timers of each of chats are dealt with as ForgetPrivate
+	// deals with its conversation's.
 	ForgetPrivateScope(ctx context.Context, scopeKey string, chats []string, userID string, at time.Time) error
 	// ForgetMember clears the user's memory, marks it forgotten at at (creating
 	// the row if needed) and deletes the user's revisions in the conversation.
@@ -264,16 +269,22 @@ type Store interface {
 	// at any time, and also picks up messages written by binaries without the
 	// index.
 	BackfillMessageIndex(ctx context.Context, batch int) (indexed, remaining int, err error)
-	// SetStatus stores s as the conversation's only status and, in the same
-	// transaction, ret as its status_return timer (ConversationKey and Kind may
-	// be left empty), or deletes that timer when ret is nil.
+	// SetStatus stores s as the only status of s.ConversationKey, a memory
+	// scope (MemoryScopeKey; the status, bar and bar change methods below take
+	// scope keys where they say conversation, while timers stay with each
+	// chat), set in the chat s.Origin(), and, in the same transaction, ret as
+	// that chat's status_return timer (ConversationKey and Kind may be left
+	// empty), or deletes that timer when ret is nil. When the status it
+	// replaces was set in another chat, that chat's status_return timer is
+	// deleted too.
 	SetStatus(ctx context.Context, s ConversationStatus, ret *ConversationTimer) error
 	// GetStatus returns the conversation's status, expired or not, or ErrNotFound.
 	GetStatus(ctx context.Context, convKey string) (ConversationStatus, error)
 	// ClearStatus deletes the conversation's status if its UntilAt equals
-	// untilAt (any status for a zero untilAt), together with its status_return
-	// timer, and reports whether a status was deleted. A zero untilAt deletes
-	// the timer even without a status.
+	// untilAt (any status for a zero untilAt), together with the
+	// status_return timer of the chat it was set in, and reports whether a
+	// status was deleted. A zero untilAt deletes convKey's timer even without
+	// a status.
 	ClearStatus(ctx context.Context, convKey string, untilAt time.Time) (bool, error)
 	// ArmTimer stores t, replacing the conversation's timer of the same kind,
 	// unclaimed.
@@ -323,8 +334,17 @@ type Store interface {
 	// keyword index rows, tasks, outbox actions, personas, policies, members, memory,
 	// chunks, proactive log, status, timers, bars, users only referenced by this
 	// conversation, events of it) except model_calls and audit_events, then the
-	// conversation row. ErrNotFound if absent.
+	// conversation row. For a panel chat it also deletes the status of its shared
+	// memory scope when that was set in the chat; the rest of the scope stays.
+	// ErrNotFound if absent.
 	DeleteConversation(ctx context.Context, convKey string) error
+	// DeleteScope deletes everything stored under the shared panel memory scope
+	// scopeKey (summary and cursor, members with their forget times, revisions,
+	// chunk records, status, timers, bar values and bar changes), for a panel
+	// bot whose chats are gone. It returns ErrBotHasData, with nothing deleted,
+	// while the bot still has panel chats; a key that is not a shared scope
+	// (IsSharedScope) is an error.
+	DeleteScope(ctx context.Context, scopeKey string) error
 	Backup(ctx context.Context, path string) error
 	Close() error
 }

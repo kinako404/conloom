@@ -122,7 +122,7 @@ func (o *Orchestrator) nextInitiate(ctx context.Context, convKey string, spoke t
 	if spoke.After(last) {
 		last = spoke
 	}
-	switch st, err := o.st.GetStatus(ctx, convKey); {
+	switch st, err := o.st.GetStatus(ctx, memory.ScopeKeyOf(convKey)); {
 	case errors.Is(err, store.ErrNotFound):
 	case err != nil:
 		return nil, false, "", err

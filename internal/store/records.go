@@ -367,13 +367,27 @@ type TimerRef struct {
 
 // ConversationStatus is what the bot said it is doing in a private
 // conversation, from StartedAt until UntilAt. TaskID is the task that set it.
+// ConversationKey is the memory scope it is kept under (MemoryScopeKey):
+// all panel chats of a bot share one status. OriginConversationKey is the
+// chat it was set in, whose status_return timer comes back to talk; empty
+// means ConversationKey itself (see Origin).
 type ConversationStatus struct {
-	ConversationKey string
-	Activity        string
-	TaskID          string
-	StartedAt       time.Time
-	UntilAt         time.Time
-	UpdatedAt       time.Time
+	ConversationKey       string
+	OriginConversationKey string
+	Activity              string
+	TaskID                string
+	StartedAt             time.Time
+	UntilAt               time.Time
+	UpdatedAt             time.Time
+}
+
+// Origin returns the chat the status was set in: OriginConversationKey, or
+// ConversationKey when that is empty.
+func (s ConversationStatus) Origin() string {
+	if s.OriginConversationKey == "" {
+		return s.ConversationKey
+	}
+	return s.OriginConversationKey
 }
 
 // BuffValue is a hidden bar's value in a private conversation as last
