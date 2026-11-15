@@ -495,22 +495,23 @@ func TestUserMessageTimes(t *testing.T) {
 	}
 }
 
-func TestUserMessageTimes_SkipsPanelMessages(t *testing.T) {
+func TestUserMessageTimes_CountsPanelChannel(t *testing.T) {
 	db := newTestDB(t)
-	key := privKey("20001")
+	key := store.ConversationKey(testBot, store.PlatformPanel, conloomapi.ConvPrivate, "panel_1")
 	base := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
-	user := memMessage(key, "user_20001", "20001", false)
-	user.OccurredAt = base
-	// The panel takes over the chat and writes as its user.
-	panel := memMessage(key, "user_20001", "20001", false)
-	panel.OccurredAt, panel.Channel = base.Add(time.Hour), store.ChannelPanel
-	memInsertMessages(t, db, user, panel)
+	var msgs []store.MessageRecord
+	for i, fromBot := range []bool{false, true, false} {
+		m := memMessage(key, "panel_admin", "panel_admin", fromBot)
+		m.Platform, m.Channel, m.OccurredAt = store.PlatformPanel, store.ChannelPanel, base.Add(time.Duration(i)*time.Hour)
+		msgs = append(msgs, m)
+	}
+	memInsertMessages(t, db, msgs...)
 	got, err := db.UserMessageTimes(context.Background(), key, time.Time{}, 10)
 	if err != nil {
 		t.Fatalf("UserMessageTimes: %v", err)
 	}
-	if !slices.EqualFunc(got, []time.Time{base}, time.Time.Equal) {
-		t.Fatalf("times = %v, want only the platform message at %v", got, base)
+	if want := []time.Time{base.Add(2 * time.Hour), base}; !slices.EqualFunc(got, want, time.Time.Equal) {
+		t.Fatalf("times = %v, want the panel chat user's messages %v", got, want)
 	}
 }
 

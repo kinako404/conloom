@@ -4,9 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"hash/fnv"
-	"slices"
+	"maps"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -82,22 +81,22 @@ func wantChannels(t *testing.T, what string, got []string, want string) {
 	}
 }
 
-func TestSubmitPanel_TakeoverRepliesOnPanelOnly(t *testing.T) {
+func TestSubmitPanel_RepliesOnPanelOnly(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
 	ctx := context.Background()
-	key := privateKey("20001")
 
 	first := env.waitTask(t, env.submit(t, env.event(conloomapi.ConvPrivate, "20001", "20001", "在吗")).TaskID)
 	wantChannels(t, "platform message", env.actionChannels(t, first), "")
 	platformAction := first.Actions[0].ActionID
 
+	key := env.createChat(t, testBot)
 	id := env.submitPanel(t, key, "admin", "今天过得怎么样")
 	msg, err := env.st.GetMessage(ctx, testBot, id)
 	if err != nil {
 		t.Fatalf("panel message not stored: %v", err)
 	}
-	if msg.Channel != store.ChannelPanel || msg.PlatformUserID != "20001" || msg.ActorID != "user_20001" ||
-		msg.DisplayName != "用户20001" || msg.Platform != "qq" || msg.ConversationKey != key || msg.FromBot {
+	if msg.Channel != store.ChannelPanel || msg.PlatformUserID != "panel_admin" || msg.ActorID != "panel_admin" ||
+		msg.DisplayName != "小明" || msg.Platform != store.PlatformPanel || msg.ConversationKey != key || msg.FromBot {
 		t.Fatalf("panel message = %+v", msg)
 	}
 	if !strings.HasPrefix(msg.PlatformMessageID, "panel_") || strings.Contains(msg.PlatformMessageID, ":") {
@@ -145,69 +144,72 @@ func TestSubmitPanel_TakeoverRepliesOnPanelOnly(t *testing.T) {
 	}
 }
 
-func TestSubmitPanel_MergedTaskTakesNewestTriggerChannel(t *testing.T) {
-	env := newTestOrchestrator(t, testOpts{configure: privateWait(400 * time.Millisecond)})
-
-	resp := env.submit(t, env.event(conloomapi.ConvPrivate, "20001", "20001", "第一句"))
-	merged := env.panelResponse(t, env.submitPanel(t, privateKey("20001"), "admin", "第二句"))
-	if !merged.Merged || merged.TaskID != resp.TaskID {
-		t.Fatalf("panel message response = %+v, want merged into %s", merged, resp.TaskID)
-	}
-	wantChannels(t, "platform then panel", env.actionChannels(t, env.waitTask(t, resp.TaskID)), store.ChannelPanel)
-
-	resp = env.submit(t, env.event(conloomapi.ConvPrivate, "20002", "20002", "第一句"))
-	merged = env.panelResponse(t, env.submitPanel(t, privateKey("20002"), "admin", "第二句"))
-	last := env.submit(t, env.event(conloomapi.ConvPrivate, "20002", "20002", "第三句"))
-	if !merged.Merged || !last.Merged || merged.TaskID != resp.TaskID || last.TaskID != resp.TaskID {
-		t.Fatalf("responses %+v, %+v; want both merged into %s", merged, last, resp.TaskID)
-	}
-	wantChannels(t, "panel then platform", env.actionChannels(t, env.waitTask(t, resp.TaskID)), "")
-}
-
 func TestSubmitPanel_RateLimited(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) {
-		allowAllPrivate(c)
 		c.DefaultGroupPolicy.Reply.UserRateLimitPerMinute = 1
 	}})
-	env.waitTask(t, env.submit(t, env.event(conloomapi.ConvPrivate, "20001", "20001", "在吗")).TaskID)
-	resp := env.panelResponse(t, env.submitPanel(t, privateKey("20001"), "admin", "还在吗"))
+	key := env.createChat(t, testBot)
+	env.waitTask(t, env.panelResponse(t, env.submitPanel(t, key, "admin", "在吗")).TaskID)
+	resp := env.panelResponse(t, env.submitPanel(t, key, "admin", "还在吗"))
 	if resp.Disposition != conloomapi.DispositionObserve || resp.SuppressedReason != conloomapi.SuppressedRateLimited {
 		t.Fatalf("panel message response = %+v, want observed as rate limited", resp)
 	}
 }
 
 func TestSubmitPanel_Errors(t *testing.T) {
-	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	env := newTestOrchestrator(t, testOpts{})
 	ctx := context.Background()
-	env.submit(t, env.groupEvent("20001", "大家好"))
-	env.waitTask(t, env.submit(t, env.event(conloomapi.ConvPrivate, "20001", "20001", "在吗")).TaskID)
-	emptyKey := privateKey("20002")
-	if _, err := env.st.Ingest(ctx, store.Ingest{
-		Event: store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "seed_20002", EventID: "evt_seed_20002"},
-		Conversation: &store.ConversationRecord{BotInstanceID: testBot, ID: "private_20002", Key: emptyKey,
-			Type: conloomapi.ConvPrivate, Platform: "qq", PlatformConversationID: "20002"},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	key := env.createChat(t, testBot)
 
 	for _, c := range []struct {
 		name, key, text string
 		want            error
 	}{
 		{"unknown conversation", privateKey("20009"), "你好", store.ErrNotFound},
+		{"unknown panel chat", store.ConversationKey(testBot, store.PlatformPanel, conloomapi.ConvPrivate, "panel_missing"), "你好",
+			store.ErrNotFound},
 		{"malformed key", "bot_main:qq", "你好", store.ErrNotFound},
-		{"group", testConvKey, "你好", ErrNotPrivate},
-		{"no user message", emptyKey, "你好", ErrNoUserYet},
-		{"empty", privateKey("20001"), "", ErrBadText},
-		{"blank", privateKey("20001"), " \n ", ErrBadText},
-		{"too long", privateKey("20001"), strings.Repeat("长", 2001), ErrBadText},
+		{"empty", key, "", ErrBadText},
+		{"blank", key, " \n ", ErrBadText},
+		{"too long", key, strings.Repeat("长", 2001), ErrBadText},
 	} {
 		if _, err := env.o.SubmitPanel(ctx, c.key, "admin", c.text); !errors.Is(err, c.want) {
 			t.Errorf("%s: err = %v, want %v", c.name, err, c.want)
 		}
 	}
-	if _, err := env.o.SubmitPanel(ctx, privateKey("20001"), "admin", strings.Repeat("长", 2000)); err != nil {
+	if _, err := env.o.SubmitPanel(ctx, key, "admin", strings.Repeat("长", 2000)); err != nil {
 		t.Errorf("2000 characters: %v", err)
+	}
+}
+
+func TestSubmitPanel_RejectsPlatform(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	ctx := context.Background()
+	private := privateKey("20001")
+	env.waitTask(t, env.submit(t, env.event(conloomapi.ConvPrivate, "20001", "20001", "在吗")).TaskID)
+	if _, err := env.st.Ingest(ctx, store.Ingest{
+		Event: store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "seed_group", EventID: "evt_seed_group"},
+		Conversation: &store.ConversationRecord{BotInstanceID: testBot, ID: "group_10001", Key: testConvKey,
+			Type: conloomapi.ConvGroup, Platform: "qq", PlatformConversationID: "10001"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stored := func() map[string]int {
+		rows := rowsOfBot(t, env.dbPath, testBot)
+		return map[string]int{"events": rows["events"], "messages": rows["messages"], "tasks": rows["tasks"],
+			"outbox_actions": rows["outbox_actions"]}
+	}
+	before := stored()
+	for _, key := range []string{private, testConvKey} {
+		if _, err := env.o.SubmitPanel(ctx, key, "admin", "你好"); !errors.Is(err, ErrNotPanelChat) {
+			t.Errorf("%s: err = %v, want ErrNotPanelChat", key, err)
+		}
+	}
+	if after := stored(); !maps.Equal(after, before) {
+		t.Errorf("rows after the refused messages = %v, want %v", after, before)
+	}
+	if env.o.Busy(private) {
+		t.Error("the platform chat is busy after a refused panel message")
 	}
 }
 
@@ -297,8 +299,9 @@ func TestNewActions_Channel(t *testing.T) {
 	}{
 		{"no triggers on a platform", platform, nil, ""},
 		{"no triggers in a panel chat", panel, nil, store.ChannelPanel},
-		{"newest from the panel", platform, []store.MessageRecord{fromPlatform, fromPanel}, store.ChannelPanel},
-		{"newest from the platform", platform, []store.MessageRecord{fromPanel, fromPlatform}, ""},
+		{"panel chat", panel, []store.MessageRecord{fromPanel}, store.ChannelPanel},
+		{"platform", platform, []store.MessageRecord{fromPlatform}, ""},
+		{"platform, newest written in the panel before", platform, []store.MessageRecord{fromPlatform, fromPanel}, ""},
 	} {
 		for _, parts := range [][]string{{"一"}, {"一", "二", "三"}} {
 			for i, a := range env.o.newActions(ctx, task, c.conv, c.triggers, parts) {
@@ -408,72 +411,9 @@ func TestDeletePanelChat_CancelsRunningTask(t *testing.T) {
 	}
 }
 
-// ingestMessage stores m in the private conversation of user without
-// deciding anything.
-func (e *testEnv) ingestMessage(t *testing.T, user string, m store.MessageRecord) {
-	t.Helper()
-	key := privateKey(user)
-	m.BotInstanceID, m.ConversationKey, m.Platform, m.CreatedAt = testBot, key, "qq", time.Now()
-	if m.OccurredAt.IsZero() {
-		m.OccurredAt = m.CreatedAt
-	}
-	if _, err := e.st.Ingest(context.Background(), store.Ingest{
-		Event: store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "seed_" + m.ID, EventID: "evt_" + m.ID},
-		Conversation: &store.ConversationRecord{BotInstanceID: testBot, ID: "private_" + user, Key: key,
-			Type: conloomapi.ConvPrivate, Platform: "qq", PlatformConversationID: user},
-		Message: &m,
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func userMessage(id, user, name string) store.MessageRecord {
-	return store.MessageRecord{ID: id, PlatformMessageID: strings.TrimPrefix(id, "msg_"), ActorID: "user_" + user,
-		PlatformUserID: user, DisplayName: name, Text: "在吗"}
-}
-
-func botMessage(id string) store.MessageRecord {
-	return store.MessageRecord{ID: id, PlatformMessageID: strings.TrimPrefix(id, "msg_"), ActorID: "bot_30001",
-		PlatformUserID: "30001", Text: "我在", FromBot: true}
-}
-
-func TestSubmitPanel_NotAllowedIsNotStored(t *testing.T) {
-	env := newTestOrchestrator(t, testOpts{})
-	ctx := context.Background()
-	env.ingestMessage(t, "20001", userMessage("msg_seed1", "20001", "小明"))
-	if _, err := env.o.SubmitPanel(ctx, privateKey("20001"), "admin", "你好"); !errors.Is(err, ErrNotAllowed) {
-		t.Fatalf("takeover of a user private_chat does not allow: err = %v, want ErrNotAllowed", err)
-	}
-	if msgs, err := env.st.RecentMessages(ctx, privateKey("20001"), 10); err != nil || len(msgs) != 1 {
-		t.Errorf("messages = %d, %v; want only the seeded one", len(msgs), err)
-	}
-}
-
-func TestSubmitPanel_TakeoverFallsBackToConversationUser(t *testing.T) {
-	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
-	ctx := context.Background()
-	env.ingestMessage(t, "20001", userMessage("msg_seed0", "20001", "小明"))
-	for i := range panelSpeakerLookback {
-		env.ingestMessage(t, "20001", botMessage(fmt.Sprintf("msg_bot%d", i)))
-	}
-	msg, err := env.st.GetMessage(ctx, testBot, env.submitPanel(t, privateKey("20001"), "admin", "你好"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if msg.PlatformUserID != "20001" || msg.ActorID != "user_20001" || msg.DisplayName != "小明" {
-		t.Errorf("speaker = %s/%s/%s, want the conversation's user", msg.ActorID, msg.PlatformUserID, msg.DisplayName)
-	}
-
-	env.ingestMessage(t, "20002", botMessage("msg_bot_only"))
-	if _, err := env.o.SubmitPanel(ctx, privateKey("20002"), "admin", "你好"); !errors.Is(err, ErrNoUserYet) {
-		t.Errorf("only bot messages: err = %v, want ErrNoUserYet", err)
-	}
-}
-
 func TestSubmitPanel_InputReviewed(t *testing.T) {
-	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
-	env.waitTask(t, env.submit(t, env.event(conloomapi.ConvPrivate, "20001", "20001", "在吗")).TaskID)
-	id := env.submitPanel(t, privateKey("20001"), "admin", "你好\x07呀")
+	env := newTestOrchestrator(t, testOpts{})
+	id := env.submitPanel(t, env.createChat(t, testBot), "admin", "你好\x07呀")
 	if task := env.waitTask(t, env.panelResponse(t, id).TaskID); task.Status != conloomapi.TaskSucceeded {
 		t.Fatalf("task = %+v", task)
 	}
@@ -485,7 +425,7 @@ func TestSubmitPanel_InputReviewed(t *testing.T) {
 	}
 }
 
-func TestSubmitPanel_SupersedesRunningPlatformTask(t *testing.T) {
+func TestSubmitPanel_SupersedesRunningTask(t *testing.T) {
 	var calls atomic.Int64
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
@@ -496,15 +436,16 @@ func TestSubmitPanel_SupersedesRunningPlatformTask(t *testing.T) {
 		}
 		return 200, fakeReply
 	}
-	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate, short: model, long: model})
+	env := newTestOrchestrator(t, testOpts{short: model, long: model})
 	t.Cleanup(func() { close(release) })
-	first := env.submit(t, env.event(conloomapi.ConvPrivate, "20001", "20001", "在吗"))
+	key := env.createChat(t, testBot)
+	first := env.panelResponse(t, env.submitPanel(t, key, "admin", "在吗"))
 	select {
 	case <-started:
 	case <-time.After(waitLimit):
 		t.Fatal("model never called")
 	}
-	resp := env.panelResponse(t, env.submitPanel(t, privateKey("20001"), "admin", "换个话题"))
+	resp := env.panelResponse(t, env.submitPanel(t, key, "admin", "换个话题"))
 	if resp.Disposition != conloomapi.DispositionReply || resp.TaskID == first.TaskID {
 		t.Fatalf("panel message response = %+v, want a new task", resp)
 	}
@@ -657,52 +598,6 @@ func TestDeletePanelChat_DoesNotBlockOtherChats(t *testing.T) {
 	release()
 	if err := <-deleted; err != nil {
 		t.Fatalf("DeletePanelChat: %v", err)
-	}
-}
-
-func TestSubmitPanel_TakeoverIsNotTheUser(t *testing.T) {
-	env, clock := newWakeEnv(t, nil, []string{"status", "buff"}, nil)
-	ctx := context.Background()
-	requireOneReply(t, env, env.submit(t, env.event(conloomapi.ConvPrivate, privateUser, privateUser, "在吗", withName("小明"), clock.stamp)).TaskID)
-	clock.set(clock.now().Add(time.Hour))
-	env.appendPrivateLog(t, store.ProactivePrivateInitiate, clock.now())
-	clock.set(clock.now().Add(time.Hour))
-
-	// The panel takes over 小明's chat.
-	takeover := env.waitTask(t, env.panelResponse(t, env.submitPanel(t, privateConvKey, "admin", "今天过得怎么样")).TaskID)
-	if takeover.Status != conloomapi.TaskSucceeded {
-		t.Fatalf("takeover task = %+v", takeover)
-	}
-	panelChat, err := env.o.CreatePanelChat(ctx, testBot, "admin", "小红")
-	if err != nil {
-		t.Fatal(err)
-	}
-	env.waitTask(t, env.panelResponse(t, env.submitPanel(t, panelChat, "admin", "你好")).TaskID)
-
-	reqs := env.short.Requests()
-	if len(reqs) != 3 {
-		t.Fatalf("model requests = %d, want 3", len(reqs))
-	}
-	for i, c := range []struct {
-		what      string
-		setStatus bool
-	}{{"小明's message", true}, {"the takeover", false}, {"the panel chat", true}} {
-		got := offeredTools(reqs[i])
-		if slices.Contains(got, "set_status") != c.setStatus || !slices.Contains(got, "adjust_buff") {
-			t.Errorf("tools offered to %s = %v, want adjust_buff and set_status %v", c.what, got, c.setStatus)
-		}
-	}
-	if sys := requestMessages(t, reqs[1])[0]["content"].(string); strings.Contains(sys, "set_status") {
-		t.Errorf("takeover system prompt describes set_status:\n%s", sys)
-	}
-
-	// The takeover is not 小明 answering the bot's initiate.
-	st, err := env.o.privateProactiveStatus(ctx, privateConvKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st.UnansweredLeft != 1 {
-		t.Errorf("unanswered left = %d, want 1 after a takeover", st.UnansweredLeft)
 	}
 }
 

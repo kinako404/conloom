@@ -175,7 +175,7 @@ func checkChatAudit(t *testing.T, events []store.AuditEvent, target string, secr
 
 func TestChat_PostMessage(t *testing.T) {
 	h, chat := newChatHarness(t)
-	private := h.seedConv("qq", conloomapi.ConvPrivate, "20001")
+	private := h.seedConv(store.PlatformPanel, conloomapi.ConvPrivate, "panel_1")
 	path := convPath(private.Key, "messages")
 
 	w := h.write(http.MethodPost, path, map[string]string{"text": "今晚吃什么"})
@@ -211,9 +211,7 @@ func TestChat_PostMessage(t *testing.T) {
 	}{
 		{core.ErrNotPrivate, http.StatusBadRequest, conloomapi.CodeInvalidEvent},
 		{core.ErrBadText, http.StatusBadRequest, conloomapi.CodeInvalidEvent},
-		{fmt.Errorf("submit: %w", core.ErrNoUserYet), http.StatusBadRequest, conloomapi.CodeInvalidEvent},
-		{core.ErrNotPanelChat, http.StatusBadRequest, conloomapi.CodeInvalidEvent},
-		{core.ErrNotAllowed, http.StatusBadRequest, conloomapi.CodeInvalidEvent},
+		{fmt.Errorf("submit: %w", core.ErrNotPanelChat), http.StatusBadRequest, conloomapi.CodeInvalidEvent},
 		{store.ErrNotFound, http.StatusNotFound, conloomapi.CodeNotFound},
 		{errors.New("disk full"), http.StatusInternalServerError, conloomapi.CodeInternal},
 	} {
@@ -225,6 +223,39 @@ func TestChat_PostMessage(t *testing.T) {
 	}
 	if n := len(h.audits("panel.message")); n != 1 {
 		t.Fatalf("panel.message audits = %d, want only the accepted message's", n)
+	}
+}
+
+func TestChat_PlatformConversationRejected(t *testing.T) {
+	h := newBotsHarness(t)
+	ctx := context.Background()
+	private := h.seedConv("telegram", conloomapi.ConvPrivate, "20001")
+	h.seedMessage(private, "在吗", h.now.Add(-time.Minute), false)
+	group := h.seedConv("telegram", conloomapi.ConvGroup, "10001")
+	h.seedMessage(group, "大家好", h.now.Add(-time.Minute), false)
+
+	for _, conv := range []store.ConversationRecord{private, group} {
+		body := errorBody(t, h.write(http.MethodPost, convPath(conv.Key, "messages"), map[string]string{"text": "你好"}),
+			http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+		if body.Message != "not a panel chat" {
+			t.Errorf("%s: message %q, want %q", conv.Key, body.Message, "not a panel chat")
+		}
+		if msgs, err := h.db.RecentMessages(ctx, conv.Key, 10); err != nil || len(msgs) != 1 {
+			t.Errorf("%s: %d messages (%v), want only the seeded one", conv.Key, len(msgs), err)
+		}
+	}
+	if tasks, err := h.db.ListTasks(ctx, store.TaskFilter{BotInstanceID: dataBot}); err != nil || len(tasks) != 0 {
+		t.Errorf("tasks = %+v (%v), want none", tasks, err)
+	}
+	if n, err := h.db.CountPendingOutbox(ctx); err != nil || n != 0 {
+		t.Errorf("outbox actions to send = %d (%v), want none", n, err)
+	}
+	if n := len(h.audits("panel.message")); n != 0 {
+		t.Errorf("panel.message audits = %d, want none", n)
+	}
+	// Purging every event counts them: only the seeded ones are stored.
+	if n, err := h.db.PurgeEvents(ctx, time.Now().AddDate(1, 0, 0)); err != nil || n != h.seeded {
+		t.Errorf("events = %d (%v), want only the %d seeded", n, err, h.seeded)
 	}
 }
 

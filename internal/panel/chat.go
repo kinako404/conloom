@@ -34,7 +34,7 @@ func (s *Server) chatService(w http.ResponseWriter, r *http.Request) (ChatServic
 // chatFail is fail for the chat service: a request it refuses is 400 with
 // the reason.
 func (s *Server) chatFail(w http.ResponseWriter, r *http.Request, err error) {
-	for _, refused := range []error{core.ErrNotPrivate, core.ErrNotPanelChat, core.ErrNoUserYet, core.ErrBadText, core.ErrNotAllowed} {
+	for _, refused := range []error{core.ErrNotPrivate, core.ErrNotPanelChat, core.ErrBadText} {
 		if errors.Is(err, refused) {
 			s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
 				strings.TrimPrefix(refused.Error(), "core: "), err)
@@ -44,8 +44,9 @@ func (s *Server) chatFail(w http.ResponseWriter, r *http.Request, err error) {
 	s.fail(w, r, err)
 }
 
-// postChatMessage sends text to the bot as the conversation's user, through
-// the panel channel. The audit records the message ID, not the text.
+// postChatMessage sends text to the bot in a panel chat as the session's
+// user, through the panel channel; the chat service refuses other
+// conversations. The audit records the message ID, not the text.
 func (s *Server) postChatMessage(w http.ResponseWriter, r *http.Request, sess *Session) {
 	chat, ok := s.chatService(w, r)
 	if !ok {

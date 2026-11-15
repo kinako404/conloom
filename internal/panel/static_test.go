@@ -159,6 +159,11 @@ func TestStatic_ServesChatsView(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "location.replace(href('chat', key))") {
 		t.Error("/panel/views/conversation.js does not send old chat tab links to the chat page")
 	}
+	for _, view := range []string{"chats.js", "chat.js", "conversation.js"} {
+		if body := get("/panel/views/" + view).Body.String(); strings.Contains(body, "接管") || strings.Contains(body, "takeover") {
+			t.Errorf("/panel/views/%s still offers the takeover of platform chats", view)
+		}
+	}
 }
 
 func TestStatic_ServesTemplatesViews(t *testing.T) {

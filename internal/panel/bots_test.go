@@ -378,7 +378,6 @@ type chatsResp struct {
 			Key           string     `json:"key"`
 			Title         string     `json:"title"`
 			Platform      string     `json:"platform"`
-			Takeover      bool       `json:"takeover"`
 			LastMessageAt *time.Time `json:"last_message_at"`
 		} `json:"chats"`
 	} `json:"bots"`
@@ -452,18 +451,18 @@ func TestChatsAPI_GroupsAndOrder(t *testing.T) {
 	withUser := h.seedConv("qq", conloomapi.ConvPrivate, "20001")
 	h.seedMessage(withUser, "在吗", base.Add(2*time.Minute), false)
 	h.seedMessage(withUser, "在的", base.Add(3*time.Minute), true)
-	quiet := h.seedConv("qq", conloomapi.ConvPrivate, "20002")
+	h.seedConv("qq", conloomapi.ConvPrivate, "20002")
+	configQuiet := h.panelChat(dataBot, "小灰")
 	configPanel := h.panelChat(dataBot, "小白")
 	h.seedChatMessage(configPanel, "panel_"+testUser, "白白", base.Add(time.Minute))
-	gone := h.storeBotConv("qq-gone", "qq", conloomapi.ConvPrivate, "20003")
-	h.seedChatMessage(gone, "user_20003", "小黑", base.Add(4*time.Minute))
+	gone := h.storeBotConv("panel-gone0001", store.PlatformPanel, conloomapi.ConvPrivate, "panel_gone")
+	h.seedChatMessage(gone, "panel_"+testUser, "小黑", base.Add(4*time.Minute))
 	unwritten := h.panelChat(red.ID, "阿蓝")
 	written := h.panelChat(red.ID, "阿紫")
 	h.seedChatMessage(written, "panel_"+testUser, "阿紫", base.Add(5*time.Minute))
 
 	type item struct {
 		key, title, platform string
-		takeover             bool
 		last                 *time.Time
 	}
 	check := func(want map[string][]item) {
@@ -475,14 +474,14 @@ func TestChatsAPI_GroupsAndOrder(t *testing.T) {
 			ids = append(ids, b.ID)
 			got := make([]item, 0, len(b.Chats))
 			for _, c := range b.Chats {
-				got = append(got, item{c.Key, c.Title, c.Platform, c.Takeover, c.LastMessageAt})
+				got = append(got, item{c.Key, c.Title, c.Platform, c.LastMessageAt})
 			}
 			if w := want[b.ID]; len(got) != len(w) {
 				t.Errorf("bot %s: %d chats, want %d", b.ID, len(got), len(w))
 			} else {
 				for i := range w {
 					if got[i].key != w[i].key || got[i].title != w[i].title || got[i].platform != w[i].platform ||
-						got[i].takeover != w[i].takeover || !sameTime(got[i].last, w[i].last) {
+						!sameTime(got[i].last, w[i].last) {
 						t.Errorf("bot %s chat %d = %+v, want %+v", b.ID, i, got[i], w[i])
 					}
 				}
@@ -503,39 +502,50 @@ func TestChatsAPI_GroupsAndOrder(t *testing.T) {
 	}
 	at := func(d time.Duration) *time.Time { return new(base.Add(d)) }
 	configChats := []item{
-		{withUser.Key, "小明", "qq", true, at(3 * time.Minute)},
-		{configPanel.Key, "白白", store.PlatformPanel, false, at(time.Minute)},
-		{quiet.Key, "20002", "qq", true, nil},
+		{configPanel.Key, "白白", store.PlatformPanel, at(time.Minute)},
+		{configQuiet.Key, "小灰", store.PlatformPanel, nil},
 	}
-	check(map[string][]item{
-		dataBot: configChats,
-		red.ID: {
-			{written.Key, "阿紫", store.PlatformPanel, false, at(5 * time.Minute)},
-			{unwritten.Key, "阿蓝", store.PlatformPanel, false, nil},
-		},
-		green.ID: {},
-	})
+	redChats := []item{
+		{written.Key, "阿紫", store.PlatformPanel, at(5 * time.Minute)},
+		{unwritten.Key, "阿蓝", store.PlatformPanel, nil},
+	}
+	check(map[string][]item{dataBot: configChats, red.ID: redChats, green.ID: {}})
 
-	// At most 200 chats a bot, cut after sorting: the quiet ones by creation,
-	// the newest first, so the two created first are left out.
+	// At most 200 panel chats a bot, cut after sorting and leaving out the
+	// platform chats: the quiet ones by creation, the newest first, so the one
+	// created first is left out.
+	capped := []item{configChats[0]}
 	for i := range 199 {
-		h.seedConv("qq", conloomapi.ConvPrivate, fmt.Sprint(21000+i))
+		id := fmt.Sprintf("panel_%d", 21000+i)
+		conv := h.storeBotConv(dataBot, store.PlatformPanel, conloomapi.ConvPrivate, id)
+		capped = slices.Insert(capped, 1, item{conv.Key, id, store.PlatformPanel, nil})
 	}
-	capped := append([]item{}, configChats[:2]...)
-	for i := 198; i >= 1; i-- {
-		id := fmt.Sprint(21000 + i)
-		capped = append(capped, item{store.ConversationKey(dataBot, "qq", conloomapi.ConvPrivate, id), id, "qq", true, nil})
+	check(map[string][]item{dataBot: capped, red.ID: redChats, green.ID: {}})
+	if b := h.bots().Bots[0]; b.Chats != 203 || b.LastMessageAt == nil || !b.LastMessageAt.Equal(base.Add(3*time.Minute)) {
+		t.Errorf("config bot = %+v, want 203 private chats, the last message at %s", b, base.Add(3*time.Minute))
 	}
-	check(map[string][]item{
-		dataBot: capped,
-		red.ID: {
-			{written.Key, "阿紫", store.PlatformPanel, false, at(5 * time.Minute)},
-			{unwritten.Key, "阿蓝", store.PlatformPanel, false, nil},
-		},
-		green.ID: {},
-	})
-	if b := h.bots().Bots[0]; b.Chats != 202 || b.LastMessageAt == nil || !b.LastMessageAt.Equal(base.Add(3*time.Minute)) {
-		t.Errorf("config bot = %+v, want 202 private chats, the last message at %s", b, base.Add(3*time.Minute))
+}
+
+func TestChatsAPI_OnlyPanelChats(t *testing.T) {
+	h := newBotsHarness(t)
+	base := time.Now().UTC().Truncate(time.Second).Add(time.Hour)
+	chat := h.panelChat(dataBot, "小白")
+	h.seedChatMessage(chat, "panel_"+testUser, "白白", base)
+	qq := h.seedConv("qq", conloomapi.ConvPrivate, "20001")
+	h.seedMessage(qq, "在吗", base.Add(time.Minute), false)
+	tg := h.seedConv("telegram", conloomapi.ConvPrivate, "20002")
+	h.seedMessage(tg, "在吗", base.Add(2*time.Minute), false)
+
+	var resp chatsResp
+	body := h.getJSON("/panel/api/chats", &resp)
+	if len(resp.Bots) != 1 || resp.Bots[0].ID != dataBot {
+		t.Fatalf("groups = %+v, want the config bot", resp.Bots)
+	}
+	if chats := resp.Bots[0].Chats; len(chats) != 1 || chats[0].Key != chat.Key || chats[0].Platform != store.PlatformPanel {
+		t.Errorf("chats = %+v, want only the panel chat %s", chats, chat.Key)
+	}
+	if strings.Contains(string(body), "takeover") {
+		t.Errorf("chats body %s has a takeover field", body)
 	}
 }
 
@@ -547,8 +557,8 @@ func TestChatsAPI_NewChatFirst(t *testing.T) {
 	h.seedChatMessage(older, "panel_"+testUser, "阿蓝", past)
 	recent := h.panelChat(bot.ID, "阿紫")
 	h.seedChatMessage(recent, "panel_"+testUser, "阿紫", past.Add(30*time.Minute))
-	platform := h.seedConv("qq", conloomapi.ConvPrivate, "20001")
-	h.seedMessage(platform, "在吗", past.Add(40*time.Minute), false)
+	configOlder := h.panelChat(dataBot, "小灰")
+	h.seedChatMessage(configOlder, "panel_"+testUser, "小灰", past.Add(40*time.Minute))
 
 	fresh := h.panelChat(bot.ID, "阿绿")
 	configFresh := h.panelChat(dataBot, "小白")
@@ -567,7 +577,7 @@ func TestChatsAPI_NewChatFirst(t *testing.T) {
 	if want := []string{fresh.Key, recent.Key, older.Key}; !slices.Equal(keys[bot.ID], want) {
 		t.Errorf("panel bot chats = %v, want the new empty chat first: %v", keys[bot.ID], want)
 	}
-	if want := []string{configFresh.Key, platform.Key}; !slices.Equal(keys[dataBot], want) {
+	if want := []string{configFresh.Key, configOlder.Key}; !slices.Equal(keys[dataBot], want) {
 		t.Errorf("config bot chats = %v, want the new empty chat first: %v", keys[dataBot], want)
 	}
 

@@ -1226,9 +1226,9 @@ func (o *Orchestrator) record(ctx context.Context, task store.TaskRecord, status
 	return nil
 }
 
-// newAction builds a text message action for task on the channel of the
-// newest trigger message (see replyChannel). A group reply quotes the newest
-// trigger message when shouldQuote says so; private replies quote nothing.
+// newAction builds a text message action for task on the conversation's
+// channel (see replyChannel). A group reply quotes the newest trigger message
+// when shouldQuote says so; private replies quote nothing.
 func (o *Orchestrator) newAction(ctx context.Context, task store.TaskRecord, conv store.ConversationRecord, triggers []store.MessageRecord, text string) store.OutboxRecord {
 	now := o.now().UTC()
 	a := conloomapi.Action{
@@ -1248,18 +1248,14 @@ func (o *Orchestrator) newAction(ctx context.Context, task store.TaskRecord, con
 	return store.OutboxRecord{
 		Action: a, BotInstanceID: task.BotInstanceID, ConversationKey: task.ConversationKey, TaskID: task.ID,
 		Platform: conv.Platform, Status: store.OutboxPending, CreatedAt: now, ExpiresAt: now.Add(o.actionTTL),
-		Channel: replyChannel(conv, triggers),
+		Channel: replyChannel(conv),
 	}
 }
 
-// replyChannel is the channel a reply to triggers is delivered on: that of
-// the newest trigger message or, without triggers, the panel's in a panel chat
-// and the platform's elsewhere.
-func replyChannel(conv store.ConversationRecord, triggers []store.MessageRecord) string {
-	switch {
-	case len(triggers) > 0:
-		return triggers[len(triggers)-1].Channel
-	case conv.Platform == store.PlatformPanel:
+// replyChannel is the channel the bot's messages in conv are delivered on:
+// the panel's in a panel chat (store.PlatformPanel), the platform's elsewhere.
+func replyChannel(conv store.ConversationRecord) string {
+	if conv.Platform == store.PlatformPanel {
 		return store.ChannelPanel
 	}
 	return ""

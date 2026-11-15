@@ -12,7 +12,6 @@ const PANEL = 'panel';
 const MAX_DISPLAY_NAME = 32;
 
 const PANEL_HINT = '在面板里和 bot 私聊，你是这个聊天的管理员。bot 的回复只出现在面板里。每条最多 2000 字。';
-const TAKEOVER_HINT = '接管：以这个会话的用户身份和 bot 聊天。从这里发的消息带“面板”标记，bot 的回复只出现在面板里，不会发到原平台。每条最多 2000 字。';
 
 // botLabel names a bot among bots to choose from: a panel bot as 名字（面板）,
 // a config bot by its name and ID.
@@ -185,18 +184,17 @@ function deleteBotDialog(done) {
   return { dialog, open };
 }
 
-// chatHead names the chat in the pane: who the bot talks with, the bot, a
-// 接管 badge for a platform chat and a link to the conversation's page.
-function chatHead(key, title, botName, takeover) {
+// chatHead names the chat in the pane: who the bot talks with, the bot and a
+// link to the conversation's page.
+function chatHead(key, title, botName) {
   return h('div', { class: 'chat-head' },
     h('h2', null, title),
     h('span', { class: 'muted' }, botName),
-    takeover ? h('span', { class: 'badge warn' }, '接管') : null,
     h('span', { class: 'spacer' }),
     h('a', { href: href('conversations', key) }, '会话详情'));
 }
 
-// chatPage lays out the chat page: the bots with their private chats on the
+// chatPage lays out the chat page: the bots with their panel chats on the
 // left, the chat chosen on the right. load reads the list; select(key,
 // signal) shows the chat key, or a hint when key is empty, and keeps the list.
 function chatPage() {
@@ -275,7 +273,6 @@ function chatPage() {
   const chatItem = (c) => {
     const a = h('a', { href: href('chat', c.key), title: c.last_message_at ? `最后消息 ${fmtTime(c.last_message_at)}` : '还没有消息' },
       h('span', { class: 'chat-title' }, c.title || c.key),
-      c.takeover ? h('span', { class: 'badge warn' }, '接管') : null,
       h('span', { class: 'chat-time muted' }, fmtClock(c.last_message_at)));
     links.set(c.key, a);
     return h('li', null, a);
@@ -326,25 +323,23 @@ function chatPage() {
     mark();
     if (!key) {
       mount(pane, h('div', { class: 'chat-empty' },
-        h('p', null, '从左边选一个聊天，或者在某个 bot 下点“新建聊天”。'),
-        h('p', { class: 'hint' }, '标“接管”的是 QQ、Telegram 上的私聊：在这里发消息是以对方的身份，bot 的回复只出现在面板里。')));
+        h('p', null, '从左边选一个聊天，或者在某个 bot 下点“新建聊天”。')));
       return;
     }
     const shown = find(key);
-    let head = shown ? chatHead(key, shown.chat.title || key, shown.group.name || shown.group.id, shown.chat.takeover) : null;
-    let takeover = shown ? shown.chat.takeover : false;
+    let head = shown ? chatHead(key, shown.chat.title || key, shown.group.name || shown.group.id) : null;
     mount(pane, head, loading());
     try {
       if (!shown) {
         const conv = await get(convPath(key), null, signal);
-        if (conv.type !== 'private') {
-          mount(pane, errorBox({ message: '聊天页只能打开私聊。' }), h('p', null, h('a', { href: href('conversations', key) }, '打开会话详情')));
+        if (conv.platform !== PANEL) {
+          mount(pane, errorBox({ message: '聊天页只能打开面板里新建的聊天。' }),
+            h('p', null, h('a', { href: href('conversations', key) }, '打开会话详情')));
           return;
         }
-        takeover = conv.platform !== PANEL;
-        head = chatHead(key, conv.platform_conversation_id, conv.bot_name || conv.bot_instance_id, takeover);
+        head = chatHead(key, conv.platform_conversation_id, conv.bot_name || conv.bot_instance_id);
       }
-      const nodes = await chatPane({ key, signal, hint: takeover ? TAKEOVER_HINT : PANEL_HINT });
+      const nodes = await chatPane({ key, signal, hint: PANEL_HINT });
       if (!signal.aborted) mount(pane, head, nodes);
     } catch (err) {
       if (!isAbort(err) && !signal.aborted) mount(pane, errorBox(err));
@@ -365,7 +360,7 @@ function chatPage() {
           h('button', {
             type: 'button',
             class: 'link',
-            title: '左栏不会自动更新，平台上来了新的私聊时点这里',
+            title: '左栏不会自动更新，点这里重新读取',
             onclick: () => {
               mount(listMsg);
               refresh();

@@ -269,10 +269,9 @@ type Store interface {
 	DeleteTimer(ctx context.Context, ref TimerRef) (bool, error)
 	// UserMessageTimes returns when the conversation's newest up to limit
 	// member (not bot) messages occurred at or after since, newest first (none
-	// when limit <= 0). Messages written in the panel (ChannelPanel) are not
-	// the member's and do not count. It looks at no more than the
-	// conversation's newest 4×limit messages, bot and panel messages included,
-	// so fewer may be returned even when older member messages would match.
+	// when limit <= 0). It looks at no more than the conversation's newest
+	// 4×limit messages, bot messages included, so fewer may be returned even
+	// when older member messages would match.
 	UserMessageTimes(ctx context.Context, convKey string, since time.Time, limit int) ([]time.Time, error)
 	// GetBuffs returns the conversation's stored bar values ordered by Name,
 	// including bars its persona no longer has.

@@ -139,22 +139,10 @@ func (e *env) watchAdapter() (stop func() []conloomapi.Action) {
 const panelPartSlack = 500 * time.Millisecond
 
 func TestPanelChatE2E(t *testing.T) {
-	const (
-		hotpot   = "今天吃了火锅"
-		cat      = "我养了一只猫叫团子"
-		catReply = "团子这个名字真可爱"
-		ask      = "我的猫叫什么"
-		answer   = "它叫团子呀"
-	)
+	const hotpot = "今天吃了火锅"
 	parts := []string{"火锅好吃吗", "下次也带我去吧，我想吃毛肚和鸭肠，再来一份冰粉"}
 	fake := fakeopenai.New(t, func(req map[string]any) (int, string) {
-		prompt := requestText(req)
-		switch {
-		case strings.Contains(prompt, ask):
-			return 200, answer
-		case strings.Contains(prompt, cat):
-			return 200, catReply
-		case strings.Contains(prompt, hotpot):
+		if strings.Contains(requestText(req), hotpot) {
 			return 200, strings.Join(parts, "\n|||\n")
 		}
 		return 200, fakeReply
@@ -202,45 +190,31 @@ func TestPanelChatE2E(t *testing.T) {
 		t.Errorf("second part delivered %v after the first, want within %v of its typing time %v", gap, panelPartSlack, due)
 	}
 
-	// Taking over a platform chat: the reply to the panel message stays in
-	// the panel, the next platform message is answered on the platform with
-	// the panel turn in context.
+	// The panel cannot write in a platform chat: nothing is stored, answered
+	// or handed to the adapter.
 	e.say(adminChat, admin, "晚上好", mock.SayOptions{})
 	if a := e.drainOne(); a.Content.Text != fakeReply {
 		t.Fatalf("platform reply = %q, want %q", a.Content.Text, fakeReply)
 	}
-	takeover := store.ConversationKey(botID, "qq", conloomapi.ConvPrivate, "private_"+admin.PlatformID)
-	cursor := p.chat(takeover, 0).NextAfter
+	platformChat := store.ConversationKey(botID, "qq", conloomapi.ConvPrivate, "private_"+admin.PlatformID)
+	cursor := p.chat(platformChat, 0).NextAfter
+	calls := len(fake.Requests())
 	stop = e.watchAdapter()
-	p.send(takeover, cat)
-	got = p.botReplies(takeover, cursor, 1)
+	if status, raw := p.do(http.MethodPost, convAPIPath(platformChat, "messages"), map[string]string{"text": "你好"}); status != http.StatusBadRequest {
+		t.Fatalf("message to the platform chat: status %d, body %s; want 400", status, raw)
+	}
+	if tail := p.chat(platformChat, cursor); len(tail.Messages) != 0 || tail.Typing {
+		t.Fatalf("platform chat after the refused message = %+v, want nothing new", tail)
+	}
 	if leased := stop(); len(leased) != 0 {
-		t.Fatalf("the adapter leased %+v, want no reply to the panel message", leased)
+		t.Fatalf("the adapter leased %+v after the refused message", leased)
 	}
-	if got[0].Text != catReply || got[0].Channel != store.ChannelPanel || !strings.HasPrefix(got[0].ID, "msg_panel_") {
-		t.Fatalf("reply to the panel message = %+v, want %q on the panel channel, delivered by the panel", got[0], catReply)
-	}
-	tail := p.chat(takeover, cursor).Messages
-	if len(tail) != 2 || tail[0].Text != cat || tail[0].Channel != store.ChannelPanel || tail[0].SenderID != admin.PlatformID {
-		t.Fatalf("chat after the takeover = %+v, want the panel message as %s, then the reply", tail, admin.PlatformID)
-	}
-	cursor = tail[len(tail)-1].Seq
-
-	e.say(adminChat, admin, ask, mock.SayOptions{})
-	if a := e.drainOne(); a.Content.Text != answer {
-		t.Fatalf("platform reply = %q, want %q", a.Content.Text, answer)
-	}
-	reqs := fake.Requests()
-	if prompt := requestText(reqs[len(reqs)-1]); !strings.Contains(prompt, cat) || !strings.Contains(prompt, catReply) {
-		t.Errorf("model request for the platform message lacks the panel turn: %q", prompt)
-	}
-	tail = p.chat(takeover, cursor).Messages
-	if len(tail) != 2 || tail[0].Text != ask || tail[0].Channel != "" || tail[1].Text != answer || tail[1].Channel != "" {
-		t.Fatalf("chat after the platform message = %+v, want it and its reply on the platform channel", tail)
+	if n := len(fake.Requests()); n != calls {
+		t.Fatalf("model requests = %d after the refused message, want %d", n, calls)
 	}
 
 	// Deleting the panel chat removes it; platform chats cannot be deleted.
-	if status, raw := p.do(http.MethodDelete, convAPIPath(takeover), nil); status != http.StatusBadRequest {
+	if status, raw := p.do(http.MethodDelete, convAPIPath(platformChat), nil); status != http.StatusBadRequest {
 		t.Fatalf("delete platform chat: status %d, body %s; want 400", status, raw)
 	}
 	if status, raw := p.do(http.MethodDelete, convAPIPath(created.Key), nil); status != http.StatusNoContent {
@@ -252,8 +226,8 @@ func TestPanelChatE2E(t *testing.T) {
 	var conv struct {
 		Key string `json:"key"`
 	}
-	if p.get(convAPIPath(takeover), &conv); conv.Key != takeover {
-		t.Fatalf("platform chat after the delete = %+v, want %s", conv, takeover)
+	if p.get(convAPIPath(platformChat), &conv); conv.Key != platformChat {
+		t.Fatalf("platform chat after the delete = %+v, want %s", conv, platformChat)
 	}
 }
 

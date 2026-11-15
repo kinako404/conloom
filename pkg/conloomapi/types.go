@@ -17,7 +17,7 @@ const (
 	// bot may use it as its own platform.
 	PlatformPanel = "panel"
 	// ChannelPanel is the channel of messages written in the panel and of the
-	// actions answering them, which only the panel delivers. The empty
+	// bot's actions in panel chats, which only the panel delivers. The empty
 	// channel is the platform's, delivered by its adapter.
 	ChannelPanel = "panel"
 )

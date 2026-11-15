@@ -13,12 +13,10 @@ import (
 )
 
 // skillBuff is the skill whose bot gets its hidden bars in private replies;
-// toolAdjustBuff is its tool, the only one a wake task offers. skillStatus is
-// the skill of set_status.
+// toolAdjustBuff is its tool, the only one a wake task offers.
 const (
 	skillBuff      = "buff"
 	toolAdjustBuff = "adjust_buff"
-	skillStatus    = "status"
 )
 
 // stateBlock returns the hidden state block (autonomy.RenderState) of a

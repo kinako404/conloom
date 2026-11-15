@@ -550,7 +550,7 @@ function deleteChat(c) {
 }
 
 function header(c) {
-  const open = c.type === 'private' ? h('a', { class: 'button', href: href('chat', c.key) }, '在聊天页打开') : null;
+  const open = c.platform === PANEL ? h('a', { class: 'button', href: href('chat', c.key) }, '在聊天页打开') : null;
   const removal = c.platform === PANEL ? deleteChat(c) : null;
   return [
     h('p', null, h('a', { href: '#/conversations' }, '← 会话列表')),

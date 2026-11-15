@@ -84,9 +84,7 @@ type skillRun struct {
 // conversation's type or the task is a turn or a join. A message the bot
 // starts itself (a wake task) gets only adjust_buff, of skillBuff: neither
 // set_status, so statuses do not chain, nor memory tools, which would take
-// old messages for a request. Nor does a reply to the panel taking over a
-// platform private chat get skillStatus: its status return would reach the
-// user on the platform about a conversation they never saw.
+// old messages for a request.
 func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, conv store.ConversationRecord,
 	triggers []store.MessageRecord, out *outcome) *skillRun {
 	if o.skills == nil || len(bot.Skills) == 0 {
@@ -97,9 +95,6 @@ func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, 
 	case out.wake != nil && conv.Type == conloomapi.ConvPrivate:
 		names = slices.DeleteFunc(slices.Clone(names), func(s string) bool { return s != skillBuff })
 	case conv.Type == conloomapi.ConvPrivate && !out.proactive && !out.turn:
-		if replyChannel(conv, triggers) == store.ChannelPanel && conv.Platform != store.PlatformPanel {
-			names = slices.DeleteFunc(slices.Clone(names), func(s string) bool { return s == skillStatus })
-		}
 	case conv.Type == conloomapi.ConvGroup && out.addressed:
 	default:
 		return nil

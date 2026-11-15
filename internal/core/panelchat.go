@@ -11,7 +11,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/ids"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -22,23 +21,15 @@ const (
 	panelTextMax = 2000
 	// panelNameMax is the most characters of a panel chat's display name.
 	panelNameMax = 32
-	// panelSpeakerLookback is how many of a conversation's newest messages
-	// SubmitPanel searches for the user it speaks as.
-	panelSpeakerLookback = 200
-	// platformActorPrefix starts the actor ID the adapters give a platform
-	// user: user_<platform user ID>.
-	platformActorPrefix = "user_"
 )
 
-// SubmitPanel accepts text written in the panel by panelUser into the private
-// conversation convKey, like Submit accepts an event: the message is stored
-// on the panel channel, so the reply to a task it is the newest trigger of is
-// delivered to the panel only (see replyChannel). In a panel chat
-// (store.PlatformPanel) it speaks as panel_<panelUser>, under the display name
-// the chat was created with; elsewhere it takes over the conversation's user
-// (see panelSpeaker). It returns the new message's ID. A message the bot
-// ignores, and so does not store (its user is not allowed to chat privately),
-// is ErrNotAllowed; an unknown conversation, also one deleted meanwhile (see
+// SubmitPanel accepts text written in the panel by panelUser into the panel
+// chat convKey (store.PlatformPanel), like Submit accepts an event: the
+// message is stored on the panel channel and the bot's replies there are
+// delivered to the panel only (see replyChannel). It speaks as
+// panel_<panelUser>, under the display name the chat was created with, and
+// returns the new message's ID. A conversation on another platform is
+// ErrNotPanelChat; an unknown conversation, also one deleted meanwhile (see
 // DeletePanelChat), store.ErrNotFound; one whose bot is being deleted (see
 // PanelBotService.Delete) ErrBotDeleting.
 func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text string) (messageID string, err error) {
@@ -56,27 +47,27 @@ func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text
 	if err != nil {
 		return "", err
 	}
+	if conv.Platform != store.PlatformPanel {
+		return "", ErrNotPanelChat
+	}
 	if conv.Type != conloomapi.ConvPrivate {
 		return "", ErrNotPrivate
 	}
 	if strings.TrimSpace(text) == "" || utf8.RuneCountInString(text) > panelTextMax {
 		return "", ErrBadText
 	}
-	bot, ok := o.bots.Bot(conv.BotInstanceID)
-	if !ok {
+	if _, ok := o.bots.Bot(conv.BotInstanceID); !ok {
 		return "", fmt.Errorf("%w: unknown bot %q", store.ErrNotFound, conv.BotInstanceID)
 	}
-	actor, err := o.panelSpeaker(ctx, conv, bot, panelUser)
-	if err != nil {
-		return "", err
-	}
+	actorID := PanelActorID(panelUser)
 	pmid := ids.New("panel")
 	ev := conloomapi.Event{
 		SchemaVersion: conloomapi.SchemaVersion, EventID: ids.New("evt"), EventType: conloomapi.EventTypeMessageCreated,
 		BotInstanceID: conv.BotInstanceID, Platform: conv.Platform, OccurredAt: o.now().UTC(),
 		Conversation: conloomapi.Conversation{Type: conv.Type, ID: conv.ID, PlatformConversationID: conv.PlatformConversationID},
-		Actor:        actor,
-		Trigger:      conloomapi.Trigger{Type: conloomapi.TriggerPrivate, RequestedResponse: true},
+		Actor: conloomapi.Actor{ID: actorID, PlatformUserID: actorID,
+			DisplayName: o.panelDisplayName(ctx, conv, actorID, panelUser)},
+		Trigger: conloomapi.Trigger{Type: conloomapi.TriggerPrivate, RequestedResponse: true},
 		Message: conloomapi.Message{ID: "msg_" + pmid, PlatformMessageID: pmid, Text: text,
 			Mentions: []conloomapi.Mention{}, Attachments: []conloomapi.Attachment{}},
 	}
@@ -84,55 +75,10 @@ func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text
 	if err != nil {
 		return "", err
 	}
-	resp, _, err := o.submitOn(ctx, conv.BotInstanceID, pmid, body, ev, store.ChannelPanel)
-	if err != nil {
+	if _, _, err := o.submitOn(ctx, conv.BotInstanceID, pmid, body, ev, store.ChannelPanel); err != nil {
 		return "", err
 	}
-	// Every disposition but ignore stores the message.
-	if resp.Disposition == conloomapi.DispositionIgnore {
-		return "", ErrNotAllowed
-	}
 	return ev.Message.ID, nil
-}
-
-// panelSpeaker is the actor a panel message in conv is sent as (see
-// SubmitPanel). Outside panel chats it is the sender of the newest user
-// message among the conversation's newest panelSpeakerLookback messages or,
-// without one there, the user the private conversation is with (its
-// PlatformConversationID) if they ever wrote in it, under their newest
-// display name. It is never the bot itself; a conversation without a known
-// user is ErrNoUserYet.
-func (o *Orchestrator) panelSpeaker(ctx context.Context, conv store.ConversationRecord, bot config.BotConfig, panelUser string) (conloomapi.Actor, error) {
-	if conv.Platform == store.PlatformPanel {
-		id := PanelActorID(panelUser)
-		return conloomapi.Actor{ID: id, PlatformUserID: id, DisplayName: o.panelDisplayName(ctx, conv, id, panelUser)}, nil
-	}
-	recent, err := o.st.RecentMessages(ctx, conv.Key, panelSpeakerLookback)
-	if err != nil {
-		return conloomapi.Actor{}, err
-	}
-	for i := len(recent) - 1; i >= 0; i-- {
-		if m := recent[i]; !m.FromBot && m.PlatformUserID != "" && m.PlatformUserID != bot.PlatformSelfID {
-			return conloomapi.Actor{ID: m.ActorID, PlatformUserID: m.PlatformUserID, DisplayName: m.DisplayName}, nil
-		}
-	}
-	uid := conv.PlatformConversationID
-	if uid == "" || uid == bot.PlatformSelfID {
-		return conloomapi.Actor{}, ErrNoUserYet
-	}
-	actorID := PlatformActorID(uid)
-	users, err := o.st.UserIDsForActors(ctx, conv.Key, []string{actorID})
-	if err != nil {
-		return conloomapi.Actor{}, err
-	}
-	if users[actorID] == "" {
-		return conloomapi.Actor{}, ErrNoUserYet
-	}
-	names, err := o.st.LatestDisplayNames(ctx, conv.Key, []string{actorID})
-	if err != nil {
-		return conloomapi.Actor{}, err
-	}
-	return conloomapi.Actor{ID: actorID, PlatformUserID: users[actorID], DisplayName: names[actorID]}, nil
 }
 
 // panelDisplayName is the name actorID goes by in the panel chat conv: the
@@ -303,12 +249,6 @@ func (o *Orchestrator) panelConversation(ctx context.Context, convKey string) (s
 // from it) replaced by '_'.
 func PanelActorID(panelUser string) string {
 	return "panel_" + strings.ReplaceAll(panelUser, ":", "_")
-}
-
-// PlatformActorID is the actor ID the adapters give the platform user
-// platformUserID.
-func PlatformActorID(platformUserID string) string {
-	return platformActorPrefix + platformUserID
 }
 
 // panelChatName is displayName trimmed, or panelUser when that is empty, cut

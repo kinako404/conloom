@@ -22,7 +22,7 @@ function bubble(m) {
 // GONE is shown, once, when the chat no longer exists.
 const GONE = '这个聊天已不存在，可能已经被删除。';
 
-// chatPane talks to the bot in the private conversation key, as its user. It
+// chatPane talks to the bot in the panel chat key, as the panel user. It
 // opens with the latest messages, then polls GET chat with the newest seq it
 // has seen until signal fires or the chat is gone (404), which stops the
 // polling and the sending. hint, when given, is shown above the chat.

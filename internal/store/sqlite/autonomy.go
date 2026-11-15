@@ -392,9 +392,9 @@ func (db *DB) UserMessageTimes(ctx context.Context, convKey string, since time.T
 		return nil, nil
 	}
 	rows, err := db.r.QueryContext(ctx, `SELECT occurred_at FROM (
-			SELECT seq, occurred_at, from_bot, channel FROM messages WHERE conversation_key = ? ORDER BY seq DESC LIMIT ?)
-		WHERE from_bot = 0 AND channel <> ? AND occurred_at >= ? ORDER BY seq DESC LIMIT ?`,
-		convKey, userMessageScan*limit, store.ChannelPanel, fmtTime(since), limit)
+			SELECT seq, occurred_at, from_bot FROM messages WHERE conversation_key = ? ORDER BY seq DESC LIMIT ?)
+		WHERE from_bot = 0 AND occurred_at >= ? ORDER BY seq DESC LIMIT ?`,
+		convKey, userMessageScan*limit, fmtTime(since), limit)
 	if err != nil {
 		return nil, err
 	}

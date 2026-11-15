@@ -51,7 +51,7 @@ type botSummary struct {
 	LastMessageAt   *time.Time `json:"last_message_at"`
 }
 
-// chatGroup is a bot with its private chats as the chat page lists them.
+// chatGroup is a bot with its panel chats as the chat page lists them.
 type chatGroup struct {
 	ID     string      `json:"id"`
 	Name   string      `json:"name"`
@@ -59,14 +59,12 @@ type chatGroup struct {
 	Chats  []chatEntry `json:"chats"`
 }
 
-// chatEntry is a private chat on the chat page. Title is who the bot talks
-// with there (see chatTitle). Takeover marks a chat on a platform, where the
-// panel speaks as the chat's user; a panel chat has its own panel user.
+// chatEntry is a panel chat on the chat page. Title is who the bot talks with
+// there (see chatTitle).
 type chatEntry struct {
 	Key           string     `json:"key"`
 	Title         string     `json:"title"`
 	Platform      string     `json:"platform"`
-	Takeover      bool       `json:"takeover"`
 	LastMessageAt *time.Time `json:"last_message_at"`
 }
 
@@ -267,10 +265,11 @@ func (s *Server) deleteBot(w http.ResponseWriter, r *http.Request, sess *Session
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// listChats lists the private chats of every bot for the chat page, grouped
-// by bot in directory order: each bot's most recently active first (its
-// newest message or, if later, its creation; see privateChats), cut to
-// maxBotChats after sorting.
+// listChats lists the panel chats (store.PlatformPanel) of every bot for the
+// chat page, grouped by bot in directory order: each bot's most recently
+// active first (its newest message or, if later, its creation; see
+// privateChats), cut to maxBotChats after sorting. Private chats on the
+// platforms are not listed.
 func (s *Server) listChats(w http.ResponseWriter, r *http.Request, _ *Session) {
 	chats, err := s.privateChats(r.Context())
 	if err != nil {
@@ -280,7 +279,7 @@ func (s *Server) listChats(w http.ResponseWriter, r *http.Request, _ *Session) {
 	all := s.d.Bots.All()
 	out := make([]chatGroup, 0, len(all))
 	for _, b := range all {
-		list := chats[b.ID]
+		list := slices.DeleteFunc(chats[b.ID], func(st store.ConversationStats) bool { return st.Platform != store.PlatformPanel })
 		list = list[:min(len(list), maxBotChats)]
 		g := chatGroup{ID: b.ID, Name: b.Name, Source: s.botSource(b.ID), Chats: make([]chatEntry, 0, len(list))}
 		for _, st := range list {
@@ -290,8 +289,7 @@ func (s *Server) listChats(w http.ResponseWriter, r *http.Request, _ *Session) {
 				return
 			}
 			g.Chats = append(g.Chats, chatEntry{
-				Key: st.Key, Title: title, Platform: st.Platform, Takeover: st.Platform != store.PlatformPanel,
-				LastMessageAt: nullTime(st.LastMessageAt),
+				Key: st.Key, Title: title, Platform: st.Platform, LastMessageAt: nullTime(st.LastMessageAt),
 			})
 		}
 		out = append(out, g)
@@ -301,20 +299,14 @@ func (s *Server) listChats(w http.ResponseWriter, r *http.Request, _ *Session) {
 	}{out})
 }
 
-// chatTitle names the private chat st after the user the bot talks with
-// there: their newest display name in the chat (in a panel chat, the newest
-// of the panel users in config order) or, in a panel chat none of them wrote
-// in yet, the name it was created with; failing both, the chat's platform
-// conversation ID.
+// chatTitle names the panel chat st after the panel user the bot talks with
+// there: the newest display name in the chat of the first panel user, in
+// config order, who wrote in it or, before any of them did, the name it was
+// created with; failing both, the chat's platform conversation ID.
 func (s *Server) chatTitle(ctx context.Context, st store.ConversationStats) (string, error) {
-	panelChat := st.Platform == store.PlatformPanel
-	var actors []string
-	if panelChat {
-		for _, u := range s.d.Config.Panel.Users {
-			actors = append(actors, core.PanelActorID(u.Name))
-		}
-	} else {
-		actors = []string{core.PlatformActorID(st.PlatformConversationID)}
+	actors := make([]string, 0, len(s.d.Config.Panel.Users))
+	for _, u := range s.d.Config.Panel.Users {
+		actors = append(actors, core.PanelActorID(u.Name))
 	}
 	names, err := s.d.Store.LatestDisplayNames(ctx, st.Key, actors)
 	if err != nil {
@@ -325,19 +317,17 @@ func (s *Server) chatTitle(ctx context.Context, st store.ConversationStats) (str
 			return name, nil
 		}
 	}
-	if panelChat {
-		// A panel chat keeps the name it was created with in its creation
-		// event, stored under the conversation ID until the events are purged.
-		rec, err := s.d.Store.GetEvent(ctx, st.BotInstanceID, st.ID)
-		switch {
-		case err == nil:
-			var ev conloomapi.Event
-			if json.Unmarshal(rec.RawEvent, &ev) == nil && ev.Actor.DisplayName != "" {
-				return ev.Actor.DisplayName, nil
-			}
-		case !errors.Is(err, store.ErrNotFound):
-			return "", err
+	// A panel chat keeps the name it was created with in its creation event,
+	// stored under the conversation ID until the events are purged.
+	rec, err := s.d.Store.GetEvent(ctx, st.BotInstanceID, st.ID)
+	switch {
+	case err == nil:
+		var ev conloomapi.Event
+		if json.Unmarshal(rec.RawEvent, &ev) == nil && ev.Actor.DisplayName != "" {
+			return ev.Actor.DisplayName, nil
 		}
+	case !errors.Is(err, store.ErrNotFound):
+		return "", err
 	}
 	return st.PlatformConversationID, nil
 }
