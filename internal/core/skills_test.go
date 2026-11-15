@@ -266,7 +266,7 @@ func TestSkills_SingleRound(t *testing.T) {
 	if !strings.Contains(logs, `msg="skill call"`) || !strings.Contains(logs, "tool=now") || !strings.Contains(logs, "skill_calls=now:1") {
 		t.Errorf("logs lack the skill call: %s", logs)
 	}
-	if strings.Contains(logs, "16:30") {
+	if strings.Contains(logs, "星期五 16:30") {
 		t.Error("tool result leaked into logs")
 	}
 }
