@@ -14,16 +14,35 @@ const METRICS = {
 };
 const RANGES = ['7', '30', '90'];
 
-const keyLabel = (k) => k || '（空）';
+// keyLabeler returns how the keys of a usage report are shown: an empty key
+// as '（空）' and a deleted bot by the name it last had, marked as deleted,
+// with its ID too when an earlier key of the report already shows that way.
+function keyLabeler(report) {
+  const bots = report.group === 'bot' && report.bots ? report.bots : {};
+  const labels = new Map();
+  const used = new Set();
+  for (const { key } of report.totals || []) {
+    const bot = Object.hasOwn(bots, key) ? bots[key] : null;
+    let text = key || '（空）';
+    if (bot && bot.deleted) {
+      text = `${bot.name || key}（已删除）`;
+      if (used.has(text)) text = `${bot.name || key}（已删除，${key}）`;
+    }
+    used.add(text);
+    labels.set(key, text);
+  }
+  return (k) => labels.get(k) || k || '（空）';
+}
 
 // reportDays turns a usage report into chart input for one of METRICS, with
 // keys in the order of the report's totals.
 export function reportDays(report, metric) {
   const value = METRICS[metric].value;
-  const keys = (report.totals || []).map((r) => keyLabel(r.key));
+  const keyText = keyLabeler(report);
+  const keys = (report.totals || []).map((r) => keyText(r.key));
   const days = (report.days || []).map((d) => {
     const values = {};
-    for (const r of d.rows || []) values[keyLabel(r.key)] = value(r);
+    for (const r of d.rows || []) values[keyText(r.key)] = value(r);
     return { day: d.day, values };
   });
   return { days, keys };
@@ -67,8 +86,9 @@ function select(options, current, attrs) {
 function totalsTable(report, group) {
   const rows = report.totals || [];
   if (!rows.length) return empty('此范围内没有调用');
+  const keyText = keyLabeler(report);
   return table([
-    { title: GROUPS[group], cell: (r) => (group === 'purpose' ? `${label(PURPOSE, r.key)}（${r.key}）` : keyLabel(r.key)) },
+    { title: GROUPS[group], cell: (r) => (group === 'purpose' ? `${label(PURPOSE, r.key)}（${r.key}）` : keyText(r.key)) },
     { title: '调用', class: 'num', cell: (r) => fmtInt(r.calls) },
     { title: '失败', class: 'num', cell: (r) => fmtInt(r.errors) },
     { title: '提示 token', class: 'num', cell: (r) => fmtInt(r.prompt_tokens) },

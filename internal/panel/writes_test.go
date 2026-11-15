@@ -14,6 +14,7 @@ import (
 
 	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/internal/policy"
@@ -466,6 +467,14 @@ func TestFail_WriteErrors(t *testing.T) {
 			http.StatusConflict, conloomapi.CodeMemoryDisabled, "memory is not enabled for this conversation", false},
 		{memory.ErrPaused,
 			http.StatusConflict, conloomapi.CodePaused, "the conversation is paused; memory is not consolidated", false},
+		{fmt.Errorf("%w: 名字不能为空", core.ErrInvalidBot),
+			http.StatusBadRequest, conloomapi.CodeInvalidEvent, "名字不能为空", false},
+		{fmt.Errorf("%w: %q", core.ErrConfigBot, "qq-main"),
+			http.StatusForbidden, conloomapi.CodeForbidden, "bot is defined in the config file", false},
+		{core.ErrBotDeleting,
+			http.StatusConflict, conloomapi.CodeChatBusy, "bot is being deleted", true},
+		{fmt.Errorf("%w: %w", core.ErrChatBusy, store.ErrBotHasData),
+			http.StatusConflict, conloomapi.CodeChatBusy, "the chat's cancelled tasks are still stopping; try again", true},
 	} {
 		r := httptest.NewRequest(http.MethodPut, "http://"+testHost+"/panel/api/x", nil)
 		w := httptest.NewRecorder()

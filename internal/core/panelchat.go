@@ -104,7 +104,7 @@ func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text
 // user is ErrNoUserYet.
 func (o *Orchestrator) panelSpeaker(ctx context.Context, conv store.ConversationRecord, bot config.BotConfig, panelUser string) (conloomapi.Actor, error) {
 	if conv.Platform == store.PlatformPanel {
-		id := panelActorID(panelUser)
+		id := PanelActorID(panelUser)
 		return conloomapi.Actor{ID: id, PlatformUserID: id, DisplayName: o.panelDisplayName(ctx, conv, id, panelUser)}, nil
 	}
 	recent, err := o.st.RecentMessages(ctx, conv.Key, panelSpeakerLookback)
@@ -120,7 +120,7 @@ func (o *Orchestrator) panelSpeaker(ctx context.Context, conv store.Conversation
 	if uid == "" || uid == bot.PlatformSelfID {
 		return conloomapi.Actor{}, ErrNoUserYet
 	}
-	actorID := platformActorPrefix + uid
+	actorID := PlatformActorID(uid)
 	users, err := o.st.UserIDsForActors(ctx, conv.Key, []string{actorID})
 	if err != nil {
 		return conloomapi.Actor{}, err
@@ -171,7 +171,7 @@ func (o *Orchestrator) CreatePanelChat(ctx context.Context, botID, panelUser, di
 	}
 	convID := ids.New("panel")
 	convKey = store.ConversationKey(botID, store.PlatformPanel, conloomapi.ConvPrivate, convID)
-	actorID := panelActorID(panelUser)
+	actorID := PanelActorID(panelUser)
 	name := panelChatName(displayName, panelUser)
 	now := o.now()
 	// The creation is stored as an event without a message under the
@@ -298,11 +298,17 @@ func (o *Orchestrator) panelConversation(ctx context.Context, convKey string) (s
 	return conv, nil
 }
 
-// panelActorID is the actor and platform user ID of panelUser in panel chats:
+// PanelActorID is the actor and platform user ID of panelUser in panel chats:
 // panel_<panelUser>, with any ':' (which separates the parts of keys built
 // from it) replaced by '_'.
-func panelActorID(panelUser string) string {
+func PanelActorID(panelUser string) string {
 	return "panel_" + strings.ReplaceAll(panelUser, ":", "_")
+}
+
+// PlatformActorID is the actor ID the adapters give the platform user
+// platformUserID.
+func PlatformActorID(platformUserID string) string {
+	return platformActorPrefix + platformUserID
 }
 
 // panelChatName is displayName trimmed, or panelUser when that is empty, cut

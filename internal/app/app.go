@@ -254,6 +254,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 			StartedAt:   opts.StartedAt,
 			Chat:        orch,
 			Autonomy:    orch.Autonomy(),
+			PanelBots:   orch.PanelBots(),
 		}).Handler()
 		if cfg.Panel.Listen != "" {
 			panelSite, panelHandler = panelHandler, nil

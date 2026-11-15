@@ -32,7 +32,7 @@ func TestConversations_ListAndDetail(t *testing.T) {
 	dh := newDataHarness(t)
 	ctx := context.Background()
 
-	want := `{"conversations":[],"bots":[{"id":"qq-main","name":"织语","platform":"qq"}]}` + "\n"
+	want := `{"conversations":[],"bots":[{"id":"qq-main","name":"织语","platform":"qq","source":"config"}]}` + "\n"
 	if body := string(dh.getJSON("/panel/api/conversations", nil)); body != want {
 		t.Fatalf("empty store: body %q, want %q", body, want)
 	}

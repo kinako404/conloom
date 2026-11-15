@@ -46,8 +46,8 @@ type Auditor interface {
 // memory consolidation; Gatherer is the registry the live metrics are read
 // from; Presence holds when each bot's adapter last called the core; a nil
 // Location is UTC; StartedAt is when the process started. Chat serves the
-// panel chat API and Autonomy the private chats' hidden state; their APIs
-// answer 503 while they are nil.
+// panel chat API, Autonomy the private chats' hidden state and PanelBots the
+// changes to panel bots; their APIs answer 503 while they are nil.
 type Deps struct {
 	Config   *config.Config
 	Bots     *botdir.Directory
@@ -65,6 +65,7 @@ type Deps struct {
 	Memory          interface{ Trigger(convKey string) }
 	Chat            ChatService
 	Autonomy        AutonomyService
+	PanelBots       PanelBotService
 	Gatherer        prometheus.Gatherer
 	Presence        *obs.Presence
 	Location        *time.Location

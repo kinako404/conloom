@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
@@ -23,9 +24,40 @@ const (
 // usageGroups are the group values of a usage report.
 var usageGroups = map[string]bool{"model": true, "role": true, "purpose": true, "bot": true}
 
+// usageBot names a bot a usage report may group by. Deleted marks a bot that
+// is no longer in the directory, such as a deleted panel bot; it keeps the
+// name its bot instance was last registered with.
+type usageBot struct {
+	Name    string `json:"name"`
+	Deleted bool   `json:"deleted"`
+}
+
+// usageReportResponse is a usage report with every registered bot by ID.
+type usageReportResponse struct {
+	usage.Report
+	Bots map[string]usageBot `json:"bots"`
+}
+
+// usageBots names every bot of the directory and every bot instance ever
+// registered, deleted panel bots included, by ID.
+func (s *Server) usageBots(ctx context.Context) (map[string]usageBot, error) {
+	insts, err := s.d.Store.ListBotInstances(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]usageBot, len(insts))
+	for _, b := range insts {
+		out[b.ID] = usageBot{Name: b.Name, Deleted: true}
+	}
+	for _, b := range s.d.Bots.All() {
+		out[b.ID] = usageBot{Name: b.Name}
+	}
+	return out, nil
+}
+
 // usageReport serves the usage of the local days from..to (YYYY-MM-DD in the
-// server time zone) grouped by group. to defaults to today, from to the 7th
-// day up to to, and group to model.
+// server time zone) grouped by group, with the bots it may name (usageBots).
+// to defaults to today, from to the 7th day up to to, and group to model.
 func (s *Server) usageReport(w http.ResponseWriter, r *http.Request, _ *Session) {
 	q := r.URL.Query()
 	loc := s.location()
@@ -79,7 +111,12 @@ func (s *Server) usageReport(w http.ResponseWriter, r *http.Request, _ *Session)
 		s.fail(w, r, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, rep)
+	bots, err := s.usageBots(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, usageReportResponse{rep, bots})
 }
 
 type usageCallsResponse struct {

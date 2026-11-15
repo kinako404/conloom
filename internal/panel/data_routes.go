@@ -1,9 +1,12 @@
 package panel
 
-// dataRoutes registers the read API for conversations, messages, the panel
-// chat, policies, personas, memory, the hidden state of private chats, tasks
-// and audit events.
+// dataRoutes registers the read API for bots, conversations, messages, the
+// panel chat, policies, personas, memory, the hidden state of private chats,
+// tasks and audit events.
 func (s *Server) dataRoutes() {
+	s.api("GET /panel/api/bots", s.listBots)
+	s.api("GET /panel/api/bots/skills", s.listBotSkills)
+	s.api("GET /panel/api/chats", s.listChats)
 	s.api("GET /panel/api/conversations", s.listConversations)
 	s.api("GET /panel/api/conversations/{key}", s.getConversation)
 	s.api("GET /panel/api/conversations/{key}/messages", s.listMessages)

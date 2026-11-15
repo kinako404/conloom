@@ -122,6 +122,26 @@ NapCat      Adapter                 Core                          SQLite        
 - **锁**：同一个聊天的提交和删除按会话键串行（`lockTable`，`panelchat.go`），删除时提交等它结束，然后发现会话已不存在（404）。锁表只放正在使用的键，用完即删；不同聊天互不等待。
 - **关闭顺序**：`App.Close` 先停编排器（不再写新动作），再停面板投递器，然后写完用量记录、关库。
 
+### 2.3 面板 bot 和 bot 目录
+
+面板 bot（用法见 [Web 管理面板：面板 bot](panel.md#面板-bot)）存在数据库里，和配置 bot 合在一个 bot 目录里，所有组件都从目录取 bot。
+
+- **bot 目录**（`internal/botdir`）：配置 bot 在启动时固定；面板 bot 是一份整体替换的快照（`atomic.Pointer`）。`Bot(id)` 按 ID 取，`All()` 先按配置顺序列配置 bot，再按新建时间列面板 bot。读的一方总是拿到一份完整的旧快照或新快照，所以新建、编辑、删除时正在跑的回复不会读到一半的改动。
+  - core、memory、search、panel、gateway、app 都从目录取 bot；只有配置校验和启动时登记 `bot_instances` 只看配置 bot。
+  - 面板 bot 在目录里是一个 `BotConfig`：平台 `panel`，`private_chat` 为 `admins`，没有平台自身 ID、管理员和会话白名单。
+- **存储**（迁移 `0013_panel_bots.sql`）：表 `panel_bots` 有 `id`、`name`、`persona_template`、`skills`（JSON 字符串数组）、`created_by`、`created_at`、`updated_at`。新建时在同一个事务里往 `bot_instances` 插入一行（平台 `panel`），改名时同步它的名字，删除 bot 时保留这一行。
+- **ID**：`panel-` 加 8 位 `[a-z0-9]`，随机生成；和 `bot_instances`（含已删除的面板 bot）或目录里已有的 ID 重复时换一个，最多试 10 次。配置校验拒绝以 `panel-` 开头的配置 bot ID，所以两类 ID 不会冲突。
+- **启动**：`app.New` 在装配面板和 gateway 之前调用 `PanelBots().Load`，读 `panel_bots` 发布到目录。人设模板已不存在的改用 `default`；不存在、不能在私聊里用或工具不全的技能去掉。每一处都记一条警告日志，并作为 `problems` 挂在目录里；库里的行不改。
+- **新建和编辑**（`core.PanelBotService`，`internal/core/panelbots.go`）：校验后写库，再用库里的全部面板 bot 加上这次的改动重建快照，最后记审计。写操作在一把互斥锁下串行，不会互相覆盖。runner 每个任务都从目录取 bot，所以改动从下一次回复起生效；系统提示缓存的键里有 bot 名字，改名后自然失效。
+- **只收面板事件**：bot 是面板 bot、事件平台却不是 `panel` 时，core 拒绝这个事件，什么都不存（`submitOn`）。
+- **删除**（`PanelBotService.Delete`）：
+  1. 在写锁下检查：配置 bot 返回 `ErrConfigBot`，不存在返回 `ErrNotFound`，确认的名字不符返回 `ErrInvalidBot`。然后把 bot 标为“删除中”并放开写锁，别的 bot 的新建和编辑不用等它。“删除中”时 `CreatePanelChat`、`SubmitPanel`、编辑和再次删除都返回 `ErrBotDeleting`（面板 409）。设标记和 `CreatePanelChat` 用同一把按 bot 的锁，所以列出聊天之后不会再冒出新聊天。
+  2. 逐个 `DeletePanelChat`（见 2.2）删掉 bot 的全部会话；某个返回 `ErrChatBusy` 时停下，已删的不恢复。
+  3. 在写锁下 `DeletePanelBot`：一个事务里删掉 `panel_bots` 的行和这个 bot ID 下残留的 `users`、`events`，保留 `bot_instances`、`model_calls`、`audit_events`。还有会话、任务或发件箱动作时什么都不删（`ErrBotHasData`，按 `ErrChatBusy` 处理）。成功后发布不含它的快照，记审计。
+  4. 不论成败，最后都撤掉“删除中”标记，失败后可以重试。
+- **后台任务**：记忆整理和语义索引按会话的 bot ID 从目录取 bot，不在目录里的（删除的面板 bot、从配置文件去掉的 bot）安静跳过；自主唤醒照旧丢弃这些 bot 的定时。
+- **面板接口**：`/panel/api/bots` 的增删改直接调用 `PanelBotService`，审计由它写（`actor` 为 `panel:<用户名>`），面板不再写第二条。`/panel/api/chats` 按目录顺序分组列出每个 bot 的私聊：聊天数和最后一条消息的时间复用会话列表的 GROUP BY 查询（`ConversationStats`），每个私聊的显示名另查一次（`LatestDisplayNames`，面板聊天还没人发言时读它的创建事件）。用量页的 bot 名字来自目录和 `bot_instances`。
+
 ## 3. 任务模型
 
 ### 3.1 触发类型
@@ -577,6 +597,8 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | 模型用量明细 | SQLite `model_calls` | 保留 `usage_retention`（9600h） |
 | 还没写库的用量记录 | `usage.Recorder` 的内存队列 | 正常退出时限时写完；崩溃时丢失还在队列里的记录（通常是最近 2 秒以内的） |
 | 面板登录会话 | SQLite `panel_sessions` | 保留，到期或超过空闲时限后失效并被清理 |
+| 面板 bot | SQLite `panel_bots`，名字也在 `bot_instances` | 保留，启动时载入 bot 目录（2.3）；删除面板 bot 后它在 `bot_instances` 里的行仍保留 |
+| bot 目录里的面板 bot 快照、面板 bot 的“删除中”标记 | 内存 | 快照从库里重建；标记丢失，进行到一半的删除已删的聊天不恢复，bot 保留 |
 | 各 bot 最近一次通过 API 鉴权的时间、面板登录失败计数 | 内存 | 清空 |
 | 记忆整理的排队请求、积压跳转标记、失败计数和退避、缩小后的批次上限 | 内存 | 丢失；手动整理要重新触发。重新开启记忆后、下一次整理前重启的群，跳转标记丢失，按原游标整理完整积压（每轮最多 10 批） |
 | 调度队列、合并窗口、挂起标记、`lastFinish` | 内存 | 丢失；任务按库里记录重新入队 |
@@ -687,7 +709,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - **CSRF**：`GET`、`HEAD` 以外的接口要求 `X-CSRF-Token` 等于会话的 CSRF 令牌；请求带 `Origin` 时其主机必须等于 `Host`（登录也检查）。
 - **响应头**：所有 `/panel/` 响应带 CSP（`default-src 'self'`、`frame-ancestors 'none'` 等）、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`；接口另加 `Cache-Control: no-store`，静态资源为 `no-cache`。每个请求有 trace ID，按路由模板和状态码计入 `panel_requests_total`，panic 转成 500。
 - **读**：会话列表的消息数和最后时间用一条 GROUP BY 查询得到；消息检索复用 `SearchMessages`；读人设走只读路径，会话还没有人设时不触发第 1 版的写入；概览的实时状态来自本进程的 Prometheus registry（队列深度、关键词索引补建剩余、熔断，配置了 `embedding` 时还有向量积压）和发件箱待发数的查库结果；各 bot 的“最近调用”由 gateway 在 Bearer 鉴权通过时记进内存里的 `obs.Presence`。
-- **写**：策略和人设直接调用 `policy.Service`、`persona.Service`，`by` 为 `panel:<用户名>`；成员记忆的修改、忘记和读取走与 Bearer API 共用的 `memory.Admin`，修订记录来源为 `panel`，审计的 `bot_instance_id` 取自会话记录。触发整理写新审计种类 `memory.consolidate`，登录成功写 `panel.login`。
+- **写**：策略和人设直接调用 `policy.Service`、`persona.Service`，`by` 为 `panel:<用户名>`；成员记忆的修改、忘记和读取走与 Bearer API 共用的 `memory.Admin`，修订记录来源为 `panel`，审计的 `bot_instance_id` 取自会话记录。触发整理写新审计种类 `memory.consolidate`，登录成功写 `panel.login`。面板 bot 的新建、编辑、删除调用 `core.PanelBotService`，由它写 `panel.bot.create`、`panel.bot.update`、`panel.bot.delete`（2.3）。
 - **配置页**：按白名单逐字段输出，密钥只显示 `(已设置)` / `(未设置)`，`extra_body` 只显示键和布尔、数字值；接口地址去掉 `user:password@`，查询参数的值和 `#` 后的部分显示为 `(已隐藏)`（`redactURL`）。人格模板和默认策略整段输出，测试检查这两个类型里没有名字像密钥的字段。
 
 ## 9. 已知限制和后续方向

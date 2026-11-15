@@ -330,7 +330,7 @@ func TestWake_PanelChatStatusReturnNotCounted(t *testing.T) {
 	waitUntil(t, "the panel reply's runner", func() bool { return !env.o.sched.Busy(key) })
 	until := clock.now()
 	timer := store.ConversationTimer{ConversationKey: key, Kind: store.TimerStatusReturn, BotInstanceID: testBot,
-		PlatformUserID: panelActorID("admin"), DueAt: until}
+		PlatformUserID: PanelActorID("admin"), DueAt: until}
 	if err := env.st.SetStatus(ctx, store.ConversationStatus{ConversationKey: key, Activity: "洗澡", TaskID: "task_seed",
 		StartedAt: until.Add(-20 * time.Minute), UntilAt: until}, &timer); err != nil {
 		t.Fatal(err)

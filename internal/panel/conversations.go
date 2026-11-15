@@ -31,11 +31,13 @@ type conversationView struct {
 	PersonaVersion         *int       `json:"persona_version"`
 }
 
-// botView is a bot of the directory, one a panel chat can be started with.
+// botView is a bot of the directory, one a panel chat can be started with;
+// Source is "config" or "panel" (see botSource).
 type botView struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	Platform string `json:"platform"`
+	Source   string `json:"source"`
 }
 
 // listConversations lists every stored conversation and every bot.
@@ -57,7 +59,7 @@ func (s *Server) listConversations(w http.ResponseWriter, r *http.Request, _ *Se
 	all := s.d.Bots.All()
 	bots := make([]botView, 0, len(all))
 	for _, b := range all {
-		bots = append(bots, botView{ID: b.ID, Name: b.Name, Platform: b.Platform})
+		bots = append(bots, botView{ID: b.ID, Name: b.Name, Platform: b.Platform, Source: s.botSource(b.ID)})
 	}
 	s.writeJSON(w, http.StatusOK, struct {
 		Conversations []conversationView `json:"conversations"`

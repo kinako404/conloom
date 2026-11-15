@@ -1,6 +1,6 @@
 # Web 管理面板
 
-面板是核心自带的网页管理界面，给部署者本人用：看模型用量和运行状态，浏览和修改各个会话的策略、人设和记忆，查看任务、审计记录和当前配置。页面和脚本用 `go:embed` 打包进 `conloom` 二进制，不需要另装任何东西，也不引用外部资源。设计见 `docs/superpowers/specs/2026-11-13-web-panel-design.md`。
+面板是核心自带的网页管理界面，给部署者本人用：看模型用量和运行状态，浏览和修改各个会话的策略、人设和记忆，新建和管理只在面板里聊天的 bot，查看任务、审计记录和当前配置。页面和脚本用 `go:embed` 打包进 `conloom` 二进制，不需要另装任何东西，也不引用外部资源。设计见 `docs/superpowers/specs/2026-11-13-web-panel-design.md`。
 
 ## 启用
 
@@ -115,12 +115,26 @@ panel:
 - 用量统计（`model_calls`）和审计记录按设计保留，分别到 `runtime.usage_retention`、`runtime.audit_retention` 到期清理。
 - 删除时如果这个聊天的记忆整理或语义索引（`embedding`）正好在进行，它们可能在删除之后再写入几行记忆或向量数据。这些行挂在已删除的会话键下，会话键不会再被使用（新建聊天总是用新的随机 ID），所以不会出现在任何会话里，只占少量空间。
 
+### 面板 bot
+
+面板 bot 是在面板里新建、只在面板里聊天的 bot：有自己的名字、默认人设模板、技能，每个聊天有自己的人设、记忆和策略；不接任何平台，也不能发网关令牌。配置文件里的 bot 在面板里只读，要改就改配置文件。用法见 [使用指南：面板 bot](usage.md#面板-bot)，设计见 `docs/superpowers/specs/2026-11-15-panel-bots-design.md`。
+
+- **ID**：服务自动生成，`panel-` 加 8 位小写字母和数字，如 `panel-k3x9q2ma`；用过的 ID（包括已删除的 bot 的）不会再用。配置文件里的 bot ID 不能以 `panel-` 开头，所以两类 ID 不会冲突。
+- **校验**：名字去掉首尾空白后 1–32 字，不能有控制字符和换行，可以和别的 bot 重名；默认人设模板必须存在，不填时用 `default`；技能必须已加载、允许在私聊里用、用到的工具都已注册，可以一个都不选，重复的只算一次。最多 50 个面板 bot。不通过时返回 400，`message` 是中文原因，如“名字不能为空”。
+- **生效**：新建后立即出现在所有列出 bot 的地方（新建聊天、概览、会话、用量等），不用重启。改名字和技能从下一次回复起生效；默认人设模板只影响之后新建的、以及 bot 还没回复过的聊天，已有聊天的人设在会话的“人设”页里改。
+- **重启后**：面板 bot 存在数据库里，启动时载入。引用的人设模板已经不存在时，运行时改用 `default`；某个技能不存在或不能在私聊里用时，运行时忽略它。两种情况都记一条警告日志，接口的 `problems` 里给出说明（如“人设模板“x”已不存在，暂用 default”），不影响启动；编辑并保存一次后说明消失。
+- **删除**：请求要带上 bot 的名字确认，不一致返回 400。删除时先把 bot 标为“删除中”，这期间新建聊天、发消息、编辑和再次删除都返回 409 `CHAT_BUSY`；然后逐个删除它的聊天，规则同上面的“删除这个聊天”。
+  - 某个聊天里被取消的任务 5 秒内没停下时，删除停在这里，返回 409 `CHAT_BUSY`（`retryable: true`）：已删的聊天不恢复，bot 保留、不再是“删除中”，可以重试。
+  - 聊天都删完后，删掉 bot 和它名下残留的用户、事件记录。`bot_instances` 里的行（存着名字）、模型用量和审计记录保留，用量页按 bot 分组时把它显示为“名字（已删除）”。
+- **审计**：新建、编辑、删除分别写 `panel.bot.create`、`panel.bot.update`、`panel.bot.delete`，`actor` 为 `panel:<用户名>`，`bot_instance_id` 和目标都是这个 bot 的 ID。内容是保存的名字、默认人设模板和技能；删除时是名字和删掉的聊天数 `chats`。
+
 ### 面板上的修改
 
 面板上的修改和 Bearer API、聊天命令走同一套代码，校验规则、字数上限、好感度范围完全一致，校验失败时原样显示服务端返回的错误。
 
 - 每次修改都写一条审计记录，`actor` 为 `panel:<用户名>`，`bot_instance_id` 是会话所属的 bot。种类沿用 API 的 `policy.update`、`persona.update`、`memory.update`、`memory.forget`、`autonomy.buff`（修改私聊的状态条）、`autonomy.status.clear`（结束私聊的状态）；触发整理写 `memory.consolidate`（API 触发整理不写审计）。登录成功写 `panel.login`。
 - 面板聊天的审计：发消息写 `panel.message`（内容只有消息 ID，不含正文），新建聊天写 `panel.chat.create`，删除聊天写 `panel.chat.delete`；目标都是会话键。
+- 面板 bot 的新建、编辑、删除写 `panel.bot.create`、`panel.bot.update`、`panel.bot.delete`，目标是 bot 的 ID，见 [面板 bot](#面板-bot)。
 - 策略和人设的新版本里 `updated_by` 为 `panel:<用户名>`；成员记忆的修订记录、状态条的变化记录来源为 `panel`。
 - 忘记成员等同于这个人在会话里发 `/忘记我`；暂停、恢复和 `/pause`、`/resume` 写入同样的策略版本（恢复时并发回到暂停前最近一个非 0 的值）。
 
@@ -163,6 +177,7 @@ panel:
   - 延迟 p50 / p95 只按成功的调用计算，并且只在范围不超过 90 天时计算，更长的范围只给次数和 token。
   - 日期格式错误、开始晚于结束、超过 400 天都返回 400。
   - `runtime.usage_retention` 比所选范围短时，更早的日子显示为 0。
+  - 按 bot 分组时，已经不在 bot 目录里的 bot（删除的面板 bot，或从配置文件里去掉的 bot）显示为“名字（已删除）”，名字取自 `bot_instances`；同一范围里有两个这样同名的 bot 时，后一个再加上它的 ID。
 - **体积**：每次调用连同索引占几百字节，其中为统计查询建的覆盖索引每 100 万行约 97MB。按每天几千次调用算，保留 400 天是一两百万行，几百 MB；调用很多时可以调短 `runtime.usage_retention`。
 
 ## 接口
@@ -186,11 +201,14 @@ panel:
 
 | 接口 | 说明 |
 |---|---|
-| `GET overview` | 版本、提交、启动时间、时区；各 bot 及其 `last_seen_at`；实时状态 `live`；今天的用量 `today` |
-| `GET usage?from=&to=&group=` | 每日分桶和区间合计；`group` 为 `model`（默认）、`role`、`purpose`、`bot`；不传日期时为截至今天的 7 天 |
+| `GET overview` | 版本、提交、启动时间、时区；各 bot（带 `source`，见 `GET bots`）及其 `last_seen_at`；实时状态 `live`；今天的用量 `today` |
+| `GET usage?from=&to=&group=` | 每日分桶和区间合计；`group` 为 `model`（默认）、`role`、`purpose`、`bot`；不传日期时为截至今天的 7 天。`bots` 按 bot ID 给出每个 bot 的 `name` 和 `deleted`：bot 目录里的 bot 用当前的名字、`deleted` 为 false；只在 `bot_instances` 里登记过的（删除的面板 bot、从配置文件去掉的 bot）用登记的名字、`deleted` 为 true |
 | `GET usage/calls?from=&to=&model=&purpose=&conversation=&before=&limit=` | 调用明细，新的在前；`conversation` 是会话键 |
 | `GET metrics/live` | 本进程 Prometheus 指标的快照：计数器和仪表给值，直方图给次数、总和和按桶估算的 p50 / p95 |
-| `GET conversations` | 全部会话 `conversations`，以及配置里的 bot 列表 `bots`（`id`、`name`、`platform`，“新建聊天”从这里选）。私聊会话的 `proactive_level` 是生效的主动找人档位（`off`、`low`、`mid`、`high`，没设时为 `mid`），其他会话为空字符串；单个会话的接口同样有这个字段 |
+| `GET bots` | 全部 bot `bots`：先配置 bot，再按新建顺序列面板 bot。每项 `id`、`name`、`source`（`config` 或 `panel`）、`persona_template` 和 `skills`（运行时生效的值）、`problems`（面板 bot 失效引用的说明，没有时为空列表）、`chats`（私聊数）、`last_message_at`（这些私聊最后一条消息的时间）。另有 `templates`：可选的人设模板名，按名字排序 |
+| `GET bots/skills` | 面板 bot 可以启用的技能 `skills`（已加载、允许在私聊里用、工具齐全），每项 `name`、`description`，按名字排序 |
+| `GET chats` | 聊天页左栏用：`bots` 按 bot 分组，顺序同 `GET bots`，每组 `id`、`name`、`source` 和这个 bot 的私聊 `chats`（没有时为空列表）。私聊按最后一条消息从新到旧，没有消息的排最后，每个 bot 最多 200 个；群聊不列出。每项 `key`、`title`（对方的显示名：会话里他最新的昵称；面板聊天还没人发言时是新建时填的称呼；都没有时是平台会话 ID）、`platform`、`takeover`（平台上的私聊为 true，在面板里发言是接管；面板聊天为 false）、`last_message_at` |
+| `GET conversations` | 全部会话 `conversations`，以及全部 bot `bots`（`id`、`name`、`platform`、`source`，“新建聊天”从这里选；面板 bot 的 `platform` 和 `source` 都是 `panel`）。私聊会话的 `proactive_level` 是生效的主动找人档位（`off`、`low`、`mid`、`high`，没设时为 `mid`），其他会话为空字符串；单个会话的接口同样有这个字段 |
 | `GET conversations/{key}` | 单个会话 |
 | `GET conversations/{key}/messages?before=&limit=` | 浏览消息，按 `seq` 游标翻页。每条消息带 `channel`：`panel` 表示从面板发出或送到面板，平台上的消息为空字符串 |
 | `GET conversations/{key}/messages?q=&from=&to=&offset=&limit=` | 检索消息，按 `offset` 翻页，响应里的 `next_offset` 是下一页 |
@@ -209,6 +227,9 @@ panel:
 
 | 接口 | 说明 |
 |---|---|
+| `POST bots` | 新建面板 bot，请求 `{"name","persona_template","skills"}`（`persona_template` 省略时为 `default`，`skills` 省略时不启用技能），返回 201 和新 bot，格式同 `GET bots` 的一项；校验不通过返回 400 |
+| `PUT bots/{id}` | 编辑面板 bot，请求同上，三个字段都必填，返回改后的 bot；配置 bot 返回 403 `FORBIDDEN`，不存在返回 404，正在删除返回 409 `CHAT_BUSY` |
+| `DELETE bots/{id}` | 删除面板 bot 和它的全部聊天，请求 `{"confirm_name"}`，返回 204；名字不一致返回 400，配置 bot 返回 403，不存在返回 404，正在删除或有聊天的任务没停下返回 409 `CHAT_BUSY`，可以重试。见 [面板 bot](#面板-bot) |
 | `PUT conversations/{key}/policy` | 请求体同 API 的 `PolicyPut`，返回新的当前版本 |
 | `POST conversations/{key}/policy/restore` | 请求 `{"version","reason"}`，把该历史版本的策略写成新版本 |
 | `POST conversations/{key}/pause`、`POST conversations/{key}/resume` | 暂停、恢复 |
@@ -218,8 +239,8 @@ panel:
 | `POST conversations/{key}/memory/consolidate` | 触发一次整理，返回 202 |
 | `PUT conversations/{key}/autonomy/buffs/{name}` | 请求 `{"value","reason"}`，把私聊的这条状态条设成指定值，规则同 API（不受模型调整的上限约束），变化记录的来源为 `panel`，返回 204；不是私聊、值不在 0–100、人设里没有这一条时返回 400 |
 | `DELETE conversations/{key}/autonomy/status` | 结束私聊的当前状态并取消回来说话的定时，返回 204；不是私聊返回 400 |
-| `POST conversations/{key}/messages` | 面板聊天发消息，请求 `{"text"}`，返回 202 `{"message_id"}`。只限私聊；群聊、文本为空或超过 2000 字、接管的会话还没有用户消息、bot 不回复这个发言人（私聊白名单不允许）时返回 400 |
-| `POST chats` | 新建面板聊天，请求 `{"bot_instance_id","display_name"}`，返回 201 `{"key"}`；bot 没有配置时返回 404 |
+| `POST conversations/{key}/messages` | 面板聊天发消息，请求 `{"text"}`，返回 202 `{"message_id"}`。只限私聊；群聊、文本为空或超过 2000 字、接管的会话还没有用户消息、bot 不回复这个发言人（私聊白名单不允许）时返回 400；bot 正在删除时返回 409 `CHAT_BUSY` |
+| `POST chats` | 新建面板聊天，请求 `{"bot_instance_id","display_name"}`，返回 201 `{"key"}`；bot 不存在时返回 404，正在删除时返回 409 `CHAT_BUSY` |
 | `DELETE conversations/{key}` | 删除面板聊天，返回 204；不是 `panel` 平台的会话返回 400；聊天里被取消的任务 5 秒内没停下时返回 409 `CHAT_BUSY`，可以重试 |
 
 ## 指标

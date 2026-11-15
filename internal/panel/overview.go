@@ -8,10 +8,13 @@ import (
 	dto "github.com/prometheus/client_model/go"
 )
 
+// overviewBot is a bot with when its adapter last called the core; a panel
+// bot (Source "panel", see botSource) has no adapter.
 type overviewBot struct {
 	ID         string     `json:"id"`
 	Platform   string     `json:"platform"`
 	Name       string     `json:"name"`
+	Source     string     `json:"source"`
 	LastSeenAt *time.Time `json:"last_seen_at"` // last call to the core since this process started
 }
 
@@ -89,7 +92,7 @@ func (s *Server) overviewBots() []overviewBot {
 	all := s.d.Bots.All()
 	bots := make([]overviewBot, 0, len(all))
 	for _, b := range all {
-		bot := overviewBot{ID: b.ID, Platform: b.Platform, Name: b.Name}
+		bot := overviewBot{ID: b.ID, Platform: b.Platform, Name: b.Name, Source: s.botSource(b.ID)}
 		if at, ok := seen[b.ID]; ok {
 			at = at.UTC()
 			bot.LastSeenAt = &at
