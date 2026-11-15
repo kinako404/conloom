@@ -140,6 +140,33 @@ type PersonaVersion struct {
 	CreatedAt       time.Time
 }
 
+// PersonaImage is an uploaded appearance reference image, as checked by
+// imaging.Process: the original bytes and a smaller JPEG reply copy. ID is
+// the lowercase hex sha256 of Original, so an image is never changed.
+type PersonaImage struct {
+	ID          string
+	MIME        string
+	Width       int
+	Height      int
+	Original    []byte
+	ReplyJPEG   []byte
+	ReplyWidth  int
+	ReplyHeight int
+	ReplyTokens int
+	CreatedBy   string
+	CreatedAt   time.Time
+}
+
+// PersonaTemplateRecord is a persona template written online; it overrides
+// the configured template of the same name or adds a new one.
+type PersonaTemplateRecord struct {
+	Name      string
+	Persona   conloomapi.PersonaDoc
+	UpdatedBy string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type PolicyVersion struct {
 	ConversationKey string
 	Version         int

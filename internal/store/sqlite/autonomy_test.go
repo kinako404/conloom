@@ -872,10 +872,16 @@ func schemaObjects(t *testing.T, db *DB) map[string]string {
 	return out
 }
 
-func TestMigration0012_OnlyAddsTables(t *testing.T) {
+// migrateOnlyAdding opens a database migrated up to version-1, applies the
+// migrations up to version and fails the test if they changed or removed a
+// table or index. It returns the open database (closed when the test ends),
+// the names of the tables and indexes added, sorted, and the columns of
+// every table (see tableInfos).
+func migrateOnlyAdding(t *testing.T, version int) (*DB, []string, map[string][]string) {
+	t.Helper()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "conloom.db")
-	old, err := open(ctx, path, migrationsUpTo(t, 11))
+	old, err := open(ctx, path, migrationsUpTo(t, version-1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -883,16 +889,21 @@ func TestMigration0012_OnlyAddsTables(t *testing.T) {
 	if err := old.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db, err := open(ctx, path, migrationsUpTo(t, 12))
+	db, err := open(ctx, path, migrationsUpTo(t, version))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() })
 
 	after, afterObjects := tableInfos(t, db.r), schemaObjects(t, db)
 	for table, cols := range before {
 		if !reflect.DeepEqual(after[table], cols) {
 			t.Errorf("table %s changed:\n before %v\n after  %v", table, cols, after[table])
+		}
+	}
+	for name := range beforeObjects {
+		if _, ok := afterObjects[name]; !ok {
+			t.Errorf("%s removed", name)
 		}
 	}
 	var added []string
@@ -905,6 +916,11 @@ func TestMigration0012_OnlyAddsTables(t *testing.T) {
 		}
 	}
 	slices.Sort(added)
+	return db, added, after
+}
+
+func TestMigration0012_OnlyAddsTables(t *testing.T) {
+	db, added, _ := migrateOnlyAdding(t, 12)
 	want := []string{
 		"conversation_buff_events", "conversation_buff_events_conv", "conversation_buff_events_task",
 		"conversation_buffs", "conversation_status", "conversation_timers", "conversation_timers_due",
@@ -913,9 +929,6 @@ func TestMigration0012_OnlyAddsTables(t *testing.T) {
 	}
 	if !slices.Equal(added, want) {
 		t.Fatalf("added %v, want %v", added, want)
-	}
-	if len(beforeObjects)+len(want) != len(afterObjects) {
-		t.Fatalf("schema objects %d -> %d, want only additions", len(beforeObjects), len(afterObjects))
 	}
 
 	insert := func(taskID string) error {

@@ -122,6 +122,26 @@ type Store interface {
 	GetPersonaVersion(ctx context.Context, convKey string, version int) (PersonaVersion, error)
 	// AppendPersonaVersion assigns the next version number.
 	AppendPersonaVersion(ctx context.Context, pv PersonaVersion) (PersonaVersion, error)
+	// PutPersonaImage stores img unless an image with its ID exists, in which
+	// case nothing is written. Nil Original or ReplyJPEG are stored as empty,
+	// a zero CreatedAt as now.
+	PutPersonaImage(ctx context.Context, img PersonaImage) error
+	// GetPersonaImage returns the image, with its Original only when original
+	// is set (nil otherwise), or ErrNotFound.
+	GetPersonaImage(ctx context.Context, id string, original bool) (PersonaImage, error)
+	PersonaImageExists(ctx context.Context, id string) (bool, error)
+	// PurgePersonaImages deletes the images created before createdBefore that
+	// no persona template and no persona version, of any age, names as its
+	// appearance image, and returns how many it deleted.
+	PurgePersonaImages(ctx context.Context, createdBefore time.Time) (int, error)
+	// ListPersonaTemplates returns the templates written online ordered by Name.
+	ListPersonaTemplates(ctx context.Context) ([]PersonaTemplateRecord, error)
+	// PutPersonaTemplate stores r, replacing the template of the same name but
+	// keeping its CreatedAt. A zero UpdatedAt is stored as now, a zero
+	// CreatedAt as UpdatedAt.
+	PutPersonaTemplate(ctx context.Context, r PersonaTemplateRecord) error
+	// DeletePersonaTemplate deletes the template and reports whether it existed.
+	DeletePersonaTemplate(ctx context.Context, name string) (bool, error)
 	LatestPolicy(ctx context.Context, convKey string) (PolicyVersion, error)
 	// ListPolicyVersions returns versions newest first.
 	ListPolicyVersions(ctx context.Context, convKey string) ([]PolicyVersion, error)

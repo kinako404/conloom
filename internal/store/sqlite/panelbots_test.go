@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"testing"
@@ -324,44 +323,10 @@ func TestPanelBots_SkillsRoundTrip(t *testing.T) {
 }
 
 func TestMigration0013_OnlyAddsTables(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "conloom.db")
-	old, err := open(ctx, path, migrationsUpTo(t, 12))
-	if err != nil {
-		t.Fatal(err)
-	}
-	before, beforeObjects := tableInfos(t, old.r), schemaObjects(t, old)
-	if err := old.Close(); err != nil {
-		t.Fatal(err)
-	}
-	db, err := open(ctx, path, migrationsUpTo(t, 13))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	after, afterObjects := tableInfos(t, db.r), schemaObjects(t, db)
-	for table, cols := range before {
-		if !reflect.DeepEqual(after[table], cols) {
-			t.Errorf("table %s changed:\n before %v\n after  %v", table, cols, after[table])
-		}
-	}
-	var added []string
-	for name, def := range afterObjects {
-		prev, ok := beforeObjects[name]
-		if !ok {
-			added = append(added, name)
-		} else if prev != def {
-			t.Errorf("%s changed:\n before %s\n after  %s", name, prev, def)
-		}
-	}
-	slices.Sort(added)
+	_, added, after := migrateOnlyAdding(t, 13)
 	want := []string{"panel_bots", "sqlite_autoindex_panel_bots_1"}
 	if !slices.Equal(added, want) {
 		t.Fatalf("added %v, want %v", added, want)
-	}
-	if len(beforeObjects)+len(want) != len(afterObjects) {
-		t.Fatalf("schema objects %d -> %d, want only additions", len(beforeObjects), len(afterObjects))
 	}
 	wantCols := []string{"0|id|TEXT|0||1", "1|name|TEXT|1||0", "2|persona_template|TEXT|1||0", "3|skills|TEXT|1||0",
 		"4|created_by|TEXT|1||0", "5|created_at|TEXT|1||0", "6|updated_at|TEXT|1||0"}
