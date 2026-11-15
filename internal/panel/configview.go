@@ -3,6 +3,7 @@ package panel
 import (
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/kinako404/conloom/internal/botdir"
@@ -23,10 +24,12 @@ func (s *Server) configView(w http.ResponseWriter, r *http.Request, _ *Session) 
 }
 
 // redactedConfig is the configuration in effect, keyed as in the YAML file,
-// with the bots of bots: the config file's, then those created in the panel.
-// It is built field by field from an explicit list, so a field added to the
-// configuration is left out until it is listed here; secrets only show
-// whether they are set, and URLs go through redactURL.
+// with the bots of bots: the config file's as written in it, then those
+// created in the panel as they take effect. A config bot whose persona
+// template is gone thus shows the file's template, not the default it falls
+// back to. It is built field by field from an explicit list, so a field
+// added to the configuration is left out until it is listed here; secrets
+// only show whether they are set, and URLs go through redactURL.
 //
 // The default policies are shown whole: they are behaviour settings shared
 // with the Bearer API's policy endpoints and hold no credentials.
@@ -41,7 +44,7 @@ func redactedConfig(c *config.Config, bots *botdir.Directory) map[string]any {
 		},
 		"storage":                map[string]any{"data_dir": c.Storage.DataDir},
 		"api_tokens":             apiTokensView(c.APITokens),
-		"bots":                   botsView(bots.All()),
+		"bots":                   botsView(writtenBots(bots)),
 		"model_profiles":         modelProfilesView(c.ModelProfiles),
 		"default_group_policy":   c.DefaultGroupPolicy,
 		"default_private_policy": c.DefaultPrivatePolicy,
@@ -110,6 +113,14 @@ func apiTokensView(tokens []config.APIToken) []map[string]any {
 		out = append(out, map[string]any{"name": t.Name, "bot_instance_id": t.BotInstanceID, "scopes": strs(t.Scopes)})
 	}
 	return out
+}
+
+// writtenBots lists the config bots of bots as configured, then its panel
+// bots as they take effect. All lists one entry per config bot before the
+// panel bots.
+func writtenBots(bots *botdir.Directory) []config.BotConfig {
+	configured, all := bots.ConfigBots(), bots.All()
+	return append(slices.Clone(configured), all[len(configured):]...)
 }
 
 // botsView shows bots as keyed in the YAML file; a bot created in the panel

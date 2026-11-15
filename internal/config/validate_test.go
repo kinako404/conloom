@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -119,6 +120,25 @@ func TestValidate_ConfigBotTemplateNotChecked(t *testing.T) {
 	cfg.LegacyPersonaTemplates = map[string]conloomapi.PersonaDoc{"lighthouse": conloomapi.DefaultPersona()}
 	if err := cfg.ValidateServe(); err != nil {
 		t.Fatalf("bot naming a template that is neither in the legacy templates: %v", err)
+	}
+}
+
+func TestValidate_ConfigBotBlankTemplate(t *testing.T) {
+	base, err := os.ReadFile("testdata/valid.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Omitted, persona_template is default.
+	if cfg := mustLoad(t, writeConfig(t, string(base))); cfg.Bots[0].PersonaTemplate != "default" || cfg.ValidateServe() != nil {
+		t.Fatalf("bot without persona_template = %q, %v; want default, valid", cfg.Bots[0].PersonaTemplate, cfg.ValidateServe())
+	}
+	for _, v := range []string{`""`, `"  "`} {
+		yaml := strings.Replace(string(base), "    platform: qq\n", "    platform: qq\n    persona_template: "+v+"\n", 1)
+		cfg := mustLoad(t, writeConfig(t, yaml))
+		err := cfg.ValidateServe()
+		if want := "bots[0].persona_template: must not be empty"; err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("persona_template: %s: ValidateServe = %v, want an error containing %q", v, err, want)
+		}
 	}
 }
 

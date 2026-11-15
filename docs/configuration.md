@@ -85,7 +85,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `admins` | 空 | 管理员的平台用户 ID 列表，每项不能为空 |
 | `enabled_conversations` | 空 | 只在这些会话里工作，每项 `{type: group\|private, platform_id: "<ID>"}`；未列出的群消息会被忽略。`private` 项的 `platform_id` 填用户的平台 ID，只在 `private_chat: allowlist` 时生效，用来放行这些人的私聊；其他档位下会被忽略，启动时打一条警告日志 |
 | `private_chat` | `admins` | 私聊策略：`admins`（仅管理员）、`allowlist`（管理员和 `enabled_conversations` 里列为 `private` 的人）、`all`（所有人）、`off`（关闭）。不被允许的私聊不回复 |
-| `persona_template` | `default` | 会话初始人格使用的模板名。模板存在数据库里，加载配置时不检查；启动后模板不存在时记一条警告、运行时改用 `default`，面板的 bot 页标出“模板已不存在”，建出这个模板后恢复 |
+| `persona_template` | `default` | 会话初始人格使用的模板名。写了就不能为空（`""` 或只有空格时加载配置失败）；模板存在数据库里，加载配置时不检查它是否存在；启动后模板不存在时记一条警告、运行时改用 `default`，面板的 bot 页标出“模板已不存在”，建出这个模板后恢复 |
 | `skills` | 空 | 启用的技能名列表，如 `[memory, time]`，不能有空项或重复；必须是内置技能或 `skills.dir` 里的技能，它们用到的工具都必须存在，否则启动失败（退出码 78）。省略或为空时不带任何工具，行为和没有技能时一样。见 [技能](skills.md) |
 
 ## model_profiles

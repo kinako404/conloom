@@ -156,6 +156,7 @@ func (c *Config) ValidateServe() error {
 		if !slices.Contains([]string{"admins", "allowlist", "all", "off"}, b.PrivateChat) {
 			p.addf(path+".private_chat", "must be one of admins|allowlist|all|off, got %q", b.PrivateChat)
 		}
+		p.required(path+".persona_template", b.PersonaTemplate)
 		for j, s := range b.Skills {
 			spath := fmt.Sprintf("%s.skills[%d]", path, j)
 			if strings.TrimSpace(s) == "" {

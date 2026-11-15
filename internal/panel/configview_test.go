@@ -215,6 +215,39 @@ func TestConfigView_PanelBotsMarked(t *testing.T) {
 	}
 }
 
+func TestConfigView_ConfigBotsAsWritten(t *testing.T) {
+	h := newOverviewHarness(t, func(d *Deps) {
+		d.Bots = botdir.New([]config.BotConfig{
+			{ID: "qq-main", Platform: "qq", Name: "小织", PersonaTemplate: "lighthouse"},
+			{ID: "tg-main", Platform: "telegram", Name: "织语", PersonaTemplate: "default"},
+		})
+	})
+	// lighthouse is gone, so qq-main takes effect with default; so does the
+	// panel bot, whose template is gone too.
+	h.srv.d.Bots.SetConfig([]botdir.Entry{{
+		Bot:      config.BotConfig{ID: "qq-main", Platform: "qq", Name: "小织", PersonaTemplate: "default"},
+		Problems: []string{"人设模板“lighthouse”已不存在，暂用 default"},
+	}})
+	h.srv.d.Bots.SetPanel([]botdir.Entry{{
+		Bot:      botdir.PanelBotConfig(store.PanelBot{ID: "panel-a1b2c3d4", Name: "小红", PersonaTemplate: "default"}),
+		Problems: []string{"人设模板“night-owl”已不存在，暂用 default"},
+	}})
+
+	var resp struct {
+		Config struct {
+			Bots []map[string]any `json:"bots"`
+		} `json:"config"`
+	}
+	h.getJSON("/panel/api/config", &resp)
+	var got []string
+	for _, b := range resp.Config.Bots {
+		got = append(got, b["id"].(string)+":"+b["persona_template"].(string))
+	}
+	if want := []string{"qq-main:lighthouse", "tg-main:default", "panel-a1b2c3d4:default"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("bots = %v, want %v: config bots as in the file, panel bots as they take effect", got, want)
+	}
+}
+
 // TestConfigView_PassThroughTypesHaveNoSecretFields guards the default
 // policies, which the config view shows whole.
 func TestConfigView_PassThroughTypesHaveNoSecretFields(t *testing.T) {
