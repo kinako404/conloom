@@ -172,13 +172,13 @@ func TestExchange_RoundTripSameImageID(t *testing.T) {
 	dst := newTestStore(t)
 	other := NewService(dst)
 	loadTemplates(t, other)
-	results, err := other.Import(ctx, back, ConflictOverwrite, "panel:other")
+	results, err := other.Import(ctx, back, ConflictFail, "panel:other")
 	if err != nil {
-		t.Fatalf("Import: %v", err)
+		t.Fatalf("Import of the whole export into a fresh store: %v; the built-in default is no conflict", err)
 	}
 	wantResults := []ImportResult{
 		{Name: "cat", Requested: "cat", Created: true},
-		{Name: "default", Requested: "default", Created: false},
+		{Name: "default", Requested: "default", Created: true},
 		{Name: "lighthouse", Requested: "lighthouse", Created: true},
 	}
 	if !slices.Equal(results, wantResults) {
@@ -369,9 +369,9 @@ func TestImport_ConflictModes(t *testing.T) {
 		if !errors.Is(err, ErrImportConflict) || !errors.As(err, &conflict) || results != nil {
 			t.Fatalf("Import = %+v, %v; want ErrImportConflict", results, err)
 		}
-		wantNames := []string{"lighthouse", "cat", "default", longName}
+		wantNames := []string{"lighthouse", "cat", longName}
 		if !slices.Equal(conflict.Names, wantNames) {
-			t.Errorf("conflicting names = %v, want %v", conflict.Names, wantNames)
+			t.Errorf("conflicting names = %v, want %v: the built-in default is no conflict", conflict.Names, wantNames)
 		}
 		for _, name := range wantNames {
 			if !strings.Contains(err.Error(), name) {
@@ -401,7 +401,7 @@ func TestImport_ConflictModes(t *testing.T) {
 			{Name: "lighthouse", Requested: "lighthouse"},
 			{Name: "owl", Requested: "owl", Created: true},
 			{Name: "cat", Requested: "cat"},
-			{Name: "default", Requested: "default"},
+			{Name: "default", Requested: "default", Created: true},
 			{Name: longName, Requested: longName},
 			{Name: "lighthouse-2", Requested: "lighthouse-2", Created: true},
 		}
@@ -432,7 +432,7 @@ func TestImport_ConflictModes(t *testing.T) {
 			{Name: "lighthouse-3", Requested: "lighthouse", Created: true},
 			{Name: "owl", Requested: "owl", Created: true},
 			{Name: "cat-3", Requested: "cat", Created: true},
-			{Name: "default-2", Requested: "default", Created: true},
+			{Name: "default", Requested: "default", Created: true},
 			{Name: "abcdefghijklmnopqrstuvwxyz0123-3", Requested: longName, Created: true},
 			{Name: "lighthouse-2", Requested: "lighthouse-2", Created: true},
 		}
@@ -440,13 +440,38 @@ func TestImport_ConflictModes(t *testing.T) {
 			t.Errorf("results = %+v, want %+v", results, want)
 		}
 		for name, tag := range map[string]string{"lighthouse": "灯塔", "cat": "猫", "cat-2": "猫2", longName: "长",
-			"lighthouse-3": "新灯塔", "cat-3": "新猫", "default-2": "新默认", "abcdefghijklmnopqrstuvwxyz0123-3": "新长", "lighthouse-2": "灯塔2"} {
-			if got := info(t, svc, name); !reflect.DeepEqual(got.Doc, tagged(tag)) {
-				t.Errorf("%s after the import = %+v, want tagged %s", name, got.Doc, tag)
+			"lighthouse-3": "新灯塔", "cat-3": "新猫", "default": "新默认", "abcdefghijklmnopqrstuvwxyz0123-3": "新长", "lighthouse-2": "灯塔2"} {
+			if got := info(t, svc, name); got.Source != SourceDB || !reflect.DeepEqual(got.Doc, tagged(tag)) {
+				t.Errorf("%s after the import = %+v, want stored and tagged %s", name, got, tag)
 			}
 		}
-		if got := info(t, svc, "default"); got.Source != SourceBuiltin {
-			t.Errorf("default after a renaming import = %+v, want the built-in one", got)
+		if _, ok := svc.Template("default-2"); ok {
+			t.Error("default renamed although only the built-in one existed")
+		}
+	})
+
+	t.Run("stored default", func(t *testing.T) {
+		withDefault := exchangeFile(exchangeTemplate("default", tagged("新默认"), nil))
+		for _, c := range []struct {
+			mode ConflictMode
+			want ImportResult
+		}{
+			{ConflictOverwrite, ImportResult{Name: "default", Requested: "default"}},
+			{ConflictRename, ImportResult{Name: "default-2", Requested: "default", Created: true}},
+		} {
+			_, svc := conflictSetup(t)
+			if err := svc.PutTemplate(ctx, "default", tagged("默认"), "panel:admin"); err != nil {
+				t.Fatal(err)
+			}
+			var conflict *ImportConflictError
+			if _, err := svc.Import(ctx, withDefault, ConflictFail, "panel:admin"); !errors.As(err, &conflict) ||
+				!slices.Equal(conflict.Names, []string{"default"}) {
+				t.Errorf("Import over a stored default err = %v, want a conflict naming default", err)
+			}
+			results, err := svc.Import(ctx, withDefault, c.mode, "panel:admin")
+			if err != nil || !slices.Equal(results, []ImportResult{c.want}) {
+				t.Errorf("Import (%s) over a stored default = %+v, %v; want %+v", c.mode, results, err, c.want)
+			}
 		}
 	})
 

@@ -48,8 +48,8 @@ type ExchangeImage struct {
 	Data string `json:"data"`
 }
 
-// ConflictMode is what Import does with a template whose name the catalog
-// already has.
+// ConflictMode is what Import does with a template whose name a stored
+// template already has.
 type ConflictMode string
 
 const (
@@ -64,16 +64,16 @@ const (
 )
 
 // ImportResult is a template Import stored: Requested is its name in the
-// file, Name the name it was stored under, and Created whether the catalog
-// had no template of that name.
+// file, Name the name it was stored under, and Created whether no template
+// of that name was stored.
 type ImportResult struct {
 	Name, Requested string
 	Created         bool
 }
 
 // ErrImportConflict refuses a ConflictFail import of templates whose names
-// the catalog already has. Import returns it as an *ImportConflictError
-// naming them.
+// stored templates already have. Import returns it as an
+// *ImportConflictError naming them.
 var ErrImportConflict = errors.New("persona: template names already exist")
 
 // ImportConflictError is ErrImportConflict for the templates Names, in the
@@ -145,9 +145,9 @@ func (s *Service) exportTemplate(ctx context.Context, name string, doc conloomap
 
 // Import stores the templates of f for actor, all of them or none, and
 // returns them in the order of f. mode decides what happens to a template
-// whose name the catalog already has, the built-in "default" included; in
-// ConflictFail mode such templates refuse the import with an
-// *ImportConflictError naming them.
+// whose name a stored template has; in ConflictFail mode such templates
+// refuse the import with an *ImportConflictError naming them. The built-in
+// "default" is no conflict: an imported "default" is stored in its place.
 //
 // The whole file is checked first. A wrong format or version, a file without
 // templates and an unknown mode are ErrInvalid. Problems of templates are
@@ -284,13 +284,12 @@ func (s *Service) storeImport(ctx context.Context, templates []importTemplate, i
 	mode ConflictMode, actor string) ([]ImportResult, error) {
 	s.templateMu.Lock()
 	defer s.templateMu.Unlock()
-	catalog := s.catalog.Load().docs
 	reserved := make(map[string]bool, len(templates))
 	for _, t := range templates {
 		reserved[t.name] = true
 	}
 	taken := func(name string) bool {
-		_, ok := catalog[name]
+		_, ok := s.stored[name]
 		return ok || reserved[name]
 	}
 	now := time.Now().UTC()
@@ -298,7 +297,7 @@ func (s *Service) storeImport(ctx context.Context, templates []importTemplate, i
 	results := make([]ImportResult, len(templates))
 	rows := make([]store.PersonaTemplateRecord, len(templates))
 	for i, t := range templates {
-		_, exists := catalog[t.name]
+		_, exists := s.stored[t.name]
 		r := ImportResult{Name: t.name, Requested: t.name, Created: !exists}
 		if exists {
 			switch mode {
