@@ -221,9 +221,10 @@ func (s *Service) ReferencedImages() []string {
 // one; a stored "default" takes the place of the built-in one. Conversations
 // whose first version is made afterwards, and a template applied with
 // Update, get it; existing versions are kept. The name of a new template must
-// be 1 to 32 lowercase letters, digits, - or _; a stored template keeps the
-// name it has. An invalid name, a doc that fails Validate and an appearance
-// image that was not uploaded are ErrInvalidTemplate.
+// be 1 to 32 lowercase letters, digits, - or _, and none of
+// reservedTemplateNames; a stored template keeps the name it has. An invalid
+// name, a doc that fails Validate and an appearance image that was not
+// uploaded are ErrInvalidTemplate.
 func (s *Service) PutTemplate(ctx context.Context, name string, doc conloomapi.PersonaDoc, actor string) error {
 	if err := checkTemplateDoc(doc); err != nil {
 		return err
@@ -233,8 +234,13 @@ func (s *Service) PutTemplate(ctx context.Context, name string, doc conloomapi.P
 	}
 	s.templateMu.Lock()
 	defer s.templateMu.Unlock()
-	if _, ok := s.stored[name]; !ok && !validTemplateName(name) {
-		return fmt.Errorf("%w: name must be 1 to %d lowercase letters, digits, - or _, got %q", ErrInvalidTemplate, maxTemplateName, name)
+	if _, ok := s.stored[name]; !ok {
+		if !validTemplateName(name) {
+			return fmt.Errorf("%w: name must be 1 to %d lowercase letters, digits, - or _, got %q", ErrInvalidTemplate, maxTemplateName, name)
+		}
+		if reservedTemplateName(name) {
+			return fmt.Errorf("%w: %w", ErrInvalidTemplate, errReservedTemplateName)
+		}
 	}
 	r := store.PersonaTemplateRecord{Name: name, Persona: doc, UpdatedBy: actor, UpdatedAt: time.Now().UTC()}
 	if err := s.st.PutPersonaTemplate(ctx, r); err != nil {
@@ -305,6 +311,20 @@ func checkTemplateDoc(doc conloomapi.PersonaDoc) error {
 		return fmt.Errorf("%w: %w", ErrInvalidTemplate, err)
 	}
 	return nil
+}
+
+// reservedTemplateNames are names no new template may have, as the panel's
+// API uses persona-templates/export and persona-templates/import as paths of
+// their own. Templates stored with them before keep them.
+var reservedTemplateNames = []string{"export", "import"}
+
+// errReservedTemplateName is why a new template cannot have one of
+// reservedTemplateNames.
+var errReservedTemplateName = errors.New("模板名不能是 export 或 import，这两个名字留给面板的导出和导入")
+
+// reservedTemplateName reports whether name is one of reservedTemplateNames.
+func reservedTemplateName(name string) bool {
+	return slices.Contains(reservedTemplateNames, name)
 }
 
 // validTemplateName reports whether name is 1 to maxTemplateName lowercase

@@ -531,6 +531,43 @@ func TestImport_DuplicateNamesInFile(t *testing.T) {
 	}
 }
 
+func TestImport_ReservedNames(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	// A stored template of a reserved name does not make the name importable.
+	svc := newServiceWith(t, st, map[string]conloomapi.PersonaDoc{"export": tagged("旧")})
+	f := exchangeFile(
+		exchangeTemplate("owl", tagged("夜猫"), nil),
+		exchangeTemplate("export", tagged("甲"), nil),
+		exchangeTemplate("import", tagged("乙"), nil),
+	)
+	for _, mode := range []ConflictMode{ConflictFail, ConflictOverwrite, ConflictRename} {
+		_, err := svc.Import(ctx, f, mode, "panel:admin")
+		if !errors.Is(err, ErrInvalidTemplate) || !strings.Contains(err.Error(), `templates[1] "export": 模板名不能是 export 或 import`) ||
+			!strings.Contains(err.Error(), `templates[2] "import": 模板名不能是 export 或 import`) ||
+			strings.Contains(err.Error(), "templates[0]") {
+			t.Errorf("Import (%s) err = %v, want ErrInvalidTemplate naming export and import only", mode, err)
+		}
+		checkUnchanged(t, st, svc, []string{"export"})
+	}
+	if doc, _ := svc.Template("export"); !reflect.DeepEqual(doc, tagged("旧")) {
+		t.Errorf("stored export = %+v, want it untouched", doc)
+	}
+}
+
+func TestRenamed_SkipsReservedNames(t *testing.T) {
+	free := func(string) bool { return false }
+	if got := renamed("export", free); got != "export-2" {
+		t.Errorf("renamed(export) = %q, want export-2", got)
+	}
+	// Were a reserved name of the form name-N, a rename would pass it by.
+	defer func(old []string) { reservedTemplateNames = old }(reservedTemplateNames)
+	reservedTemplateNames = append(slices.Clone(reservedTemplateNames), "owl-2")
+	if got := renamed("owl", free); got != "owl-3" {
+		t.Errorf("renamed(owl) with owl-2 reserved = %q, want owl-3", got)
+	}
+}
+
 func TestImport_ProtectedModeRule(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)

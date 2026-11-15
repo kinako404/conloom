@@ -685,20 +685,62 @@ func TestTemplatesAPI_ImportHoldsImageSlot(t *testing.T) {
 
 func TestTemplatesAPI_ImportTooLarge413(t *testing.T) {
 	h := newBotsHarness(t)
-	over := `{"format":"` + strings.Repeat("a", maxImportBytes) + `"}`
+	// A good file, padded to one byte over the limit.
+	valid := mustJSON(t, exchangeFile(persona.ExchangeTemplate{Name: "owl", Persona: lighthousePersona()}))
+	over := valid + strings.Repeat(" ", maxImportBytes+1-len(valid))
 	e := errorBody(t, h.write(http.MethodPost, importPath(""), over), http.StatusRequestEntityTooLarge, conloomapi.CodeInvalidEvent)
 	if !strings.Contains(e.Message, "64 MiB") {
 		t.Errorf("too large message = %q", e.Message)
 	}
-
-	// A file of exactly 64 MiB is read.
-	valid := mustJSON(t, exchangeFile(persona.ExchangeTemplate{Name: "owl", Persona: lighthousePersona()}))
-	atLimit := valid + strings.Repeat(" ", maxImportBytes-len(valid))
-	if got := decodeImport(t, h.write(http.MethodPost, importPath(""), atLimit)); !reflect.DeepEqual(got, []importedResp{{"owl", "owl", true}}) {
-		t.Errorf("import at the limit = %+v", got)
+	if _, ok := h.personas.Template("owl"); ok {
+		t.Error("too large import stored")
 	}
-	if n := len(h.audits("persona.template.import")); n != 1 {
-		t.Errorf("import audits = %d, want 1", n)
+	if n := len(h.audits("persona.template.import")); n != 0 {
+		t.Errorf("import audits = %d, want 0", n)
+	}
+}
+
+func TestTemplatesAPI_ReservedNames(t *testing.T) {
+	h := newBotsHarness(t)
+	ctx := context.Background()
+	const reason = "模板名不能是 export 或 import"
+
+	// Saving or copying to a new template of a reserved name.
+	for _, name := range []string{"export", "import"} {
+		e := errorBody(t, h.putTemplate(name, lighthousePersona(), ""), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+		if !strings.Contains(e.Message, reason) {
+			t.Errorf("PUT %s message = %q, want %q", name, e.Message, reason)
+		}
+	}
+	// Importing one, whatever on_conflict says.
+	body := mustJSON(t, exchangeFile(persona.ExchangeTemplate{Name: "import", Persona: lighthousePersona()}))
+	for _, mode := range []string{"", "overwrite", "rename"} {
+		e := errorBody(t, h.write(http.MethodPost, importPath(mode), body), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+		if !strings.Contains(e.Message, `templates[0] "import": `+reason) {
+			t.Errorf("import (%q) message = %q, want %q", mode, e.Message, reason)
+		}
+	}
+	for _, name := range []string{"export", "import"} {
+		if _, ok := h.personas.Template(name); ok {
+			t.Errorf("template %s stored", name)
+		}
+	}
+
+	// A template stored with such a name before keeps working.
+	if err := h.db.PutPersonaTemplate(ctx, store.PersonaTemplateRecord{Name: "export", Persona: catPersona, UpdatedBy: "system"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.personas.LoadTemplates(ctx); err != nil {
+		t.Fatal(err)
+	}
+	edited := catPersona
+	edited.CharacterName = "大猫"
+	if got := decodeTemplate(t, h.putTemplate("export", edited, ""), http.StatusOK); got.Persona == nil || got.Persona.CharacterName != "大猫" {
+		t.Errorf("PUT of the stored export = %+v", got)
+	}
+	f := decodeExport(t, h.get(templatePath("export", "export")), "persona-export.json")
+	if len(f.Templates) != 1 || f.Templates[0].Name != "export" || !reflect.DeepEqual(f.Templates[0].Persona, edited) {
+		t.Errorf("export of the stored export = %+v", f.Templates)
 	}
 }
 

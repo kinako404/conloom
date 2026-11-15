@@ -1,10 +1,12 @@
 package panel
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"time"
@@ -234,14 +236,18 @@ type importedTemplate struct {
 // is a retryable 409 CHAT_BUSY. The import is audited with the names, never
 // the personas or images.
 func (s *Server) importTemplates(w http.ResponseWriter, r *http.Request, sess *Session) {
-	var f persona.ExchangeFile
-	err := decodeJSON(http.MaxBytesReader(w, r.Body, maxImportBytes), &f)
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxImportBytes))
 	if mbe := (*http.MaxBytesError)(nil); errors.As(err, &mbe) {
 		s.writeError(w, r, http.StatusRequestEntityTooLarge, conloomapi.CodeInvalidEvent,
 			fmt.Sprintf("导入文件不能超过 %d MiB", maxImportBytes>>20))
 		return
 	}
 	if err != nil {
+		s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "could not read the request body", err)
+		return
+	}
+	var f persona.ExchangeFile
+	if err := decodeJSON(bytes.NewReader(data), &f); err != nil {
 		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "invalid JSON body: "+err.Error())
 		return
 	}

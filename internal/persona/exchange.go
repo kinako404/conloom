@@ -234,6 +234,8 @@ func (s *Service) checkImport(ctx context.Context, templates []ExchangeTemplate)
 		var errs []error
 		if !validTemplateName(t.Name) {
 			errs = append(errs, fmt.Errorf("name must be 1 to %d lowercase letters, digits, - or _", maxTemplateName))
+		} else if reservedTemplateName(t.Name) {
+			errs = append(errs, errReservedTemplateName)
 		} else if j, ok := first[t.Name]; ok {
 			errs = append(errs, fmt.Errorf("name already used by templates[%d]", j))
 		} else {
@@ -332,13 +334,14 @@ func (s *Service) storeImport(ctx context.Context, templates []importTemplate, i
 	return results, nil
 }
 
-// renamed returns the first of name-2, name-3, … that is not taken, name cut
-// so that the result has at most maxTemplateName characters.
+// renamed returns the first of name-2, name-3, … that is neither taken nor
+// one of reservedTemplateNames, name cut so that the result has at most
+// maxTemplateName characters.
 func renamed(name string, taken func(string) bool) string {
 	for n := 2; ; n++ {
 		suffix := "-" + strconv.Itoa(n)
 		candidate := name[:min(len(name), maxTemplateName-len(suffix))] + suffix
-		if !taken(candidate) {
+		if !taken(candidate) && !reservedTemplateName(candidate) {
 			return candidate
 		}
 	}

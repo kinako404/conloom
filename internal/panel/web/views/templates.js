@@ -62,15 +62,11 @@ function updated(t) {
   return t.updated_at ? `${fmtTime(t.updated_at)}，${t.updated_by}` : '—';
 }
 
-// exists reports whether the catalog has a template name.
+// exists reports whether the catalog has a template name. It reads the list:
+// persona-templates/export is the download of all templates, not a template.
 async function exists(name) {
-  try {
-    await get(templatePath(name));
-    return true;
-  } catch (err) {
-    if (err.status === 404) return false;
-    throw err;
-  }
+  const res = await get('persona-templates');
+  return (res.templates || []).some((t) => t.name === name);
 }
 
 export async function templatesView(ctx) {
@@ -127,7 +123,7 @@ export async function templateView(ctx) {
       const button = e.currentTarget;
       const r = form.read();
       if (r.error) return fail(actionMsg, r.error);
-      const answer = prompt('新模板的名字：1–32 个小写字母、数字、- 或 _。新模板用下面表单里当前的内容，本模板不变。', '');
+      const answer = prompt('新模板的名字：1–32 个小写字母、数字、- 或 _，不能是 export 或 import。新模板用下面表单里当前的内容，本模板不变。', '');
       if (answer === null) return undefined;
       const to = answer.trim();
       if (!TEMPLATE_NAME.test(to)) return fail(actionMsg, '模板名只能是 1–32 个小写字母、数字、- 或 _');

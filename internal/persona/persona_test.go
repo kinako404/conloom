@@ -1218,6 +1218,39 @@ func TestCatalog_PutAndDelete(t *testing.T) {
 	checkInfos(t, restarted.Templates(), svc.Templates())
 }
 
+func TestCatalog_ReservedNames(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	// A template stored before its name was reserved keeps it.
+	svc := newServiceWith(t, st, map[string]conloomapi.PersonaDoc{"export": tagged("旧")})
+	if err := svc.PutTemplate(ctx, "export", tagged("新"), "panel:admin"); err != nil {
+		t.Errorf("PutTemplate of the stored export: %v", err)
+	}
+	if doc, _ := svc.Template("export"); !reflect.DeepEqual(doc, tagged("新")) {
+		t.Errorf("export = %+v, want the update", doc)
+	}
+
+	for _, name := range []string{"import", "export"} {
+		if name == "export" {
+			if err := svc.DeleteTemplate(ctx, "export"); err != nil {
+				t.Fatalf("DeleteTemplate export: %v", err)
+			}
+		}
+		err := svc.PutTemplate(ctx, name, tagged("甲"), "panel:admin")
+		if !errors.Is(err, ErrInvalidTemplate) || !strings.Contains(err.Error(), "模板名不能是 export 或 import") {
+			t.Errorf("PutTemplate of a new %s err = %v, want ErrInvalidTemplate with the reason in Chinese", name, err)
+		}
+	}
+	for _, name := range []string{"export-2", "imports", "my-import"} {
+		if err := svc.PutTemplate(ctx, name, tagged(name), "panel:admin"); err != nil {
+			t.Errorf("PutTemplate %s: %v", name, err)
+		}
+	}
+	if got, want := storedTemplateNames(t, st), []string{"export-2", "imports", "my-import"}; !slices.Equal(got, want) {
+		t.Errorf("stored templates = %v, want %v", got, want)
+	}
+}
+
 func TestCatalog_ConcurrentPutAndRead(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
