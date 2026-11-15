@@ -7,6 +7,7 @@ import { usageView } from './views/usage.js';
 import { chatsView } from './views/chats.js';
 import { conversationsView } from './views/conversations.js';
 import { conversationView } from './views/conversation.js';
+import { templatesView, templateView } from './views/templates.js';
 import { tasksView, taskDetailView } from './views/tasks.js';
 import { auditView } from './views/audit.js';
 import { configView } from './views/config.js';
@@ -19,6 +20,8 @@ route('/chat/:key', chatsView);
 route('/conversations', conversationsView);
 route('/conversations/:key', conversationView);
 route('/conversations/:key/:tab', conversationView);
+route('/templates', templatesView);
+route('/templates/:name', templateView);
 route('/tasks', tasksView);
 route('/tasks/:id', taskDetailView);
 route('/audit', auditView);
@@ -29,6 +32,7 @@ const SECTIONS = [
   ['usage', '用量'],
   ['chat', '聊天'],
   ['conversations', '会话'],
+  ['templates', '人设模板'],
   ['tasks', '任务'],
   ['audit', '审计'],
   ['config', '配置'],

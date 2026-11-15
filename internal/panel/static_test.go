@@ -153,3 +153,41 @@ func TestStatic_ServesChatsView(t *testing.T) {
 		t.Error("/panel/views/conversation.js still has the chat tab")
 	}
 }
+
+func TestStatic_ServesTemplatesViews(t *testing.T) {
+	h := staticHandler(t, web.FS)
+	get := func(target string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+		return w
+	}
+	for _, c := range []struct {
+		path string
+		want []string
+	}{
+		{"/panel/views/templates.js", []string{
+			"export async function templatesView(", "export async function templateView(", "from './personaform.js'",
+		}},
+		{"/panel/views/personaform.js", []string{"export function personaForm(", "upload("}},
+		{"/panel/views/conversation.js", []string{"from './personaform.js'"}},
+		{"/panel/lib/api.js", []string{"export const upload ="}},
+		{"/panel/app.js", []string{
+			"from './views/templates.js'", "route('/templates', templatesView)", "route('/templates/:name', templateView)",
+			"['templates', '人设模板']",
+		}},
+	} {
+		w := get(c.path)
+		if ct := w.Header().Get("Content-Type"); w.Code != http.StatusOK || !strings.Contains(ct, "javascript") {
+			t.Errorf("%s: %d Content-Type %q", c.path, w.Code, ct)
+			continue
+		}
+		for _, want := range c.want {
+			if !strings.Contains(w.Body.String(), want) {
+				t.Errorf("%s lacks %q", c.path, want)
+			}
+		}
+	}
+	if w := get("/panel/views/conversation.js"); strings.Contains(w.Body.String(), "function barsEditor(") {
+		t.Error("/panel/views/conversation.js still has its own bars editor")
+	}
+}

@@ -78,17 +78,20 @@ export async function request(method, path, opts = {}) {
   }
 }
 
-async function send(method, path, { body, params, signal } = {}) {
+// send makes one API call. body is sent as JSON; blob, when given instead, is
+// sent as it is, typed by its own type.
+async function send(method, path, { body, blob, params, signal } = {}) {
   if (method !== 'GET' && path !== 'login' && !csrfToken) await loadSession(signal);
   const headers = { Accept: 'application/json' };
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (blob !== undefined) headers['Content-Type'] = blob.type || 'application/octet-stream';
+  else if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (method !== 'GET' && csrfToken) headers['X-CSRF-Token'] = csrfToken;
   let res;
   try {
     res = await fetch(BASE + path + qs(params), {
       method,
       headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: blob !== undefined ? blob : body === undefined ? undefined : JSON.stringify(body),
       credentials: 'same-origin',
       cache: 'no-store',
       signal,
@@ -124,6 +127,8 @@ export const get = (path, params, signal) => request('GET', path, { params, sign
 export const post = (path, body) => request('POST', path, { body });
 export const put = (path, body) => request('PUT', path, { body });
 export const del = (path) => request('DELETE', path);
+// upload posts blob, a file, as the raw request body.
+export const upload = (path, blob) => request('POST', path, { blob });
 
 export async function loadSession(signal) {
   const sess = await request('GET', 'session', { signal });

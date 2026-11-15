@@ -1,10 +1,11 @@
-import { h, mount, errorBox, loading, empty, table, kv, field, paged } from '../lib/dom.js';
+import { h, mount, errorBox, loading, empty, table, kv, field, paged, select } from '../lib/dom.js';
 import { get, post, put, del, convPath, isAbort } from '../lib/api.js';
 import { go, href, withQuery } from '../lib/router.js';
 import { fmtTime, fmtInt, pretty, label, CONV_TYPE, PRIVATE_LEVEL } from '../lib/format.js';
 import { statusBadges, personaLabel } from './conversations.js';
 import { taskList } from './tasks.js';
 import { autonomyTab } from './autonomy.js';
+import { personaForm } from './personaform.js';
 
 const TABS = [
   ['messages', '消息'],
@@ -39,12 +40,6 @@ async function write(box, button, fn, done) {
 
 function fail(box, message) {
   mount(box, errorBox({ message }));
-}
-
-function select(map, current, attrs) {
-  const opts = Object.entries(map).map(([v, t]) => h('option', { value: v, selected: v === current }, t));
-  if (current && !Object.hasOwn(map, current)) opts.unshift(h('option', { value: current, selected: true }, current));
-  return h('select', attrs, opts);
 }
 
 function jsonDetails(v) {
@@ -276,209 +271,7 @@ async function policyTab({ key, conv, signal }) {
 
 // ---- persona ----
 
-const REPLY_LENGTH = { short: '短（short）', medium: '中（medium）', long: '长（long）' };
-const FOLLOWUP = { never: '从不（never）', occasionally: '偶尔（occasionally）', often: '经常（often）' };
-const TECHNICAL = { brief: '简要（brief）', clear_and_practical: '清楚实用（clear_and_practical）', detailed: '详细（detailed）' };
-const STYLE = [
-  ['warmth', '亲和'],
-  ['humor', '幽默'],
-  ['directness', '直接'],
-  ['verbosity', '话多'],
-  ['emoji_usage', '表情'],
-  ['proactivity', '主动'],
-];
-const MAX_EXAMPLES = 8;
 const CONTENT_MODE = { open: '开放（open）', protected: '保护（protected）' };
-// MAX_BARS is conloomapi.MaxPersonaBars, the most bars a persona has.
-const MAX_BARS = 4;
-
-// shortDuration drops the zero minutes and seconds of a Go duration, "6h0m0s"
-// becoming "6h".
-function shortDuration(v) {
-  return String(v || '').replace(/([hm])0s$/, '$1').replace(/h0m$/, 'h');
-}
-
-// barsEditor edits a persona's bars, one row each, at most MAX_BARS. read
-// returns {bars}, keeping fields the rows do not show, or {error}.
-function barsEditor(bars) {
-  const list = h('div');
-  const inputs = new WeakMap();
-  const add = h('button', { type: 'button' }, '添加状态条');
-  const updateAdd = () => {
-    add.disabled = list.children.length >= MAX_BARS;
-  };
-  const addBar = (bar) => {
-    const name = h('input', { value: bar.name || '' });
-    const baseline = h('input', { type: 'number', min: 0, max: 100, step: 1, value: bar.baseline ?? '' });
-    const halfLife = h('input', { value: shortDuration(bar.half_life), placeholder: '6h' });
-    const description = h('input', { value: bar.description || '' });
-    const row = h('div', { class: 'card' },
-      h('div', { class: 'form-grid' },
-        field('名称', name, '1–6 字，不能重复，不含空白、【】和冒号'),
-        field('基准', baseline, '0–100 的整数，数值会逐渐回到这里'),
-        field('半衰期', halfLife, '30m–168h，如 6h、90m'),
-        field('说明', description, '可选，最多 40 字，如“高=有精神，低=累、困”')),
-      h('button', {
-        type: 'button',
-        class: 'danger',
-        onclick: () => {
-          row.remove();
-          updateAdd();
-        },
-      }, '删除状态条'));
-    inputs.set(row, { bar, name, baseline, halfLife, description });
-    list.appendChild(row);
-    updateAdd();
-  };
-  add.addEventListener('click', () => addBar({}));
-  for (const bar of bars || []) addBar(bar);
-  const read = () => {
-    const out = [];
-    for (const [i, row] of [...list.children].entries()) {
-      const r = inputs.get(row);
-      const baseline = Number(r.baseline.value);
-      if (r.baseline.value.trim() === '' || !Number.isInteger(baseline)) return { error: `第 ${i + 1} 条状态条的基准必须是整数` };
-      out.push({
-        ...r.bar,
-        name: r.name.value.trim(),
-        baseline,
-        half_life: r.halfLife.value.trim(),
-        description: r.description.value.trim(),
-      });
-    }
-    return { bars: out };
-  };
-  return { el: [list, h('div', { class: 'toolbar' }, add)], read };
-}
-
-function personaForm(key, doc) {
-  const base = structuredClone(doc || {});
-  const style = base.style || {};
-  const behavior = base.behavior || {};
-
-  const name = h('input', { value: base.persona_name || '' });
-  const templateVersion = h('input', { type: 'number', min: 0, step: 1, value: base.template_version ?? 0 });
-  const characterName = h('input', { value: base.character_name || '' });
-  const description = h('textarea', { value: base.description || '' });
-  const speakingStyle = h('textarea', { value: base.speaking_style || '' });
-  const styleInputs = Object.fromEntries(STYLE.map(([k]) => [k,
-    h('input', { type: 'number', min: 0, max: 1, step: 'any', value: style[k] ?? '' })]));
-  const replyLength = select(REPLY_LENGTH, behavior.default_reply_length);
-  const followup = select(FOLLOWUP, behavior.ask_followup_questions);
-  const technical = select(TECHNICAL, behavior.technical_explanations);
-  const memes = h('input', { type: 'checkbox', checked: !!behavior.allow_memes });
-  const minor = h('input', { type: 'checkbox', checked: !!base.minor });
-  const adult = h('input', { type: 'checkbox', checked: !!base.adult });
-  const adultNote = h('span', { class: 'hint' }, '未成年角色不能设为成年人设');
-  const syncAdult = () => {
-    if (minor.checked) adult.checked = false;
-    adult.disabled = minor.checked;
-    adultNote.hidden = !minor.checked;
-  };
-  minor.addEventListener('change', syncAdult);
-  syncAdult();
-  const contentRules = h('textarea', { value: base.content_rules || '' });
-  const memoryRules = h('textarea', { value: base.memory_rules || '' });
-
-  const examples = h('div');
-  const exampleInputs = new WeakMap();
-  const addButton = h('button', { type: 'button' }, '添加示例');
-  const updateAdd = () => {
-    addButton.disabled = examples.children.length >= MAX_EXAMPLES;
-  };
-  const addExample = (ex) => {
-    const user = h('textarea', { value: ex.user || '' });
-    const reply = h('textarea', { value: ex.reply || '' });
-    const row = h('div', { class: 'card' },
-      h('div', { class: 'cols' }, field('群友说', user), field('回复', reply)),
-      h('button', {
-        type: 'button',
-        class: 'danger',
-        onclick: () => {
-          row.remove();
-          updateAdd();
-        },
-      }, '删除示例'));
-    exampleInputs.set(row, { user, reply });
-    examples.appendChild(row);
-    updateAdd();
-  };
-  addButton.addEventListener('click', () => addExample({}));
-  for (const ex of base.examples || []) addExample(ex);
-  const bars = barsEditor(base.bars);
-
-  const reason = h('input', { placeholder: '修改原因' });
-  const msg = h('div');
-  const save = h('button', { type: 'submit', class: 'primary' }, '保存人设');
-  return h('form', {
-    onsubmit: (e) => {
-      e.preventDefault();
-      const tv = Number(templateVersion.value);
-      if (templateVersion.value.trim() === '' || !Number.isInteger(tv)) return fail(msg, '模板版本必须是整数');
-      const barRows = bars.read();
-      if (barRows.error) return fail(msg, barRows.error);
-      const persona = base;
-      persona.persona_name = name.value;
-      persona.template_version = tv;
-      persona.style = { ...style };
-      for (const [k, title] of STYLE) {
-        const v = styleInputs[k].valueAsNumber;
-        if (Number.isNaN(v)) return fail(msg, `风格「${title}」必须是 0 到 1 之间的数`);
-        persona.style[k] = v;
-      }
-      persona.behavior = {
-        ...behavior,
-        default_reply_length: replyLength.value,
-        allow_memes: memes.checked,
-        ask_followup_questions: followup.value,
-        technical_explanations: technical.value,
-      };
-      persona.character_name = characterName.value;
-      persona.description = description.value;
-      persona.speaking_style = speakingStyle.value;
-      persona.minor = minor.checked;
-      persona.adult = adult.checked;
-      persona.content_rules = contentRules.value;
-      persona.memory_rules = memoryRules.value;
-      persona.examples = [...examples.children].map((row) => {
-        const ex = exampleInputs.get(row);
-        return { user: ex.user.value, reply: ex.reply.value };
-      });
-      if (barRows.bars.length) persona.bars = barRows.bars;
-      else delete persona.bars;
-      return write(msg, save, () => put(convPath(key, 'persona'), { persona, reason: reason.value.trim() }), '人设已保存');
-    },
-  },
-  h('div', { class: 'form-grid' },
-    field('人设名', name),
-    field('模板版本', templateVersion),
-    field('角色名', characterName, '可选，最多 20 字；设置后就是 bot 在会话里的名字')),
-  field('描述', description, '可选，最多 2000 字'),
-  field('说话风格', speakingStyle, '可选，最多 1000 字'),
-  h('h3', null, '风格（0–1）'),
-  h('div', { class: 'form-grid' }, STYLE.map(([k, title]) => field(`${title}（${k}）`, styleInputs[k]))),
-  h('h3', null, '行为'),
-  h('div', { class: 'form-grid' },
-    field('回复长度', replyLength),
-    field('追问', followup),
-    field('技术解释', technical),
-    h('label', { class: 'field inline' }, memes, '允许玩梗')),
-  h('h3', null, '内容尺度'),
-  h('p', { class: 'hint' }, '只有成年、非未成年的人设在私聊里是开放模式，下面两项规则只在开放模式生效；其余情况都是保护模式，使用内置的保护规则，不能通过配置去掉。'),
-  h('div', { class: 'form-grid' },
-    h('label', { class: 'field inline' }, minor, '未成年角色'),
-    h('label', { class: 'field inline' }, adult, '成年人设', adultNote)),
-  field('内容规则（仅成年人设、私聊生效）', contentRules, '可选，最多 2000 字；开放模式下加入回复提示词，为空则不加'),
-  field('记忆规则（仅成年人设、私聊生效）', memoryRules, '可选，最多 1000 字；开放模式下替换记忆整理的第 6 条，为空则省略该条'),
-  h('h3', null, `示例对话（最多 ${MAX_EXAMPLES} 条，每条最多 200 字）`),
-  examples,
-  h('div', { class: 'toolbar' }, addButton),
-  h('h3', null, `状态条（最多 ${MAX_BARS} 条）`),
-  h('p', { class: 'hint' }, '私聊里只有 bot 自己知道的数值（0–100），只影响语气和想不想多聊，不进系统提示；bot 启用了 buff 技能才生效。一条都不写时用默认的心情和精力。'),
-  bars.el,
-  field('原因', reason),
-  msg, save);
-}
 
 async function personaTab({ key, signal }) {
   const res = await get(convPath(key, 'persona'), null, signal);
@@ -503,6 +296,10 @@ async function personaTab({ key, signal }) {
     },
   }, field('模板', tpl), field('原因', tplReason), tplApply);
 
+  const form = personaForm(cur ? cur.persona : res.template_doc, {
+    save: (persona, reason, msg, button) => write(msg, button, () => put(convPath(key, 'persona'), { persona, reason }), '人设已保存'),
+  });
+
   const verMsg = h('div');
   const rollback = async (version, button) => {
     const why = prompt(`用第 ${version} 版的内容新建一个版本。原因：`, `回滚到第 ${version} 版`);
@@ -519,8 +316,9 @@ async function personaTab({ key, signal }) {
         : [h('h2', null, '尚未生成人设'),
           h('p', null, `将使用模板 ${res.pending_template || 'default'}。下面是该模板的内容，保存后写入第 1 版。`),
           kv([['私聊内容模式', label(CONTENT_MODE, res.content_mode)]])],
-      templates.length ? [h('h3', null, '套用模板'), tplForm, tplMsg] : null),
-    h('section', { class: 'card' }, h('h2', null, '编辑人设'), personaForm(key, cur ? cur.persona : res.template_doc)),
+      templates.length ? [h('h3', null, '套用模板'), tplForm, tplMsg,
+        h('p', { class: 'hint' }, '模板在', h('a', { href: '#/templates' }, '人设模板'), '页编辑；改模板不会改动这里，要用新内容就在这里再套用一次。')] : null),
+    h('section', { class: 'card' }, h('h2', null, '编辑人设'), form.el),
     h('section', { class: 'card' },
       h('h2', null, '历史版本'),
       verMsg,

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kinako404/conloom/internal/imaging"
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -43,6 +44,7 @@ func TestAssets_PlannedFilesPresent(t *testing.T) {
 		"lib/api.js", "lib/router.js", "lib/dom.js", "lib/chart.js", "lib/format.js",
 		"views/login.js", "views/overview.js", "views/usage.js", "views/conversations.js",
 		"views/conversation.js", "views/chat.js", "views/chats.js", "views/autonomy.js", "views/tasks.js", "views/audit.js", "views/config.js",
+		"views/personaform.js", "views/templates.js",
 	} {
 		if _, err := fs.Stat(FS, name); err != nil {
 			t.Errorf("%s: %v", name, err)
@@ -92,11 +94,22 @@ func TestAssets_NoExternalOrUnsafeAPIs(t *testing.T) {
 		"http://", "https://",
 		"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write",
 		"eval(", "new Function",
+		// The CSP allows images from 'self' and data: only; a local preview
+		// is a data: URL from FileReader.
+		"blob:", "createObjectURL",
 	}
+	// The CSP allows no inline styles: no style attribute through h() or
+	// setAttribute.
+	inlineStyle := regexp.MustCompile(`\bstyle\s*:\s*['"` + "`" + `]|setAttribute\(\s*['"]style['"]`)
 	for name, text := range files {
 		for _, f := range forbidden {
 			if strings.Contains(text, f) {
 				t.Errorf("%s contains %q", name, f)
+			}
+		}
+		if path.Ext(name) == ".js" {
+			if m := inlineStyle.FindString(text); m != "" {
+				t.Errorf("%s sets an inline style: %q", name, m)
 			}
 		}
 	}
@@ -150,12 +163,32 @@ func TestAssets_InitialAffinityMatchesMemory(t *testing.T) {
 }
 
 func TestAssets_MaxBarsMatchesPersona(t *testing.T) {
-	js := assets(t, ".js")["views/conversation.js"]
+	js := assets(t, ".js")["views/personaform.js"]
 	m := regexp.MustCompile(`const MAX_BARS = (\d+);`).FindStringSubmatch(js)
 	if m == nil {
-		t.Fatal("views/conversation.js has no MAX_BARS")
+		t.Fatal("views/personaform.js has no MAX_BARS")
 	}
 	if want := strconv.Itoa(conloomapi.MaxPersonaBars); m[1] != want {
 		t.Errorf("MAX_BARS = %s, want conloomapi.MaxPersonaBars %s", m[1], want)
+	}
+}
+
+func TestAssets_AppearanceLimitsMatchServer(t *testing.T) {
+	js := assets(t, ".js")["views/personaform.js"]
+	for _, c := range []struct {
+		name string
+		want int
+	}{
+		{"MAX_APPEARANCE", conloomapi.MaxAppearanceRunes},
+		{"MAX_IMAGE_MIB", imaging.MaxBytes >> 20},
+	} {
+		m := regexp.MustCompile(`const ` + c.name + ` = (\d+);`).FindStringSubmatch(js)
+		if m == nil {
+			t.Errorf("views/personaform.js has no %s", c.name)
+			continue
+		}
+		if want := strconv.Itoa(c.want); m[1] != want {
+			t.Errorf("%s = %s, want %s", c.name, m[1], want)
+		}
 	}
 }

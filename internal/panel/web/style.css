@@ -195,6 +195,14 @@ input[type=checkbox] { width: 16px; height: 16px; vertical-align: middle; }
 .bar-edit input[type=number] { width: 72px; }
 meter { width: 120px; vertical-align: middle; }
 ul.plain { list-style: none; margin: 0; padding: 0; }
+.persona-image {
+  display: block;
+  max-width: 240px;
+  max-height: 320px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--code-bg);
+}
 
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 12px 0 16px; flex-wrap: wrap; }
 .tabs a { padding: 6px 14px; color: var(--text); border-bottom: 2px solid transparent; }
