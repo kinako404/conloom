@@ -28,11 +28,12 @@ func (s *Server) configView(w http.ResponseWriter, r *http.Request, _ *Session) 
 // configuration is left out until it is listed here; secrets only show
 // whether they are set, and URLs go through redactURL.
 //
-// Persona templates and the default policies are shown whole: they are
-// behaviour settings shared with the Bearer API's persona and policy
-// endpoints and hold no credentials.
-// TestConfigView_PassThroughTypesHaveNoSecretFields fails if either type
-// gains a field that looks like one.
+// The default policies are shown whole: they are behaviour settings shared
+// with the Bearer API's policy endpoints and hold no credentials.
+// TestConfigView_PassThroughTypesHaveNoSecretFields fails if their type gains
+// a field that looks like one. The persona templates of an old config file
+// are not shown: they no longer take effect (see
+// config.Config.LegacyPersonaTemplates).
 func redactedConfig(c *config.Config, bots *botdir.Directory) map[string]any {
 	return map[string]any{
 		"server": map[string]any{
@@ -42,7 +43,6 @@ func redactedConfig(c *config.Config, bots *botdir.Directory) map[string]any {
 		"api_tokens":             apiTokensView(c.APITokens),
 		"bots":                   botsView(bots.All()),
 		"model_profiles":         modelProfilesView(c.ModelProfiles),
-		"persona_templates":      c.PersonaTemplates,
 		"default_group_policy":   c.DefaultGroupPolicy,
 		"default_private_policy": c.DefaultPrivatePolicy,
 		"runtime":                runtimeView(c.Runtime),

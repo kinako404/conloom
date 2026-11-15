@@ -39,7 +39,7 @@ func TestDirectory_LookupAndOrder(t *testing.T) {
 	first := PanelBotConfig(store.PanelBot{ID: "panel-a1b2c3d4", Name: "小明", PersonaTemplate: "lighthouse",
 		Skills: []string{"memory", "time"}, CreatedBy: "admin", CreatedAt: time.Date(2026, 11, 15, 8, 0, 0, 0, time.UTC)})
 	problems := []string{"模板已不存在"}
-	d.SetPanel([]PanelEntry{
+	d.SetPanel([]Entry{
 		{Bot: second},
 		{Bot: first, Problems: problems},
 		{Bot: config.BotConfig{ID: "qq-main", Platform: store.PlatformPanel, Name: "冒名"}},
@@ -87,21 +87,88 @@ func TestDirectory_LookupAndOrder(t *testing.T) {
 	}
 }
 
-func TestDirectory_PanelTemplateUsers(t *testing.T) {
-	d := New([]config.BotConfig{{ID: "qq-main", Platform: "qq", Name: "小明", PersonaTemplate: "lighthouse"}})
-	if got := d.PanelTemplateUsers("lighthouse"); len(got) != 0 {
-		t.Fatalf("PanelTemplateUsers without panel bots = %v, want none", got)
+func TestDirectory_TemplateUsers(t *testing.T) {
+	d := New([]config.BotConfig{
+		{ID: "qq-main", Platform: "qq", Name: "小明", PersonaTemplate: "lighthouse"},
+		{ID: "tg-main", Platform: "telegram", PersonaTemplate: "lighthouse"},
+		{ID: "qq-alt", Platform: "qq", Name: "小明", PersonaTemplate: "cat"},
+	})
+	if got := d.TemplateUsers("lighthouse"); !slices.Equal(got, []string{"小明（qq-main）", "tg-main"}) {
+		t.Fatalf("TemplateUsers without panel bots = %v, want the config bots by name and ID", got)
 	}
-	d.SetPanel([]PanelEntry{
+	d.SetPanel([]Entry{
 		{Bot: PanelBotConfig(store.PanelBot{ID: "panel-a1b2c3d4", Name: "小红", PersonaTemplate: "lighthouse"})},
 		{Bot: PanelBotConfig(store.PanelBot{ID: "panel-b2c3d4e5", Name: "小刚", PersonaTemplate: "default"})},
 		{Bot: PanelBotConfig(store.PanelBot{ID: "panel-c3d4e5f6", Name: "小绿", PersonaTemplate: "lighthouse"})},
 	})
-	if got := d.PanelTemplateUsers("lighthouse"); !slices.Equal(got, []string{"小红", "小绿"}) {
-		t.Fatalf("PanelTemplateUsers(lighthouse) = %v, want the panel bots 小红 and 小绿, not the config bot", got)
+	if got, want := d.TemplateUsers("lighthouse"), []string{"小明（qq-main）", "tg-main", "小红", "小绿"}; !slices.Equal(got, want) {
+		t.Fatalf("TemplateUsers(lighthouse) = %v, want %v: config bots, then panel bots", got, want)
 	}
-	if got := d.PanelTemplateUsers("cat"); len(got) != 0 {
-		t.Fatalf("PanelTemplateUsers(cat) = %v, want none", got)
+	if got := d.TemplateUsers("nope"); len(got) != 0 {
+		t.Fatalf("TemplateUsers(nope) = %v, want none", got)
+	}
+
+	d.SetConfig([]Entry{{Bot: config.BotConfig{ID: "qq-alt", Platform: "qq", Name: "小明", PersonaTemplate: "default"},
+		Problems: []string{"模板已不存在"}}})
+	if got := d.TemplateUsers("cat"); len(got) != 0 {
+		t.Fatalf("TemplateUsers(cat) = %v, want none: qq-alt uses default instead", got)
+	}
+	if got := d.TemplateUsers("default"); !slices.Equal(got, []string{"小明（qq-alt）", "小刚"}) {
+		t.Fatalf("TemplateUsers(default) = %v, want the templates as they take effect", got)
+	}
+}
+
+func TestDirectory_SetConfig(t *testing.T) {
+	configured := []config.BotConfig{
+		{ID: "qq-main", Platform: "qq", Name: "小明", PersonaTemplate: "night-owl", Skills: []string{"memory"}},
+		{ID: "tg-main", Platform: "telegram", Name: "小红", PersonaTemplate: "lighthouse"},
+	}
+	d := New(configured)
+	if got := d.ConfigBots(); !reflect.DeepEqual(got, configured) {
+		t.Fatalf("ConfigBots = %+v, want the bots as configured", got)
+	}
+
+	fallback := configured[0]
+	fallback.PersonaTemplate = "default"
+	problems := []string{"人设模板“night-owl”已不存在，暂用 default"}
+	d.SetConfig([]Entry{
+		{Bot: fallback, Problems: problems},
+		{Bot: config.BotConfig{ID: "panel-a1b2c3d4", Platform: store.PlatformPanel, Name: "冒名"}},
+	})
+	if got := ids(d.All()); !slices.Equal(got, []string{"qq-main", "tg-main"}) {
+		t.Fatalf("All() = %v, want only the config bots, in config order", got)
+	}
+	if b, ok := d.Bot("qq-main"); !ok || !reflect.DeepEqual(b, fallback) {
+		t.Fatalf("Bot(qq-main) = %+v, %v; want it as it takes effect %+v", b, ok, fallback)
+	}
+	if got := d.All()[0]; !reflect.DeepEqual(got, fallback) {
+		t.Fatalf("All()[0] = %+v, want %+v", got, fallback)
+	}
+	if got := d.Problems("qq-main"); !slices.Equal(got, problems) {
+		t.Fatalf("Problems(qq-main) = %v, want %v", got, problems)
+	}
+	if b, _ := d.Bot("tg-main"); !reflect.DeepEqual(b, configured[1]) || d.Problems("tg-main") != nil {
+		t.Fatalf("Bot(tg-main) = %+v, problems %v; want it as configured without problems", b, d.Problems("tg-main"))
+	}
+	if d.IsPanel("qq-main") {
+		t.Fatal("config bot reported as a panel bot")
+	}
+	if _, ok := d.Bot("panel-a1b2c3d4"); ok {
+		t.Fatal("SetConfig added a bot that is not a config bot")
+	}
+	if got := d.ConfigBots(); got[0].PersonaTemplate != "night-owl" {
+		t.Fatalf("ConfigBots after SetConfig = %+v, want the bots as configured", got)
+	}
+
+	problems[0] = "改过"
+	fallback.Skills[0] = "改过"
+	if b, _ := d.Bot("qq-main"); b.Skills[0] != "memory" || d.Problems("qq-main")[0] == "改过" {
+		t.Fatalf("directory changed through the entries given to SetConfig: %+v, %v", b, d.Problems("qq-main"))
+	}
+
+	d.SetConfig(nil)
+	if b, _ := d.Bot("qq-main"); b.PersonaTemplate != "night-owl" || d.Problems("qq-main") != nil {
+		t.Fatalf("Bot(qq-main) after SetConfig(nil) = %+v, problems %v; want it as configured", b, d.Problems("qq-main"))
 	}
 }
 
@@ -124,9 +191,9 @@ func TestPanelBotConfig(t *testing.T) {
 // generation, so a reader sees one whole snapshot or another, never a mix.
 func TestDirectory_ConcurrentSetAndRead(t *testing.T) {
 	d := New([]config.BotConfig{{ID: "qq-main", Platform: "qq", Name: "小明"}})
-	snapshot := func(gen int) []PanelEntry {
+	snapshot := func(gen int) []Entry {
 		name := fmt.Sprintf("第%d版", gen)
-		return []PanelEntry{
+		return []Entry{
 			{Bot: PanelBotConfig(store.PanelBot{ID: "panel-a1b2c3d4", Name: name, Skills: []string{"memory"}}), Problems: []string{name}},
 			{Bot: PanelBotConfig(store.PanelBot{ID: "panel-b2c3d4e5", Name: name})},
 		}

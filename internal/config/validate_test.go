@@ -90,21 +90,35 @@ func TestValidateConfig_MinorTemplateAdult(t *testing.T) {
 	cfg := mustLoad(t, "testdata/valid.yaml")
 	adult := conloomapi.DefaultPersona()
 	adult.Adult = true
-	cfg.PersonaTemplates["grownup"] = adult
 	minor := conloomapi.DefaultPersona()
 	minor.CharacterName, minor.Minor = "角色甲", true
-	cfg.PersonaTemplates["child"] = minor
+	cfg.LegacyPersonaTemplates = map[string]conloomapi.PersonaDoc{"grownup": adult, "child": minor}
 	if err := cfg.ValidateServe(); err != nil {
 		t.Fatalf("adult template and minor template: %v", err)
 	}
 	minor.Adult = true
-	cfg.PersonaTemplates["child"] = minor
+	cfg.LegacyPersonaTemplates["child"] = minor
 	err := cfg.ValidateServe()
 	if want := "persona_templates.child.adult: a minor persona cannot be adult"; err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("err = %v, want containing %q", err, want)
 	}
 	if err != nil && strings.Contains(err.Error(), "persona_templates.grownup") {
 		t.Errorf("err = %v, names the adult template", err)
+	}
+}
+
+func TestValidate_ConfigBotTemplateNotChecked(t *testing.T) {
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	if cfg.LegacyPersonaTemplates != nil {
+		t.Fatalf("persona_templates of a config without them = %+v, want none, not even default", cfg.LegacyPersonaTemplates)
+	}
+	cfg.Bots[0].PersonaTemplate = "night-owl"
+	if err := cfg.ValidateServe(); err != nil {
+		t.Fatalf("bot naming a template that is not in the config file: %v", err)
+	}
+	cfg.LegacyPersonaTemplates = map[string]conloomapi.PersonaDoc{"lighthouse": conloomapi.DefaultPersona()}
+	if err := cfg.ValidateServe(); err != nil {
+		t.Fatalf("bot naming a template that is neither in the legacy templates: %v", err)
 	}
 }
 

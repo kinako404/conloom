@@ -35,7 +35,6 @@ func secretConfig(h *overviewHarness) {
 			Runtime: config.ProfileRuntime{MaxConcurrency: 2, Timeout: dur(time.Minute)}},
 		"long_context": {Provider: config.ProviderOpenAICompatible, Endpoint: "http://example.invalid/v2", Model: "deepseek"},
 	}
-	c.PersonaTemplates = map[string]conloomapi.PersonaDoc{"default": conloomapi.DefaultPersona()}
 	c.DefaultGroupPolicy = conloomapi.DefaultGroupPolicy()
 	c.Runtime = config.RuntimeConfig{ActionTTL: dur(10 * time.Minute), AuditRetention: dur(2160 * time.Hour)}
 	c.Embedding = &config.EmbeddingConfig{Endpoint: "http://SECRET-user@example.invalid:11434/v1?key=SECRET-k#SECRET-frag", Model: "bge-m3",
@@ -188,7 +187,7 @@ func TestConfigView_NegativeUsageRetentionAndEmptyURL(t *testing.T) {
 
 func TestConfigView_PanelBotsMarked(t *testing.T) {
 	h := newOverviewHarness(t, nil)
-	h.srv.d.Bots.SetPanel([]botdir.PanelEntry{{Bot: botdir.PanelBotConfig(store.PanelBot{
+	h.srv.d.Bots.SetPanel([]botdir.Entry{{Bot: botdir.PanelBotConfig(store.PanelBot{
 		ID: "panel-a1b2c3d4", Name: "小红", PersonaTemplate: "default", Skills: []string{"time"}})}})
 
 	var resp struct {
@@ -216,8 +215,8 @@ func TestConfigView_PanelBotsMarked(t *testing.T) {
 	}
 }
 
-// TestConfigView_PassThroughTypesHaveNoSecretFields guards the persona
-// templates and default policies, which the config view shows whole.
+// TestConfigView_PassThroughTypesHaveNoSecretFields guards the default
+// policies, which the config view shows whole.
 func TestConfigView_PassThroughTypesHaveNoSecretFields(t *testing.T) {
 	type inner struct{ APIKey string }
 	type outer struct{ Items []map[string]*inner }
@@ -226,7 +225,7 @@ func TestConfigView_PassThroughTypesHaveNoSecretFields(t *testing.T) {
 	}
 
 	allowed := map[string]bool{"ContextPolicy.MaxContextTokens": true}
-	for _, typ := range []reflect.Type{reflect.TypeFor[conloomapi.GroupPolicy](), reflect.TypeFor[conloomapi.PersonaDoc]()} {
+	for _, typ := range []reflect.Type{reflect.TypeFor[conloomapi.GroupPolicy]()} {
 		for _, f := range secretLikeFields(typ, map[reflect.Type]bool{}) {
 			if !allowed[f] {
 				t.Errorf("%s has field %s, which may hold a secret; show it field by field in redactedConfig", typ, f)

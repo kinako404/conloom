@@ -191,13 +191,21 @@ func newConsEnv(t *testing.T, opts consOpts) *consEnv {
 	if opts.persona != nil {
 		opts.persona(&doc)
 	}
+	ctx := context.Background()
+	if err := e.st.PutPersonaTemplate(ctx, store.PersonaTemplateRecord{Name: "default", Persona: doc, UpdatedBy: "panel:admin"}); err != nil {
+		t.Fatal(err)
+	}
+	personas := persona.NewService(e.st)
+	if err := personas.LoadTemplates(ctx); err != nil {
+		t.Fatal(err)
+	}
 	e.router = router.New(profiles, router.BreakerConfig{}, time.Now)
 	e.adm = admission.New(limits)
 	e.c = NewConsolidator(ConsolidatorDeps{
 		Store:     e.st,
 		Router:    e.router,
 		Admission: e.adm,
-		Personas:  persona.NewService(e.st, map[string]conloomapi.PersonaDoc{"default": doc}),
+		Personas:  personas,
 		Policies:  policy.NewService(e.st, defaults),
 		Config:    cfg,
 		Bots:      botdir.New(cfg.Bots),

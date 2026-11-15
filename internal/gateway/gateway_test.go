@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -168,7 +169,19 @@ func newTestServerWith(t *testing.T, opts serverOpts) *testServer {
 	p := cfg.ModelProfiles["short_context"]
 	profiles := []*router.Profile{{Role: router.RoleShort, Config: p, Client: openai.New(p, nil)}}
 	ob := outbox.New(st, outbox.Config{}, metrics, nil)
-	personas := persona.NewService(st, cfg.PersonaTemplates)
+	// The config's persona_templates are migrated into the database, as on
+	// the first start of the app.
+	var legacy []store.PersonaTemplateRecord
+	for _, name := range slices.Sorted(maps.Keys(cfg.LegacyPersonaTemplates)) {
+		legacy = append(legacy, store.PersonaTemplateRecord{Name: name, Persona: cfg.LegacyPersonaTemplates[name], UpdatedBy: "system"})
+	}
+	if _, _, err := st.MigrateConfigTemplates(context.Background(), legacy, time.Now()); err != nil {
+		t.Fatalf("MigrateConfigTemplates: %v", err)
+	}
+	personas := persona.NewService(st)
+	if err := personas.LoadTemplates(context.Background()); err != nil {
+		t.Fatalf("LoadTemplates: %v", err)
+	}
 	policies := policy.NewService(st, cfg.DefaultGroupPolicy)
 	bots := botdir.New(cfg.Bots)
 	o, err := core.New(core.Deps{

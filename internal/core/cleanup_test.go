@@ -330,18 +330,18 @@ func TestMaintenance_PurgesImages(t *testing.T) {
 		b := sha256.Sum256([]byte(s))
 		return hex.EncodeToString(b[:])
 	}
-	configImg, overriddenImg, onlineImg, oldImg, recentImg := sum("config"), sum("overridden"), sum("online"), sum("old"), sum("recent")
+	migratedImg, replacedImg, onlineImg, oldImg, recentImg := sum("migrated"), sum("replaced"), sum("online"), sum("old"), sum("recent")
 	env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) {
 		lighthouse := conloomapi.DefaultPersona()
-		lighthouse.AppearanceImage = configImg
+		lighthouse.AppearanceImage = migratedImg
 		cat := conloomapi.DefaultPersona()
-		cat.AppearanceImage = overriddenImg
-		c.PersonaTemplates["lighthouse"], c.PersonaTemplates["cat"] = lighthouse, cat
+		cat.AppearanceImage = replacedImg
+		c.LegacyPersonaTemplates["lighthouse"], c.LegacyPersonaTemplates["cat"] = lighthouse, cat
 	}})
 	ctx := context.Background()
 	now := time.Now()
 	for id, at := range map[string]time.Time{
-		configImg: now.Add(-8 * cleanupDay), overriddenImg: now.Add(-8 * cleanupDay), onlineImg: now.Add(-8 * cleanupDay),
+		migratedImg: now.Add(-8 * cleanupDay), replacedImg: now.Add(-8 * cleanupDay), onlineImg: now.Add(-8 * cleanupDay),
 		oldImg: now.Add(-8 * cleanupDay), recentImg: now.Add(-6 * cleanupDay),
 	} {
 		err := env.st.PutPersonaImage(ctx, store.PersonaImage{ID: id, MIME: "image/png", Width: 1, Height: 1,
@@ -351,8 +351,8 @@ func TestMaintenance_PurgesImages(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// cat is overridden online without its image, which a reset brings back;
-	// a panel template names another image.
+	// cat is saved again without its image, which nothing names any more; a
+	// new template names another image.
 	if err := env.o.personas.PutTemplate(ctx, "cat", conloomapi.DefaultPersona(), "panel:admin"); err != nil {
 		t.Fatal(err)
 	}
@@ -365,10 +365,10 @@ func TestMaintenance_PurgesImages(t *testing.T) {
 	if err := env.o.Recover(ctx); err != nil {
 		t.Fatal(err)
 	}
-	waitUntil(t, "old unreferenced image purged", func() bool {
-		return env.counter(t, "conloom_cleanup_deleted_total", "table", "persona_images") == 1
+	waitUntil(t, "old unreferenced images purged", func() bool {
+		return env.counter(t, "conloom_cleanup_deleted_total", "table", "persona_images") == 2
 	})
-	for id, want := range map[string]bool{configImg: true, overriddenImg: true, onlineImg: true, oldImg: false, recentImg: true} {
+	for id, want := range map[string]bool{migratedImg: true, replacedImg: false, onlineImg: true, oldImg: false, recentImg: true} {
 		if got, err := env.st.PersonaImageExists(ctx, id); err != nil || got != want {
 			t.Errorf("image %s kept = %v, %v; want %v", id[:8], got, err, want)
 		}

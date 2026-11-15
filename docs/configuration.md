@@ -38,7 +38,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `api_tokens` | API 令牌及其权限范围 |
 | `bots` | 机器人实例 |
 | `model_profiles` | 模型配置，按角色 |
-| `persona_templates` | 人设模板 |
+| `persona_templates` | 旧版本的人设模板，只在升级后第一次启动时导入数据库，之后必须删除（见 [人设模板](#人设模板)） |
 | `default_group_policy` | 新会话的初始群策略 |
 | `default_private_policy` | 私聊会话的初始策略，省略时沿用 `default_group_policy` |
 | `runtime` | 投递、过时判定、合并窗口等运行时参数 |
@@ -85,7 +85,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `admins` | 空 | 管理员的平台用户 ID 列表，每项不能为空 |
 | `enabled_conversations` | 空 | 只在这些会话里工作，每项 `{type: group\|private, platform_id: "<ID>"}`；未列出的群消息会被忽略。`private` 项的 `platform_id` 填用户的平台 ID，只在 `private_chat: allowlist` 时生效，用来放行这些人的私聊；其他档位下会被忽略，启动时打一条警告日志 |
 | `private_chat` | `admins` | 私聊策略：`admins`（仅管理员）、`allowlist`（管理员和 `enabled_conversations` 里列为 `private` 的人）、`all`（所有人）、`off`（关闭）。不被允许的私聊不回复 |
-| `persona_template` | `default` | 会话初始人格使用的模板名，必须存在于 `persona_templates` |
+| `persona_template` | `default` | 会话初始人格使用的模板名。模板存在数据库里，加载配置时不检查；启动后模板不存在时记一条警告、运行时改用 `default`，面板的 bot 页标出“模板已不存在”，建出这个模板后恢复 |
 | `skills` | 空 | 启用的技能名列表，如 `[memory, time]`，不能有空项或重复；必须是内置技能或 `skills.dir` 里的技能，它们用到的工具都必须存在，否则启动失败（退出码 78）。省略或为空时不带任何工具，行为和没有技能时一样。见 [技能](skills.md) |
 
 ## model_profiles
@@ -113,7 +113,32 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 
 ## 人设模板
 
-`persona_templates.<名字>` 定义一个人设模板，机器人通过 `bots[].persona_template` 引用。省略 `default` 时使用内置的默认人格。使用方法见 [使用指南：人设模板](usage.md#人设模板)。
+人设模板只存在数据库里，在 Web 管理面板的“人设模板”页里新建、修改和删除（见 [Web 管理面板：人设模板和外观参考图](panel.md#人设模板和外观参考图)），改动立即生效，重启后还在。机器人通过 `bots[].persona_template` 引用模板，面板 bot 在面板里选。配置文件不再定义模板。使用方法见 [使用指南：人设模板](usage.md#人设模板)。
+
+- **`default`**：数据库里没有 `default` 时，用程序内置的默认人设（下面的 JSON）。在面板里保存 `default` 后用保存的版本，“恢复为内置默认”删掉保存的版本、回到内置的。`default` 不能删除。
+- **名字**：新模板的名字只能是 1–32 个小写字母、数字、`-` 或 `_`，同名就是修改。从旧配置文件导入的模板保留原来的名字。
+- **删除**：还有 bot（配置 bot 或面板 bot）用它作默认模板时不能删除，面板会列出这些 bot。
+- **已有会话不变**：会话第一次回复时把模板复制成自己的人设，之后各自独立。模板改了不影响已经在用它的会话，要更新得在会话里重新套用模板。
+
+内置的默认人设（面板和 `PUT …/persona` 用的都是这个 JSON 格式）：
+
+```json
+{
+  "persona_name": "默认群友人格",
+  "template_version": 1,
+  "style": {"warmth": 0.75, "humor": 0.45, "directness": 0.65, "verbosity": 0.30, "emoji_usage": 0.15, "proactivity": 0.20},
+  "behavior": {
+    "default_reply_length": "short",
+    "allow_memes": true,
+    "ask_followup_questions": "occasionally",
+    "technical_explanations": "clear_and_practical"
+  }
+}
+```
+
+**升级：配置文件里的 `persona_templates`**。旧版本的模板写在配置文件的 `persona_templates.<名字>` 下。升级后第一次启动时，这一段照常解析和校验（字段同下表），然后自动导入数据库：库里还没有的名字写入，已经有同名模板的（以前在面板里改过或新建的）跳过，以库里为准；数据库记下已经导入过。导入后必须从配置文件删掉整段 `persona_templates`，之后还留着这一段时启动失败（退出码 78），报错提示删除。配置里没有这一段时什么都不做。步骤见 [部署：升级](deployment.md#备份迁移与升级)。
+
+模板的字段：
 
 | 字段 | 限制 | 说明 |
 |---|---|---|
@@ -137,14 +162,9 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `memory_rules` | ≤1000 字 | 记忆规则，只在开放模式下生效：替换记忆整理提示词的第 6 条；为空则省略这一条 |
 | `bars` | ≤4 条 | 私聊的隐藏状态条，见下面的“状态条” |
 
-`character_name`、`description`、`appearance`、`speaking_style`、`examples`，`appearance_image`、`appearance_image_skip`，以及 `content_rules`、`memory_rules`、`bars`，都可以省略。字数按字符计（去掉首尾空白后），超出时启动校验和 `PUT …/persona` 都会拒绝并指出字段；`appearance_image` 不为空又不是 64 位小写十六进制时同样拒绝。文本可以用 YAML 多行块（`|`）书写，示例见 `conloom.example.yaml` 中的原创角色模板 `librarian`。
+`character_name`、`description`、`appearance`、`speaking_style`、`examples`，`appearance_image`、`appearance_image_skip`，以及 `content_rules`、`memory_rules`、`bars`，都可以省略。字数按字符计（去掉首尾空白后），超出时面板、`PUT …/persona` 和旧配置的启动校验都会拒绝并指出字段；`appearance_image` 不为空又不是 64 位小写十六进制时同样拒绝。
 
-**在线修改**：模板也可以在 Web 管理面板里修改和新建（见 [Web 管理面板：人设模板和外观参考图](panel.md#人设模板和外观参考图)），存在数据库里，立即生效，重启后还在：
-
-- 在面板里改配置文件的模板，算“在线覆盖”：运行时用覆盖后的版本，配置文件不变，随时可以“恢复为配置文件版本”。配置文件里的模板（包括 `default`）不能在面板里删除。
-- 在面板里新建的模板名字只能是 1–32 个小写字母、数字、`-` 或 `_`，不能和已有模板重名（同名就是修改）。`bots[].persona_template` 只能引用配置文件里的模板，面板 bot 可以引用任何模板。
-- 模板改了不影响已经在用它的会话：会话第一次回复时把模板复制成自己的人设，之后各自独立。
-- 配置文件的模板写了 `appearance_image` 时，启动时不检查这张图是否已上传（配置校验读不到数据库）。图还没上传时新会话照样复制这个 ID，回复时读不到图就记一条警告、不带图照常回复；`/persona use` 和面板、API 里的套用模板会因为图片不存在而失败（接口返回 400）。先在面板里上传这张图（同一张图得到同一个 ID）。配置模板引用的图片不会被清理。
+模板引用的 `appearance_image` 在保存时必须是已上传的图片。从旧配置文件导入的模板原样保留图片 ID，不检查图片是否存在：图还没上传时新会话照样复制这个 ID，回复时读不到图就记一条警告、不带图照常回复；`/persona use` 和面板、API 里的套用模板会因为图片不存在而失败（接口返回 400）。先在面板里上传这张图（同一张图得到同一个 ID）。
 
 ### 状态条
 
@@ -157,7 +177,14 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `half_life` | 30m~168h（7 天） | 半衰期：每过这么久，数值和基准值的差距减半 |
 | `description` | ≤40 字，可省略 | 说明数值高低各代表什么，例如“高=开心放松，低=低落烦躁” |
 
-人设没写 `bars`（或写成空列表）时，使用默认的两条：心情（基准 60，半衰期 6h，“高=开心放松，低=低落烦躁”）和精力（基准 70，半衰期 4h，“高=有精神，低=累、困”）。状态条不进系统提示：同一个人设写不写 `bars`，系统提示逐字节相同。超出限制时启动校验和 `PUT …/persona` 都会拒绝并指出字段，例如 `bars[0].half_life`。写法示例见 `conloom.example.yaml` 中 `librarian` 模板里注释掉的 `bars`。
+人设没写 `bars`（或写成空列表）时，使用默认的两条：心情（基准 60，半衰期 6h，“高=开心放松，低=低落烦躁”）和精力（基准 70，半衰期 4h，“高=有精神，低=累、困”）。状态条不进系统提示：同一个人设写不写 `bars`，系统提示逐字节相同。超出限制时面板和 `PUT …/persona` 都会拒绝并指出字段，例如 `bars[0].half_life`。写法示例：
+
+```json
+"bars": [
+  {"name": "心情", "baseline": 60, "half_life": "6h", "description": "高=开心放松，低=低落烦躁"},
+  {"name": "好奇", "baseline": 50, "half_life": "12h", "description": "高=想多问多聊，低=没什么兴趣"}
+]
+```
 
 ### 内容模式
 
@@ -170,7 +197,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
   - 回复发出前过一道内置的露骨词表，命中就整条拦截并写审计，不受 `review` 段任何开关影响。
   - `content_rules`、`memory_rules` 不生效。
 
-`minor` 和 `adult` 不能同时为 `true`：启动校验、`PUT …/persona` 的整份替换、套模板、回滚，以及面板的修改都会拒绝，报错 “a minor persona cannot be adult”。即使库里存着同时为 `true` 的旧数据，运行时也按保护模式处理。代码里没有任何角色名单，是否未成年完全由部署者在人设里用 `minor` 标出。`content_rules` 由部署者自己编写，本项目不提供示例规则。
+`minor` 和 `adult` 不能同时为 `true`：`PUT …/persona` 的整份替换、套模板、回滚，面板的修改，以及旧配置模板的启动校验都会拒绝，报错 “a minor persona cannot be adult”。即使库里存着同时为 `true` 的旧数据，运行时也按保护模式处理。代码里没有任何角色名单，是否未成年完全由部署者在人设里用 `minor` 标出。`content_rules` 由部署者自己编写，本项目不提供示例规则。
 
 ## 群策略
 

@@ -23,6 +23,7 @@ import (
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/panel"
 	"github.com/kinako404/conloom/internal/skills"
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/internal/store/sqlite"
 	"github.com/kinako404/conloom/pkg/client"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -43,7 +44,8 @@ const (
 	// or argument.
 	exitUsage = 2
 	// exitConfig is EX_CONFIG from sysexits.h: the configuration cannot be
-	// loaded or is invalid, or a credential in it was refused. Restarting does
+	// loaded or is invalid, a credential in it was refused, or it still has
+	// persona templates already migrated into the database. Restarting does
 	// not help, so the systemd units do not restart on it. It differs from 2,
 	// the status of a Go panic, which must still be restarted.
 	exitConfig = 78
@@ -188,7 +190,7 @@ func runServe(ctx context.Context, args []string, sio stdio) error {
 	logger := obs.NewLogger(cfg.Observability, sio.err)
 	logger.Info("starting conloom", "version", version, "commit", commit, "config", cfg.Path)
 	err = app.Serve(ctx, cfg, logger, app.Options{Version: version, Commit: commit, StartedAt: startedAt})
-	if errors.Is(err, skills.ErrInvalid) {
+	if errors.Is(err, skills.ErrInvalid) || errors.Is(err, store.ErrAlreadyMigrated) {
 		return configErr(err)
 	}
 	return err

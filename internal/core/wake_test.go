@@ -532,7 +532,7 @@ func withPersona(minor, adult bool) func(*config.Config) {
 	return func(c *config.Config) {
 		doc := conloomapi.DefaultPersona()
 		doc.Minor, doc.Adult = minor, adult
-		c.PersonaTemplates["default"] = doc
+		c.LegacyPersonaTemplates["default"] = doc
 	}
 }
 

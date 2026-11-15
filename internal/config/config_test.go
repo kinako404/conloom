@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -230,16 +231,8 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 		}
 	}
 
-	if !reflect.DeepEqual(cfg.PersonaTemplates["default"], conloomapi.DefaultPersona()) {
-		t.Errorf("persona_templates.default = %+v, want the built-in default", cfg.PersonaTemplates["default"])
-	}
-	lib, ok := cfg.PersonaTemplates["librarian"]
-	if !ok || lib.CharacterName != "砚秋" || !strings.Contains(strings.TrimSpace(lib.Description), "\n") ||
-		lib.SpeakingStyle == "" || len(lib.Examples) < 2 {
-		t.Errorf("persona_templates.librarian = %+v, want a character template with multi-line text and examples", lib)
-	}
-	if lib.Appearance == "" || lib.AppearanceImage != "" || lib.AppearanceImageSkip {
-		t.Errorf("librarian appearance = %q, image %q, skip %v; want an appearance text and no image", lib.Appearance, lib.AppearanceImage, lib.AppearanceImageSkip)
+	if cfg.LegacyPersonaTemplates != nil {
+		t.Errorf("example has persona_templates %v, want none: templates live in the database", slices.Sorted(maps.Keys(cfg.LegacyPersonaTemplates)))
 	}
 	if _, ok := cfg.ModelProfiles["vision"]; ok {
 		t.Error("example has a vision profile, want it commented out")
@@ -442,8 +435,8 @@ func TestLoad_DefaultsApplied(t *testing.T) {
 	if !reflect.DeepEqual(cfg.DefaultGroupPolicy, conloomapi.DefaultGroupPolicy()) {
 		t.Errorf("default_group_policy = %+v", cfg.DefaultGroupPolicy)
 	}
-	if !reflect.DeepEqual(cfg.PersonaTemplates["default"], conloomapi.DefaultPersona()) {
-		t.Errorf("persona_templates.default = %+v", cfg.PersonaTemplates["default"])
+	if cfg.LegacyPersonaTemplates != nil {
+		t.Errorf("persona_templates = %+v, want none: there is no default to fill in", cfg.LegacyPersonaTemplates)
 	}
 }
 
@@ -596,7 +589,7 @@ func TestLoad_PersonaTemplateTextFields(t *testing.T) {
 	if err := cfg.ValidateServe(); err != nil {
 		t.Fatalf("ValidateServe: %v", err)
 	}
-	p := cfg.PersonaTemplates["lighthouse"]
+	p := cfg.LegacyPersonaTemplates["lighthouse"]
 	want := []conloomapi.PersonaExample{{User: "今天好累", Reply: "辛苦啦，\n歇一会儿吧。\n"}}
 	if p.CharacterName != "苔灯" || p.Description != "苔灯是海边小镇的灯塔看守。\n她喜欢收集贝壳。\n" ||
 		p.SpeakingStyle != "说话轻快， 句子短。" || !reflect.DeepEqual(p.Examples, want) {
@@ -876,7 +869,6 @@ func TestValidateServe_Rules(t *testing.T) {
 		{"no bots", func(c *Config) { c.Bots = nil }, []string{"bots"}},
 		{"duplicate bot id", func(c *Config) { c.Bots = append(c.Bots, c.Bots[0]) }, []string{"bots[1].id", "duplicate"}},
 		{"bad private_chat", func(c *Config) { c.Bots[0].PrivateChat = "everyone" }, []string{"bots[0].private_chat"}},
-		{"unknown persona template", func(c *Config) { c.Bots[0].PersonaTemplate = "nope" }, []string{"bots[0].persona_template", "nope"}},
 		{"empty platform_self_id", func(c *Config) {
 			c.Bots[0].PlatformSelfID = ""
 			c.MissingEnv = []string{"CONLOOM_BOT_SELF_ID"}
@@ -900,10 +892,10 @@ func TestValidateServe_Rules(t *testing.T) {
 		{"token for unknown bot", func(c *Config) { c.APITokens[0].BotInstanceID = "ghost" }, []string{"api_tokens[0].bot_instance_id", "ghost"}},
 		{"bad scope", func(c *Config) { c.APITokens[0].Scopes = append(c.APITokens[0].Scopes, "root") }, []string{"api_tokens[0].scopes", "root"}},
 		{"empty token", func(c *Config) { c.APITokens[0].Token = "" }, []string{"api_tokens[0].token"}},
-		{"invalid persona template", func(c *Config) {
-			p := c.PersonaTemplates["default"]
+		{"invalid legacy persona template", func(c *Config) {
+			p := conloomapi.DefaultPersona()
 			p.Style.Warmth = 2
-			c.PersonaTemplates["default"] = p
+			c.LegacyPersonaTemplates = map[string]conloomapi.PersonaDoc{"default": p}
 		}, []string{"persona_templates.default.style.warmth"}},
 		{"invalid group policy", func(c *Config) {
 			c.DefaultGroupPolicy.Concurrency.MaxInteractiveRequests = 3

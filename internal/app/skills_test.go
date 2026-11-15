@@ -86,8 +86,15 @@ func TestPersonaSource(t *testing.T) {
 	lighthouse := conloomapi.DefaultPersona()
 	lighthouse.PersonaName = "灯塔"
 	lighthouse.Bars = []conloomapi.PersonaBar{{Name: "好奇", Baseline: 50, HalfLife: conloomapi.Duration{Duration: 2 * time.Hour}}}
+	if err := st.PutPersonaTemplate(ctx, store.PersonaTemplateRecord{Name: "lighthouse", Persona: lighthouse, UpdatedBy: "panel:admin"}); err != nil {
+		t.Fatal(err)
+	}
+	personas := persona.NewService(st)
+	if err := personas.LoadTemplates(ctx); err != nil {
+		t.Fatal(err)
+	}
 	bots := botdir.New([]config.BotConfig{{ID: "qq-main", PersonaTemplate: "lighthouse"}})
-	src := personaSource{bots: bots, personas: persona.NewService(st, map[string]conloomapi.PersonaDoc{"lighthouse": lighthouse})}
+	src := personaSource{bots: bots, personas: personas}
 	convKey := store.ConversationKey("qq-main", "qq", conloomapi.ConvPrivate, "private_20001")
 	doc, err := src.Persona(ctx, "qq-main", convKey)
 	if err != nil || doc.PersonaName != "灯塔" || len(doc.EffectiveBars()) != 1 || doc.EffectiveBars()[0].Name != "好奇" {
@@ -97,7 +104,7 @@ func TestPersonaSource(t *testing.T) {
 		t.Error("Persona of an unknown bot succeeded")
 	}
 
-	bots.SetPanel([]botdir.PanelEntry{{Bot: botdir.PanelBotConfig(store.PanelBot{ID: "panel-a1b2c3d4", Name: "小红", PersonaTemplate: "lighthouse"})}})
+	bots.SetPanel([]botdir.Entry{{Bot: botdir.PanelBotConfig(store.PanelBot{ID: "panel-a1b2c3d4", Name: "小红", PersonaTemplate: "lighthouse"})}})
 	panelKey := store.ConversationKey("panel-a1b2c3d4", store.PlatformPanel, conloomapi.ConvPrivate, "panel_1")
 	if doc, err := src.Persona(ctx, "panel-a1b2c3d4", panelKey); err != nil || doc.PersonaName != "灯塔" {
 		t.Fatalf("Persona of a panel bot = %+v, %v, want its template", doc, err)

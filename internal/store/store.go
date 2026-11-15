@@ -30,7 +30,14 @@ var (
 	// ErrBotHasData refuses a DeletePanelBot of a bot that still has
 	// conversations, tasks or outbox actions.
 	ErrBotHasData = errors.New("store: bot still has conversations")
+	// ErrAlreadyMigrated refuses a migration of the config file's persona
+	// templates into a database they were already migrated into.
+	ErrAlreadyMigrated = errors.New("store: config persona templates already migrated")
 )
+
+// MetaConfigTemplatesMigrated is the database fact (app_meta key) holding
+// when the config file's persona templates were migrated into the database.
+const MetaConfigTemplatesMigrated = "config_templates_migrated"
 
 // ConversationKey returns the canonical "bot:platform:type:id" key of a conversation.
 func ConversationKey(botID, platform, convType, convID string) string {
@@ -135,10 +142,9 @@ type Store interface {
 	// are not in keep and that no persona template and no persona version, of
 	// any age, names as its appearance image, and returns how many it deleted.
 	// A row whose persona is not valid JSON references no image. keep lists
-	// the images referenced elsewhere, such as by the persona templates of the
-	// config file.
+	// further images to keep.
 	PurgePersonaImages(ctx context.Context, createdBefore time.Time, keep []string) (int, error)
-	// ListPersonaTemplates returns the templates written online ordered by
+	// ListPersonaTemplates returns the stored persona templates ordered by
 	// Name. A row it cannot read does not fail the list: it is left out of
 	// templates and reported in unreadable, also ordered by Name.
 	ListPersonaTemplates(ctx context.Context) (templates []PersonaTemplateRecord, unreadable []UnreadablePersonaTemplate, err error)

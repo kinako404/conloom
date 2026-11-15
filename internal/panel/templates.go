@@ -19,7 +19,7 @@ type templateUser struct {
 // templateSummary is a persona template of the catalog as the templates page
 // lists it. Source is persona.TemplateSource; Users are the bots whose
 // persona template it is, as it takes effect; UpdatedBy and UpdatedAt are of
-// the online write, empty and null for a template only in the config file.
+// the last write, empty and null for the built-in default.
 type templateSummary struct {
 	Name            string         `json:"name"`
 	Source          string         `json:"source"`
@@ -31,13 +31,10 @@ type templateSummary struct {
 	UpdatedAt       *time.Time     `json:"updated_at"`
 }
 
-// templateView is a persona template with its persona as it takes effect and,
-// when it overrides a template of the config file, the config file's version
-// Config.
+// templateView is a persona template with its persona.
 type templateView struct {
 	templateSummary
-	Persona conloomapi.PersonaDoc  `json:"persona"`
-	Config  *conloomapi.PersonaDoc `json:"config"`
+	Persona conloomapi.PersonaDoc `json:"persona"`
 }
 
 // templateUsers maps each persona template to the bots whose template it is.
@@ -78,7 +75,7 @@ func (s *Server) writeTemplate(w http.ResponseWriter, r *http.Request, status in
 		return
 	}
 	s.writeJSON(w, status, templateView{
-		templateSummary: summarizeTemplate(info, s.templateUsers()[name]), Persona: info.Doc, Config: info.Config,
+		templateSummary: summarizeTemplate(info, s.templateUsers()[name]), Persona: info.Doc,
 	})
 }
 
@@ -100,8 +97,7 @@ func (s *Server) getTemplate(w http.ResponseWriter, r *http.Request, _ *Session)
 }
 
 // putTemplate stores the request's persona as the template {name}, which
-// overrides the config file's template of that name or, for a new name,
-// creates a panel template (201).
+// replaces the template of that name or, for a new name, creates one (201).
 func (s *Server) putTemplate(w http.ResponseWriter, r *http.Request, sess *Session) {
 	var req struct {
 		Persona *conloomapi.PersonaDoc `json:"persona"`
@@ -134,8 +130,8 @@ func (s *Server) putTemplate(w http.ResponseWriter, r *http.Request, sess *Sessi
 	s.writeTemplate(w, r, status, name)
 }
 
-// resetTemplate deletes the online override of the config file's template
-// {name}.
+// resetTemplate deletes the stored "default", which brings back the built-in
+// default persona; any other {name} is 400.
 func (s *Server) resetTemplate(w http.ResponseWriter, r *http.Request, sess *Session) {
 	name := r.PathValue("name")
 	if err := s.d.Personas.ResetTemplate(r.Context(), name); err != nil {
@@ -147,7 +143,7 @@ func (s *Server) resetTemplate(w http.ResponseWriter, r *http.Request, sess *Ses
 	s.writeTemplate(w, r, http.StatusOK, name)
 }
 
-// deleteTemplate deletes the panel template {name}.
+// deleteTemplate deletes the template {name}; "default" is 403.
 func (s *Server) deleteTemplate(w http.ResponseWriter, r *http.Request, sess *Session) {
 	name := r.PathValue("name")
 	if err := s.d.Personas.DeleteTemplate(r.Context(), name); err != nil {
@@ -159,9 +155,9 @@ func (s *Server) deleteTemplate(w http.ResponseWriter, r *http.Request, sess *Se
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// templatesChanged publishes the panel bots again after a persona template
-// changed, so that a bot whose template is back loses its problem. A failure
-// is only logged: the template change is already stored.
+// templatesChanged publishes the bots again after a persona template changed,
+// so that a bot whose template is back loses its problem. A failure is only
+// logged: the template change is already stored.
 func (s *Server) templatesChanged(r *http.Request) {
 	if s.d.PanelBots == nil {
 		return

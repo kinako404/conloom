@@ -156,9 +156,6 @@ func (c *Config) ValidateServe() error {
 		if !slices.Contains([]string{"admins", "allowlist", "all", "off"}, b.PrivateChat) {
 			p.addf(path+".private_chat", "must be one of admins|allowlist|all|off, got %q", b.PrivateChat)
 		}
-		if _, ok := c.PersonaTemplates[b.PersonaTemplate]; !ok {
-			p.addf(path+".persona_template", "unknown persona template %q", b.PersonaTemplate)
-		}
 		for j, s := range b.Skills {
 			spath := fmt.Sprintf("%s.skills[%d]", path, j)
 			if strings.TrimSpace(s) == "" {
@@ -239,8 +236,8 @@ func (c *Config) ValidateServe() error {
 		}
 	}
 
-	for _, name := range slices.Sorted(maps.Keys(c.PersonaTemplates)) {
-		doc := c.PersonaTemplates[name]
+	for _, name := range slices.Sorted(maps.Keys(c.LegacyPersonaTemplates)) {
+		doc := c.LegacyPersonaTemplates[name]
 		p.nested("persona_templates."+name, doc.Validate())
 		if err := conloomapi.ValidateContent(doc); err != nil {
 			p.addf("persona_templates."+name+".adult", "%v", err)

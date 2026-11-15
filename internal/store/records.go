@@ -158,8 +158,7 @@ type PersonaImage struct {
 	CreatedAt   time.Time
 }
 
-// PersonaTemplateRecord is a persona template written online; it overrides
-// the configured template of the same name or adds a new one.
+// PersonaTemplateRecord is a stored persona template.
 type PersonaTemplateRecord struct {
 	Name      string
 	Persona   conloomapi.PersonaDoc

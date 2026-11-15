@@ -66,7 +66,7 @@ func contentEnv(t *testing.T, persona conloomapi.PersonaDoc, reply string) (*env
 		t.Fatal(err)
 	}
 	cfg := panelTestConfig(t, configParams{modelURL: fake.URL}, hash)
-	cfg.PersonaTemplates[contentTemplate] = persona
+	cfg.LegacyPersonaTemplates = map[string]conloomapi.PersonaDoc{contentTemplate: persona}
 	cfg.Bots[0].PersonaTemplate = contentTemplate
 	cfg.DefaultGroupPolicy.Reply.MaxParts = 3
 	private := conloomapi.DefaultGroupPolicy()

@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kinako404/conloom/internal/botdir"
+	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/internal/store/sqlite"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -275,8 +277,8 @@ func TestSystemPrompt_AppearanceImageNotRendered(t *testing.T) {
 				t.Errorf("%s skip=%v: Render with an image =\n%s\nwant\n%s", base.PersonaName, skip, got, want)
 			}
 			for _, key := range []string{testConvKey, privateKey} {
-				plain := NewService(newTestStore(t), map[string]conloomapi.PersonaDoc{"t": base})
-				imaged := NewService(newTestStore(t), map[string]conloomapi.PersonaDoc{"t": withImage})
+				plain := newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": base})
+				imaged := newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": withImage})
 				want, err := plain.SystemPrompt(ctx, key, "t", "织语")
 				if err != nil {
 					t.Fatalf("SystemPrompt without an image: %v", err)
@@ -324,7 +326,7 @@ func TestService_CurrentCreatesV1FromTemplate(t *testing.T) {
 	tmpl := conloomapi.DefaultPersona()
 	tmpl.PersonaName = "安静人格"
 	tmpl.Style.Humor = 0.1
-	svc := NewService(st, map[string]conloomapi.PersonaDoc{"quiet": tmpl})
+	svc := newServiceWith(t, st, map[string]conloomapi.PersonaDoc{"quiet": tmpl})
 
 	pv, err := svc.Current(ctx, testConvKey, "quiet")
 	if err != nil {
@@ -352,7 +354,7 @@ func TestService_CurrentCreatesV1FromTemplate(t *testing.T) {
 func TestService_ConcurrentCurrentCreatesOneVersion(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
-	svc := NewService(st, nil)
+	svc := NewService(st)
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Add(1)
@@ -373,7 +375,7 @@ func TestService_UpdateAndRollback(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
 	rec := &auditRecorder{Store: st}
-	svc := NewService(rec, nil)
+	svc := NewService(rec)
 	v1, err := svc.Current(ctx, testConvKey, "default")
 	if err != nil {
 		t.Fatalf("Current: %v", err)
@@ -435,7 +437,7 @@ func TestService_UpdateAndRollback(t *testing.T) {
 func TestService_SystemPromptStablePerVersion(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
-	svc := NewService(st, nil)
+	svc := NewService(st)
 
 	a, err := svc.SystemPrompt(ctx, testConvKey, "default", "织语")
 	if err != nil {
@@ -470,7 +472,7 @@ func TestService_UpdateFromTemplate(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
 	rec := &auditRecorder{Store: st}
-	svc := NewService(rec, map[string]conloomapi.PersonaDoc{"lighthouse": testCharacter()})
+	svc := newServiceWith(t, rec, map[string]conloomapi.PersonaDoc{"lighthouse": testCharacter()})
 	if got := svc.TemplateNames(); !slices.Equal(got, []string{"default", "lighthouse"}) {
 		t.Errorf("TemplateNames = %v", got)
 	}
@@ -527,7 +529,7 @@ func TestService_UpdateFromTemplate(t *testing.T) {
 
 func TestService_SystemPromptUsesCharacterName(t *testing.T) {
 	ctx := context.Background()
-	svc := NewService(newTestStore(t), nil)
+	svc := NewService(newTestStore(t))
 	check := func(wantVersion int, wantName string) {
 		t.Helper()
 		p, err := svc.SystemPrompt(ctx, testConvKey, "default", "织语")
@@ -562,7 +564,7 @@ func TestService_SystemPromptUsesCharacterName(t *testing.T) {
 
 func TestService_SystemPromptNamesPlatformName(t *testing.T) {
 	ctx := context.Background()
-	svc := NewService(newTestStore(t), nil)
+	svc := NewService(newTestStore(t))
 	const note = "群里的人也可能用你在平台上的名字“织语”称呼你，那也是你。"
 	prompt := func() string {
 		t.Helper()
@@ -642,7 +644,7 @@ func TestService_SystemPromptContentByMode(t *testing.T) {
 		{"not adult in private", privateKey, plain, conloomapi.ContentProtected, protectionRules, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			svc := NewService(newTestStore(t), map[string]conloomapi.PersonaDoc{"t": c.doc})
+			svc := newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": c.doc})
 			p, err := svc.SystemPrompt(ctx, c.convKey, "t", "织语")
 			if err != nil {
 				t.Fatalf("SystemPrompt: %v", err)
@@ -690,8 +692,8 @@ func TestSystemPrompt_BarsNotRendered(t *testing.T) {
 			t.Errorf("%s: Render with bars =\n%s\nwant\n%s", base.PersonaName, got, want)
 		}
 		for _, key := range []string{testConvKey, privateKey} {
-			plain := NewService(newTestStore(t), map[string]conloomapi.PersonaDoc{"t": base})
-			barred := NewService(newTestStore(t), map[string]conloomapi.PersonaDoc{"t": withBars})
+			plain := newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": base})
+			barred := newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": withBars})
 			want, err := plain.SystemPrompt(ctx, key, "t", "织语")
 			if err != nil {
 				t.Fatalf("SystemPrompt without bars: %v", err)
@@ -722,7 +724,7 @@ func TestSystemPrompt_BarsNotRendered(t *testing.T) {
 func TestService_SystemPromptStoredMinorAdultIsProtected(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
-	svc := NewService(st, nil)
+	svc := NewService(st)
 	privateKey := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "20001")
 	doc := testCharacter()
 	doc.Minor, doc.Adult, doc.ContentRules = true, true, testContentRules
@@ -744,7 +746,7 @@ func TestService_SystemPromptStoredMinorAdultIsProtected(t *testing.T) {
 func TestService_SystemPromptCacheFollowsMode(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
-	svc := NewService(st, nil)
+	svc := NewService(st)
 	privateKey := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "20001")
 	get := func() Prompt {
 		t.Helper()
@@ -781,10 +783,7 @@ func TestUpdate_RejectsMinorAdult(t *testing.T) {
 	adult.Adult = true
 	minorAdult := testCharacter()
 	minorAdult.CharacterName, minorAdult.Minor, minorAdult.Adult = "角色甲", true, true
-	svc := NewService(st, map[string]conloomapi.PersonaDoc{
-		"child":   minorAdult,
-		"grownup": adult,
-	})
+	svc := newServiceWith(t, st, map[string]conloomapi.PersonaDoc{"grownup": adult})
 	if _, err := svc.Current(ctx, testConvKey, "default"); err != nil {
 		t.Fatalf("Current: %v", err)
 	}
@@ -819,7 +818,6 @@ func TestUpdate_RejectsMinorAdult(t *testing.T) {
 		want string
 	}{
 		{"persona", conloomapi.PersonaPut{Persona: &minorAdult}, minorErr},
-		{"template", conloomapi.PersonaPut{Template: "child"}, minorErr},
 		{"rollback", conloomapi.PersonaPut{RollbackTo: &minorAdultVersion}, minorErr},
 		{"rollback to an invalid version", conloomapi.PersonaPut{RollbackTo: &invalidVersion}, "style.warmth"},
 	} {
@@ -863,7 +861,7 @@ func (r *auditRecorder) all() []store.AuditEvent {
 
 func TestService_ForgetDropsCachedPrompt(t *testing.T) {
 	ctx := context.Background()
-	svc := NewService(newTestStore(t), nil)
+	svc := NewService(newTestStore(t))
 	other := store.ConversationKey(testBot, "qq", conloomapi.ConvGroup, "10002")
 	for _, key := range []string{testConvKey, other} {
 		if _, err := svc.SystemPrompt(ctx, key, "default", "小助手"); err != nil {
@@ -944,6 +942,18 @@ func loadTemplates(t *testing.T, svc *Service) {
 	}
 }
 
+// newServiceWith returns a Service over st whose catalog holds templates,
+// stored in st and loaded.
+func newServiceWith(t *testing.T, st store.Store, templates map[string]conloomapi.PersonaDoc) *Service {
+	t.Helper()
+	for name, doc := range templates {
+		putTemplateRow(t, st, name, doc, time.Now())
+	}
+	svc := NewService(st)
+	loadTemplates(t, svc)
+	return svc
+}
+
 // checkInfos compares got with want, UpdatedAt as instants.
 func checkInfos(t *testing.T, got, want []TemplateInfo) {
 	t.Helper()
@@ -962,26 +972,23 @@ func checkInfos(t *testing.T, got, want []TemplateInfo) {
 	}
 }
 
-func TestCatalog_MergeOrder(t *testing.T) {
+func TestCatalog_LoadsStoredTemplates(t *testing.T) {
 	st := newTestStore(t)
 	at := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
-	cfgLighthouse, cfgPlain := tagged("配置灯塔"), tagged("配置普通")
-	config := map[string]conloomapi.PersonaDoc{"lighthouse": cfgLighthouse, "plain": cfgPlain}
-	onlineLighthouse, onlineCat := tagged("在线灯塔"), tagged("在线猫")
-	putTemplateRow(t, st, "lighthouse", onlineLighthouse, at)
-	putTemplateRow(t, st, "cat", onlineCat, at)
+	lighthouse, cat := tagged("灯塔"), tagged("猫")
+	putTemplateRow(t, st, "lighthouse", lighthouse, at)
+	putTemplateRow(t, st, "cat", cat, at)
 
-	svc := NewService(st, config)
-	config["plain"] = tagged("改过的配置")
-	if got := svc.TemplateNames(); !slices.Equal(got, []string{"default", "lighthouse", "plain"}) {
-		t.Errorf("TemplateNames before LoadTemplates = %v, want the config templates and default", got)
+	svc := NewService(st)
+	if got := svc.TemplateNames(); !slices.Equal(got, []string{"default"}) {
+		t.Errorf("TemplateNames before LoadTemplates = %v, want only the built-in default", got)
 	}
 	loadTemplates(t, svc)
-	if got := svc.TemplateNames(); !slices.Equal(got, []string{"cat", "default", "lighthouse", "plain"}) {
-		t.Errorf("TemplateNames = %v, want [cat default lighthouse plain]", got)
+	if got := svc.TemplateNames(); !slices.Equal(got, []string{"cat", "default", "lighthouse"}) {
+		t.Errorf("TemplateNames = %v, want [cat default lighthouse]", got)
 	}
 	for name, want := range map[string]conloomapi.PersonaDoc{
-		"lighthouse": onlineLighthouse, "plain": cfgPlain, "cat": onlineCat, "default": conloomapi.DefaultPersona(),
+		"lighthouse": lighthouse, "cat": cat, "default": conloomapi.DefaultPersona(),
 	} {
 		if got, ok := svc.Template(name); !ok || !reflect.DeepEqual(got, want) {
 			t.Errorf("Template(%s) = %+v, %v; want %+v", name, got, ok, want)
@@ -991,132 +998,173 @@ func TestCatalog_MergeOrder(t *testing.T) {
 		t.Error("Template(nope) found")
 	}
 	checkInfos(t, svc.Templates(), []TemplateInfo{
-		{Name: "cat", Source: SourcePanel, Doc: onlineCat, UpdatedBy: "panel:admin", UpdatedAt: at},
-		{Name: "default", Source: SourceConfig, Doc: conloomapi.DefaultPersona()},
-		{Name: "lighthouse", Source: SourceConfigOverride, Doc: onlineLighthouse, Config: &cfgLighthouse,
-			UpdatedBy: "panel:admin", UpdatedAt: at},
-		{Name: "plain", Source: SourceConfig, Doc: cfgPlain},
+		{Name: "cat", Source: SourceDB, Doc: cat, UpdatedBy: "panel:admin", UpdatedAt: at},
+		{Name: "default", Source: SourceBuiltin, Doc: conloomapi.DefaultPersona()},
+		{Name: "lighthouse", Source: SourceDB, Doc: lighthouse, UpdatedBy: "panel:admin", UpdatedAt: at},
 	})
 
-	onlineDefault, builtIn := tagged("在线默认"), conloomapi.DefaultPersona()
-	putTemplateRow(t, st, "default", onlineDefault, at)
-	again := NewService(st, map[string]conloomapi.PersonaDoc{"lighthouse": cfgLighthouse})
+	stored := tagged("默认")
+	putTemplateRow(t, st, "default", stored, at)
+	again := NewService(st)
 	loadTemplates(t, again)
 	checkInfos(t, again.Templates(), []TemplateInfo{
-		{Name: "cat", Source: SourcePanel, Doc: onlineCat, UpdatedBy: "panel:admin", UpdatedAt: at},
-		{Name: "default", Source: SourceConfigOverride, Doc: onlineDefault, Config: &builtIn, UpdatedBy: "panel:admin", UpdatedAt: at},
-		{Name: "lighthouse", Source: SourceConfigOverride, Doc: onlineLighthouse, Config: &cfgLighthouse,
-			UpdatedBy: "panel:admin", UpdatedAt: at},
+		{Name: "cat", Source: SourceDB, Doc: cat, UpdatedBy: "panel:admin", UpdatedAt: at},
+		{Name: "default", Source: SourceDB, Doc: stored, UpdatedBy: "panel:admin", UpdatedAt: at},
+		{Name: "lighthouse", Source: SourceDB, Doc: lighthouse, UpdatedBy: "panel:admin", UpdatedAt: at},
 	})
 }
 
-func TestCatalog_PutResetDelete(t *testing.T) {
+// info returns svc's catalog entry of the template name.
+func info(t *testing.T, svc *Service, name string) TemplateInfo {
+	t.Helper()
+	for _, i := range svc.Templates() {
+		if i.Name == name {
+			return i
+		}
+	}
+	t.Fatalf("no template %s in %+v", name, svc.Templates())
+	return TemplateInfo{}
+}
+
+func TestCatalog_BuiltinDefault(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
-	cfgDoc, classic := tagged("配置"), tagged("经典")
-	config := map[string]conloomapi.PersonaDoc{"lighthouse": cfgDoc, "Classic One": classic}
-	svc := NewService(st, config)
+	svc := NewService(st)
 	loadTemplates(t, svc)
-	usersOf := map[string][]string{}
-	svc.SetTemplateUsers(func(name string) []string { return usersOf[name] })
-	info := func(name string) TemplateInfo {
-		t.Helper()
-		for _, i := range svc.Templates() {
-			if i.Name == name {
-				return i
-			}
-		}
-		t.Fatalf("no template %s in %+v", name, svc.Templates())
-		return TemplateInfo{}
-	}
-	edited := tagged("改")
+	builtin := TemplateInfo{Name: "default", Source: SourceBuiltin, Doc: conloomapi.DefaultPersona()}
+	checkInfos(t, svc.Templates(), []TemplateInfo{builtin})
 
+	edited := tagged("默认")
 	before := time.Now()
-	if err := svc.PutTemplate(ctx, "lighthouse", edited, "panel:admin"); err != nil {
-		t.Fatalf("PutTemplate lighthouse: %v", err)
+	if err := svc.PutTemplate(ctx, "default", edited, "panel:admin"); err != nil {
+		t.Fatalf("PutTemplate default: %v", err)
 	}
-	if got := info("lighthouse"); got.Source != SourceConfigOverride || !reflect.DeepEqual(got.Doc, edited) ||
-		got.Config == nil || !reflect.DeepEqual(*got.Config, cfgDoc) || got.UpdatedBy != "panel:admin" ||
-		got.UpdatedAt.Before(before) || got.UpdatedAt.After(time.Now()) {
-		t.Errorf("overridden config template = %+v", got)
+	if got := info(t, svc, "default"); got.Source != SourceDB || !reflect.DeepEqual(got.Doc, edited) ||
+		got.UpdatedBy != "panel:admin" || got.UpdatedAt.Before(before) || got.UpdatedAt.After(time.Now()) {
+		t.Errorf("saved default = %+v, want the stored one", got)
 	}
-	if doc, _ := svc.Template("lighthouse"); !reflect.DeepEqual(doc, edited) {
-		t.Errorf("Template(lighthouse) = %+v, want the override", doc)
+	if doc, _ := svc.Template("default"); !reflect.DeepEqual(doc, edited) {
+		t.Errorf("Template(default) = %+v, want the saved one", doc)
 	}
-	if names := storedTemplateNames(t, st); !slices.Equal(names, []string{"lighthouse"}) {
-		t.Errorf("stored templates = %v, want [lighthouse]", names)
+	if names := storedTemplateNames(t, st); !slices.Equal(names, []string{"default"}) {
+		t.Errorf("stored templates = %v, want [default]", names)
+	}
+	restarted := NewService(st)
+	loadTemplates(t, restarted)
+	checkInfos(t, restarted.Templates(), svc.Templates())
+
+	if err := svc.DeleteTemplate(ctx, "default"); !errors.Is(err, ErrDefaultTemplate) {
+		t.Errorf("DeleteTemplate default err = %v, want ErrDefaultTemplate", err)
+	}
+	if doc, _ := svc.Template("default"); !reflect.DeepEqual(doc, edited) {
+		t.Errorf("Template(default) after a refused delete = %+v, want the saved one", doc)
 	}
 	for range 2 {
-		if err := svc.ResetTemplate(ctx, "lighthouse"); err != nil {
-			t.Fatalf("ResetTemplate lighthouse: %v", err)
+		if err := svc.ResetTemplate(ctx, "default"); err != nil {
+			t.Fatalf("ResetTemplate default: %v", err)
 		}
-		if got := info("lighthouse"); got.Source != SourceConfig || !reflect.DeepEqual(got.Doc, cfgDoc) || got.Config != nil ||
-			got.UpdatedBy != "" || !got.UpdatedAt.IsZero() {
-			t.Errorf("reset config template = %+v, want the config file's", got)
-		}
+		checkInfos(t, svc.Templates(), []TemplateInfo{builtin})
 	}
 	if names := storedTemplateNames(t, st); len(names) != 0 {
 		t.Errorf("stored templates after reset = %v, want none", names)
 	}
-	if err := svc.DeleteTemplate(ctx, "lighthouse"); !errors.Is(err, ErrTemplateConfigOnly) {
-		t.Errorf("DeleteTemplate of a config template err = %v, want ErrTemplateConfigOnly", err)
+	if err := svc.DeleteTemplate(ctx, "default"); !errors.Is(err, ErrDefaultTemplate) {
+		t.Errorf("DeleteTemplate of the built-in default err = %v, want ErrDefaultTemplate", err)
 	}
+
+	if err := svc.PutTemplate(ctx, "lighthouse", tagged("灯塔"), "panel:admin"); err != nil {
+		t.Fatalf("PutTemplate lighthouse: %v", err)
+	}
+	for _, name := range []string{"lighthouse", "nope"} {
+		if err := svc.ResetTemplate(ctx, name); !errors.Is(err, ErrInvalidTemplate) {
+			t.Errorf("ResetTemplate %s err = %v, want ErrInvalidTemplate: only default can be reset", name, err)
+		}
+	}
+	if _, ok := svc.Template("lighthouse"); !ok {
+		t.Error("refused reset removed lighthouse")
+	}
+}
+
+func TestCatalog_DeleteInUseByConfigBot(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newTestStore(t))
+	for _, name := range []string{"lighthouse", "cat", "free"} {
+		if err := svc.PutTemplate(ctx, name, tagged(name), "panel:admin"); err != nil {
+			t.Fatalf("PutTemplate %s: %v", name, err)
+		}
+	}
+	bots := botdir.New([]config.BotConfig{
+		{ID: "qq-main", Platform: "qq", Name: "小明", PersonaTemplate: "lighthouse"},
+		{ID: "tg-main", Platform: "telegram", Name: "小明", PersonaTemplate: "default"},
+	})
+	bots.SetPanel([]botdir.Entry{{Bot: botdir.PanelBotConfig(store.PanelBot{ID: "panel-a1b2c3d4", Name: "小红", PersonaTemplate: "cat"})}})
+	svc.SetTemplateUsers(bots.TemplateUsers)
+
+	err := svc.DeleteTemplate(ctx, "lighthouse")
+	if !errors.Is(err, ErrTemplateInUse) || !strings.Contains(err.Error(), "小明（qq-main）") || strings.Contains(err.Error(), "tg-main") {
+		t.Errorf("DeleteTemplate of a config bot's template err = %v, want ErrTemplateInUse naming qq-main only", err)
+	}
+	if err := svc.DeleteTemplate(ctx, "cat"); !errors.Is(err, ErrTemplateInUse) || !strings.Contains(err.Error(), "小红") {
+		t.Errorf("DeleteTemplate of a panel bot's template err = %v, want ErrTemplateInUse naming 小红", err)
+	}
+	for _, name := range []string{"lighthouse", "cat"} {
+		if _, ok := svc.Template(name); !ok {
+			t.Errorf("template %s in use was deleted", name)
+		}
+	}
+	if err := svc.DeleteTemplate(ctx, "free"); err != nil {
+		t.Errorf("DeleteTemplate of a template no bot uses: %v", err)
+	}
+}
+
+func TestCatalog_PutAndDelete(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	putTemplateRow(t, st, "Classic One", tagged("经典"), time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC))
+	svc := NewService(st)
+	loadTemplates(t, svc)
+	usersOf := map[string][]string{}
+	svc.SetTemplateUsers(func(name string) []string { return usersOf[name] })
+
+	edited := tagged("改")
 	if err := svc.PutTemplate(ctx, "Classic One", edited, "panel:admin"); err != nil {
-		t.Errorf("PutTemplate of a config template named outside the online name rules: %v", err)
+		t.Errorf("PutTemplate of a stored template named outside the name rules: %v", err)
+	}
+	if got := info(t, svc, "Classic One"); got.Source != SourceDB || !reflect.DeepEqual(got.Doc, edited) || got.UpdatedBy != "panel:admin" {
+		t.Errorf("Classic One after PutTemplate = %+v", got)
 	}
 
-	if err := svc.PutTemplate(ctx, "default", edited, "panel:admin"); err != nil {
-		t.Fatalf("PutTemplate default: %v", err)
-	}
-	if err := svc.DeleteTemplate(ctx, "default"); !errors.Is(err, ErrTemplateConfigOnly) {
-		t.Errorf("DeleteTemplate default err = %v, want ErrTemplateConfigOnly", err)
-	}
-	if doc, _ := svc.Template("default"); !reflect.DeepEqual(doc, edited) {
-		t.Errorf("Template(default) after a refused delete = %+v, want the override", doc)
-	}
-	if err := svc.ResetTemplate(ctx, "default"); err != nil {
-		t.Fatalf("ResetTemplate default: %v", err)
-	}
-	if got := info("default"); got.Source != SourceConfig || !reflect.DeepEqual(got.Doc, conloomapi.DefaultPersona()) {
-		t.Errorf("reset default = %+v, want the built-in default", got)
-	}
-
-	const panelName = "new_cat-1"
+	const name = "new_cat-1"
 	cat := tagged("猫")
-	if err := svc.PutTemplate(ctx, panelName, cat, "panel:admin"); err != nil {
-		t.Fatalf("PutTemplate %s: %v", panelName, err)
+	if err := svc.PutTemplate(ctx, name, cat, "panel:admin"); err != nil {
+		t.Fatalf("PutTemplate %s: %v", name, err)
 	}
-	if got := info(panelName); got.Source != SourcePanel || !reflect.DeepEqual(got.Doc, cat) || got.Config != nil {
-		t.Errorf("panel template = %+v", got)
+	if got := info(t, svc, name); got.Source != SourceDB || !reflect.DeepEqual(got.Doc, cat) {
+		t.Errorf("new template = %+v", got)
 	}
-	if err := svc.ResetTemplate(ctx, panelName); !errors.Is(err, ErrInvalidTemplate) {
-		t.Errorf("ResetTemplate of a panel template err = %v, want ErrInvalidTemplate", err)
-	}
-	usersOf[panelName] = []string{"小红", "小明"}
-	err := svc.DeleteTemplate(ctx, panelName)
-	if !errors.Is(err, ErrTemplateInUse) || !strings.Contains(err.Error(), "小红") || !strings.Contains(err.Error(), "小明") {
+	usersOf[name] = []string{"小红", "小明（qq-main）"}
+	err := svc.DeleteTemplate(ctx, name)
+	if !errors.Is(err, ErrTemplateInUse) || !strings.Contains(err.Error(), "小红") || !strings.Contains(err.Error(), "小明（qq-main）") {
 		t.Errorf("DeleteTemplate of a template in use err = %v, want ErrTemplateInUse naming 小红 and 小明", err)
 	}
-	if _, ok := svc.Template(panelName); !ok {
+	if _, ok := svc.Template(name); !ok {
 		t.Error("template in use deleted from the catalog")
 	}
-	if names := storedTemplateNames(t, st); !slices.Contains(names, panelName) {
+	if names := storedTemplateNames(t, st); !slices.Contains(names, name) {
 		t.Errorf("template in use deleted from the store: %v", names)
 	}
-	delete(usersOf, panelName)
-	if err := svc.DeleteTemplate(ctx, panelName); err != nil {
-		t.Fatalf("DeleteTemplate %s: %v", panelName, err)
+	delete(usersOf, name)
+	if err := svc.DeleteTemplate(ctx, name); err != nil {
+		t.Fatalf("DeleteTemplate %s: %v", name, err)
 	}
-	if _, ok := svc.Template(panelName); ok {
+	if _, ok := svc.Template(name); ok {
 		t.Error("deleted template still in the catalog")
 	}
-	if names := storedTemplateNames(t, st); slices.Contains(names, panelName) {
+	if names := storedTemplateNames(t, st); slices.Contains(names, name) {
 		t.Errorf("deleted template still stored: %v", names)
 	}
-	for _, err := range []error{svc.DeleteTemplate(ctx, panelName), svc.ResetTemplate(ctx, "nope")} {
-		if !errors.Is(err, store.ErrNotFound) {
-			t.Errorf("err = %v, want ErrNotFound", err)
-		}
+	if err := svc.DeleteTemplate(ctx, name); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("DeleteTemplate of an unknown template err = %v, want ErrNotFound", err)
 	}
 
 	namesBefore, storedBefore := svc.TemplateNames(), storedTemplateNames(t, st)
@@ -1165,10 +1213,7 @@ func TestCatalog_PutResetDelete(t *testing.T) {
 		t.Errorf("PutTemplate with a failing image check err = %v, want the check's error, not ErrInvalid", err)
 	}
 
-	if err := svc.PutTemplate(ctx, "lighthouse", edited, "panel:other"); err != nil {
-		t.Fatalf("PutTemplate lighthouse: %v", err)
-	}
-	restarted := NewService(st, config)
+	restarted := NewService(st)
 	loadTemplates(t, restarted)
 	checkInfos(t, restarted.Templates(), svc.Templates())
 }
@@ -1176,9 +1221,7 @@ func TestCatalog_PutResetDelete(t *testing.T) {
 func TestCatalog_ConcurrentPutAndRead(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
-	cfgDoc := tagged("配置")
-	svc := NewService(st, map[string]conloomapi.PersonaDoc{"lighthouse": cfgDoc})
-	loadTemplates(t, svc)
+	svc := newServiceWith(t, st, map[string]conloomapi.PersonaDoc{"lighthouse": tagged("灯塔")})
 	const rounds = 20
 	var writers, readers sync.WaitGroup
 	writers.Add(2)
@@ -1186,13 +1229,16 @@ func TestCatalog_ConcurrentPutAndRead(t *testing.T) {
 		defer writers.Done()
 		for i := range rounds {
 			var err error
-			if i%5 == 4 {
-				err = svc.ResetTemplate(ctx, "lighthouse")
-			} else {
-				err = svc.PutTemplate(ctx, "lighthouse", tagged(fmt.Sprint("在线", i)), "panel:admin")
+			switch {
+			case i%5 == 4:
+				err = svc.ResetTemplate(ctx, "default")
+			case i%2 == 1:
+				err = svc.PutTemplate(ctx, "default", tagged(fmt.Sprint("默认", i)), "panel:admin")
+			default:
+				err = svc.PutTemplate(ctx, "lighthouse", tagged(fmt.Sprint("灯塔", i)), "panel:admin")
 			}
 			if err != nil {
-				t.Errorf("write lighthouse %d: %v", i, err)
+				t.Errorf("write %d: %v", i, err)
 			}
 		}
 	}()
@@ -1210,6 +1256,7 @@ func TestCatalog_ConcurrentPutAndRead(t *testing.T) {
 			}
 		}
 	}()
+	builtin := conloomapi.DefaultPersona()
 	done := make(chan struct{})
 	for r := range 4 {
 		readers.Add(1)
@@ -1222,12 +1269,12 @@ func TestCatalog_ConcurrentPutAndRead(t *testing.T) {
 				if doc, ok := svc.Template("cat"); ok && !whole(doc) {
 					t.Errorf("Template(cat) = %+v; want one whole version", doc)
 				}
+				if doc, ok := svc.Template("default"); !ok || !whole(doc) && !reflect.DeepEqual(doc, builtin) {
+					t.Errorf("Template(default) = %+v, %v; want the built-in or one whole version", doc, ok)
+				}
 				for _, info := range svc.Templates() {
-					if info.Name == "default" {
-						continue
-					}
-					override := info.Source == SourceConfigOverride
-					if !whole(info.Doc) || override != (info.Config != nil) || (info.Name == "lighthouse" && override == reflect.DeepEqual(info.Doc, cfgDoc)) {
+					isBuiltin := info.Source == SourceBuiltin
+					if isBuiltin != (info.Name == "default" && reflect.DeepEqual(info.Doc, builtin)) || !isBuiltin && !whole(info.Doc) {
 						t.Errorf("Templates has %+v; want a whole template matching its source", info)
 					}
 				}
@@ -1250,48 +1297,46 @@ func TestCatalog_ConcurrentPutAndRead(t *testing.T) {
 	readers.Wait()
 }
 
-func TestCatalog_NewConversationUsesOverride(t *testing.T) {
+func TestCatalog_NewConversationUsesSavedTemplate(t *testing.T) {
 	ctx := context.Background()
-	st := newTestStore(t)
-	cfgDoc, edited := tagged("配置"), tagged("在线")
-	svc := NewService(st, map[string]conloomapi.PersonaDoc{"lighthouse": cfgDoc})
-	loadTemplates(t, svc)
+	svc := NewService(newTestStore(t))
+	edited := tagged("在线")
 	key := func(id string) string { return store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, id) }
 	current := func(id string) store.PersonaVersion {
 		t.Helper()
-		pv, err := svc.Current(ctx, key(id), "lighthouse")
+		pv, err := svc.Current(ctx, key(id), "default")
 		if err != nil {
 			t.Fatalf("Current(%s): %v", id, err)
 		}
 		return pv
 	}
-	if pv := current("20001"); pv.Version != 1 || !reflect.DeepEqual(pv.Persona, cfgDoc) {
-		t.Fatalf("v1 before the override = %+v", pv)
+	if pv := current("20001"); pv.Version != 1 || !reflect.DeepEqual(pv.Persona, conloomapi.DefaultPersona()) {
+		t.Fatalf("v1 before saving default = %+v, want the built-in default", pv)
 	}
 
-	if err := svc.PutTemplate(ctx, "lighthouse", edited, "panel:admin"); err != nil {
+	if err := svc.PutTemplate(ctx, "default", edited, "panel:admin"); err != nil {
 		t.Fatalf("PutTemplate: %v", err)
 	}
-	if pv := current("20002"); pv.Version != 1 || pv.TemplateName != "lighthouse" || !reflect.DeepEqual(pv.Persona, edited) {
-		t.Errorf("new conversation v1 = %+v, want the override", pv)
+	if pv := current("20002"); pv.Version != 1 || pv.TemplateName != "default" || !reflect.DeepEqual(pv.Persona, edited) {
+		t.Errorf("new conversation v1 = %+v, want the saved default", pv)
 	}
-	p, err := svc.SystemPrompt(ctx, key("20003"), "lighthouse", "织语")
+	p, err := svc.SystemPrompt(ctx, key("20003"), "default", "织语")
 	if err != nil || p.BotName != "小红在线" || !strings.HasSuffix(p.Text, Render(edited)) {
-		t.Errorf("system prompt of a new conversation = %+v, %v; want the override rendered", p, err)
+		t.Errorf("system prompt of a new conversation = %+v, %v; want the saved default rendered", p, err)
 	}
-	if pv := current("20001"); pv.Version != 1 || !reflect.DeepEqual(pv.Persona, cfgDoc) {
+	if pv := current("20001"); pv.Version != 1 || !reflect.DeepEqual(pv.Persona, conloomapi.DefaultPersona()) {
 		t.Errorf("existing conversation = %+v, want its own copy of the old template", pv)
 	}
-	pv, err := svc.Update(ctx, key("20001"), "lighthouse", conloomapi.PersonaPut{Template: "lighthouse"}, "panel:admin")
+	pv, err := svc.Update(ctx, key("20001"), "default", conloomapi.PersonaPut{Template: "default"}, "panel:admin")
 	if err != nil || pv.Version != 2 || !reflect.DeepEqual(pv.Persona, edited) {
-		t.Errorf("applying the template = %+v, %v; want v2 with the override", pv, err)
+		t.Errorf("applying the template = %+v, %v; want v2 with the saved default", pv, err)
 	}
 
-	if err := svc.ResetTemplate(ctx, "lighthouse"); err != nil {
+	if err := svc.ResetTemplate(ctx, "default"); err != nil {
 		t.Fatalf("ResetTemplate: %v", err)
 	}
-	if pv := current("20004"); !reflect.DeepEqual(pv.Persona, cfgDoc) {
-		t.Errorf("new conversation after reset = %+v, want the config template", pv)
+	if pv := current("20004"); !reflect.DeepEqual(pv.Persona, conloomapi.DefaultPersona()) {
+		t.Errorf("new conversation after reset = %+v, want the built-in default", pv)
 	}
 }
 
@@ -1304,7 +1349,8 @@ func TestCatalog_LoadSkipsInvalidRows(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	at := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
-	config := map[string]conloomapi.PersonaDoc{"lighthouse": tagged("配置"), "Classic One": tagged("配置经典")}
+	// "Classic One" is named outside the rules for new names, as a template
+	// migrated from an old config file may be; it is loaded all the same.
 	valid := map[string]conloomapi.PersonaDoc{"teacher": tagged("老师"), "lighthouse": tagged("在线"), "Classic One": tagged("经典")}
 	for name, doc := range valid {
 		putTemplateRow(t, st, name, doc, at)
@@ -1313,7 +1359,7 @@ func TestCatalog_LoadSkipsInvalidRows(t *testing.T) {
 	minorAdult.Minor, minorAdult.Adult = true, true
 	warm := tagged("暖")
 	warm.Style.Warmth = 2
-	invalid := map[string]conloomapi.PersonaDoc{"Bad Name": tagged("坏名"), "both": minorAdult, "warm": warm}
+	invalid := map[string]conloomapi.PersonaDoc{"both": minorAdult, "warm": warm}
 	for name, doc := range invalid {
 		putTemplateRow(t, st, name, doc, at)
 	}
@@ -1328,11 +1374,11 @@ func TestCatalog_LoadSkipsInvalidRows(t *testing.T) {
 	}
 
 	var logs bytes.Buffer
-	svc := NewService(st, config)
+	svc := NewService(st)
 	svc.SetLogger(slog.New(slog.NewTextHandler(&logs, nil)))
 	loadTemplates(t, svc)
 	if got := svc.TemplateNames(); !slices.Equal(got, []string{"Classic One", "default", "lighthouse", "teacher"}) {
-		t.Errorf("TemplateNames = %v, want the config templates, default and teacher", got)
+		t.Errorf("TemplateNames = %v, want the valid rows and default", got)
 	}
 	for name, want := range valid {
 		if got, ok := svc.Template(name); !ok || !reflect.DeepEqual(got, want) {
@@ -1340,7 +1386,7 @@ func TestCatalog_LoadSkipsInvalidRows(t *testing.T) {
 		}
 	}
 	warnings := strings.Count(logs.String(), "level=WARN")
-	for _, name := range []string{"Bad Name", "both", "warm", "broken"} {
+	for _, name := range []string{"both", "warm", "broken"} {
 		if _, ok := svc.Template(name); ok {
 			t.Errorf("invalid row %s loaded", name)
 		}
@@ -1348,10 +1394,10 @@ func TestCatalog_LoadSkipsInvalidRows(t *testing.T) {
 			t.Errorf("no warning names %s: %s", name, logs.String())
 		}
 	}
-	if warnings != 4 {
-		t.Errorf("warnings = %d, want 4: %s", warnings, logs.String())
+	if warnings != 3 {
+		t.Errorf("warnings = %d, want 3: %s", warnings, logs.String())
 	}
-	if got := storedTemplateNames(t, st); !slices.Equal(got, []string{"Bad Name", "Classic One", "both", "broken", "lighthouse", "teacher", "warm"}) {
+	if got := storedTemplateNames(t, st); !slices.Equal(got, []string{"Classic One", "both", "broken", "lighthouse", "teacher", "warm"}) {
 		t.Errorf("stored templates = %v, want the invalid rows left as they are", got)
 	}
 }
@@ -1364,26 +1410,28 @@ func TestCatalog_ReferencedImages(t *testing.T) {
 		p.AppearanceImage = id
 		return p
 	}
-	byConfig, byOverridden, byOnline := fakeImageID("config"), fakeImageID("overridden"), putTestImage(t, st, "online")
-	svc := NewService(st, map[string]conloomapi.PersonaDoc{
-		"plain": withImage("普通", byConfig), "lighthouse": withImage("灯塔", byOverridden), "again": withImage("重复", byConfig),
+	notUploaded, uploaded := fakeImageID("not uploaded"), putTestImage(t, st, "uploaded")
+	svc := newServiceWith(t, st, map[string]conloomapi.PersonaDoc{
+		"plain": withImage("普通", notUploaded), "again": withImage("重复", notUploaded), "cat": tagged("猫"),
 	})
-	loadTemplates(t, svc)
-	want := []string{byConfig, byOverridden}
-	slices.Sort(want)
-	if got := svc.ReferencedImages(); !slices.Equal(got, want) {
+	if got, want := svc.ReferencedImages(), []string{notUploaded}; !slices.Equal(got, want) {
 		t.Errorf("ReferencedImages = %v, want %v", got, want)
 	}
-	if err := svc.PutTemplate(ctx, "lighthouse", withImage("在线", byOnline), "panel:admin"); err != nil {
+	if err := svc.PutTemplate(ctx, "lighthouse", withImage("在线", uploaded), "panel:admin"); err != nil {
 		t.Fatalf("PutTemplate: %v", err)
 	}
-	if err := svc.PutTemplate(ctx, "cat", tagged("猫"), "panel:admin"); err != nil {
-		t.Fatalf("PutTemplate: %v", err)
-	}
-	want = append(want, byOnline)
+	want := []string{notUploaded, uploaded}
 	slices.Sort(want)
 	if got := svc.ReferencedImages(); !slices.Equal(got, want) {
-		t.Errorf("ReferencedImages with an override = %v, want %v, also the overridden config template's", got, want)
+		t.Errorf("ReferencedImages after a put = %v, want %v", got, want)
+	}
+	for _, name := range []string{"plain", "again"} {
+		if err := svc.DeleteTemplate(ctx, name); err != nil {
+			t.Fatalf("DeleteTemplate %s: %v", name, err)
+		}
+	}
+	if got := svc.ReferencedImages(); !slices.Equal(got, []string{uploaded}) {
+		t.Errorf("ReferencedImages after deleting = %v, want only the stored templates' %v", got, []string{uploaded})
 	}
 }
 
@@ -1396,7 +1444,7 @@ func TestUpdate_UnknownImageInvalid(t *testing.T) {
 		p.AppearanceImage = id
 		return p
 	}
-	svc := NewService(st, map[string]conloomapi.PersonaDoc{"imaged": withImage(missing)})
+	svc := newServiceWith(t, st, map[string]conloomapi.PersonaDoc{"imaged": withImage(missing)})
 	if _, err := svc.Current(ctx, testConvKey, "default"); err != nil {
 		t.Fatalf("Current: %v", err)
 	}

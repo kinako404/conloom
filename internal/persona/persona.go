@@ -33,38 +33,36 @@ func Validate(p conloomapi.PersonaDoc) error {
 
 // Errors of the template catalog. ErrInvalidTemplate wraps ErrInvalid.
 var (
-	ErrInvalidTemplate    = fmt.Errorf("%w template", ErrInvalid)
-	ErrTemplateInUse      = errors.New("persona: template is in use")
-	ErrTemplateConfigOnly = errors.New("persona: template is defined in the config file")
+	ErrInvalidTemplate = fmt.Errorf("%w template", ErrInvalid)
+	ErrTemplateInUse   = errors.New("persona: template is in use")
+	ErrDefaultTemplate = errors.New("persona: the default template cannot be deleted")
 )
 
-// maxTemplateName is the most characters of the name of a template written
-// online.
-const maxTemplateName = 32
+const (
+	// defaultTemplate is the template the catalog always has: the stored one,
+	// or the built-in conloomapi.DefaultPersona.
+	defaultTemplate = "default"
+	// maxTemplateName is the most characters of the name of a new template.
+	maxTemplateName = 32
+)
 
 // TemplateSource is where a persona template of the catalog comes from.
 type TemplateSource string
 
 const (
-	// SourceConfig is a template of the config file, or the built-in
-	// "default".
-	SourceConfig TemplateSource = "config"
-	// SourceConfigOverride is a template of the config file overridden
-	// online.
-	SourceConfigOverride TemplateSource = "config_override"
-	// SourcePanel is a template created online.
-	SourcePanel TemplateSource = "panel"
+	// SourceDB is a template stored in the database.
+	SourceDB TemplateSource = "db"
+	// SourceBuiltin is the built-in "default", in the catalog while the
+	// database has none.
+	SourceBuiltin TemplateSource = "builtin"
 )
 
-// TemplateInfo is a persona template of the catalog: Doc as it takes effect,
-// where it comes from and, for an online override, the config file's version
-// Config. UpdatedBy and UpdatedAt are of the online write; they are empty for
-// SourceConfig.
+// TemplateInfo is a persona template of the catalog: Doc, where it comes from
+// and, for SourceDB, who stored it last and when.
 type TemplateInfo struct {
 	Name      string
 	Source    TemplateSource
 	Doc       conloomapi.PersonaDoc
-	Config    *conloomapi.PersonaDoc
 	UpdatedBy string
 	UpdatedAt time.Time
 }
@@ -77,31 +75,24 @@ type catalog struct {
 	images []string       // see Service.ReferencedImages
 }
 
-// newCatalog merges the config layer config with the online layer online, an
-// online template replacing the config template of the same name.
-func newCatalog(config map[string]conloomapi.PersonaDoc, online map[string]store.PersonaTemplateRecord) *catalog {
-	c := &catalog{docs: make(map[string]conloomapi.PersonaDoc, len(config)+len(online))}
-	maps.Copy(c.docs, config)
-	for name, r := range online {
+// newCatalog makes the catalog of the stored templates stored, with the
+// built-in "default" when stored has none.
+func newCatalog(stored map[string]store.PersonaTemplateRecord) *catalog {
+	c := &catalog{docs: make(map[string]conloomapi.PersonaDoc, len(stored)+1)}
+	images := map[string]bool{}
+	for name, r := range stored {
 		c.docs[name] = r.Persona
+		images[r.Persona.AppearanceImage] = true
+	}
+	if _, ok := stored[defaultTemplate]; !ok {
+		c.docs[defaultTemplate] = conloomapi.DefaultPersona()
 	}
 	for _, name := range slices.Sorted(maps.Keys(c.docs)) {
-		info := TemplateInfo{Name: name, Source: SourceConfig, Doc: c.docs[name]}
-		cfg, inConfig := config[name]
-		if r, ok := online[name]; ok {
-			info.Source, info.UpdatedBy, info.UpdatedAt = SourcePanel, r.UpdatedBy, r.UpdatedAt
-			if inConfig {
-				info.Source, info.Config = SourceConfigOverride, &cfg
-			}
+		info := TemplateInfo{Name: name, Source: SourceBuiltin, Doc: c.docs[name]}
+		if r, ok := stored[name]; ok {
+			info.Source, info.UpdatedBy, info.UpdatedAt = SourceDB, r.UpdatedBy, r.UpdatedAt
 		}
 		c.infos = append(c.infos, info)
-	}
-	images := map[string]bool{}
-	for _, doc := range config {
-		images[doc.AppearanceImage] = true
-	}
-	for _, r := range online {
-		images[r.Persona.AppearanceImage] = true
 	}
 	delete(images, "")
 	c.images = slices.Sorted(maps.Keys(images))
@@ -116,20 +107,18 @@ type cachedPrompt struct {
 }
 
 // Service keeps the conversations' persona versions and the persona template
-// catalog: the config file's templates (the config layer) merged with the
-// templates written online (the online layer), which override config
-// templates of the same name and add new ones. The catalog is replaced as a
-// whole on every change, so a reader always sees one whole version of it.
+// catalog: the templates stored in the database and, while none of them is
+// "default", the built-in default persona as "default". The catalog is
+// replaced as a whole on every change, so a reader always sees one whole
+// version of it.
 type Service struct {
-	st store.Store
-	// config is the config layer; it never changes.
-	config  map[string]conloomapi.PersonaDoc
+	st      store.Store
 	catalog atomic.Pointer[catalog]
 
-	// templateMu serialises LoadTemplates and the template writes; online,
-	// which it guards, is the online layer of the published catalog.
+	// templateMu serialises LoadTemplates and the template writes; stored,
+	// which it guards, holds the stored templates of the published catalog.
 	templateMu sync.Mutex
-	online     map[string]store.PersonaTemplateRecord
+	stored     map[string]store.PersonaTemplateRecord
 
 	imageExists   func(ctx context.Context, id string) (bool, error)
 	templateUsers func(name string) []string
@@ -142,18 +131,12 @@ type Service struct {
 	prompts  map[string]cachedPrompt
 }
 
-// NewService returns a Service whose config layer is a copy of templates, with
-// DefaultPersona as "default" when missing. LoadTemplates adds the online
-// layer.
-func NewService(st store.Store, templates map[string]conloomapi.PersonaDoc) *Service {
-	config := make(map[string]conloomapi.PersonaDoc, len(templates)+1)
-	maps.Copy(config, templates)
-	if _, ok := config["default"]; !ok {
-		config["default"] = conloomapi.DefaultPersona()
-	}
-	s := &Service{st: st, config: config, online: map[string]store.PersonaTemplateRecord{},
+// NewService returns a Service whose catalog holds only the built-in
+// "default" until LoadTemplates loads the stored templates.
+func NewService(st store.Store) *Service {
+	s := &Service{st: st, stored: map[string]store.PersonaTemplateRecord{},
 		log: slog.New(slog.DiscardHandler), prompts: map[string]cachedPrompt{}}
-	s.catalog.Store(newCatalog(config, s.online))
+	s.catalog.Store(newCatalog(s.stored))
 	return s
 }
 
@@ -165,8 +148,9 @@ func (s *Service) SetImageChecker(f func(ctx context.Context, id string) (bool, 
 }
 
 // SetTemplateUsers sets how DeleteTemplate finds the users of a template: f
-// returns the names of the panel bots whose persona template is name. Without
-// it no template is in use. Call it before the Service is shared.
+// returns the bots, config and panel bots alike, whose persona template is
+// name. Without it no template is in use. Call it before the Service is
+// shared.
 func (s *Service) SetTemplateUsers(f func(name string) []string) {
 	s.templateUsers = f
 }
@@ -177,10 +161,11 @@ func (s *Service) SetLogger(l *slog.Logger) {
 	s.log = l
 }
 
-// LoadTemplates replaces the online layer with the templates stored in the
-// database. A row that cannot be read or is not a valid template (see
-// PutTemplate; its image is not checked) is logged as a warning and left out
-// of the catalog; the stored row is left as it is.
+// LoadTemplates replaces the catalog's stored templates with the templates
+// stored in the database. A row that cannot be read or whose persona fails
+// Validate is logged as a warning and left out of the catalog; the stored
+// row is left as it is. A row's name and image are not checked: a template
+// migrated from an old config file keeps the name it had there.
 func (s *Service) LoadTemplates(ctx context.Context) error {
 	s.templateMu.Lock()
 	defer s.templateMu.Unlock()
@@ -191,20 +176,20 @@ func (s *Service) LoadTemplates(ctx context.Context) error {
 	for _, u := range unreadable {
 		s.log.Warn("stored persona template cannot be read; leaving it out", "template", u.Name, "error", u.Err)
 	}
-	online := make(map[string]store.PersonaTemplateRecord, len(rows))
+	stored := make(map[string]store.PersonaTemplateRecord, len(rows))
 	for _, r := range rows {
-		if err := s.checkTemplate(r.Name, r.Persona); err != nil {
+		if err := checkTemplateDoc(r.Persona); err != nil {
 			s.log.Warn("stored persona template is invalid; leaving it out", "template", r.Name, "error", err)
 			continue
 		}
-		online[r.Name] = r
+		stored[r.Name] = r
 	}
-	s.publish(online)
-	s.log.Info("persona templates loaded", "online", len(online))
+	s.publish(stored)
+	s.log.Info("persona templates loaded", "stored", len(stored))
 	return nil
 }
 
-// Template returns the persona template name as it takes effect.
+// Template returns the persona template name.
 func (s *Service) Template(name string) (conloomapi.PersonaDoc, bool) {
 	doc, ok := s.catalog.Load().docs[name]
 	return doc, ok
@@ -212,33 +197,25 @@ func (s *Service) Template(name string) (conloomapi.PersonaDoc, bool) {
 
 // Templates lists the persona templates by name.
 func (s *Service) Templates() []TemplateInfo {
-	infos := slices.Clone(s.catalog.Load().infos)
-	for i, info := range infos {
-		if info.Config != nil {
-			cfg := *info.Config
-			infos[i].Config = &cfg
-		}
-	}
-	return infos
+	return slices.Clone(s.catalog.Load().infos)
 }
 
-// ReferencedImages returns the IDs of the appearance images the persona
-// templates name, sorted: those of the online templates and of all config
-// templates, also one overridden online, whose image a reset brings back.
+// ReferencedImages returns the IDs of the appearance images the stored
+// persona templates name, sorted.
 func (s *Service) ReferencedImages() []string {
 	return slices.Clone(s.catalog.Load().images)
 }
 
 // PutTemplate stores doc as the persona template name for actor and
-// publishes it: it overrides the config template of that name or adds a
-// panel template. Conversations whose first version is made afterwards, and
-// a template applied with Update, get it; existing versions are kept. The
-// name of a new template must be 1 to 32 lowercase letters, digits, - or _;
-// a config template keeps the name it has. An invalid name, a doc that fails
-// Validate and an appearance image that was not uploaded are
-// ErrInvalidTemplate.
+// publishes it, replacing the stored template of that name or adding a new
+// one; a stored "default" takes the place of the built-in one. Conversations
+// whose first version is made afterwards, and a template applied with
+// Update, get it; existing versions are kept. The name of a new template must
+// be 1 to 32 lowercase letters, digits, - or _; a stored template keeps the
+// name it has. An invalid name, a doc that fails Validate and an appearance
+// image that was not uploaded are ErrInvalidTemplate.
 func (s *Service) PutTemplate(ctx context.Context, name string, doc conloomapi.PersonaDoc, actor string) error {
-	if err := s.checkTemplate(name, doc); err != nil {
+	if err := checkTemplateDoc(doc); err != nil {
 		return err
 	}
 	if err := s.checkImage(ctx, doc, ErrInvalidTemplate); err != nil {
@@ -246,51 +223,50 @@ func (s *Service) PutTemplate(ctx context.Context, name string, doc conloomapi.P
 	}
 	s.templateMu.Lock()
 	defer s.templateMu.Unlock()
+	if _, ok := s.stored[name]; !ok && !validTemplateName(name) {
+		return fmt.Errorf("%w: name must be 1 to %d lowercase letters, digits, - or _, got %q", ErrInvalidTemplate, maxTemplateName, name)
+	}
 	r := store.PersonaTemplateRecord{Name: name, Persona: doc, UpdatedBy: actor, UpdatedAt: time.Now().UTC()}
 	if err := s.st.PutPersonaTemplate(ctx, r); err != nil {
 		return fmt.Errorf("persona: store template %q: %w", name, err)
 	}
-	online := maps.Clone(s.online)
-	online[name] = r
-	s.publish(online)
+	stored := maps.Clone(s.stored)
+	stored[name] = r
+	s.publish(stored)
 	return nil
 }
 
-// ResetTemplate deletes the online override of the config template name, so
-// that the config file's version takes effect again; without an override it
-// does nothing. A panel template is ErrInvalidTemplate, an unknown name
-// store.ErrNotFound.
+// ResetTemplate deletes the stored "default", so that the built-in default
+// persona takes its place again; without one it does nothing. Any other name
+// is ErrInvalidTemplate.
 func (s *Service) ResetTemplate(ctx context.Context, name string) error {
+	if name != defaultTemplate {
+		return fmt.Errorf("%w: only %q can be reset, to the built-in default persona; got %q", ErrInvalidTemplate, defaultTemplate, name)
+	}
 	s.templateMu.Lock()
 	defer s.templateMu.Unlock()
-	if _, ok := s.config[name]; !ok {
-		if _, ok := s.online[name]; ok {
-			return fmt.Errorf("%w: %q is not a template of the config file; delete it instead", ErrInvalidTemplate, name)
-		}
-		return fmt.Errorf("%w: persona template %q", store.ErrNotFound, name)
-	}
 	if _, err := s.st.DeletePersonaTemplate(ctx, name); err != nil {
 		return fmt.Errorf("persona: delete template %q: %w", name, err)
 	}
-	online := maps.Clone(s.online)
-	delete(online, name)
-	s.publish(online)
+	stored := maps.Clone(s.stored)
+	delete(stored, name)
+	s.publish(stored)
 	return nil
 }
 
-// DeleteTemplate deletes the panel template name, or a stored row of that
-// name LoadTemplates left out. A config template, overridden online or not,
-// is ErrTemplateConfigOnly; a template panel bots use (see SetTemplateUsers)
-// is ErrTemplateInUse naming them; an unknown name is store.ErrNotFound.
+// DeleteTemplate deletes the stored template name, also a row LoadTemplates
+// left out. "default" is ErrDefaultTemplate (see ResetTemplate); a template
+// bots use (see SetTemplateUsers) is ErrTemplateInUse naming them; an
+// unknown name is store.ErrNotFound.
 func (s *Service) DeleteTemplate(ctx context.Context, name string) error {
-	if _, ok := s.config[name]; ok {
-		return fmt.Errorf("%w: %q can only be reset", ErrTemplateConfigOnly, name)
+	if name == defaultTemplate {
+		return fmt.Errorf("%w; reset it to go back to the built-in default persona", ErrDefaultTemplate)
 	}
 	s.templateMu.Lock()
 	defer s.templateMu.Unlock()
 	if s.templateUsers != nil {
 		if users := s.templateUsers(name); len(users) > 0 {
-			return fmt.Errorf("%w: 面板 bot %s 还在用这个模板", ErrTemplateInUse, strings.Join(users, "、"))
+			return fmt.Errorf("%w: bot %s 还在用这个模板", ErrTemplateInUse, strings.Join(users, "、"))
 		}
 	}
 	deleted, err := s.st.DeletePersonaTemplate(ctx, name)
@@ -300,26 +276,21 @@ func (s *Service) DeleteTemplate(ctx context.Context, name string) error {
 	if !deleted {
 		return fmt.Errorf("%w: persona template %q", store.ErrNotFound, name)
 	}
-	online := maps.Clone(s.online)
-	delete(online, name)
-	s.publish(online)
+	stored := maps.Clone(s.stored)
+	delete(stored, name)
+	s.publish(stored)
 	return nil
 }
 
-// publish makes online the online layer and publishes the catalog it makes
-// with the config layer. The caller holds templateMu.
-func (s *Service) publish(online map[string]store.PersonaTemplateRecord) {
-	s.online = online
-	s.catalog.Store(newCatalog(s.config, online))
+// publish makes stored the catalog's stored templates and publishes the
+// catalog. The caller holds templateMu.
+func (s *Service) publish(stored map[string]store.PersonaTemplateRecord) {
+	s.stored = stored
+	s.catalog.Store(newCatalog(stored))
 }
 
-// checkTemplate returns ErrInvalidTemplate when doc fails Validate or name may
-// not name a template written online: a config template's name always may,
-// others must be 1 to maxTemplateName lowercase letters, digits, - or _.
-func (s *Service) checkTemplate(name string, doc conloomapi.PersonaDoc) error {
-	if _, ok := s.config[name]; !ok && !validTemplateName(name) {
-		return fmt.Errorf("%w: name must be 1 to %d lowercase letters, digits, - or _, got %q", ErrInvalidTemplate, maxTemplateName, name)
-	}
+// checkTemplateDoc returns ErrInvalidTemplate when doc fails Validate.
+func checkTemplateDoc(doc conloomapi.PersonaDoc) error {
 	if err := errors.Join(doc.Validate(), conloomapi.ValidateContent(doc)); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidTemplate, err)
 	}

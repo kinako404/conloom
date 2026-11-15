@@ -27,7 +27,7 @@ go install github.com/kinako404/conloom/cmd/conloom@latest
 
 ## Linux（systemd）
 
-仓库的 [`deploy/systemd/`](../deploy/systemd) 提供三个单元：`conloom.service`（核心），以及 `conloom-napcat.service` 和 `conloom-telegram.service`（适配器，依赖核心，按需安装）。它们都以 `conloom` 用户运行、异常退出 3 秒后自动重启，停止时最多等待 90 秒（适配器会等正在发送的消息拿到结果再退出）。退出码为 78 时不重启（`RestartPreventExitStatus=78`）：78 是配置错误（sysexits 的 `EX_CONFIG`），比如配置文件读不了、校验失败、Telegram 的 token 或核心令牌被拒绝，重启也没用，`systemctl status` 会显示 `status=78`，改好配置后手动 `systemctl restart`。其他异常退出照常重启，包括 Go 程序 panic（退出码 2，日志里有堆栈）。单元启用了 `ProtectSystem=strict`，只有 `/opt/conloom/data` 可写：该目录必须在启动前存在；如果把 `storage.data_dir` 或适配器的 `state_dir` 改到别处，要同步修改单元里的 `ReadWritePaths`。
+仓库的 [`deploy/systemd/`](../deploy/systemd) 提供三个单元：`conloom.service`（核心），以及 `conloom-napcat.service` 和 `conloom-telegram.service`（适配器，依赖核心，按需安装）。它们都以 `conloom` 用户运行、异常退出 3 秒后自动重启，停止时最多等待 90 秒（适配器会等正在发送的消息拿到结果再退出）。退出码为 78 时不重启（`RestartPreventExitStatus=78`）：78 是配置错误（sysexits 的 `EX_CONFIG`），比如配置文件读不了、校验失败、Telegram 的 token 或核心令牌被拒绝、已经迁移到数据库的 `persona_templates` 还留在配置里，重启也没用，`systemctl status` 会显示 `status=78`，改好配置后手动 `systemctl restart`。其他异常退出照常重启，包括 Go 程序 panic（退出码 2，日志里有堆栈）。单元启用了 `ProtectSystem=strict`，只有 `/opt/conloom/data` 可写：该目录必须在启动前存在；如果把 `storage.data_dir` 或适配器的 `state_dir` 改到别处，要同步修改单元里的 `ReadWritePaths`。
 
 ```sh
 sudo useradd --system --home-dir /opt/conloom --shell /usr/sbin/nologin conloom
@@ -421,7 +421,7 @@ model_profiles:
   | 事件幂等记录（含被处理事件的原文） | `events` | `runtime.idempotency_retention`（默认 7 天） |
   | 主动搭话记录 | `proactive_log` | 7 天 |
   | 私聊状态条的变化记录 | `conversation_buff_events` | 30 天 |
-  | 人设外观参考图（原图和缩小图） | `persona_images` | 没有被任何人设模板或人设版本（包括历史版本）引用、上传满 7 天后删除；配置文件的模板引用的一直保留 |
+  | 人设外观参考图（原图和缩小图） | `persona_images` | 没有被任何人设模板或人设版本（包括历史版本）引用、上传满 7 天后删除 |
   | 记忆修订历史 | `memory_revisions` | 30 天（由记忆层清理，不受 `ops_retention` 影响） |
   | 模型用量明细（每次模型调用一行） | `model_calls` | `runtime.usage_retention`（默认 400 天） |
   | Web 管理面板的登录会话 | `panel_sessions` | 超过 `panel.session_ttl` 或 `panel.idle_timeout` 后删除 |
@@ -461,6 +461,17 @@ model_profiles:
 **升级到记忆字数上限可配置的版本**（`memory.summary_max_chars`、`note_max_chars`）：摘要和笔记的默认上限变长（群聊 1500 / 300 字、私聊 3000 / 1000 字），记忆整理的输出也跟着变长。升级时把 `long_context` 的 `reserved_output_tokens` 调到 8192 或以上：低于 8192（且大于 0）而默认策略开启了记忆时，启动日志会有一条 `long_context reserved_output_tokens is low for memory consolidation` 警告；整理时一个人的摘要加笔记放不下，就按比例缩短这次提示词要求的字数（不低于 200 / 50 字；写入时仍按策略的上限截断，已有的较长笔记不会被截短），并为这个会话记一条 `memory consolidation limits reduced …` 警告。调大输出预留并重启后恢复完整上限。已有的摘要和笔记不会立即变长，要经过之后的几次整理才写长。回复时带上的记忆块不超过短模型输入预算（`soft_input_budget`，会话设了 `context.max_context_tokens` 时取两者算出的较小值）的 30%，摘要太长时只带最新的一段，所以写长的记忆不会挤掉近期历史（见 [架构 5.5 节](architecture.md#55-记忆和好感度)）。
 
 **升级到有面板 bot 和在线人设模板的版本**（迁移 `0013_panel_bots.sql`、`0014_persona_templates.sql`）：两个迁移只新增表——0013 是面板 bot 的 `panel_bots`，0014 是在线写入的人设模板 `persona_templates` 和外观参考图 `persona_images`——不改已有的表，启动时自动执行。配置文件里 bot 的 `id` 不能再以 `panel-` 开头（这个前缀留给面板 bot），有的话先改名再升级。
+
+**升级到人设模板只存在数据库里的版本**（迁移 `0015_app_meta.sql`）：配置文件不再支持 `persona_templates`，模板只在 Web 管理面板里管理（见 [配置参考：人设模板](configuration.md#人设模板)）。迁移只新增键值表 `app_meta`，启动时自动执行。
+
+1. 先备份（`conloom backup`），配置文件原样保留，替换二进制后启动核心。
+2. 第一次启动时，配置里的 `persona_templates` 自动导入数据库：库里还没有的名字写入，已经有同名模板的（在面板里改过或新建的）跳过，以库里为准，在线改过的版本不会被配置里的旧版本覆盖。整个导入在一个事务里，最后在 `app_meta` 记下 `config_templates_migrated`（迁移时间）。日志里每个导入或跳过的模板各有一条，审计里有一条 `persona.template.migrate`，列出导入和跳过的模板名，最后一条警告提示删除配置里的 `persona_templates`。
+3. 确认面板模板页里模板都在，然后从 `conloom.yaml` 删掉整段 `persona_templates`（先备份这个文件），重启。之后配置里还留着这一段时启动失败，退出码 78（systemd 不会反复重启），报错说明模板已经迁到数据库，请删除配置里的 `persona_templates`。
+4. 模板引用的外观参考图 ID 原样写入；图片不存在时回复照常、不带图，并记一条警告，在面板里重新上传同一张图即可（同一张图得到同一个 ID）。
+
+配置 bot 的 `persona_template` 不再在加载配置时检查：模板不存在时启动照常，日志有一条警告，运行时改用 `default`，面板的 bot 页标出“人设模板“x”已不存在，暂用 default”；在面板里建出这个模板后说明消失。数据库里没有 `default` 时用程序内置的默认人设。
+
+**回退到人设模板还在配置文件里的旧版本**（没有迁移 0015）：旧二进制忽略 `app_meta` 表，库里的模板在旧版本上是“在线写入的模板”，照样生效；但旧版本要求配置 bot 的 `persona_template` 存在于配置文件，而且 `default` 以外引用的模板必须写回 `persona_templates`，否则启动失败。再升级回来时，配置里还有 `persona_templates` 就会因为已经迁移过而启动失败，先删掉这一段。
 
 **回退到没有面板 bot 和在线人设模板的旧版本**（没有迁移 0013、0014）：旧二进制忽略这三张表，不需要用备份恢复。
 

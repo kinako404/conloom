@@ -49,7 +49,7 @@ func panelBotEnv(t *testing.T, opts testOpts) *testEnv {
 		bigWindows(c)
 		gentle := conloomapi.DefaultPersona()
 		gentle.PersonaName = "温柔人格"
-		c.PersonaTemplates["gentle"] = gentle
+		c.LegacyPersonaTemplates["gentle"] = gentle
 		if configure != nil {
 			configure(c)
 		}
@@ -320,8 +320,16 @@ func TestPanelBots_OnlineTemplate(t *testing.T) {
 		t.Errorf("system prompt of the bot's new chat does not use the online template:\n%s", sys)
 	}
 
-	if err := env.o.personas.DeleteTemplate(ctx, "online_cat"); err != nil {
-		t.Fatalf("DeleteTemplate: %v", err)
+	if err := env.o.personas.DeleteTemplate(ctx, "online_cat"); !errors.Is(err, persona.ErrTemplateInUse) {
+		t.Fatalf("DeleteTemplate of the bot's template err = %v, want ErrTemplateInUse", err)
+	}
+	// The template disappears behind the catalog's back, as a stored row
+	// found invalid at startup does.
+	if _, err := env.st.DeletePersonaTemplate(ctx, "online_cat"); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.o.personas.LoadTemplates(ctx); err != nil {
+		t.Fatal(err)
 	}
 	if err := svc.Load(ctx); err != nil {
 		t.Fatalf("Load: %v", err)
@@ -725,6 +733,42 @@ func TestPanelBots_LoadMarksProblems(t *testing.T) {
 	}
 	if b, _ := env.o.bots.Bot("panel-aaaa0002"); b.Name != "小绿" || b.PersonaTemplate != "gentle" {
 		t.Errorf("other bot after an update = %+v", b)
+	}
+}
+
+func TestPanelBots_LoadMarksConfigBotProblems(t *testing.T) {
+	env := panelBotEnv(t, testOpts{configure: func(c *config.Config) { c.Bots[0].PersonaTemplate = "night-owl" }})
+	ctx := context.Background()
+	if err := env.o.PanelBots().Load(ctx); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	bot, _ := env.o.bots.Bot(testBot)
+	want := []string{"人设模板“night-owl”已不存在，暂用 default"}
+	if bot.PersonaTemplate != "default" || !slices.Equal(env.o.bots.Problems(testBot), want) {
+		t.Fatalf("config bot with a missing template = %+v, problems %q; want default and %q", bot, env.o.bots.Problems(testBot), want)
+	}
+	if !slices.ContainsFunc(strings.Split(env.logs.String(), "\n"), func(l string) bool {
+		return strings.Contains(l, "level=WARN") && strings.Contains(l, "night-owl") && strings.Contains(l, testBot)
+	}) {
+		t.Errorf("no warning about night-owl in the log:\n%s", env.logs)
+	}
+	if got, want := env.command(t, "20001", "/persona"), CopyPersonaInfo("默认群友人格", 1, ""); got != want {
+		t.Errorf("/persona = %q, want %q: the default template", got, want)
+	}
+
+	owl := conloomapi.DefaultPersona()
+	owl.PersonaName = "夜猫人格"
+	if err := env.o.personas.PutTemplate(ctx, "night-owl", owl, panelBotActor); err != nil {
+		t.Fatalf("PutTemplate: %v", err)
+	}
+	if err := env.o.PanelBots().Load(ctx); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if bot, _ := env.o.bots.Bot(testBot); bot.PersonaTemplate != "night-owl" || env.o.bots.Problems(testBot) != nil {
+		t.Fatalf("config bot after its template was created = %+v, problems %q; want night-owl without problems", bot, env.o.bots.Problems(testBot))
+	}
+	if err := env.o.personas.DeleteTemplate(ctx, "night-owl"); !errors.Is(err, persona.ErrTemplateInUse) || !strings.Contains(err.Error(), testBot) {
+		t.Errorf("DeleteTemplate of the config bot's template err = %v, want ErrTemplateInUse naming %s", err, testBot)
 	}
 }
 

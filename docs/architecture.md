@@ -126,12 +126,12 @@ NapCat      Adapter                 Core                          SQLite        
 
 面板 bot（用法见 [Web 管理面板：面板 bot](panel.md#面板-bot)）存在数据库里，和配置 bot 合在一个 bot 目录里，所有组件都从目录取 bot。
 
-- **bot 目录**（`internal/botdir`）：配置 bot 在启动时固定；面板 bot 是一份整体替换的快照（`atomic.Pointer`）。`Bot(id)` 按 ID 取，`All()` 先按配置顺序列配置 bot，再按新建时间列面板 bot。读的一方总是拿到一份完整的旧快照或新快照，所以新建、编辑、删除时正在跑的回复不会读到一半的改动。
+- **bot 目录**（`internal/botdir`）：配置 bot 在启动时固定，另有一份整体替换的快照记着哪些配置 bot 运行时和配置不同（目前只有模板不存在、改用 `default` 这一种）；面板 bot 也是一份整体替换的快照（`atomic.Pointer`）。`Bot(id)` 按 ID 取，`All()` 先按配置顺序列配置 bot，再按新建时间列面板 bot，都是运行时生效的样子。读的一方总是拿到一份完整的旧快照或新快照，所以新建、编辑、删除时正在跑的回复不会读到一半的改动。
   - core、memory、search、panel、gateway、app 都从目录取 bot；只有配置校验和启动时登记 `bot_instances` 只看配置 bot。
   - 面板 bot 在目录里是一个 `BotConfig`：平台 `panel`，`private_chat` 为 `admins`，没有平台自身 ID、管理员和会话白名单。
 - **存储**（迁移 `0013_panel_bots.sql`）：表 `panel_bots` 有 `id`、`name`、`persona_template`、`skills`（JSON 字符串数组）、`created_by`、`created_at`、`updated_at`。新建时在同一个事务里往 `bot_instances` 插入一行（平台 `panel`），改名时同步它的名字，删除 bot 时保留这一行。
 - **ID**：`panel-` 加 8 位 `[a-z0-9]`，随机生成；和 `bot_instances`（含已删除的面板 bot）或目录里已有的 ID 重复时换一个，最多试 10 次。配置校验拒绝以 `panel-` 开头的配置 bot ID，所以两类 ID 不会冲突。
-- **启动**：`app.New` 在装配面板和 gateway 之前调用 `PanelBots().Load`，读 `panel_bots` 发布到目录。人设模板已不存在的改用 `default`；不存在、不能在私聊里用或工具不全的技能去掉。每一处都记一条警告日志，并作为 `problems` 挂在目录里；库里的行不改。
+- **启动**：`app.New` 在装配面板和 gateway 之前调用 `PanelBots().Load`，按当前的模板目录发布配置 bot，再读 `panel_bots` 发布面板 bot。人设模板不存在的 bot（配置 bot 和面板 bot 一样）改用 `default`；面板 bot 不存在、不能在私聊里用或工具不全的技能去掉。每一处都记一条警告日志，并作为 `problems` 挂在目录里（如“人设模板“x”已不存在，暂用 default”）；配置文件和库里的行都不改。
 - **新建和编辑**（`core.PanelBotService`，`internal/core/panelbots.go`）：校验后写库，再用库里的全部面板 bot 加上这次的改动重建快照，最后记审计。写操作在一把互斥锁下串行，不会互相覆盖。runner 每个任务都从目录取 bot，所以改动从下一次回复起生效；系统提示缓存的键里有 bot 名字，改名后自然失效。
 - **只收面板事件**：bot 是面板 bot、事件平台却不是 `panel` 时，core 拒绝这个事件，什么都不存（`submitOn`）。
 - **删除**（`PanelBotService.Delete`）：
@@ -144,20 +144,21 @@ NapCat      Adapter                 Core                          SQLite        
 
 ### 2.4 人设模板目录
 
-人设模板是一份目录：配置文件里的模板，加上在线写入的模板（`persona.Service`，`internal/persona/persona.go`）。在线改动立即生效，不用重启，重启后也还在。
+人设模板是一份目录，只来自数据库（`persona.Service`，`internal/persona/persona.go`），在 Web 管理面板里管理。改动立即生效，不用重启，重启后也还在。
 
-- **合并**：先放配置文件的 `persona_templates`（没有 `default` 时补上内置的 `DefaultPersona()`），再用表 `persona_templates`（迁移 `0014_persona_templates.sql`）里的行覆盖同名模板、补上新名字。每个模板有来源：配置（`config`）、配置·已在线修改（`config_override`，同时留着配置原版）、面板（`panel`）。面板的配置页仍然只显示配置文件原样。
+- **来源**：表 `persona_templates`（迁移 `0014_persona_templates.sql`）里的每一行是一个模板，来源 `db`；库里没有 `default` 时，目录里补上内置的 `DefaultPersona()` 作 `default`，来源 `builtin`。配置文件不再提供模板。
 - **读**：目录放在一个原子指针里，每次改动都生成一份新的完整目录再整体替换。读的一方总是拿到完整的旧目录或新目录，正在进行的回复不会读到改了一半的模板。读目录的地方：新会话建第 1 版、`/persona use` 和 `PUT …/persona` 的 `template`、`/persona list`、面板人设页的待用模板、私聊状态条（会话还没有人设时）、面板 bot 的模板检查。
 - **写**：在一把互斥锁下先写库，再在同一把锁内重建目录。
-  - `PutTemplate`：覆盖配置模板，或新建面板模板。新模板的名字只能是 1–32 个小写字母、数字、`-` 或 `_`；配置模板沿用配置里的名字。内容按 `PersonaDoc.Validate` 和 `ValidateContent` 检查（`minor` 和 `adult` 不能同时为真），`appearance_image` 不为空时必须是已上传的图片。不合格返回 `ErrInvalidTemplate`，它也算 `persona.ErrInvalid`。
-  - `ResetTemplate`：删掉配置模板的在线覆盖，恢复配置文件版本；没有覆盖时什么都不做。对面板模板返回 `ErrInvalidTemplate`。
-  - `DeleteTemplate`：只能删面板模板。配置模板（包括 `default`）返回 `ErrTemplateConfigOnly`；还有面板 bot 用它作默认模板时（bot 目录的 `PanelTemplateUsers`）返回 `ErrTemplateInUse`，并列出这些 bot 的名字。
+  - `PutTemplate`：覆盖同名模板，或新建模板；保存 `default` 后它取代内置的那份。新模板的名字只能是 1–32 个小写字母、数字、`-` 或 `_`；库里已有的模板沿用原来的名字（从旧配置文件迁移来的模板可能不合这条规则）。内容按 `PersonaDoc.Validate` 和 `ValidateContent` 检查（`minor` 和 `adult` 不能同时为真），`appearance_image` 不为空时必须是已上传的图片。不合格返回 `ErrInvalidTemplate`，它也算 `persona.ErrInvalid`。
+  - `ResetTemplate`：只对 `default` 有效，删掉库里的 `default`，回到内置默认人设；库里没有时什么都不做。其他名字返回 `ErrInvalidTemplate`。
+  - `DeleteTemplate`：`default` 不能删，返回 `ErrDefaultTemplate`（用 `ResetTemplate`）；还有 bot 用它作默认模板时（bot 目录的 `TemplateUsers`，配置 bot 和面板 bot 都算，按运行时生效的模板）返回 `ErrTemplateInUse`，并列出这些 bot（配置 bot 写成“名字（ID）”）。
 - **已有会话不变**：会话第一次回复时把模板复制成第 1 版，之后各自独立。模板改了不影响已有会话，要更新得在会话里重新套用模板。
-- **启动**：`app.New` 在 `NewService` 之后立即调用 `LoadTemplates`，早于面板 bot 的载入。读不出来的行（JSON 损坏、时间格式不对）和不合格的行（名字或内容不合规则）各记一条警告并跳过，不阻止启动，库里的行也不改；这样的行可以用 `DeleteTemplate` 删掉，或用 `PutTemplate` 覆盖。加载时不检查图片是否存在。
-- **配置 bot**：仍然只在配置校验时检查 `persona_template` 是否在配置文件里；运行时取的是目录里的同名模板，可能是在线覆盖后的版本。
+- **启动**：`app.New` 先做一次旧配置模板的迁移（见下），再调用 `LoadTemplates`，早于 bot 的发布。读不出来的行（JSON 损坏、时间格式不对）和内容不合格的行各记一条警告并跳过，不阻止启动，库里的行也不改；这样的行可以用 `DeleteTemplate` 删掉，或用 `PutTemplate` 覆盖。加载时不检查名字（迁移来的模板保留原名）和图片是否存在。
+- **旧配置模板的迁移**（迁移 `0015_app_meta.sql` 建键值表 `app_meta`）：配置文件还有 `persona_templates`（`Config.LegacyPersonaTemplates`，照常解析和校验内容，运行时不读）时，`app.New` 在加载目录之前调用 `sqlite.DB.MigrateConfigTemplates`：一个事务里逐个写入库里还没有的名字，已有的跳过（以库里为准），最后在 `app_meta` 写入 `config_templates_migrated`（迁移时间）。每个导入或跳过的模板记一条日志，写一条审计 `persona.template.migrate`（`detail` 列出 `imported` 和 `skipped`），最后记一条警告，提示删掉配置里的 `persona_templates`。已经迁移过、配置里却还有这一段时，`MigrateConfigTemplates` 返回 `store.ErrAlreadyMigrated`，启动失败，报中文错误，`serve` 以退出码 78 退出。配置里没有这一段时什么都不做。模板引用的图片 ID 原样写入。
+- **配置 bot**：配置校验不再检查 `persona_template` 是否存在。`PanelBots().Load` 发布 bot 时，模板不存在的配置 bot 记警告、运行时改用 `default`，面板上标“模板已不存在”，和面板 bot 的规则一样。
 - **图片 ID**：所有写人设的路径——`PutTemplate` 和 `Update`（面板和 Bearer API 的 `PUT …/persona`，包括套用模板和回滚，以及 `/persona use`）——在 `appearance_image` 不为空时查 `persona_images` 表，图片不存在就返回 400（`ErrInvalid`）。建第 1 版时直接复制模板，不再检查。
-- **清理图片时保留的 ID**：`ReferencedImages()` 列出模板引用的图片 ID，包括所有配置模板的（被在线覆盖的也算，恢复配置版本时还要用）。`PurgePersonaImages(createdBefore, keep)` 只删创建早于 `createdBefore`、不在 `keep` 里、也没有任何在线模板或人设版本（不论新旧）引用的图片；人设不是合法 JSON 的行（`json_valid` 为假）当作没有引用，不会让整次清理出错。核心的维护任务（启动时一次，之后每小时）以“现在减 7 天”和 `ReferencedImages()` 调用它，删除条数计入 `cleanup_deleted_total{table="persona_images"}`。
-- **面板接口**：`/panel/api/persona-templates` 的写操作调用上面三个方法，成功后让 `PanelBotService.Load` 重新发布面板 bot，引用的模板重新出现时“模板已不存在”的说明随之消失。上传图片和生成外观介绍各自一次只处理一个请求（解码 2500 万像素的图要几百 MB 内存），另一个请求同时到达时直接返回 409，不排队。
+- **清理图片时保留的 ID**：`ReferencedImages()` 列出库里模板引用的图片 ID。`PurgePersonaImages(createdBefore, keep)` 只删创建早于 `createdBefore`、不在 `keep` 里、也没有任何模板或人设版本（不论新旧）引用的图片；人设不是合法 JSON 的行（`json_valid` 为假）当作没有引用，不会让整次清理出错。核心的维护任务（启动时一次，之后每小时）以“现在减 7 天”和 `ReferencedImages()` 调用它，删除条数计入 `cleanup_deleted_total{table="persona_images"}`。
+- **面板接口**：`/panel/api/persona-templates` 的写操作调用上面三个方法，成功后让 `PanelBotService.Load` 重新发布配置 bot 和面板 bot，引用的模板重新出现时“模板已不存在”的说明随之消失。上传图片和生成外观介绍各自一次只处理一个请求（解码 2500 万像素的图要几百 MB 内存），另一个请求同时到达时直接返回 409，不排队。
 
 ## 3. 任务模型
 
@@ -622,8 +623,9 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | 面板登录会话 | SQLite `panel_sessions` | 保留，到期或超过空闲时限后失效并被清理 |
 | 面板 bot | SQLite `panel_bots`，名字也在 `bot_instances` | 保留，启动时载入 bot 目录（2.3）；删除面板 bot 后它在 `bot_instances` 里的行仍保留 |
 | bot 目录里的面板 bot 快照、面板 bot 的“删除中”标记 | 内存 | 快照从库里重建；标记丢失，进行到一半的删除已删的聊天不恢复，bot 保留 |
-| 在线写入的人设模板 | SQLite `persona_templates` | 保留，启动时和配置文件的模板合成模板目录（2.4）；不合格的行跳过但不删 |
-| 人设模板目录 | 内存 | 从配置文件和 `persona_templates` 重建 |
+| 人设模板 | SQLite `persona_templates` | 保留，启动时载入模板目录（2.4）；不合格的行跳过但不删 |
+| 人设模板目录 | 内存 | 从 `persona_templates` 重建，库里没有 `default` 时补上内置默认人设 |
+| 旧配置模板已迁移的标记 | SQLite `app_meta`（`config_templates_migrated`） | 保留，有它时配置里的 `persona_templates` 让启动失败（2.4） |
 | 人设外观参考图 | SQLite `persona_images`（原图和回复用的缩小图） | 保留；没有被模板或人设版本引用、创建满 7 天的图片由每小时的维护任务删除（2.4） |
 | 各 bot 最近一次通过 API 鉴权的时间、面板登录失败计数 | 内存 | 清空 |
 | 记忆整理的排队请求、积压跳转标记、失败计数和退避、缩小后的批次上限 | 内存 | 丢失；手动整理要重新触发。重新开启记忆后、下一次整理前重启的群，跳转标记丢失，按原游标整理完整积压（每轮最多 10 批） |
@@ -737,7 +739,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - **响应头**：所有 `/panel/` 响应带 CSP（`default-src 'self'`、`frame-ancestors 'none'` 等）、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`；接口另加 `Cache-Control: no-store`，静态资源为 `no-cache`。每个请求有 trace ID，按路由模板和状态码计入 `panel_requests_total`，panic 转成 500。
 - **读**：会话列表的消息数和最后时间用一条 GROUP BY 查询得到；消息检索复用 `SearchMessages`；读人设走只读路径，会话还没有人设时不触发第 1 版的写入；概览的实时状态来自本进程的 Prometheus registry（队列深度、关键词索引补建剩余、熔断，配置了 `embedding` 时还有向量积压）和发件箱待发数的查库结果；各 bot 的“最近调用”由 gateway 在 Bearer 鉴权通过时记进内存里的 `obs.Presence`。
 - **写**：策略和人设直接调用 `policy.Service`、`persona.Service`，`by` 为 `panel:<用户名>`；成员记忆的修改、忘记和读取走与 Bearer API 共用的 `memory.Admin`，修订记录来源为 `panel`，审计的 `bot_instance_id` 取自会话记录。触发整理写新审计种类 `memory.consolidate`，登录成功写 `panel.login`。面板 bot 的新建、编辑、删除调用 `core.PanelBotService`，由它写 `panel.bot.create`、`panel.bot.update`、`panel.bot.delete`（2.3）。人设模板的写入、恢复、删除调用模板目录（2.4），面板写 `persona.template.put`、`persona.template.reset`、`persona.template.delete`；上传图片（`imaging.Process` 后 `PutPersonaImage`）写 `persona.image.upload`，生成外观介绍（`Orchestrator.DescribeAppearance`，5.3）成功时写 `persona.appearance.describe`；这些审计的 `bot_instance_id` 为空，不含图片内容和生成的文字。
-- **配置页**：按白名单逐字段输出，密钥只显示 `(已设置)` / `(未设置)`，`extra_body` 只显示键和布尔、数字值；接口地址去掉 `user:password@`，查询参数的值和 `#` 后的部分显示为 `(已隐藏)`（`redactURL`）。人格模板和默认策略整段输出，测试检查这两个类型里没有名字像密钥的字段。
+- **配置页**：按白名单逐字段输出，密钥只显示 `(已设置)` / `(未设置)`，`extra_body` 只显示键和布尔、数字值；接口地址去掉 `user:password@`，查询参数的值和 `#` 后的部分显示为 `(已隐藏)`（`redactURL`）。默认策略整段输出，测试检查这个类型里没有名字像密钥的字段；旧配置文件里的 `persona_templates` 不再生效，不显示。
 
 ## 9. 已知限制和后续方向
 

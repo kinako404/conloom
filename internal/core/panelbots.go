@@ -32,7 +32,7 @@ const (
 	panelBotIDLen      = 8
 	panelBotIDAttempts = 10
 	// defaultPersonaTemplate is the persona template of a panel bot that names
-	// none, and the one a panel bot whose template is gone uses instead.
+	// none, and the one a bot whose template does not exist uses instead.
 	defaultPersonaTemplate = "default"
 )
 
@@ -101,11 +101,13 @@ func randomPanelBotID() string {
 	return config.PanelBotIDPrefix + string(b)
 }
 
-// Load publishes the stored panel bots to the bot directory. A bot whose
-// persona template no longer exists uses "default" instead, and a skill that
-// is no longer registered or no longer usable in private chats is left out;
-// each is logged as a warning and noted among the bot's problems in the
-// directory. The stored bot is left as it is.
+// Load publishes the config bots and the stored panel bots to the bot
+// directory, each as it takes effect with the persona templates of the
+// moment, so call it again after a template change. A bot whose persona
+// template does not exist uses "default" instead, and a panel bot's skill
+// that is no longer registered or no longer usable in private chats is left
+// out; each is logged as a warning and noted among the bot's problems in the
+// directory. The config and the stored bot are left as they are.
 func (s *PanelBotService) Load(ctx context.Context) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -113,6 +115,7 @@ func (s *PanelBotService) Load(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("core: load panel bots: %w", err)
 	}
+	s.publishConfig()
 	s.publish(bots, true)
 	s.o.log.Info("panel bots loaded", "count", len(bots))
 	return nil
@@ -425,15 +428,11 @@ func (s *PanelBotService) publish(bots []store.PanelBot, warn bool) {
 	bots = slices.SortedStableFunc(slices.Values(bots), func(a, b store.PanelBot) int {
 		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), cmp.Compare(a.ID, b.ID))
 	})
-	entries := make([]botdir.PanelEntry, 0, len(bots))
+	entries := make([]botdir.Entry, 0, len(bots))
 	for _, b := range bots {
-		e := botdir.PanelEntry{Bot: botdir.PanelBotConfig(b)}
-		if _, ok := s.o.personas.Template(b.PersonaTemplate); !ok {
-			e.Problems = append(e.Problems, fmt.Sprintf("人设模板“%s”已不存在，暂用 %s", b.PersonaTemplate, defaultPersonaTemplate))
-			e.Bot.PersonaTemplate = defaultPersonaTemplate
-			if warn {
-				s.o.log.Warn("panel bot's persona template no longer exists; using default", "bot", b.ID, "template", b.PersonaTemplate)
-			}
+		e := botdir.Entry{Bot: botdir.PanelBotConfig(b)}
+		if s.templateFallback(&e) && warn {
+			s.o.log.Warn("panel bot's persona template no longer exists; using default", "bot", b.ID, "template", b.PersonaTemplate)
 		}
 		e.Bot.Skills = slices.DeleteFunc(e.Bot.Skills, func(name string) bool {
 			problem := s.skillProblem(name)
@@ -449,6 +448,32 @@ func (s *PanelBotService) publish(bots []store.PanelBot, warn bool) {
 		entries = append(entries, e)
 	}
 	s.o.bots.SetPanel(entries)
+}
+
+// publishConfig publishes the config bots to the directory as they take
+// effect (see Load), logging each problem.
+func (s *PanelBotService) publishConfig() {
+	var entries []botdir.Entry
+	for _, b := range s.o.bots.ConfigBots() {
+		e := botdir.Entry{Bot: b}
+		if s.templateFallback(&e) {
+			s.o.log.Warn("config bot's persona template does not exist; using default", "bot", b.ID, "template", b.PersonaTemplate)
+			entries = append(entries, e)
+		}
+	}
+	s.o.bots.SetConfig(entries)
+}
+
+// templateFallback makes e use defaultPersonaTemplate, noting the problem,
+// when its persona template does not exist, and reports whether it did.
+func (s *PanelBotService) templateFallback(e *botdir.Entry) bool {
+	name := e.Bot.PersonaTemplate
+	if _, ok := s.o.personas.Template(name); ok {
+		return false
+	}
+	e.Problems = append(e.Problems, fmt.Sprintf("人设模板“%s”已不存在，暂用 %s", name, defaultPersonaTemplate))
+	e.Bot.PersonaTemplate = defaultPersonaTemplate
+	return true
 }
 
 // audit records a change of the panel bot id by actor as kind. A failed write

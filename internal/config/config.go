@@ -18,13 +18,17 @@ import (
 )
 
 type Config struct {
-	Server             ServerConfig                     `yaml:"server"`
-	Storage            StorageConfig                    `yaml:"storage"`
-	APITokens          []APIToken                       `yaml:"api_tokens"`
-	Bots               []BotConfig                      `yaml:"bots"`
-	ModelProfiles      map[string]ModelProfile          `yaml:"model_profiles"`
-	PersonaTemplates   map[string]conloomapi.PersonaDoc `yaml:"persona_templates"`
-	DefaultGroupPolicy conloomapi.GroupPolicy           `yaml:"default_group_policy"`
+	Server        ServerConfig            `yaml:"server"`
+	Storage       StorageConfig           `yaml:"storage"`
+	APITokens     []APIToken              `yaml:"api_tokens"`
+	Bots          []BotConfig             `yaml:"bots"`
+	ModelProfiles map[string]ModelProfile `yaml:"model_profiles"`
+	// LegacyPersonaTemplates are the persona templates of a config file from
+	// before templates moved into the database; nil without
+	// persona_templates. They are only checked and migrated into the
+	// database on the first start (see app.New), never used at run time.
+	LegacyPersonaTemplates map[string]conloomapi.PersonaDoc `yaml:"persona_templates"`
+	DefaultGroupPolicy     conloomapi.GroupPolicy           `yaml:"default_group_policy"`
 	// DefaultPrivatePolicy is the default policy of private conversations; nil
 	// when the file has no default_private_policy (see PrivatePolicy).
 	DefaultPrivatePolicy *conloomapi.GroupPolicy `yaml:"default_private_policy"`
@@ -377,12 +381,6 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
-	if cfg.PersonaTemplates == nil {
-		cfg.PersonaTemplates = map[string]conloomapi.PersonaDoc{}
-	}
-	if _, ok := cfg.PersonaTemplates["default"]; !ok {
-		cfg.PersonaTemplates["default"] = conloomapi.DefaultPersona()
-	}
 	for name, p := range cfg.ModelProfiles {
 		if p.Provider == "" {
 			p.Provider = ProviderOpenAICompatible

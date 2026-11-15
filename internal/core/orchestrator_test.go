@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -337,6 +338,7 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 		p.Endpoint, p.Model, p.APIKey, p.Modalities = env.vision.URL, "vision-model", "test-key-vision", []string{"text", "image"}
 		cfg.ModelProfiles[string(router.RoleVision)] = p
 	}
+	cfg.LegacyPersonaTemplates = map[string]conloomapi.PersonaDoc{}
 	if opts.configure != nil {
 		opts.configure(cfg)
 	}
@@ -363,18 +365,21 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 	}
 	env.policies = policy.NewService(st, cfg.DefaultGroupPolicy)
 	env.reg = prometheus.NewRegistry()
+	bots := botdir.New(cfg.Bots)
+	personas := migratedPersonas(t, st, cfg.LegacyPersonaTemplates)
+	personas.SetTemplateUsers(bots.TemplateUsers)
 	o, err := New(Deps{
 		Store:     env.hooks,
 		Router:    router.New(profiles, router.BreakerConfig{}, time.Now),
 		Admission: admission.New(limits),
-		Personas:  persona.NewService(st, cfg.PersonaTemplates),
+		Personas:  personas,
 		Policies:  env.policies,
 		Reviewer:  review.New(cfg.Secrets(), review.Options{}),
 		Notifier:  env.notifier,
 		Metrics:   obs.NewMetrics(env.reg),
 		Logger:    slog.New(slog.NewTextHandler(env.logs, nil)),
 		Config:    cfg,
-		Bots:      botdir.New(cfg.Bots),
+		Bots:      bots,
 		Now:       opts.now,
 		Skills:    opts.skills,
 	})
@@ -384,6 +389,27 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 	t.Cleanup(o.Close)
 	env.o = o
 	return env
+}
+
+// migratedPersonas returns a persona service over st whose catalog holds the
+// templates legacy, migrated into st as on the first start with a config
+// file that still has them; testOpts.configure puts them in
+// LegacyPersonaTemplates.
+func migratedPersonas(t *testing.T, st *sqlite.DB, legacy map[string]conloomapi.PersonaDoc) *persona.Service {
+	t.Helper()
+	ctx := context.Background()
+	var rows []store.PersonaTemplateRecord
+	for _, name := range slices.Sorted(maps.Keys(legacy)) {
+		rows = append(rows, store.PersonaTemplateRecord{Name: name, Persona: legacy[name], UpdatedBy: "system"})
+	}
+	if _, _, err := st.MigrateConfigTemplates(ctx, rows, time.Now()); err != nil {
+		t.Fatalf("MigrateConfigTemplates: %v", err)
+	}
+	personas := persona.NewService(st)
+	if err := personas.LoadTemplates(ctx); err != nil {
+		t.Fatalf("LoadTemplates: %v", err)
+	}
+	return personas
 }
 
 type evOpt func(*conloomapi.Event)
@@ -829,7 +855,7 @@ func TestCommand_PersonaTemplates(t *testing.T) {
 		p := conloomapi.DefaultPersona()
 		p.PersonaName, p.CharacterName = "灯塔看守", "苔灯"
 		p.Description = "苔灯是海边小镇的灯塔看守。"
-		c.PersonaTemplates["lighthouse"] = p
+		c.LegacyPersonaTemplates["lighthouse"] = p
 	}})
 	names := []string{"default", "lighthouse"}
 	version := func() store.PersonaVersion {

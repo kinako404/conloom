@@ -37,20 +37,30 @@ type storeHarness struct {
 	seeded   int // events stored by the seed helpers
 }
 
-// newStoreHarness serves bots with the persona templates templates; mutate,
-// when not nil, adjusts the dependencies before the server is built.
+// newStoreHarness serves bots with the persona templates templates, stored in
+// the database; mutate, when not nil, adjusts the dependencies before the
+// server is built.
 func newStoreHarness(t *testing.T, bots []config.BotConfig, templates map[string]conloomapi.PersonaDoc, mutate func(*Deps)) *storeHarness {
 	t.Helper()
+	ctx := context.Background()
 	h := newHarness(t, nil)
-	db, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "conloom.db"))
+	db, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "conloom.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	h.cfg.Bots, h.cfg.PersonaTemplates = bots, templates
+	for name, doc := range templates {
+		if err := db.PutPersonaTemplate(ctx, store.PersonaTemplateRecord{Name: name, Persona: doc, UpdatedBy: "panel:" + testUser}); err != nil {
+			t.Fatalf("store template %s: %v", name, err)
+		}
+	}
+	h.cfg.Bots = bots
 	sh := &storeHarness{harness: h, db: db}
 	sh.policies = policy.NewService(db, conloomapi.DefaultGroupPolicy())
-	sh.personas = persona.NewService(db, templates)
+	sh.personas = persona.NewService(db)
+	if err := sh.personas.LoadTemplates(ctx); err != nil {
+		t.Fatalf("load templates: %v", err)
+	}
 	sh.memAdmin = memory.NewAdmin(memory.AdminDeps{Store: db, Policies: sh.policies, Now: func() time.Time { return h.now }})
 	d := h.srv.d
 	d.Bots, d.Store, d.Policies, d.Personas, d.MemoryAdmin = botdir.New(bots), db, sh.policies, sh.personas, sh.memAdmin
@@ -74,7 +84,7 @@ func newDataHarness(t *testing.T) *storeHarness {
 	t.Helper()
 	return newStoreHarness(t,
 		[]config.BotConfig{{ID: dataBot, Platform: "qq", Name: "织语", PersonaTemplate: "lighthouse"}},
-		map[string]conloomapi.PersonaDoc{"default": conloomapi.DefaultPersona(), "lighthouse": lighthousePersona()},
+		map[string]conloomapi.PersonaDoc{"lighthouse": lighthousePersona()},
 		nil)
 }
 

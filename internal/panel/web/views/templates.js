@@ -1,11 +1,11 @@
 import { h, mount, errorBox, empty, table, kv } from '../lib/dom.js';
 import { get, post, put, del, isAbort } from '../lib/api.js';
 import { go, href } from '../lib/router.js';
-import { fmtTime, pretty, label } from '../lib/format.js';
+import { fmtTime, label } from '../lib/format.js';
 import { personaForm } from './personaform.js';
 
 // SOURCE labels where a template comes from (persona.TemplateSource).
-const SOURCE = { config: '配置', config_override: '配置·已在线修改', panel: '面板' };
+const SOURCE = { db: '数据库', builtin: '内置' };
 
 // TEMPLATE_NAME is the form of a template name.
 const TEMPLATE_NAME = /^[a-z0-9_-]{1,32}$/;
@@ -102,18 +102,17 @@ export async function templateView(ctx) {
     save: (persona, reason, msg, button) => write(msg, button, () => put(templatePath(name), { persona, reason }), `模板 ${name} 已保存`),
   });
 
-  const isConfig = t.source === 'config' || t.source === 'config_override';
-  const reset = isConfig ? h('button', {
+  const reset = name === 'default' ? h('button', {
     type: 'button',
-    disabled: t.source !== 'config_override',
-    title: t.source === 'config_override' ? null : '没有在线修改',
+    disabled: t.source !== 'db',
+    title: t.source === 'db' ? null : '用的就是内置默认人设',
     onclick: (e) => {
-      if (!confirm(`删掉模板 ${name} 的在线修改，恢复为配置文件里的版本？`)) return;
-      write(actionMsg, e.currentTarget, () => post(templatePath(name, 'reset')), `模板 ${name} 已恢复为配置文件版本`);
+      if (!confirm('删掉保存的 default，恢复为内置默认人设？')) return;
+      write(actionMsg, e.currentTarget, () => post(templatePath(name, 'reset')), '模板 default 已恢复为内置默认');
     },
-  }, '恢复为配置文件版本') : null;
+  }, '恢复为内置默认') : null;
 
-  const remove = t.source === 'panel' ? h('button', {
+  const remove = t.source === 'db' && name !== 'default' ? h('button', {
     type: 'button',
     class: 'danger',
     onclick: (e) => {
@@ -153,6 +152,5 @@ export async function templateView(ctx) {
       h('div', { class: 'toolbar' }, reset, remove, copy),
       actionMsg),
     h('section', { class: 'card' }, h('h2', null, '编辑模板'), form.el),
-    t.config ? h('details', { class: 'card' }, h('summary', null, '配置文件里的版本'), h('pre', { class: 'code' }, pretty(t.config))) : null,
   );
 }

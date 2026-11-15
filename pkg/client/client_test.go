@@ -93,7 +93,7 @@ func newGateway(t *testing.T) string {
 	metrics := obs.NewMetrics(reg)
 	p := cfg.ModelProfiles["short_context"]
 	ob := outbox.New(st, outbox.Config{}, metrics, nil)
-	personas := persona.NewService(st, cfg.PersonaTemplates)
+	personas := persona.NewService(st)
 	policies := policy.NewService(st, cfg.DefaultGroupPolicy)
 	bots := botdir.New(cfg.Bots)
 	o, err := core.New(core.Deps{

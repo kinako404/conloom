@@ -101,7 +101,7 @@ type PersonaState struct {
 }
 
 // PersonaPut sets a new persona (Persona), restores an earlier version
-// (RollbackTo) or copies a configured persona template (Template); exactly one
+// (RollbackTo) or copies a persona template (Template); exactly one
 // of them is set.
 type PersonaPut struct {
 	Persona    *PersonaDoc `json:"persona,omitempty" yaml:"persona,omitempty"`

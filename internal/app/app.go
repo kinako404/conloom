@@ -3,6 +3,8 @@ package app
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -21,6 +23,7 @@ import (
 	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/embedding"
 	"github.com/kinako404/conloom/internal/gateway"
+	"github.com/kinako404/conloom/internal/ids"
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/internal/outbox"
@@ -37,6 +40,7 @@ import (
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/internal/store/sqlite"
 	"github.com/kinako404/conloom/internal/usage"
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 // Options override defaults: a nil Registry is a fresh registry, a nil
@@ -90,11 +94,14 @@ type App struct {
 }
 
 // New loads the skills, opens the database in the configured data directory
-// (creating the directory if needed), registers the configured bots and wires
-// every component to one bot directory, which also holds the panel bots
-// stored in the database, with the web panel when the config has a panel
-// section. An invalid skill configuration is an error wrapping
-// skills.ErrInvalid. The caller must Close the App.
+// (creating the directory if needed), registers the configured bots, migrates
+// the persona templates of an old config file into the database once (see
+// migrateLegacyTemplates), loads the persona templates and wires every
+// component to one bot directory, which also holds the panel bots stored in
+// the database, with the web panel when the config has a panel section. An
+// invalid skill configuration is an error wrapping skills.ErrInvalid, and
+// persona_templates still in the config file after they were migrated one
+// wrapping store.ErrAlreadyMigrated. The caller must Close the App.
 func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -146,9 +153,13 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	loc := location(cfg.Server.Timezone)
 	rt := router.New(profiles, router.BreakerConfig{}, now)
 	adm := admission.New(limits)
-	personas := persona.NewService(st, cfg.PersonaTemplates)
+	personas := persona.NewService(st)
 	personas.SetLogger(logger)
-	personas.SetTemplateUsers(bots.PanelTemplateUsers)
+	personas.SetTemplateUsers(bots.TemplateUsers)
+	if err := migrateLegacyTemplates(ctx, st, cfg.LegacyPersonaTemplates, now().UTC(), loc, logger); err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("app: %w", err)
+	}
 	if err := personas.LoadTemplates(ctx); err != nil {
 		_ = st.Close()
 		return nil, fmt.Errorf("app: %w", err)
@@ -285,6 +296,60 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	})
 	return &App{st: st, orch: orch, panelOut: panelOut, sched: sched, usage: rec, handler: gw.Handler(), panelSite: panelSite,
 		indexer: indexer, vectors: vectors, logger: logger, usageFlushTimeout: usageFlushTimeout}, nil
+}
+
+// migrateLegacyTemplates migrates the persona templates legacy of an old
+// config file into the database on the first start with them (see
+// sqlite.DB.MigrateConfigTemplates): a name the database has already keeps
+// the stored template. It logs each template, audits the migration as
+// persona.template.migrate and warns that persona_templates must be removed
+// from the config file. Without legacy it does nothing. Once the templates
+// were migrated, legacy is an error in Chinese wrapping
+// store.ErrAlreadyMigrated, which the deployer fixes in the config file.
+func migrateLegacyTemplates(ctx context.Context, st *sqlite.DB, legacy map[string]conloomapi.PersonaDoc, now time.Time,
+	loc *time.Location, logger *slog.Logger) error {
+	if len(legacy) == 0 {
+		return nil
+	}
+	rows := make([]store.PersonaTemplateRecord, 0, len(legacy))
+	for _, name := range slices.Sorted(maps.Keys(legacy)) {
+		rows = append(rows, store.PersonaTemplateRecord{Name: name, Persona: legacy[name], UpdatedBy: "system"})
+	}
+	imported, skipped, err := st.MigrateConfigTemplates(ctx, rows, now)
+	if errors.Is(err, store.ErrAlreadyMigrated) {
+		when := "已经"
+		if v, ok, _ := st.GetMeta(ctx, store.MetaConfigTemplatesMigrated); ok {
+			if at, perr := time.Parse(time.RFC3339Nano, v); perr == nil {
+				when = "已在 " + at.In(loc).Format("2006-01-02 15:04:05") + " "
+			}
+		}
+		return fmt.Errorf("配置文件里的 persona_templates %s导入数据库，人设模板现在只在 Web 管理面板里管理；"+
+			"请删除配置文件里整段 persona_templates 后再启动（%w）", when, err)
+	}
+	if err != nil {
+		return fmt.Errorf("migrate persona templates: %w", err)
+	}
+	for _, name := range imported {
+		logger.Info("persona template imported from the config file", "template", name)
+	}
+	for _, name := range skipped {
+		logger.Info("persona template already in the database; keeping it, not the config file's", "template", name)
+	}
+	detail, err := json.Marshal(struct {
+		Imported []string `json:"imported"`
+		Skipped  []string `json:"skipped"`
+	}{append([]string{}, imported...), append([]string{}, skipped...)})
+	if err == nil {
+		err = st.InsertAudit(ctx, store.AuditEvent{ID: ids.New("aud"), Kind: "persona.template.migrate", Actor: "system",
+			Detail: string(detail), CreatedAt: now})
+	}
+	if err != nil {
+		logger.Error("persona templates migrated but audit failed", "error", err)
+	}
+	logger.Warn("the config file's persona templates are now in the database and managed in the web panel; "+
+		"remove persona_templates from the config file, or the next start fails",
+		"imported", len(imported), "skipped", len(skipped))
+	return nil
 }
 
 // location is the time zone tz, falling back to Asia/Shanghai, then UTC.

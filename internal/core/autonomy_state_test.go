@@ -140,7 +140,7 @@ func TestState_IgnoresRemovedBars(t *testing.T) {
 	env, clock := stateEnv(t, []string{"buff"}, func(c *config.Config) {
 		doc := conloomapi.DefaultPersona()
 		doc.Bars = bars
-		c.PersonaTemplates["default"] = doc
+		c.LegacyPersonaTemplates["default"] = doc
 	})
 	key := privKeyOf("20001")
 	now := clock.now()

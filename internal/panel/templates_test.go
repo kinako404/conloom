@@ -32,7 +32,6 @@ type templateResp struct {
 	UpdatedBy       string                 `json:"updated_by"`
 	UpdatedAt       *time.Time             `json:"updated_at"`
 	Persona         *conloomapi.PersonaDoc `json:"persona"`
-	Config          *conloomapi.PersonaDoc `json:"config"`
 }
 
 func templatePath(name string, rest ...string) string {
@@ -113,52 +112,64 @@ func TestTemplatesAPI_CRUDResetDelete(t *testing.T) {
 	if len(list) != 2 || list[0].Name != "cat" || list[1].Name != "default" {
 		t.Fatalf("templates = %+v, want cat and default", list)
 	}
-	wantCat := templateResp{Name: "cat", Source: "config", PersonaName: "cat", CharacterName: "小猫", Users: []templateUserResp{}}
-	if !reflect.DeepEqual(list[0], wantCat) {
-		t.Errorf("cat = %+v, want %+v", list[0], wantCat)
+	if got := list[0]; got.Source != "db" || got.PersonaName != "cat" || got.CharacterName != "小猫" ||
+		len(got.Users) != 0 || got.UpdatedBy != "panel:"+testUser || got.UpdatedAt == nil {
+		t.Errorf("cat = %+v, want the stored template without users", got)
 	}
-	if want := []templateUserResp{{dataBot, "织语", "config"}}; !reflect.DeepEqual(list[1].Users, want) || list[1].Source != "config" {
-		t.Errorf("default = %+v, want source config, users %+v", list[1], want)
+	wantDefault := templateResp{Name: "default", Source: "builtin", PersonaName: conloomapi.DefaultPersona().PersonaName,
+		Users: []templateUserResp{{dataBot, "织语", "config"}}}
+	if !reflect.DeepEqual(list[1], wantDefault) {
+		t.Errorf("default = %+v, want %+v", list[1], wantDefault)
 	}
 	if body := string(h.getJSON("/panel/api/persona-templates", nil)); !strings.Contains(body, `"users":[]`) ||
 		strings.Contains(body, `"persona":`) {
 		t.Errorf("list = %s, want users as an empty list and no persona", body)
 	}
+	if body := string(h.getJSON(templatePath("cat"), nil)); strings.Contains(body, `"config"`) {
+		t.Errorf("GET cat = %s, want no config file's version", body)
+	}
 	got := h.template("cat")
-	if got.Persona == nil || !reflect.DeepEqual(*got.Persona, catPersona) || got.Config != nil || got.Source != "config" ||
-		got.UpdatedBy != "" || got.UpdatedAt != nil {
-		t.Errorf("GET cat = %+v, want the config file's version without config original", got)
+	if got.Persona == nil || !reflect.DeepEqual(*got.Persona, catPersona) || got.Source != "db" {
+		t.Errorf("GET cat = %+v, want the stored version", got)
 	}
 
-	// Override the config template, then reset it.
-	override := catPersona
-	override.CharacterName = "大猫"
-	got = decodeTemplate(t, h.putTemplate("cat", override, "改名"), http.StatusOK)
-	if got.Source != "config_override" || got.CharacterName != "大猫" || got.Persona == nil || got.Persona.CharacterName != "大猫" ||
-		got.Config == nil || !reflect.DeepEqual(*got.Config, catPersona) || got.UpdatedBy != "panel:"+testUser || got.UpdatedAt == nil {
-		t.Errorf("PUT cat = %+v, want the override with the config original", got)
+	// Edit a stored template.
+	edited := catPersona
+	edited.CharacterName = "大猫"
+	got = decodeTemplate(t, h.putTemplate("cat", edited, "改名"), http.StatusOK)
+	if got.Source != "db" || got.CharacterName != "大猫" || got.Persona == nil || got.Persona.CharacterName != "大猫" ||
+		got.UpdatedBy != "panel:"+testUser || got.UpdatedAt == nil {
+		t.Errorf("PUT cat = %+v, want the edit", got)
 	}
 	if doc, _ := h.personas.Template("cat"); doc.CharacterName != "大猫" {
-		t.Errorf("catalog cat = %+v, want the override", doc)
+		t.Errorf("catalog cat = %+v, want the edit", doc)
 	}
-	if got := h.template("cat"); got.Source != "config_override" || got.Config == nil || got.Config.CharacterName != "小猫" {
-		t.Errorf("GET cat after override = %+v", got)
-	}
-	got = decodeTemplate(t, h.write(http.MethodPost, templatePath("cat", "reset"), nil), http.StatusOK)
-	if got.Source != "config" || got.Persona == nil || got.Persona.CharacterName != "小猫" || got.Config != nil {
-		t.Errorf("reset cat = %+v, want the config file's version", got)
-	}
-	if rows, _, err := h.db.ListPersonaTemplates(ctx); err != nil || len(rows) != 0 {
-		t.Errorf("stored templates after reset = %+v, %v; want none", rows, err)
-	}
-	decodeTemplate(t, h.write(http.MethodPost, templatePath("cat", "reset"), nil), http.StatusOK)
 
-	// A new panel template, used by a panel bot.
+	// Save default, then reset it to the built-in one.
+	got = decodeTemplate(t, h.write(http.MethodPost, templatePath("default", "reset"), nil), http.StatusOK)
+	if got.Source != "builtin" {
+		t.Errorf("reset of the built-in default = %+v, want it unchanged", got)
+	}
+	ownDefault := lighthousePersona()
+	got = decodeTemplate(t, h.putTemplate("default", ownDefault, ""), http.StatusOK)
+	if got.Source != "db" || got.Persona == nil || !reflect.DeepEqual(*got.Persona, ownDefault) {
+		t.Errorf("PUT default = %+v, want the saved default", got)
+	}
+	got = decodeTemplate(t, h.write(http.MethodPost, templatePath("default", "reset"), nil), http.StatusOK)
+	if got.Source != "builtin" || got.Persona == nil || !reflect.DeepEqual(*got.Persona, conloomapi.DefaultPersona()) ||
+		got.UpdatedBy != "" || got.UpdatedAt != nil {
+		t.Errorf("reset default = %+v, want the built-in default", got)
+	}
+	if rows, _, err := h.db.ListPersonaTemplates(ctx); err != nil || len(rows) != 1 || rows[0].Name != "cat" {
+		t.Errorf("stored templates after reset = %+v, %v; want only cat", rows, err)
+	}
+
+	// A new template, used by a panel bot.
 	night := lighthousePersona()
 	night.PersonaName = "夜猫"
 	got = decodeTemplate(t, h.putTemplate("night-owl", night, ""), http.StatusCreated)
-	if got.Name != "night-owl" || got.Source != "panel" || got.PersonaName != "夜猫" || got.Config != nil {
-		t.Errorf("PUT night-owl = %+v, want a new panel template", got)
+	if got.Name != "night-owl" || got.Source != "db" || got.PersonaName != "夜猫" {
+		t.Errorf("PUT night-owl = %+v, want a new template", got)
 	}
 	night.Description = "夜里醒着。"
 	got = decodeTemplate(t, h.putTemplate("night-owl", night, "补充设定"), http.StatusOK)
@@ -177,11 +188,11 @@ func TestTemplatesAPI_CRUDResetDelete(t *testing.T) {
 		t.Fatal("template in use was deleted")
 	}
 
-	errorBody(t, h.write(http.MethodPost, templatePath("night-owl", "reset"), nil), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
-	errorBody(t, h.write(http.MethodDelete, templatePath("cat"), nil), http.StatusForbidden, conloomapi.CodeForbidden)
+	for _, name := range []string{"night-owl", "cat", "nope"} {
+		errorBody(t, h.write(http.MethodPost, templatePath(name, "reset"), nil), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	}
 	errorBody(t, h.write(http.MethodDelete, templatePath("default"), nil), http.StatusForbidden, conloomapi.CodeForbidden)
 	errorBody(t, h.write(http.MethodDelete, templatePath("nope"), nil), http.StatusNotFound, conloomapi.CodeNotFound)
-	errorBody(t, h.write(http.MethodPost, templatePath("nope", "reset"), nil), http.StatusNotFound, conloomapi.CodeNotFound)
 	h.getErr(templatePath("nope"), http.StatusNotFound, conloomapi.CodeNotFound)
 
 	decodeBot(t, h.write(http.MethodPut, botPath(bot.ID), map[string]any{"name": "小红", "persona_template": "cat", "skills": []string{}}), http.StatusOK)
@@ -193,17 +204,17 @@ func TestTemplatesAPI_CRUDResetDelete(t *testing.T) {
 		t.Error("deleted template still in the catalog")
 	}
 
-	puts := checkTemplateAudits(t, h, "persona.template.put", "cat", "night-owl", "night-owl")
+	puts := checkTemplateAudits(t, h, "persona.template.put", "cat", "default", "night-owl", "night-owl")
 	for _, want := range [][]string{
-		{`"source":"config_override"`, `"created":false`, `"reason":"改名"`},
-		{`"source":"panel"`, `"created":true`},
-		{`"source":"panel"`, `"created":false`, `"reason":"补充设定"`},
+		{`"source":"db"`, `"created":false`, `"reason":"改名"`},
+		{`"source":"db"`, `"created":true`},
+		{`"source":"db"`, `"created":false`, `"reason":"补充设定"`},
 	} {
 		if !someContains(puts, want...) {
 			t.Errorf("put audit details %v: none has all of %v", puts, want)
 		}
 	}
-	checkTemplateAudits(t, h, "persona.template.reset", "cat", "cat")
+	checkTemplateAudits(t, h, "persona.template.reset", "default", "default")
 	checkTemplateAudits(t, h, "persona.template.delete", "night-owl")
 }
 

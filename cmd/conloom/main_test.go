@@ -266,6 +266,57 @@ skills:
 	}
 }
 
+func TestServe_MigratedLegacyTemplatesExitWithConfigCode(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "conloom.yaml")
+	cfg := `server:
+  listen: 127.0.0.1:0
+api_tokens:
+  - {name: adapter, token: fake-adapter-token, bot_instance_id: bot_main, scopes: [events:write]}
+bots:
+  - {id: bot_main, platform: qq, platform_self_id: "30001"}
+model_profiles:
+  short_context:
+    endpoint: http://127.0.0.1:9/v1
+    model: fake-model
+    context: {native_window: 32768, configured_window: 32768, soft_input_budget: 16000}
+storage:
+  data_dir: ./data
+persona_templates:
+  default:
+    persona_name: 默认人格
+    template_version: 1
+    style: {warmth: 0.5, humor: 0.5, directness: 0.5, verbosity: 0.5, emoji_usage: 0.1, proactivity: 0.2}
+    behavior: {default_reply_length: short, allow_memes: false, ask_followup_questions: occasionally, technical_explanations: brief}
+`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	db, err := sqlite.Open(ctx, filepath.Join(dir, "data", "conloom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.MigrateConfigTemplates(ctx, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := runCommand(ctx, "serve", "-c", cfgPath)
+	if code != exitConfig || ctx.Err() != nil {
+		t.Fatalf("exit %d, want %d before the deadline; stderr %s", code, exitConfig, stderr)
+	}
+	if !strings.Contains(stderr, "请删除配置文件里整段 persona_templates") {
+		t.Errorf("stderr = %q, want the Chinese request to remove persona_templates", stderr)
+	}
+}
+
 // TestSystemdUnits_DoNotRestartOnConfigErrors checks that every unit keeps
 // systemd from restarting a process that exited with exitConfig, which a
 // restart cannot fix, and only that status: a panic (status 2) must still be

@@ -102,7 +102,7 @@ func TestAutonomyService_State(t *testing.T) {
 	env, clock := newWakeEnv(t, nil, nil, func(c *config.Config) {
 		doc := conloomapi.DefaultPersona()
 		doc.Bars = bars
-		c.PersonaTemplates["default"] = doc
+		c.LegacyPersonaTemplates["default"] = doc
 	})
 	ctx := context.Background()
 	env.seedPrivateMessage(t, clock, "晚安")

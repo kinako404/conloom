@@ -45,8 +45,7 @@ func (o *Orchestrator) purgeBuffEvents() {
 }
 
 // purgePersonaImages deletes the persona images uploaded more than
-// personaImageGrace ago that no persona template or version references,
-// keeping also those the config file's templates name.
+// personaImageGrace ago that no persona template or version references.
 func (o *Orchestrator) purgePersonaImages() {
 	n, err := o.st.PurgePersonaImages(o.bgCtx, o.now().Add(-personaImageGrace), o.personas.ReferencedImages())
 	if err != nil {

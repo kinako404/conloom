@@ -39,8 +39,8 @@ func (stubTool) Call(context.Context, skills.Invocation, json.RawMessage) (strin
 // newBotsHarness is a writeHarness whose panel bots, panel chats and
 // appearance descriptions are served by a real orchestrator (without a vision
 // model) over its store, on the harness's clock; deleting a persona template
-// checks the panel bots using it, as in the app. The
-// config bot is dataBot, the persona templates are default and cat, and the
+// checks the bots using it, as in the app. The config bot is dataBot, the
+// persona templates are the built-in default and the stored cat, and the
 // skills are the built-in ones, with stub tools, plus grouponly, which only
 // group chats may use.
 func newBotsHarness(t *testing.T) *writeHarness {
@@ -62,7 +62,7 @@ func newBotsHarness(t *testing.T) *writeHarness {
 	h := &writeHarness{trigger: &fakeTrigger{}}
 	h.storeHarness = newStoreHarness(t,
 		[]config.BotConfig{{ID: dataBot, Platform: "qq", Name: "织语", PersonaTemplate: "default", Skills: []string{"time"}}},
-		map[string]conloomapi.PersonaDoc{"default": conloomapi.DefaultPersona(), "cat": catPersona},
+		map[string]conloomapi.PersonaDoc{"cat": catPersona},
 		func(d *Deps) {
 			o, err := core.New(core.Deps{
 				Store: d.Store.(*sqlite.DB), Router: router.New(nil, router.BreakerConfig{}, time.Now),
@@ -74,7 +74,7 @@ func newBotsHarness(t *testing.T) *writeHarness {
 				t.Fatalf("core.New: %v", err)
 			}
 			t.Cleanup(o.Close)
-			d.Personas.SetTemplateUsers(d.Bots.PanelTemplateUsers)
+			d.Personas.SetTemplateUsers(d.Bots.TemplateUsers)
 			d.Audit, d.Memory, d.Chat, d.PanelBots, d.Appearance = d.Store.(*sqlite.DB), h.trigger, o, o.PanelBots(), o
 		})
 	return h
