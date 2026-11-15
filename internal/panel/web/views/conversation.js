@@ -569,8 +569,16 @@ function header(c) {
   ];
 }
 
+// OLD_CHAT_TAB was a private conversation's chat tab, now the chat page; its
+// links, such as bookmarks, open the chat there.
+const OLD_CHAT_TAB = 'chat';
+
 export async function conversationView(ctx) {
   const key = ctx.params.key;
+  if (ctx.params.tab === OLD_CHAT_TAB) {
+    location.replace(href('chat', key));
+    return;
+  }
   const conv = await get(convPath(key), null, ctx.signal);
   const tabs = tabsOf(conv);
   const tab = tabs.some(([t]) => t === ctx.params.tab) ? ctx.params.tab : 'messages';

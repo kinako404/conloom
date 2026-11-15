@@ -149,8 +149,12 @@ func TestStatic_ServesChatsView(t *testing.T) {
 	if w = get("/panel/views/conversations.js"); !strings.Contains(w.Body.String(), "from './chats.js'") {
 		t.Errorf("/panel/views/conversations.js: %d, does not import ./chats.js", w.Code)
 	}
-	if w = get("/panel/views/conversation.js"); strings.Contains(w.Body.String(), "['chat', '聊天']") {
+	w = get("/panel/views/conversation.js")
+	if strings.Contains(w.Body.String(), "['chat', '聊天']") {
 		t.Error("/panel/views/conversation.js still has the chat tab")
+	}
+	if !strings.Contains(w.Body.String(), "location.replace(href('chat', key))") {
+		t.Error("/panel/views/conversation.js does not send old chat tab links to the chat page")
 	}
 }
 
