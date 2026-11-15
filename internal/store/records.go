@@ -168,6 +168,13 @@ type PersonaTemplateRecord struct {
 	UpdatedAt time.Time
 }
 
+// UnreadablePersonaTemplate is a stored persona template row that could not
+// be read, such as one whose persona is not valid JSON, and why.
+type UnreadablePersonaTemplate struct {
+	Name string
+	Err  error
+}
+
 type PolicyVersion struct {
 	ConversationKey string
 	Version         int

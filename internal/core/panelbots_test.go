@@ -291,6 +291,36 @@ func TestPanelBots_CreateThenChat(t *testing.T) {
 	}
 }
 
+func TestPanelBots_OnlineTemplate(t *testing.T) {
+	env := panelBotEnv(t, testOpts{})
+	ctx := context.Background()
+	svc := env.o.PanelBots()
+	if _, err := svc.Create(ctx, PanelBotInput{Name: "小红", PersonaTemplate: "online_cat"}, panelBotActor); !errors.Is(err, ErrInvalidBot) {
+		t.Fatalf("Create with a template not created yet err = %v, want ErrInvalidBot", err)
+	}
+	cat := conloomapi.DefaultPersona()
+	cat.PersonaName, cat.CharacterName = "猫人格", "小猫"
+	if err := env.o.personas.PutTemplate(ctx, "online_cat", cat, panelBotActor); err != nil {
+		t.Fatalf("PutTemplate: %v", err)
+	}
+	bot := env.createPanelBot(t, PanelBotInput{Name: "小红", PersonaTemplate: "online_cat"})
+	key := env.createChat(t, bot.ID)
+	env.waitBotTask(t, bot.ID, env.panelBotMessage(t, bot.ID, key, "你好"))
+	if sys := systemPrompt(t, env.lastRequest(t)); !strings.HasPrefix(sys, persona.CorePrompt("小猫")) || !strings.Contains(sys, persona.Render(cat)) {
+		t.Errorf("system prompt of the bot's new chat does not use the online template:\n%s", sys)
+	}
+
+	if err := env.o.personas.DeleteTemplate(ctx, "online_cat"); err != nil {
+		t.Fatalf("DeleteTemplate: %v", err)
+	}
+	if err := svc.Load(ctx); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if b, _ := env.o.bots.Bot(bot.ID); b.PersonaTemplate != "default" || len(env.o.bots.Problems(bot.ID)) != 1 {
+		t.Errorf("bot after its template was deleted = %+v, problems %v; want default with a problem", b, env.o.bots.Problems(bot.ID))
+	}
+}
+
 func TestPanelBots_UpdateTakesEffectNextReply(t *testing.T) {
 	env := panelBotEnv(t, testOpts{})
 	ctx := context.Background()

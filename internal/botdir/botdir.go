@@ -83,6 +83,18 @@ func (d *Directory) Problems(id string) []string {
 	return nil
 }
 
+// PanelTemplateUsers returns the names of the panel bots whose persona
+// template, as it takes effect, is name, in snapshot order.
+func (d *Directory) PanelTemplateUsers(name string) []string {
+	var out []string
+	for _, e := range d.panel.Load().entries {
+		if e.Bot.PersonaTemplate == name {
+			out = append(out, e.Bot.Name)
+		}
+	}
+	return out
+}
+
 // SetPanel replaces the panel bots with entries, in their order. An entry
 // whose ID is a config bot's or an earlier entry's is left out. Entries are
 // copied, so the caller may reuse them.

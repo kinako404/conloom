@@ -34,6 +34,7 @@ import (
 	"github.com/kinako404/conloom/internal/provider/openai"
 	"github.com/kinako404/conloom/internal/review"
 	"github.com/kinako404/conloom/internal/router"
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/internal/store/sqlite"
 	"github.com/kinako404/conloom/internal/testutil/fakeopenai"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -677,6 +678,35 @@ func TestPersona_PutTemplateAndTextLimits(t *testing.T) {
 	}
 	if got := s.personaState(t, s.do(t, http.MethodGet, path, adapterToken, nil, nil)); got.Version != 2 {
 		t.Errorf("rejected PUTs stored versions: latest = %d", got.Version)
+	}
+}
+
+func TestPersonaWrite_UnknownImage400(t *testing.T) {
+	s := newTestServer(t)
+	s.accept(t, adapterToken, s.event("20001", "大家好"))
+	const path = "/api/v1/conversations/group_10001/persona"
+	if v1 := s.personaState(t, s.do(t, http.MethodGet, path, adapterToken, nil, nil)); v1.Version != 1 {
+		t.Fatalf("v1 = %+v", v1)
+	}
+	id := strings.Repeat("cd", 32)
+	doc := conloomapi.DefaultPersona()
+	doc.AppearanceImage = id
+	er := expectError(t, s.do(t, http.MethodPut, path, adminToken, conloomapi.PersonaPut{Persona: &doc}, nil),
+		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	if want := `persona: invalid: unknown appearance_image "` + id + `"`; er.Message != want {
+		t.Errorf("message = %q, want %q", er.Message, want)
+	}
+	if got := s.personaState(t, s.do(t, http.MethodGet, path, adapterToken, nil, nil)); got.Version != 1 {
+		t.Fatalf("rejected PUT stored a version: latest = %d", got.Version)
+	}
+
+	if err := s.st.PutPersonaImage(context.Background(), store.PersonaImage{ID: id, MIME: "image/png", Width: 1, Height: 1,
+		ReplyWidth: 1, ReplyHeight: 1, ReplyTokens: 3, CreatedBy: "panel:admin"}); err != nil {
+		t.Fatal(err)
+	}
+	if v2 := s.personaState(t, s.do(t, http.MethodPut, path, adminToken, conloomapi.PersonaPut{Persona: &doc}, nil)); v2.Version != 2 ||
+		v2.Persona.AppearanceImage != id {
+		t.Fatalf("PUT with an uploaded image = %+v", v2)
 	}
 }
 

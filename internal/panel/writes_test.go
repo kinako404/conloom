@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -330,6 +331,31 @@ func TestPutPersona_TemplateAndRollback(t *testing.T) {
 
 	h.srv.d.Bots = botdir.New(nil)
 	errorBody(t, h.write(http.MethodPut, path, conloomapi.PersonaPut{Template: "cat"}), http.StatusNotFound, conloomapi.CodeNotFound)
+}
+
+func TestPersonaWrite_UnknownImage400(t *testing.T) {
+	h := newWriteHarness(t, nil)
+	ctx := context.Background()
+	path := convPath(writeGroup.Key, "persona")
+	id := strings.Repeat("ab", 32)
+	doc := conloomapi.DefaultPersona()
+	doc.AppearanceImage = id
+	body := errorBody(t, h.write(http.MethodPut, path, conloomapi.PersonaPut{Persona: &doc}), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	if want := `persona: invalid: unknown appearance_image "` + id + `"`; body.Message != want {
+		t.Errorf("message = %q, want %q", body.Message, want)
+	}
+	if _, err := h.db.LatestPersona(ctx, writeGroup.Key); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("rejected PUT stored a version: %v", err)
+	}
+
+	if err := h.db.PutPersonaImage(ctx, store.PersonaImage{ID: id, MIME: "image/png", Width: 1, Height: 1,
+		ReplyWidth: 1, ReplyHeight: 1, ReplyTokens: 3, CreatedBy: "panel:" + testUser}); err != nil {
+		t.Fatal(err)
+	}
+	got := decodeCurrent[testPersonaView](t, h.write(http.MethodPut, path, conloomapi.PersonaPut{Persona: &doc}), http.StatusOK)
+	if got.Version != 1 || got.Persona.AppearanceImage != id {
+		t.Errorf("PUT with an uploaded image = %+v", got)
+	}
 }
 
 func TestMemberEditAndForget(t *testing.T) {

@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/kinako404/conloom/internal/store"
@@ -45,41 +46,61 @@ func (db *DB) PersonaImageExists(ctx context.Context, id string) (bool, error) {
 	return ok, err
 }
 
-func (db *DB) PurgePersonaImages(ctx context.Context, createdBefore time.Time) (int, error) {
+func (db *DB) PurgePersonaImages(ctx context.Context, createdBefore time.Time, keep []string) (int, error) {
+	if keep == nil {
+		keep = []string{}
+	}
+	kept, err := json.Marshal(keep)
+	if err != nil {
+		return 0, err
+	}
 	return execCount(ctx, db.w, `DELETE FROM persona_images WHERE created_at < ? AND id NOT IN (
+		SELECT value FROM json_each(?)
+		UNION
 		SELECT json_extract(persona, '$.appearance_image') FROM persona_templates
 		WHERE json_extract(persona, '$.appearance_image') IS NOT NULL
 		UNION
 		SELECT json_extract(persona, '$.appearance_image') FROM persona_versions
-		WHERE json_extract(persona, '$.appearance_image') IS NOT NULL)`, fmtTime(createdBefore))
+		WHERE json_extract(persona, '$.appearance_image') IS NOT NULL)`, fmtTime(createdBefore), string(kept))
 }
 
-func (db *DB) ListPersonaTemplates(ctx context.Context) ([]store.PersonaTemplateRecord, error) {
+func (db *DB) ListPersonaTemplates(ctx context.Context) ([]store.PersonaTemplateRecord, []store.UnreadablePersonaTemplate, error) {
 	rows, err := db.r.QueryContext(ctx, `SELECT name, persona, updated_by, created_at, updated_at
 		FROM persona_templates ORDER BY name`)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	var out []store.PersonaTemplateRecord
+	var unreadable []store.UnreadablePersonaTemplate
 	for rows.Next() {
 		var r store.PersonaTemplateRecord
 		var persona, created, updated string
 		if err := rows.Scan(&r.Name, &persona, &r.UpdatedBy, &created, &updated); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if err := json.Unmarshal([]byte(persona), &r.Persona); err != nil {
-			return nil, err
-		}
-		if r.CreatedAt, err = parseTime(created); err != nil {
-			return nil, err
-		}
-		if r.UpdatedAt, err = parseTime(updated); err != nil {
-			return nil, err
+		if err := decodeTemplate(&r, persona, created, updated); err != nil {
+			unreadable = append(unreadable, store.UnreadablePersonaTemplate{Name: r.Name, Err: err})
+			continue
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	return out, unreadable, rows.Err()
+}
+
+// decodeTemplate sets r's persona and times from their stored text.
+func decodeTemplate(r *store.PersonaTemplateRecord, persona, created, updated string) error {
+	if err := json.Unmarshal([]byte(persona), &r.Persona); err != nil {
+		return fmt.Errorf("persona: %w", err)
+	}
+	var err error
+	if r.CreatedAt, err = parseTime(created); err != nil {
+		return fmt.Errorf("created_at: %w", err)
+	}
+	if r.UpdatedAt, err = parseTime(updated); err != nil {
+		return fmt.Errorf("updated_at: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) PutPersonaTemplate(ctx context.Context, r store.PersonaTemplateRecord) error {

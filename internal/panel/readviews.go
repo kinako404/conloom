@@ -67,9 +67,10 @@ type personaResponse struct {
 // getPersona returns the current persona and its versions newest first. It
 // never writes: a conversation without a persona gets current null, and the
 // template its first version will be made from (the bot's persona_template,
-// "default" when unset) with that template's content. minor and content_mode
-// describe the current persona, or that template without one; content_mode is
-// the mode it has in a private chat, whatever the conversation's type.
+// "default" when unset) with that template's content in the catalog, online
+// changes included. minor and content_mode describe the current persona, or
+// that template without one; content_mode is the mode it has in a private
+// chat, whatever the conversation's type.
 func (s *Server) getPersona(w http.ResponseWriter, r *http.Request, _ *Session) {
 	conv, ok := s.conversation(w, r)
 	if !ok {
@@ -87,10 +88,7 @@ func (s *Server) getPersona(w http.ResponseWriter, r *http.Request, _ *Session) 
 			name = bot.PersonaTemplate
 		}
 		resp.PendingTemplate = &name
-		if doc, ok := s.d.Config.PersonaTemplates[name]; ok {
-			resp.TemplateDoc = &doc
-		} else if name == "default" {
-			doc := conloomapi.DefaultPersona()
+		if doc, ok := s.d.Personas.Template(name); ok {
 			resp.TemplateDoc = &doc
 		}
 	default:

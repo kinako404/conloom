@@ -105,6 +105,28 @@ func TestPersona_ReadOnlyWhenMissing(t *testing.T) {
 	}
 }
 
+func TestPersona_PendingTemplateFromCatalog(t *testing.T) {
+	dh := newDataHarness(t)
+	ctx := context.Background()
+	group := dh.seedConv("qq", conloomapi.ConvGroup, "10001")
+	edited := lighthousePersona()
+	edited.PersonaName = "在线灯塔"
+	if err := dh.personas.PutTemplate(ctx, "lighthouse", edited, "panel:admin"); err != nil {
+		t.Fatalf("PutTemplate: %v", err)
+	}
+	if err := dh.personas.PutTemplate(ctx, "cat", conloomapi.DefaultPersona(), "panel:admin"); err != nil {
+		t.Fatalf("PutTemplate: %v", err)
+	}
+	var got personaResp
+	dh.getJSON(convPath(group.Key, "persona"), &got)
+	if got.TemplateDoc == nil || !reflect.DeepEqual(*got.TemplateDoc, edited) {
+		t.Errorf("template_doc = %+v, want the online version of lighthouse", got.TemplateDoc)
+	}
+	if !reflect.DeepEqual(got.Templates, []string{"cat", "default", "lighthouse"}) {
+		t.Errorf("templates = %v, want [cat default lighthouse]", got.Templates)
+	}
+}
+
 func TestPersona_CurrentAndVersions(t *testing.T) {
 	dh := newDataHarness(t)
 	ctx := context.Background()

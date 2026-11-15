@@ -372,7 +372,7 @@ func (s *PanelBotService) validate(in PanelBotInput) (PanelBotInput, error) {
 	if out.PersonaTemplate == "" {
 		out.PersonaTemplate = defaultPersonaTemplate
 	}
-	if !slices.Contains(s.o.personas.TemplateNames(), out.PersonaTemplate) {
+	if _, ok := s.o.personas.Template(out.PersonaTemplate); !ok {
 		return invalid("人设模板“%s”不存在", out.PersonaTemplate)
 	}
 	for _, name := range in.Skills {
@@ -423,11 +423,10 @@ func (s *PanelBotService) publish(bots []store.PanelBot, warn bool) {
 	bots = slices.SortedStableFunc(slices.Values(bots), func(a, b store.PanelBot) int {
 		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), cmp.Compare(a.ID, b.ID))
 	})
-	templates := s.o.personas.TemplateNames()
 	entries := make([]botdir.PanelEntry, 0, len(bots))
 	for _, b := range bots {
 		e := botdir.PanelEntry{Bot: botdir.PanelBotConfig(b)}
-		if !slices.Contains(templates, b.PersonaTemplate) {
+		if _, ok := s.o.personas.Template(b.PersonaTemplate); !ok {
 			e.Problems = append(e.Problems, fmt.Sprintf("人设模板“%s”已不存在，暂用 %s", b.PersonaTemplate, defaultPersonaTemplate))
 			e.Bot.PersonaTemplate = defaultPersonaTemplate
 			if warn {

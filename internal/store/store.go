@@ -132,11 +132,15 @@ type Store interface {
 	GetPersonaImage(ctx context.Context, id string, original bool) (PersonaImage, error)
 	PersonaImageExists(ctx context.Context, id string) (bool, error)
 	// PurgePersonaImages deletes the images created before createdBefore that
-	// no persona template and no persona version, of any age, names as its
-	// appearance image, and returns how many it deleted.
-	PurgePersonaImages(ctx context.Context, createdBefore time.Time) (int, error)
-	// ListPersonaTemplates returns the templates written online ordered by Name.
-	ListPersonaTemplates(ctx context.Context) ([]PersonaTemplateRecord, error)
+	// are not in keep and that no persona template and no persona version, of
+	// any age, names as its appearance image, and returns how many it deleted.
+	// keep lists the images referenced elsewhere, such as by the persona
+	// templates of the config file.
+	PurgePersonaImages(ctx context.Context, createdBefore time.Time, keep []string) (int, error)
+	// ListPersonaTemplates returns the templates written online ordered by
+	// Name. A row it cannot read does not fail the list: it is left out of
+	// templates and reported in unreadable, also ordered by Name.
+	ListPersonaTemplates(ctx context.Context) (templates []PersonaTemplateRecord, unreadable []UnreadablePersonaTemplate, err error)
 	// PutPersonaTemplate stores r, replacing the template of the same name but
 	// keeping its CreatedAt. A zero UpdatedAt is stored as now, a zero
 	// CreatedAt as UpdatedAt.

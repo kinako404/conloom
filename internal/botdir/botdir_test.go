@@ -87,6 +87,24 @@ func TestDirectory_LookupAndOrder(t *testing.T) {
 	}
 }
 
+func TestDirectory_PanelTemplateUsers(t *testing.T) {
+	d := New([]config.BotConfig{{ID: "qq-main", Platform: "qq", Name: "小明", PersonaTemplate: "lighthouse"}})
+	if got := d.PanelTemplateUsers("lighthouse"); len(got) != 0 {
+		t.Fatalf("PanelTemplateUsers without panel bots = %v, want none", got)
+	}
+	d.SetPanel([]PanelEntry{
+		{Bot: PanelBotConfig(store.PanelBot{ID: "panel-a1b2c3d4", Name: "小红", PersonaTemplate: "lighthouse"})},
+		{Bot: PanelBotConfig(store.PanelBot{ID: "panel-b2c3d4e5", Name: "小刚", PersonaTemplate: "default"})},
+		{Bot: PanelBotConfig(store.PanelBot{ID: "panel-c3d4e5f6", Name: "小绿", PersonaTemplate: "lighthouse"})},
+	})
+	if got := d.PanelTemplateUsers("lighthouse"); !slices.Equal(got, []string{"小红", "小绿"}) {
+		t.Fatalf("PanelTemplateUsers(lighthouse) = %v, want the panel bots 小红 and 小绿, not the config bot", got)
+	}
+	if got := d.PanelTemplateUsers("cat"); len(got) != 0 {
+		t.Fatalf("PanelTemplateUsers(cat) = %v, want none", got)
+	}
+}
+
 func TestPanelBotConfig(t *testing.T) {
 	skills := []string{"memory"}
 	b := PanelBotConfig(store.PanelBot{ID: "panel-a1b2c3d4", Name: "小明", PersonaTemplate: "default", Skills: skills})

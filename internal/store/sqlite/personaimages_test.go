@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"slices"
@@ -72,9 +73,9 @@ func putTemplate(t *testing.T, db *DB, r store.PersonaTemplateRecord) {
 
 func listTemplates(t *testing.T, db *DB) []store.PersonaTemplateRecord {
 	t.Helper()
-	rs, err := db.ListPersonaTemplates(context.Background())
-	if err != nil {
-		t.Fatalf("ListPersonaTemplates: %v", err)
+	rs, unreadable, err := db.ListPersonaTemplates(context.Background())
+	if err != nil || len(unreadable) != 0 {
+		t.Fatalf("ListPersonaTemplates: unreadable %+v, %v", unreadable, err)
 	}
 	return rs
 }
@@ -166,9 +167,11 @@ func TestPersonaImages_PurgeKeepsReferenced(t *testing.T) {
 	unreferenced := fakeImage("unreferenced", old)
 	atCutoff := fakeImage("at cutoff", cutoff)
 	young := fakeImage("young", now.Add(-time.Hour))
-	for _, img := range []store.PersonaImage{byTemplate, byOldVersion, byLatestVersion, unreferenced, atCutoff, young} {
+	byKeep := fakeImage("kept by the caller", old)
+	for _, img := range []store.PersonaImage{byTemplate, byOldVersion, byLatestVersion, unreferenced, atCutoff, young, byKeep} {
 		putImage(t, db, img)
 	}
+	keep := []string{byKeep.ID, fakeImage("never put", old).ID}
 
 	putTemplate(t, db, store.PersonaTemplateRecord{Name: "teacher", Persona: personaWithImage(byTemplate.ID), UpdatedBy: "panel:admin"})
 	putTemplate(t, db, store.PersonaTemplateRecord{Name: "plain", Persona: conloomapi.DefaultPersona(), UpdatedBy: "panel:admin"})
@@ -183,35 +186,40 @@ func TestPersonaImages_PurgeKeepsReferenced(t *testing.T) {
 		}
 	}
 
-	purge := func(want int) {
+	purge := func(keep []string, want int) {
 		t.Helper()
-		if n, err := db.PurgePersonaImages(ctx, cutoff); err != nil || n != want {
-			t.Fatalf("PurgePersonaImages = %d, %v; want %d", n, err, want)
+		if n, err := db.PurgePersonaImages(ctx, cutoff, keep); err != nil || n != want {
+			t.Fatalf("PurgePersonaImages keeping %v = %d, %v; want %d", keep, n, err, want)
 		}
 	}
 	checkKept := func(want map[string]bool) {
 		t.Helper()
 		for name, img := range map[string]store.PersonaImage{
 			"by template": byTemplate, "by old version": byOldVersion, "by latest version": byLatestVersion,
-			"unreferenced": unreferenced, "at cutoff": atCutoff, "young": young,
+			"unreferenced": unreferenced, "at cutoff": atCutoff, "young": young, "by keep": byKeep,
 		} {
 			if got := imageExists(t, db, img.ID); got != want[name] {
 				t.Errorf("image %s kept = %v, want %v", name, got, want[name])
 			}
 		}
 	}
-	purge(1)
+	purge(keep, 1)
 	kept := map[string]bool{"by template": true, "by old version": true, "by latest version": true,
-		"unreferenced": false, "at cutoff": true, "young": true}
+		"unreferenced": false, "at cutoff": true, "young": true, "by keep": true}
 	checkKept(kept)
-	purge(0)
+	purge(keep, 0)
 
 	if ok, err := db.DeletePersonaTemplate(ctx, "teacher"); err != nil || !ok {
 		t.Fatalf("DeletePersonaTemplate = %v, %v; want true", ok, err)
 	}
-	purge(1)
+	purge(keep, 1)
 	kept["by template"] = false
 	checkKept(kept)
+
+	purge(nil, 1)
+	kept["by keep"] = false
+	checkKept(kept)
+	purge([]string{}, 0)
 }
 
 func TestPersonaImages_ReuploadRestartsGrace(t *testing.T) {
@@ -227,7 +235,7 @@ func TestPersonaImages_ReuploadRestartsGrace(t *testing.T) {
 	again := reuploaded
 	again.ReplyJPEG, again.CreatedBy, again.CreatedAt = []byte("other reply"), "panel:other", now.Add(-time.Hour)
 	putImage(t, db, again)
-	if n, err := db.PurgePersonaImages(ctx, cutoff); err != nil || n != 1 {
+	if n, err := db.PurgePersonaImages(ctx, cutoff, nil); err != nil || n != 1 {
 		t.Fatalf("PurgePersonaImages = %d, %v; want 1", n, err)
 	}
 	if imageExists(t, db, untouched.ID) {
@@ -295,6 +303,43 @@ func TestPersonaTemplates_CRUD(t *testing.T) {
 	}
 	if !slices.Equal(names, []string{"default", "new_1"}) {
 		t.Fatalf("templates after deleting = %v, want [default new_1]", names)
+	}
+}
+
+func TestPersonaTemplates_ListReportsUnreadableRows(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	at := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	good := store.PersonaTemplateRecord{Name: "b_good", Persona: conloomapi.DefaultPersona(), UpdatedBy: "panel:admin", CreatedAt: at, UpdatedAt: at}
+	putTemplate(t, db, good)
+	persona, err := json.Marshal(conloomapi.DefaultPersona())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct{ name, persona, created, updated string }{
+		{"a_json", `{"persona_name":`, fmtTime(at), fmtTime(at)},
+		{"c_created", string(persona), "yesterday", fmtTime(at)},
+		{"d_updated", string(persona), fmtTime(at), "now"},
+	} {
+		if _, err := db.w.ExecContext(ctx, `INSERT INTO persona_templates (name, persona, updated_by, created_at, updated_at)
+			VALUES (?, ?, 'panel:admin', ?, ?)`, row.name, row.persona, row.created, row.updated); err != nil {
+			t.Fatalf("insert %s: %v", row.name, err)
+		}
+	}
+	got, unreadable, err := db.ListPersonaTemplates(ctx)
+	if err != nil {
+		t.Fatalf("ListPersonaTemplates: %v", err)
+	}
+	checkTemplates(t, got, []store.PersonaTemplateRecord{good})
+	var names []string
+	for _, u := range unreadable {
+		if u.Err == nil {
+			t.Errorf("unreadable row %s has no error", u.Name)
+		}
+		names = append(names, u.Name)
+	}
+	if !slices.Equal(names, []string{"a_json", "c_created", "d_updated"}) {
+		t.Fatalf("unreadable rows = %+v, want a_json, c_created and d_updated", unreadable)
 	}
 }
 

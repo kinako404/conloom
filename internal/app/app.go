@@ -147,6 +147,12 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	rt := router.New(profiles, router.BreakerConfig{}, now)
 	adm := admission.New(limits)
 	personas := persona.NewService(st, cfg.PersonaTemplates)
+	personas.SetLogger(logger)
+	personas.SetTemplateUsers(bots.PanelTemplateUsers)
+	if err := personas.LoadTemplates(ctx); err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("app: %w", err)
+	}
 	policies := policy.NewService(st, cfg.DefaultGroupPolicy).WithPrivateDefaults(cfg.PrivatePolicy())
 	ob := outbox.New(st, outbox.Config{Lease: cfg.Runtime.OutboxLease.Duration}, metrics, now)
 	panelOut := outbox.NewPanelDeliverer(ob, st, opts.PanelDeliveryInterval, now, logger)

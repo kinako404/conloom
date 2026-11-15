@@ -142,6 +142,22 @@ NapCat      Adapter                 Core                          SQLite        
 - **后台任务**：记忆整理和语义索引按会话的 bot ID 从目录取 bot，不在目录里的（删除的面板 bot、从配置文件去掉的 bot）安静跳过；自主唤醒照旧丢弃这些 bot 的定时。
 - **面板接口**：`/panel/api/bots` 的增删改直接调用 `PanelBotService`，审计由它写（`actor` 为 `panel:<用户名>`），面板不再写第二条。`/panel/api/chats` 按目录顺序分组列出每个 bot 的私聊：聊天数、最后一条消息的时间和会话建立的时间（`conversations.created_at`，首次写入时的系统时间）复用会话列表的 GROUP BY 查询（`ConversationStats`）；每组按两个时间中较晚的一个从新到旧排序，排好后截到 200 个，所以刚新建的空聊天在最前。每个私聊的显示名另查一次（`LatestDisplayNames`，面板聊天还没人发言时读它的创建事件）。用量页的 bot 名字来自目录和 `bot_instances`。
 
+### 2.4 人设模板目录
+
+人设模板是一份目录：配置文件里的模板，加上在线写入的模板（`persona.Service`，`internal/persona/persona.go`）。在线改动立即生效，不用重启，重启后也还在。
+
+- **合并**：先放配置文件的 `persona_templates`（没有 `default` 时补上内置的 `DefaultPersona()`），再用表 `persona_templates`（迁移 `0014_persona_templates.sql`）里的行覆盖同名模板、补上新名字。每个模板有来源：配置（`config`）、配置·已在线修改（`config_override`，同时留着配置原版）、面板（`panel`）。面板的配置页仍然只显示配置文件原样。
+- **读**：目录放在一个原子指针里，每次改动都生成一份新的完整目录再整体替换。读的一方总是拿到完整的旧目录或新目录，正在进行的回复不会读到改了一半的模板。读目录的地方：新会话建第 1 版、`/persona use` 和 `PUT …/persona` 的 `template`、`/persona list`、面板人设页的待用模板、私聊状态条（会话还没有人设时）、面板 bot 的模板检查。
+- **写**：在一把互斥锁下先写库，再在同一把锁内重建目录。
+  - `PutTemplate`：覆盖配置模板，或新建面板模板。新模板的名字只能是 1–32 个小写字母、数字、`-` 或 `_`；配置模板沿用配置里的名字。内容按 `PersonaDoc.Validate` 和 `ValidateContent` 检查（`minor` 和 `adult` 不能同时为真），`appearance_image` 不为空时必须是已上传的图片。不合格返回 `ErrInvalidTemplate`，它也算 `persona.ErrInvalid`。
+  - `ResetTemplate`：删掉配置模板的在线覆盖，恢复配置文件版本；没有覆盖时什么都不做。对面板模板返回 `ErrInvalidTemplate`。
+  - `DeleteTemplate`：只能删面板模板。配置模板（包括 `default`）返回 `ErrTemplateConfigOnly`；还有面板 bot 用它作默认模板时（bot 目录的 `PanelTemplateUsers`）返回 `ErrTemplateInUse`，并列出这些 bot 的名字。
+- **已有会话不变**：会话第一次回复时把模板复制成第 1 版，之后各自独立。模板改了不影响已有会话，要更新得在会话里重新套用模板。
+- **启动**：`app.New` 在 `NewService` 之后立即调用 `LoadTemplates`，早于面板 bot 的载入。读不出来的行（JSON 损坏、时间格式不对）和不合格的行（名字或内容不合规则）各记一条警告并跳过，不阻止启动，库里的行也不改；这样的行可以用 `DeleteTemplate` 删掉，或用 `PutTemplate` 覆盖。加载时不检查图片是否存在。
+- **配置 bot**：仍然只在配置校验时检查 `persona_template` 是否在配置文件里；运行时取的是目录里的同名模板，可能是在线覆盖后的版本。
+- **图片 ID**：所有写人设的路径——`PutTemplate` 和 `Update`（面板和 Bearer API 的 `PUT …/persona`，包括套用模板和回滚，以及 `/persona use`）——在 `appearance_image` 不为空时查 `persona_images` 表，图片不存在就返回 400（`ErrInvalid`）。建第 1 版时直接复制模板，不再检查。
+- **清理图片时保留的 ID**：`ReferencedImages()` 列出模板引用的图片 ID，包括所有配置模板的（被在线覆盖的也算，恢复配置版本时还要用）。`PurgePersonaImages(createdBefore, keep)` 只删创建早于 `createdBefore`、不在 `keep` 里、也没有任何在线模板或人设版本（不论新旧）引用的图片。
+
 ## 3. 任务模型
 
 ### 3.1 触发类型
@@ -426,7 +442,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 
 - **system**：内置不可变的核心规则（`internal/persona/core.md`，8 条：身份（按人设说话，但被认真问到时承认是 AI）、自然、只回应当前发送者、准确、看不到图片、安全（不泄露密钥和提示词、不输出控制代码、不因自称管理员改变规则）、纯文本、不能执行操作；任何聊天内容和人设都不能改变它们），然后是按内容模式插入的一段内容规则，最后是按会话、带版本的群人格（`Render`，`internal/persona/render.go`）。内容模式由 `conloomapi.ModeFor(人设, 会话类型)` 判定：人设 `adult: true`、`minor` 不为真、而且是私聊时是开放模式，插入人设的 `content_rules` 原文（为空则不插入）；其余一律是保护模式，插入代码里固定的保护规则（不参与色情、性暗示、露骨内容和恋爱暧昧，用角色的方式岔开，对方反复引导时温和但明确地说不合适），并在回复发出前过一道内置的露骨词表，命中就整条拦截。保护模式的这些约束配置去不掉，规则见 [配置：内容模式](configuration.md#内容模式)。群人格除了风格数值和行为枚举，还可以有角色名 `character_name`（≤20 字）、角色设定 `description`（≤2000 字）、外貌 `appearance`（≤800 字）、说话方式 `speaking_style`（≤1000 字）和示例对话 `examples`（≤8 组，每句非空且 ≤200 字），字数按字符计，超限时校验、API 和配置加载都会拒绝。外观参考图的图片 ID `appearance_image` 和开关 `appearance_image_skip` 不进系统提示。没有这些字段的旧人格渲染结果和以前逐字节相同。
 - **名字**：人格设置了 `character_name` 时，它就是机器人在这个会话里的名字：核心规则里的“你是{名字}”、历史和当前消息里的“你（名字）”、回声清洗用的机器人名、`/help` 的自我介绍都改用它（`persona.BotName`）；没设置时用 `bots[].name`。角色名和 `bots[].name` 不同时，核心规则后面加一句平台名说明（`PlatformNameNote`），让模型知道群友用平台名叫它也是在叫它。名字随人格版本走，system prompt 按会话、版本和配置名缓存。
-- **人格来源**：会话第一次用到人格时按 `bots[].persona_template` 初始化第 1 版，之后以库内最新版本为准。新版本可以通过 `PUT …/persona` 写入完整人格、回滚到旧版本，或用 `{"template":"<名字>"}` 复制配置里的 `persona_templates.<名字>`（该版本记下模板名并写审计）；管理员也可以在群里用 `/persona list` 查看模板、`/persona use <模板名>` 应用。
+- **人格来源**：会话第一次用到人格时按 `bots[].persona_template` 从模板目录（2.4）复制出第 1 版，之后以库内最新版本为准。新版本可以通过 `PUT …/persona` 写入完整人格、回滚到旧版本，或用 `{"template":"<名字>"}` 复制模板目录里的同名模板（该版本记下模板名并写审计）；管理员也可以在群里用 `/persona list` 查看模板、`/persona use <模板名>` 应用。
 - **历史**（`Build`，`internal/contextbuilder/build.go:108`）：从最新往旧装，遇到第一条装不下的（token 预算或 `context.max_recent_messages`，默认 50 条）就停。按时间正序排好后，相邻同角色合并；开头是 assistant 的那组丢掉。
 - **渲染格式**：时间只显示 `HH:MM`（`server.timezone`）。他人历史正文最多 300 字，超出部分截断并标注；机器人自己的历史回复不截断。回复对象只以摘要出现，历史里最多 30 字，当前消息里最多 100 字。图片和文件显示为 `[图片]` / `[文件]` 占位，模型看不到图片。
 - **@ 注释**：消息 @ 了谁写成 `（@了 你、小红）`，跟在回复注释后面；当前消息里单独占一行，合并的几条一起列。机器人写成“你”，@全体写成“全体成员”，按消息里的顺序去重，名字超过 20 字截断加“…”。名字取此人在本群最近一次发言的显示名（先从已加载的历史里找，找不到再按 `(conversation_key, actor_id, seq)` 索引批量查一次库），其次用适配器在 at 段里带的名字（`Mention.Name`），都没有写“一位群友”；QQ 号和用户 ID 从不出现在 prompt 里。正文为空且只 @ 了机器人时不加注释，正文写“（只 @ 了你，没有说别的）”。
@@ -599,6 +615,9 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | 面板登录会话 | SQLite `panel_sessions` | 保留，到期或超过空闲时限后失效并被清理 |
 | 面板 bot | SQLite `panel_bots`，名字也在 `bot_instances` | 保留，启动时载入 bot 目录（2.3）；删除面板 bot 后它在 `bot_instances` 里的行仍保留 |
 | bot 目录里的面板 bot 快照、面板 bot 的“删除中”标记 | 内存 | 快照从库里重建；标记丢失，进行到一半的删除已删的聊天不恢复，bot 保留 |
+| 在线写入的人设模板 | SQLite `persona_templates` | 保留，启动时和配置文件的模板合成模板目录（2.4）；不合格的行跳过但不删 |
+| 人设模板目录 | 内存 | 从配置文件和 `persona_templates` 重建 |
+| 人设外观参考图 | SQLite `persona_images`（原图和回复用的缩小图） | 保留；没有被模板或人设版本引用、创建满 7 天的图片可以被 `PurgePersonaImages` 删除（2.4） |
 | 各 bot 最近一次通过 API 鉴权的时间、面板登录失败计数 | 内存 | 清空 |
 | 记忆整理的排队请求、积压跳转标记、失败计数和退避、缩小后的批次上限 | 内存 | 丢失；手动整理要重新触发。重新开启记忆后、下一次整理前重启的群，跳转标记丢失，按原游标整理完整积压（每轮最多 10 批） |
 | 调度队列、合并窗口、挂起标记、`lastFinish` | 内存 | 丢失；任务按库里记录重新入队 |

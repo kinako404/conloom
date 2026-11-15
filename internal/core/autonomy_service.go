@@ -204,8 +204,8 @@ func (s *AutonomyService) privateChat(ctx context.Context, convKey string) (stor
 }
 
 // bars returns the bars (conloomapi.PersonaDoc.EffectiveBars) of conv's
-// current persona version, or, while it has none, of the persona template
-// its bot's first version will copy, without creating that version.
+// current persona version, or, while it has none, of the catalog's persona
+// template its bot's first version will copy, without creating that version.
 func (s *AutonomyService) bars(ctx context.Context, conv store.ConversationRecord) ([]conloomapi.PersonaBar, error) {
 	pv, err := s.o.st.LatestPersona(ctx, conv.Key)
 	switch {
@@ -218,12 +218,8 @@ func (s *AutonomyService) bars(ctx context.Context, conv store.ConversationRecor
 	if bot, ok := s.o.bots.Bot(conv.BotInstanceID); ok && bot.PersonaTemplate != "" {
 		name = bot.PersonaTemplate
 	}
-	doc, ok := s.o.cfg.PersonaTemplates[name]
-	switch {
-	case ok:
-	case name == "default":
-		doc = conloomapi.DefaultPersona()
-	default:
+	doc, ok := s.o.personas.Template(name)
+	if !ok {
 		return nil, fmt.Errorf("core: unknown persona template %q", name)
 	}
 	return doc.EffectiveBars(), nil

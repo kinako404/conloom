@@ -75,6 +75,25 @@ func (e *testEnv) audits(t *testing.T, kind string) []store.AuditEvent {
 	return events
 }
 
+func TestAutonomyService_BarsOfOnlineTemplate(t *testing.T) {
+	env, clock := newWakeEnv(t, nil, nil, nil)
+	ctx := context.Background()
+	env.seedPrivateMessage(t, clock, "晚安")
+	doc := conloomapi.DefaultPersona()
+	doc.Bars = []conloomapi.PersonaBar{{Name: "精力", Baseline: 70, HalfLife: conloomapi.Duration{Duration: 4 * time.Hour}}}
+	if err := env.o.personas.PutTemplate(ctx, "default", doc, "panel:admin"); err != nil {
+		t.Fatalf("PutTemplate: %v", err)
+	}
+	got, err := env.o.Autonomy().State(ctx, privateConvKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []conloomapi.AutonomyBar{{Name: "精力", Value: 70, Band: "偏高", Baseline: 70}}
+	if !reflect.DeepEqual(got.Bars, want) {
+		t.Errorf("bars without a persona version = %+v, want the online template's %+v", got.Bars, want)
+	}
+}
+
 func TestAutonomyService_State(t *testing.T) {
 	bars := []conloomapi.PersonaBar{
 		{Name: "精力", Baseline: 70, HalfLife: conloomapi.Duration{Duration: 4 * time.Hour}, Description: "高=有精神，低=累、困"},
