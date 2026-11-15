@@ -19,9 +19,13 @@ function bubble(m) {
     h('div', { class: 'body' }, m.text));
 }
 
+// GONE is shown, once, when the chat no longer exists.
+const GONE = '这个聊天已不存在，可能已经被删除。';
+
 // chatPane talks to the bot in the private conversation key, as its user. It
 // opens with the latest messages, then polls GET chat with the newest seq it
-// has seen until signal fires. hint, when given, is shown above the chat.
+// has seen until signal fires or the chat is gone (404), which stops the
+// polling and the sending. hint, when given, is shown above the chat.
 export async function chatPane({ key, signal, hint }) {
   const log = h('ul', { class: 'chat-log' });
   const typing = h('div', { class: 'chat-typing', hidden: true }, '对方正在输入…');
@@ -53,11 +57,22 @@ export async function chatPane({ key, signal, hint }) {
   let running = false;
   let again = false;
   let stick = false;
+  let gone = false;
   const schedule = (ms) => {
     clearTimeout(timer);
-    if (!signal.aborted) timer = setTimeout(poll, ms);
+    if (!signal.aborted && !gone) timer = setTimeout(poll, ms);
+  };
+  const markGone = () => {
+    gone = true;
+    clearTimeout(timer);
+    typing.hidden = true;
+    input.disabled = true;
+    send.disabled = true;
+    mount(sendError);
+    mount(pollError, errorBox({ message: GONE }));
   };
   async function poll() {
+    if (gone) return;
     if (running) {
       again = true;
       return;
@@ -74,6 +89,10 @@ export async function chatPane({ key, signal, hint }) {
       if (rows.length >= PAGE) next = 0;
     } catch (err) {
       if (isAbort(err) || signal.aborted) return;
+      if (err.status === 404) {
+        markGone();
+        return;
+      }
       mount(pollError, errorBox(err));
     } finally {
       running = false;
@@ -88,7 +107,7 @@ export async function chatPane({ key, signal, hint }) {
 
   const submit = async () => {
     const text = input.value;
-    if (!text.trim() || send.disabled) return;
+    if (!text.trim() || send.disabled || gone) return;
     send.disabled = true;
     mount(sendError);
     try {
@@ -97,10 +116,12 @@ export async function chatPane({ key, signal, hint }) {
       stick = true;
       poll();
     } catch (err) {
-      if (!isAbort(err)) mount(sendError, errorBox(err));
+      if (isAbort(err)) return;
+      if (err.status === 404) markGone();
+      else mount(sendError, errorBox(err));
     } finally {
-      send.disabled = false;
-      input.focus();
+      send.disabled = gone;
+      if (!gone) input.focus();
     }
   };
   input.addEventListener('keydown', (e) => {

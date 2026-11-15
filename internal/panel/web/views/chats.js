@@ -242,11 +242,15 @@ function chatPage() {
     refresh();
   });
 
-  const deleteForm = deleteBotDialog((bot, ok) => {
+  // After a delete that stopped partway, the chat on show may be gone too:
+  // the list read afresh tells.
+  const deleteForm = deleteBotDialog(async (bot, ok) => {
     if (ok) note(`已删除 Bot：${bot.name}`);
     const shown = find(current);
-    if (ok && shown && shown.group.id === bot.id) go('#/chat');
-    refresh();
+    const onBot = shown && shown.group.id === bot.id;
+    if (ok && onBot) go('#/chat');
+    await refresh();
+    if (!ok && onBot && current === shown.chat.key && !find(current)) go('#/chat');
   });
 
   const loadSkills = () => {
