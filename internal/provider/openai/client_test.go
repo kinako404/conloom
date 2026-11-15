@@ -2,12 +2,15 @@ package openai
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -203,13 +206,10 @@ func TestChat_NoRetryOn400(t *testing.T) {
 }
 
 func TestChat_StatusErrorBodyTruncated(t *testing.T) {
-	big := make([]byte, 2000)
-	for i := range big {
-		big[i] = 'x'
-	}
+	big := strings.Repeat("bad request. ", 200)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write(big)
+		_, _ = io.WriteString(w, big)
 	}))
 	defer srv.Close()
 	_, err := newTestClient(testProfile(srv.URL)).Chat(context.Background(), userRequest())
@@ -217,9 +217,82 @@ func TestChat_StatusErrorBodyTruncated(t *testing.T) {
 	if !errors.As(err, &se) {
 		t.Fatalf("err = %v, want *StatusError", err)
 	}
-	if len(se.Body) != 512 {
-		t.Errorf("len(Body) = %d, want 512", len(se.Body))
+	if len(se.Body) != 512 || se.Body != big[:512] {
+		t.Errorf("Body = %q (%d bytes), want the first 512 bytes", se.Body, len(se.Body))
 	}
+}
+
+func TestChat_StatusErrorBodyOmitsBase64(t *testing.T) {
+	raw := make([]byte, 3000)
+	for i := range raw {
+		raw[i] = byte(i*7 + i/256)
+	}
+	payload := base64.StdEncoding.EncodeToString(raw)
+	if !strings.Contains(payload, "/") || !strings.Contains(payload, "+") {
+		t.Fatal("test payload should hold / and +")
+	}
+	url := "data:image/jpeg;base64," + payload
+	echoes := map[string]func(string) string{
+		"data URL": func(u string) string {
+			return `{"error":{"message":"Invalid image: ` + u + `","type":"invalid_request_error"}}`
+		},
+		"escaped slashes": func(u string) string {
+			return `{"error":{"message":"Invalid image: ` + strings.ReplaceAll(u, "/", `\/`) + `"}}`
+		},
+		"bare payload": func(u string) string {
+			_, p, _ := strings.Cut(u, ",")
+			return "cannot decode image " + p + " at offset 0"
+		},
+		"short data URL": func(string) string {
+			return `{"error":"bad image data:image/png;base64,iVBORw0KGgo="}`
+		},
+	}
+	long := regexp.MustCompile(`[A-Za-z0-9+/=]{40,}`)
+	for name, echo := range echoes {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					Messages []struct {
+						Content []struct {
+							ImageURL struct {
+								URL string `json:"url"`
+							} `json:"image_url"`
+						} `json:"content"`
+					} `json:"messages"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode request: %v", err)
+				}
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, echo(body.Messages[0].Content[0].ImageURL.URL))
+			}))
+			defer srv.Close()
+			req := ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "你好", Images: []string{url}}}}
+			_, err := newTestClient(testProfile(srv.URL)).Chat(context.Background(), req)
+			var se *StatusError
+			if !errors.As(err, &se) || se.Code != http.StatusBadRequest {
+				t.Fatalf("err = %v, want StatusError 400", err)
+			}
+			msg := err.Error()
+			if flat := strings.ReplaceAll(msg, `\`, ""); long.MatchString(flat) || strings.Contains(flat, "iVBORw0KGgo") {
+				t.Errorf("error holds base64: %.300s", msg)
+			}
+			if !strings.Contains(msg, "[omitted]") {
+				t.Errorf("error = %.300s, want an [omitted] marker", msg)
+			}
+		})
+	}
+	t.Run("marker keeps the data URL type", func(t *testing.T) {
+		fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":"Invalid image: `+url+`"}`)
+		}))
+		defer fake.Close()
+		_, err := newTestClient(testProfile(fake.URL)).Chat(context.Background(), userRequest())
+		if want := `openai: unexpected status 400: {"error":"Invalid image: data:image/jpeg;base64,[omitted]"}`; err == nil || err.Error() != want {
+			t.Errorf("err = %v, want %s", err, want)
+		}
+	})
 }
 
 func TestChat_NoRetryOnAttemptTimeout(t *testing.T) {

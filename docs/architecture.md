@@ -667,7 +667,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 
 ## 8. 可观测性
 
-日志用 `log/slog` 写 stderr（默认 JSON）。默认不记消息正文，只记长度；群聊参与相关日志不记正文、昵称和兴趣词。`/healthz` 查一次库，失败返回 503。
+日志用 `log/slog` 写 stderr（默认 JSON）。默认不记消息正文，只记长度；群聊参与相关日志不记正文、昵称和兴趣词。模型服务返回非 2xx 时，错误里只带响应正文的前 512 字节，其中 data URL 的 base64 内容和其他连续 200 个以上的 base64 字符先换成 `[omitted]`（`internal/provider/openai/client.go`），服务回显的图片不会进日志。`/healthz` 查一次库，失败返回 503。
 
 指标（都以 `conloom_` 开头，`internal/obs/metrics.go`）：
 

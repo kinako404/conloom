@@ -11,6 +11,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -60,7 +61,8 @@ type ChatResponse struct {
 }
 
 // StatusError reports a non-2xx response. Body holds at most the first 512
-// bytes of the response body.
+// bytes of the response body after omitBase64, so an echoed image never
+// reaches the logs.
 type StatusError struct {
 	Code int
 	Body string
@@ -68,6 +70,20 @@ type StatusError struct {
 
 func (e *StatusError) Error() string {
 	return fmt.Sprintf("openai: unexpected status %d: %s", e.Code, e.Body)
+}
+
+// Base64 data in an error body: the payload of a data URL, and any other run
+// of at least 200 base64 characters. A backslash counts as one, so a payload
+// echoed with JSON-escaped slashes is matched whole.
+var (
+	dataURLPayload = regexp.MustCompile(`(data:[^;,\s"]+;base64,)[A-Za-z0-9+/=\\]+`)
+	base64Run      = regexp.MustCompile(`[A-Za-z0-9+/=\\]{200,}`)
+)
+
+// omitBase64 replaces the base64 data in an error body with "[omitted]".
+func omitBase64(body []byte) []byte {
+	body = dataURLPayload.ReplaceAll(body, []byte("${1}[omitted]"))
+	return base64Run.ReplaceAll(body, []byte("[omitted]"))
 }
 
 type Client struct {
@@ -197,6 +213,7 @@ func (c *Client) attempt(ctx context.Context, body []byte) (ChatResponse, bool, 
 		return ChatResponse{}, true, fmt.Errorf("openai: read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		raw = omitBase64(raw)
 		if len(raw) > maxErrorBody {
 			raw = raw[:maxErrorBody]
 		}
