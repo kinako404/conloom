@@ -1,9 +1,15 @@
 package panel
 
-// writeRoutes registers the API that creates, changes and deletes panel bots,
-// changes policies, personas, member memory and the hidden state of private
-// chats, and the panel chat's writes.
+// writeRoutes registers the API that creates, changes and deletes panel bots
+// and persona templates, uploads and describes persona images, changes
+// policies, personas, member memory and the hidden state of private chats,
+// and the panel chat's writes.
 func (s *Server) writeRoutes() {
+	s.api("PUT /panel/api/persona-templates/{name}", s.putTemplate)
+	s.api("POST /panel/api/persona-templates/{name}/reset", s.resetTemplate)
+	s.api("DELETE /panel/api/persona-templates/{name}", s.deleteTemplate)
+	s.api("POST /panel/api/persona-images", s.uploadImage)
+	s.api("POST /panel/api/persona-images/{id}/describe", s.describeImage)
 	s.api("POST /panel/api/bots", s.createBot)
 	s.api("PUT /panel/api/bots/{id}", s.updateBot)
 	s.api("DELETE /panel/api/bots/{id}", s.deleteBot)

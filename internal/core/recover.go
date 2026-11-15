@@ -48,9 +48,10 @@ const (
 // (a wake task among them is followed up by staleWake).
 // It then starts background maintenance, which expires undelivered outbox
 // actions every 30s and, every hour until Close, purges old idempotency
-// records, proactive log entries older than 7 days and bar changes older than
-// 30 days and cleans up old finished tasks, outbox actions and audit events
-// (see cleanup). Each job also runs once when maintenance starts. A second
+// records, proactive log entries older than 7 days, bar changes older than
+// 30 days and persona images unreferenced 7 days after their upload (see
+// purgePersonaImages) and cleans up old finished tasks, outbox actions and
+// audit events (see cleanup). Each job also runs once when maintenance starts. A second
 // goroutine runs the keyword index backfill (backfillMessageIndex), a third
 // polls for due wake timers (wakeLoop).
 //
@@ -191,6 +192,7 @@ func (o *Orchestrator) maintain() {
 	o.purgeEvents()
 	o.purgeProactiveLog()
 	o.purgeBuffEvents()
+	o.purgePersonaImages()
 	o.cleanup()
 	for {
 		select {
@@ -202,6 +204,7 @@ func (o *Orchestrator) maintain() {
 			o.purgeEvents()
 			o.purgeProactiveLog()
 			o.purgeBuffEvents()
+			o.purgePersonaImages()
 			o.cleanup()
 		}
 	}

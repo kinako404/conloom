@@ -36,8 +36,10 @@ func (stubTool) Call(context.Context, skills.Invocation, json.RawMessage) (strin
 	return "", nil
 }
 
-// newBotsHarness is a writeHarness whose panel bots and panel chats are
-// served by a real orchestrator over its store, on the harness's clock. The
+// newBotsHarness is a writeHarness whose panel bots, panel chats and
+// appearance descriptions are served by a real orchestrator (without a vision
+// model) over its store, on the harness's clock; deleting a persona template
+// checks the panel bots using it, as in the app. The
 // config bot is dataBot, the persona templates are default and cat, and the
 // skills are the built-in ones, with stub tools, plus grouponly, which only
 // group chats may use.
@@ -72,7 +74,8 @@ func newBotsHarness(t *testing.T) *writeHarness {
 				t.Fatalf("core.New: %v", err)
 			}
 			t.Cleanup(o.Close)
-			d.Audit, d.Memory, d.Chat, d.PanelBots = d.Store.(*sqlite.DB), h.trigger, o, o.PanelBots()
+			d.Personas.SetTemplateUsers(d.Bots.PanelTemplateUsers)
+			d.Audit, d.Memory, d.Chat, d.PanelBots, d.Appearance = d.Store.(*sqlite.DB), h.trigger, o, o.PanelBots(), o
 		})
 	return h
 }

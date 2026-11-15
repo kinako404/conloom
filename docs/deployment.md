@@ -299,6 +299,7 @@ server {
     location /panel {
         proxy_pass http://127.0.0.1:8787;
         proxy_set_header Host $http_host;
+        client_max_body_size 9m;
     }
     location / {
         return 404;
@@ -321,6 +322,7 @@ panel:
 注意：
 
 - 代理必须原样转发 `Host` 头：面板的 CSRF 检查要求请求的 `Origin` 和 `Host` 一致。Caddy 默认就这样做；nginx 要写 `proxy_set_header Host $http_host;`（见上面的例子）。
+- 上传人设参考图的请求体最多 8 MiB。nginx 默认只收 1 MiB，要像上面那样调大 `client_max_body_size`，否则大一点的图在代理那里就被拒绝（413）。
 - 不要把 `/api/v1`、`/metrics`、`/healthz` 一起暴露到公网，上面的配置只转发 `/panel`。
 - 面板只信任 TCP 连接的对端地址，不读 `X-Forwarded-For`，经代理时所有人的来源 IP 都是代理的地址：登录失败的“每 IP 15 分钟 5 次”额度由所有访问者共用，有人在公网上乱试密码时，你自己也可能要等最多 15 分钟才能再登录。
 - 设了 `cookie_secure: true` 以后浏览器只经 HTTPS 发送登录 cookie，再用 SSH 隧道的 `http://` 地址访问可能登录不上，这时改用 HTTPS 地址。
@@ -359,6 +361,44 @@ sudo journalctl -u conloom | grep 'panel listening'
 
 另外，登录限流有一个全局上限：全部来源合计 15 分钟内登录失败 30 次后，所有新的登录都返回 429，直到最早的失败移出 15 分钟窗口（详见 [Web 管理面板：登录与安全](panel.md#登录与安全)）。端口对整个互联网开放时，任何人都能乱试密码把这个上限用完，让你在最多 15 分钟内无法登录；已经登录的会话不受影响，可以继续使用。这也是建议用防火墙限制来源的原因之一。
 
+### 人设参考图和识图模型
+
+人设模板和会话人设可以带一张外观参考图，在面板里上传，用法见 [Web 管理面板：人设模板和外观参考图](panel.md#人设模板和外观参考图)。
+
+**识图模型（可选）**：面板的“生成外观介绍”要用 `model_profiles.vision`，没有配置时这个功能返回“未配置识图模型”，其他功能不受影响。推荐的写法（地址和密钥可以沿用长上下文模型的环境变量，模型名换成你的服务里支持图片输入的模型）：
+
+```yaml
+model_profiles:
+  vision:
+    endpoint: ${CONLOOM_LONG_MODEL_ENDPOINT}
+    model: <支持图片输入的模型名>
+    api_key: ${CONLOOM_LONG_MODEL_KEY}
+    modalities: [text, image]       # 必须包含 image
+    context:
+      native_window: 131072
+      configured_window: 131072
+      soft_input_budget: 16000
+      reserved_output_tokens: 4096  # 作为 max_tokens；推理模型的思考也算在内，要留足
+      safety_margin_tokens: 1024
+    runtime:
+      max_concurrency: 1
+      timeout: 40s
+      max_retries: 1
+    privacy:
+      data_location: remote
+      allow_sensitive_content: true
+```
+
+`vision` 只用来识图，回复永远不会路由到它。发给它的是长边不超过 1536 像素的 JPEG，最多约 3000 个 token；一次识图最多 40 秒。字段说明见 [配置参考：model_profiles](configuration.md#model_profiles)。
+
+**回复时带图**：只有回复路由到的模型在 `modalities` 里声明了 `image`，回复请求才附带参考图的缩小图。确认回复模型确实接受图片（先在面板里用一个带图的人设试一次回复）之后，再把 `short_context`（以及需要的话 `long_context`）改成 `modalities: [text, image]`；模型不接受图片却声明了 `image` 时，带图的回复会失败。
+
+**资源**：
+
+- 图片存在 `conloom.db` 里：每张是原图（最多 8 MiB）加一份几十 KB 的缩小图。被任何人设模板或人设版本（包括历史版本）引用的图片一直保留，所以数据库会随着上传的图片变大，备份文件也一样（`conloom backup` 导出的快照包含图片）。没有被引用的图片上传满 7 天后由清理任务删除。
+- 解码一张接近上限（2500 万像素）的图要几百 MB 内存。面板同时只处理一个上传和一个识图请求，另一个请求同时到达时返回 409，稍后重试即可；服务器内存紧张时先把图缩小再上传。
+- 用 `panel.listen` 直接访问时，整个请求（包括图片）必须在 30 秒内传完；网络很慢时先把图缩小。
+
 ## 数据目录与权限
 
 全部状态在一个数据目录里，全部配置在 `conloom.yaml` 加可选的 `.env`，二进制没有其他依赖：
@@ -381,6 +421,7 @@ sudo journalctl -u conloom | grep 'panel listening'
   | 事件幂等记录（含被处理事件的原文） | `events` | `runtime.idempotency_retention`（默认 7 天） |
   | 主动搭话记录 | `proactive_log` | 7 天 |
   | 私聊状态条的变化记录 | `conversation_buff_events` | 30 天 |
+  | 人设外观参考图（原图和缩小图） | `persona_images` | 没有被任何人设模板或人设版本（包括历史版本）引用、上传满 7 天后删除；配置文件的模板引用的一直保留 |
   | 记忆修订历史 | `memory_revisions` | 30 天（由记忆层清理，不受 `ops_retention` 影响） |
   | 模型用量明细（每次模型调用一行） | `model_calls` | `runtime.usage_retention`（默认 400 天） |
   | Web 管理面板的登录会话 | `panel_sessions` | 超过 `panel.session_ttl` 或 `panel.idle_timeout` 后删除 |
@@ -418,6 +459,14 @@ sudo journalctl -u conloom | grep 'panel listening'
 **升级**：先备份，再替换二进制并重启（先核心后适配器）。核心启动时自动按顺序应用新的表结构迁移，迁移只能前进、没有回滚脚本，所以回退到旧版本时要用升级前的备份。升级前请对照 [配置参考](configuration.md#群策略) 检查已移除的配置字段（例如 `proactive.contact_cooldown`），配置文件里残留未知字段会导致启动失败。流水表清理没有新增表结构迁移，旧二进制可以直接在同一个库上运行；但回退到没有流水表清理的版本时，要先从 `conloom.yaml` 里删掉 `runtime.ops_retention` 和 `runtime.audit_retention`。
 
 **升级到记忆字数上限可配置的版本**（`memory.summary_max_chars`、`note_max_chars`）：摘要和笔记的默认上限变长（群聊 1500 / 300 字、私聊 3000 / 1000 字），记忆整理的输出也跟着变长。升级时把 `long_context` 的 `reserved_output_tokens` 调到 8192 或以上：低于 8192（且大于 0）而默认策略开启了记忆时，启动日志会有一条 `long_context reserved_output_tokens is low for memory consolidation` 警告；整理时一个人的摘要加笔记放不下，就按比例缩短这次提示词要求的字数（不低于 200 / 50 字；写入时仍按策略的上限截断，已有的较长笔记不会被截短），并为这个会话记一条 `memory consolidation limits reduced …` 警告。调大输出预留并重启后恢复完整上限。已有的摘要和笔记不会立即变长，要经过之后的几次整理才写长。回复时带上的记忆块不超过短模型输入预算（`soft_input_budget`，会话设了 `context.max_context_tokens` 时取两者算出的较小值）的 30%，摘要太长时只带最新的一段，所以写长的记忆不会挤掉近期历史（见 [架构 5.5 节](architecture.md#55-记忆和好感度)）。
+
+**升级到有面板 bot 和在线人设模板的版本**（迁移 `0013_panel_bots.sql`、`0014_persona_templates.sql`）：两个迁移只新增表——0013 是面板 bot 的 `panel_bots`，0014 是在线写入的人设模板 `persona_templates` 和外观参考图 `persona_images`——不改已有的表，启动时自动执行。配置文件里 bot 的 `id` 不能再以 `panel-` 开头（这个前缀留给面板 bot），有的话先改名再升级。
+
+**回退到没有面板 bot 和在线人设模板的旧版本**（没有迁移 0013、0014）：旧二进制忽略这三张表，不需要用备份恢复。
+
+- **配置**：先从 `conloom.yaml` 的人设模板里删掉 `appearance`、`appearance_image`、`appearance_image_skip`，否则旧二进制因为未知字段启动失败。`model_profiles.vision` 旧版本用不上，建议一并删掉（旧版本会把它的 `token_estimate_factor` 算进估算系数）。
+- **面板 bot**：面板 bot 和它们的聊天留在库里，但旧版本没有面板 bot，这些聊天在旧版本上用不了；再升级回来后照常使用。
+- **人设**：在线修改和新建的模板在旧版本上不生效，新会话用配置文件里的模板；人设版本里的外观字段被旧二进制忽略，回复不带图，它写入的新版本（API、面板、`/persona`）不带这些字段。再升级回来后在线模板和图片都还在。
 
 **回退到没有 Web 管理面板的旧版本**（没有迁移 0008、0009）：先从 `conloom.yaml` 里删掉整个 `panel` 段和 `runtime.usage_retention`，否则旧二进制因为未知字段启动失败。旧二进制会忽略 `model_calls`、`panel_sessions` 两张表，不需要用备份恢复；回退期间的模型调用不会记入用量，再升级回来后这段时间在用量页上是空白。
 

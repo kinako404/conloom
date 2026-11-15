@@ -17,6 +17,7 @@ const (
 	CodeMemoryDisabled        = "MEMORY_DISABLED"
 	CodePaused                = "PAUSED"
 	CodeChatBusy              = "CHAT_BUSY"
+	CodeTemplateInUse         = "TEMPLATE_IN_USE"
 )
 
 type ErrorBody struct {

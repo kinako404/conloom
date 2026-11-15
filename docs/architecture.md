@@ -156,7 +156,8 @@ NapCat      Adapter                 Core                          SQLite        
 - **启动**：`app.New` 在 `NewService` 之后立即调用 `LoadTemplates`，早于面板 bot 的载入。读不出来的行（JSON 损坏、时间格式不对）和不合格的行（名字或内容不合规则）各记一条警告并跳过，不阻止启动，库里的行也不改；这样的行可以用 `DeleteTemplate` 删掉，或用 `PutTemplate` 覆盖。加载时不检查图片是否存在。
 - **配置 bot**：仍然只在配置校验时检查 `persona_template` 是否在配置文件里；运行时取的是目录里的同名模板，可能是在线覆盖后的版本。
 - **图片 ID**：所有写人设的路径——`PutTemplate` 和 `Update`（面板和 Bearer API 的 `PUT …/persona`，包括套用模板和回滚，以及 `/persona use`）——在 `appearance_image` 不为空时查 `persona_images` 表，图片不存在就返回 400（`ErrInvalid`）。建第 1 版时直接复制模板，不再检查。
-- **清理图片时保留的 ID**：`ReferencedImages()` 列出模板引用的图片 ID，包括所有配置模板的（被在线覆盖的也算，恢复配置版本时还要用）。`PurgePersonaImages(createdBefore, keep)` 只删创建早于 `createdBefore`、不在 `keep` 里、也没有任何在线模板或人设版本（不论新旧）引用的图片。
+- **清理图片时保留的 ID**：`ReferencedImages()` 列出模板引用的图片 ID，包括所有配置模板的（被在线覆盖的也算，恢复配置版本时还要用）。`PurgePersonaImages(createdBefore, keep)` 只删创建早于 `createdBefore`、不在 `keep` 里、也没有任何在线模板或人设版本（不论新旧）引用的图片。核心的维护任务（启动时一次，之后每小时）以“现在减 7 天”和 `ReferencedImages()` 调用它，删除条数计入 `cleanup_deleted_total{table="persona_images"}`。
+- **面板接口**：`/panel/api/persona-templates` 的写操作调用上面三个方法，成功后让 `PanelBotService.Load` 重新发布面板 bot，引用的模板重新出现时“模板已不存在”的说明随之消失。上传图片和生成外观介绍各自一次只处理一个请求（解码 2500 万像素的图要几百 MB 内存），另一个请求同时到达时直接返回 409，不排队。
 
 ## 3. 任务模型
 
@@ -623,7 +624,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | bot 目录里的面板 bot 快照、面板 bot 的“删除中”标记 | 内存 | 快照从库里重建；标记丢失，进行到一半的删除已删的聊天不恢复，bot 保留 |
 | 在线写入的人设模板 | SQLite `persona_templates` | 保留，启动时和配置文件的模板合成模板目录（2.4）；不合格的行跳过但不删 |
 | 人设模板目录 | 内存 | 从配置文件和 `persona_templates` 重建 |
-| 人设外观参考图 | SQLite `persona_images`（原图和回复用的缩小图） | 保留；没有被模板或人设版本引用、创建满 7 天的图片可以被 `PurgePersonaImages` 删除（2.4） |
+| 人设外观参考图 | SQLite `persona_images`（原图和回复用的缩小图） | 保留；没有被模板或人设版本引用、创建满 7 天的图片由每小时的维护任务删除（2.4） |
 | 各 bot 最近一次通过 API 鉴权的时间、面板登录失败计数 | 内存 | 清空 |
 | 记忆整理的排队请求、积压跳转标记、失败计数和退避、缩小后的批次上限 | 内存 | 丢失；手动整理要重新触发。重新开启记忆后、下一次整理前重启的群，跳转标记丢失，按原游标整理完整积压（每轮最多 10 批） |
 | 调度队列、合并窗口、挂起标记、`lastFinish` | 内存 | 丢失；任务按库里记录重新入队 |
@@ -687,7 +688,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | `memory_consolidation_seconds` | —（只记成功的整理） |
 | `memory_affinity_changes_total` | source：consolidate / rule / command / api |
 | `skill_calls_total` | tool（模型编造的工具名记为 unknown）、result：ok / error / unknown / invalid |
-| `cleanup_deleted_total` | table：tasks / outbox_actions / audit_events / events / proactive_log / model_calls / panel_sessions / conversation_buff_events |
+| `cleanup_deleted_total` | table：tasks / outbox_actions / audit_events / events / proactive_log / model_calls / panel_sessions / conversation_buff_events / persona_images |
 | `search_seconds` | path：keyword（recall 的每页关键词检索）/ vector（每次语义检索，包括失败的） |
 | `fts_backfill_remaining` | —（关键词索引补建进度之后的消息数） |
 | `embedding_requests_total` | result：ok / error / timeout（每次请求向量服务，后台生成和查询都算） |
@@ -735,7 +736,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 - **CSRF**：`GET`、`HEAD` 以外的接口要求 `X-CSRF-Token` 等于会话的 CSRF 令牌；请求带 `Origin` 时其主机必须等于 `Host`（登录也检查）。
 - **响应头**：所有 `/panel/` 响应带 CSP（`default-src 'self'`、`frame-ancestors 'none'` 等）、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`；接口另加 `Cache-Control: no-store`，静态资源为 `no-cache`。每个请求有 trace ID，按路由模板和状态码计入 `panel_requests_total`，panic 转成 500。
 - **读**：会话列表的消息数和最后时间用一条 GROUP BY 查询得到；消息检索复用 `SearchMessages`；读人设走只读路径，会话还没有人设时不触发第 1 版的写入；概览的实时状态来自本进程的 Prometheus registry（队列深度、关键词索引补建剩余、熔断，配置了 `embedding` 时还有向量积压）和发件箱待发数的查库结果；各 bot 的“最近调用”由 gateway 在 Bearer 鉴权通过时记进内存里的 `obs.Presence`。
-- **写**：策略和人设直接调用 `policy.Service`、`persona.Service`，`by` 为 `panel:<用户名>`；成员记忆的修改、忘记和读取走与 Bearer API 共用的 `memory.Admin`，修订记录来源为 `panel`，审计的 `bot_instance_id` 取自会话记录。触发整理写新审计种类 `memory.consolidate`，登录成功写 `panel.login`。面板 bot 的新建、编辑、删除调用 `core.PanelBotService`，由它写 `panel.bot.create`、`panel.bot.update`、`panel.bot.delete`（2.3）。
+- **写**：策略和人设直接调用 `policy.Service`、`persona.Service`，`by` 为 `panel:<用户名>`；成员记忆的修改、忘记和读取走与 Bearer API 共用的 `memory.Admin`，修订记录来源为 `panel`，审计的 `bot_instance_id` 取自会话记录。触发整理写新审计种类 `memory.consolidate`，登录成功写 `panel.login`。面板 bot 的新建、编辑、删除调用 `core.PanelBotService`，由它写 `panel.bot.create`、`panel.bot.update`、`panel.bot.delete`（2.3）。人设模板的写入、恢复、删除调用模板目录（2.4），面板写 `persona.template.put`、`persona.template.reset`、`persona.template.delete`；上传图片（`imaging.Process` 后 `PutPersonaImage`）写 `persona.image.upload`，生成外观介绍（`Orchestrator.DescribeAppearance`，5.3）成功时写 `persona.appearance.describe`；这些审计的 `bot_instance_id` 为空，不含图片内容和生成的文字。
 - **配置页**：按白名单逐字段输出，密钥只显示 `(已设置)` / `(未设置)`，`extra_body` 只显示键和布尔、数字值；接口地址去掉 `user:password@`，查询参数的值和 `#` 后的部分显示为 `(已隐藏)`（`redactURL`）。人格模板和默认策略整段输出，测试检查这两个类型里没有名字像密钥的字段。
 
 ## 9. 已知限制和后续方向

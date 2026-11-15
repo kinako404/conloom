@@ -238,6 +238,12 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 		lib.SpeakingStyle == "" || len(lib.Examples) < 2 {
 		t.Errorf("persona_templates.librarian = %+v, want a character template with multi-line text and examples", lib)
 	}
+	if lib.Appearance == "" || lib.AppearanceImage != "" || lib.AppearanceImageSkip {
+		t.Errorf("librarian appearance = %q, image %q, skip %v; want an appearance text and no image", lib.Appearance, lib.AppearanceImage, lib.AppearanceImageSkip)
+	}
+	if _, ok := cfg.ModelProfiles["vision"]; ok {
+		t.Error("example has a vision profile, want it commented out")
+	}
 	if got, want := cfg.DefaultGroupPolicy.Proactive, conloomapi.DefaultGroupPolicy().Proactive; got != want {
 		t.Errorf("default_group_policy.proactive = %+v, want %+v", got, want)
 	}
@@ -248,6 +254,42 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 	nc := cfg.Adapters.NapCat
 	if nc.CoreURL != "http://127.0.0.1:8787" || nc.WSURL != "ws://127.0.0.1:9" || nc.AccessToken != "fake-napcat-token" {
 		t.Errorf("napcat = %+v", nc)
+	}
+}
+
+// TestLoad_ExampleVisionUncommented checks that the example's commented vision
+// profile, uncommented, is valid.
+func TestLoad_ExampleVisionUncommented(t *testing.T) {
+	setExampleEnv(t, exampleEnv)
+	data, err := os.ReadFile("../../conloom.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	inBlock, found := false, false
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "  # vision:" {
+			inBlock, found = true, true
+		} else if inBlock && !strings.HasPrefix(line, "  #   ") {
+			inBlock = false
+		}
+		if inBlock {
+			line = strings.Replace(line, "# ", "", 1)
+		}
+		out = append(out, line)
+	}
+	if !found {
+		t.Fatal("no commented vision profile in the example")
+	}
+	cfg := mustLoad(t, writeConfig(t, strings.Join(out, "\n")))
+	if err := cfg.ValidateServe(); err != nil {
+		t.Fatalf("ValidateServe: %v", err)
+	}
+	v, ok := cfg.ModelProfiles["vision"]
+	long := cfg.ModelProfiles["long_context"]
+	if !ok || !slices.Equal(v.Modalities, []string{"text", "image"}) || v.Endpoint != long.Endpoint || v.APIKey != long.APIKey ||
+		v.Model == "" || v.Runtime.MaxConcurrency != 1 || v.Context.ReservedOutputTokens != 4096 {
+		t.Errorf("uncommented vision = %+v", v)
 	}
 }
 

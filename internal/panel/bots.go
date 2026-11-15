@@ -16,11 +16,14 @@ import (
 )
 
 // PanelBotService creates, changes and deletes the bots created in the panel
-// and audits each change itself; *core.PanelBotService is one.
+// and audits each change itself; Load publishes the stored bots again, as
+// they take effect with the current persona templates. *core.PanelBotService
+// is one.
 type PanelBotService interface {
 	Create(ctx context.Context, in core.PanelBotInput, actor string) (config.BotConfig, error)
 	Update(ctx context.Context, id string, in core.PanelBotInput, actor string) (config.BotConfig, error)
 	Delete(ctx context.Context, id, confirmName, actor string) error
+	Load(ctx context.Context) error
 	PrivateSkills() []core.SkillInfo
 }
 

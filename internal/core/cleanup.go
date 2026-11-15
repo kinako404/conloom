@@ -11,6 +11,9 @@ const (
 	defaultCleanupMaxBatches = 10
 	// buffEventRetention is how long bar changes are kept.
 	buffEventRetention = 30 * 24 * time.Hour
+	// personaImageGrace is how long an uploaded persona image is kept while
+	// no persona template or version references it.
+	personaImageGrace = 7 * 24 * time.Hour
 )
 
 // Table labels of conloom_cleanup_deleted_total.
@@ -23,6 +26,7 @@ const (
 	cleanupUsage      = "model_calls"
 	cleanupPanel      = "panel_sessions"
 	cleanupBuffEvents = "conversation_buff_events"
+	cleanupImages     = "persona_images"
 )
 
 // purgeBuffEvents deletes bar changes older than buffEventRetention.
@@ -37,6 +41,23 @@ func (o *Orchestrator) purgeBuffEvents() {
 	o.countCleanup(cleanupBuffEvents, int(n))
 	if n > 0 {
 		o.log.Info("purged bar changes", "count", n)
+	}
+}
+
+// purgePersonaImages deletes the persona images uploaded more than
+// personaImageGrace ago that no persona template or version references,
+// keeping also those the config file's templates name.
+func (o *Orchestrator) purgePersonaImages() {
+	n, err := o.st.PurgePersonaImages(o.bgCtx, o.now().Add(-personaImageGrace), o.personas.ReferencedImages())
+	if err != nil {
+		if o.bgCtx.Err() == nil {
+			o.log.Error("purge persona images failed", "error", err)
+		}
+		return
+	}
+	o.countCleanup(cleanupImages, n)
+	if n > 0 {
+		o.log.Info("purged unreferenced persona images", "count", n)
 	}
 }
 

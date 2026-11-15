@@ -46,8 +46,10 @@ type Auditor interface {
 // memory consolidation; Gatherer is the registry the live metrics are read
 // from; Presence holds when each bot's adapter last called the core; a nil
 // Location is UTC; StartedAt is when the process started. Chat serves the
-// panel chat API, Autonomy the private chats' hidden state and PanelBots the
-// changes to panel bots; their APIs answer 503 while they are nil.
+// panel chat API, Autonomy the private chats' hidden state, PanelBots the
+// changes to panel bots and Appearance the descriptions of persona images;
+// their APIs answer 503 while they are nil. Without PanelBots, a changed
+// persona template does not refresh the panel bots' problems.
 type Deps struct {
 	Config   *config.Config
 	Bots     *botdir.Directory
@@ -66,6 +68,7 @@ type Deps struct {
 	Chat            ChatService
 	Autonomy        AutonomyService
 	PanelBots       PanelBotService
+	Appearance      AppearanceService
 	Gatherer        prometheus.Gatherer
 	Presence        *obs.Presence
 	Location        *time.Location
@@ -82,6 +85,10 @@ type Server struct {
 	// dummyHash is verified for unknown login names, so they cost as much
 	// as known ones.
 	dummyHash string
+	// imageUploads and imageDescribes each hold one slot: decoding a large
+	// image takes hundreds of MB, so one upload and one description run at a
+	// time and others are refused meanwhile (see tryImageSlot).
+	imageUploads, imageDescribes chan struct{}
 }
 
 // Session is the logged-in session of an API request.
@@ -101,7 +108,8 @@ const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 
 func New(d Deps) *Server {
 	s := &Server{
 		d: d, log: d.Logger, now: d.Now, mux: http.NewServeMux(), limiter: newLoginLimiter(),
-		dummyHash: dummyHash(d.Config.Panel.Users),
+		dummyHash:    dummyHash(d.Config.Panel.Users),
+		imageUploads: make(chan struct{}, 1), imageDescribes: make(chan struct{}, 1),
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)

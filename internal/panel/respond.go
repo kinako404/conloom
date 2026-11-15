@@ -59,13 +59,16 @@ func (s *Server) respondError(w http.ResponseWriter, r *http.Request, status int
 
 // fail maps err from a collaborator to an error response as the Bot
 // Interaction API does: store.ErrNotFound is 404; a rejected policy, persona,
-// member memory, bar or panel bot edit is 400 with the error text, and so is
-// a request for the hidden state of a conversation that is not private; a
-// change to a bot of the config file is 403; a refused consolidation is 409
-// MEMORY_DISABLED or PAUSED; a bot being deleted, or a chat whose cancelled
-// tasks are still stopping, is a retryable 409 CHAT_BUSY; a cancelled request
-// or a member memory that kept changing is a retryable 503; anything else is
-// a 500 whose details are only logged.
+// persona template, member memory, bar or panel bot edit is 400 with the
+// error text, and so is a request for the hidden state of a conversation that
+// is not private; a change to a bot of the config file, and deleting a
+// persona template of the config file, is 403; a refused consolidation is 409
+// MEMORY_DISABLED or PAUSED; deleting a persona template panel bots use is
+// 409 TEMPLATE_IN_USE naming them; a bot being deleted, or a chat whose
+// cancelled tasks are still stopping, is a retryable 409 CHAT_BUSY; a
+// cancelled request or a member memory that kept changing is a retryable 503,
+// and so is a description without a vision model (MODEL_UNAVAILABLE);
+// anything else is a 500 whose details are only logged.
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if ctxErr := r.Context().Err(); ctxErr != nil && errors.Is(err, ctxErr) {
 		s.respondError(w, r, http.StatusServiceUnavailable, conloomapi.CodeInternal, "request cancelled; server may be shutting down", err)
@@ -87,6 +90,13 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 			strings.TrimPrefix(err.Error(), core.ErrInvalidBot.Error()+": "), err)
 	case errors.Is(err, core.ErrConfigBot):
 		s.respondError(w, r, http.StatusForbidden, conloomapi.CodeForbidden, strings.TrimPrefix(core.ErrConfigBot.Error(), "core: "), err)
+	case errors.Is(err, persona.ErrTemplateConfigOnly):
+		s.respondError(w, r, http.StatusForbidden, conloomapi.CodeForbidden, strings.TrimPrefix(err.Error(), "persona: "), err)
+	case errors.Is(err, persona.ErrTemplateInUse):
+		s.respondError(w, r, http.StatusConflict, conloomapi.CodeTemplateInUse,
+			strings.TrimPrefix(err.Error(), persona.ErrTemplateInUse.Error()+": "), err)
+	case errors.Is(err, core.ErrNoVision):
+		s.respondError(w, r, http.StatusServiceUnavailable, conloomapi.CodeModelUnavailable, "未配置识图模型", err)
 	case errors.Is(err, core.ErrChatBusy):
 		s.respondError(w, r, http.StatusConflict, conloomapi.CodeChatBusy, strings.TrimPrefix(core.ErrChatBusy.Error(), "core: "), err)
 	case errors.Is(err, core.ErrBotDeleting):

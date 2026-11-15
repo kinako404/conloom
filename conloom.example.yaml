@@ -83,6 +83,8 @@ model_profiles:
     endpoint: ${CONLOOM_SHORT_MODEL_ENDPOINT}
     model: ${CONLOOM_SHORT_MODEL_NAME}
     api_key: ${CONLOOM_SHORT_MODEL_KEY}
+    # 模型支持的输入模态。含 image 时，回复请求会附带人设的外观参考图（appearance_image）的缩小图；
+    # 确认模型确实接受图片后再改成 [text, image]，否则带图的回复会失败。
     modalities: [text]
     # 上下文窗口：须满足 soft_input_budget <= configured_window <= native_window。
     context:
@@ -124,6 +126,27 @@ model_profiles:
       data_location: remote
       allow_sensitive_content: true
     token_estimate_factor: 1.0
+  # 识图模型（可选）：只用于面板里根据外观参考图“生成外观介绍”，回复永远不会路由到它。
+  # modalities 必须包含 image；reserved_output_tokens 作为 max_tokens，推理模型的思考也算在内。
+  # 省略时生成外观介绍提示“未配置识图模型”。见 docs/deployment.md 的“人设参考图和识图模型”。
+  # vision:
+  #   endpoint: ${CONLOOM_LONG_MODEL_ENDPOINT}
+  #   model: <支持图片输入的模型名>
+  #   api_key: ${CONLOOM_LONG_MODEL_KEY}
+  #   modalities: [text, image]
+  #   context:
+  #     native_window: 131072
+  #     configured_window: 131072
+  #     soft_input_budget: 16000
+  #     reserved_output_tokens: 4096
+  #     safety_margin_tokens: 1024
+  #   runtime:
+  #     max_concurrency: 1
+  #     timeout: 40s
+  #     max_retries: 1
+  #   privacy:
+  #     data_location: remote
+  #     allow_sensitive_content: true
 
 # 技能：内置技能 memory、time、status、buff 打包在程序里。dir 可选，相对路径按本文件所在目录解析；
 # 目录里每个 <名字>/SKILL.md 与内置技能同名时替换它，否则作为新技能加入（格式见 docs/skills.md）。
@@ -153,6 +176,7 @@ model_profiles:
 #                               # 普通 HTTP 下密码和 cookie 明文传输，公网访问请加 HTTPS 反代或防火墙，见 docs/panel.md
 
 # 人格模板：Bot 通过 persona_template 引用；省略 default 时使用内置默认人格。
+# 开启面板后也可以在面板里在线修改（覆盖这里的版本，可恢复）或新建模板，见 docs/panel.md。
 persona_templates:
   default:
     persona_name: 默认群友人格
@@ -194,6 +218,12 @@ persona_templates:
       砚秋是一座海边小城图书馆的夜班管理员，二十出头，安静、耐心，记性很好。
       她喜欢整理旧书、泡一壶清茶，熟悉馆里每一排书架，常给人推荐恰好合适的书。
       她把群当成闭馆后还亮着灯的阅览室，大家来聊天，她就放下手里的书听一听。
+    # 外貌描述（≤800），渲染为“外貌：”一段。也可以在面板里上传外观参考图，由识图模型生成后修改。
+    appearance: |
+      黑色短发齐肩，常别一枚旧书签形状的发夹；戴细框眼镜，眼神安静。
+      身形清瘦，多穿浅灰色的针织开衫和深色长裙，袖口偶尔沾着一点墨迹。
+    # appearance_image: 外观参考图的图片 ID（64 位十六进制），在面板上传后由面板填入，不要手写文件路径。
+    # appearance_image_skip: true   # 回复时不附带参考图
     speaking_style: |
       语气温和平静，句子不长，不用感叹号刷屏。
       偶尔用书或茶打个比方，但点到为止；不确定的事会直说“这个我得查查”。
