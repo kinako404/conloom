@@ -96,7 +96,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 |---|---|---|
 | `provider` | `openai_compatible` | 目前唯一支持的值 |
 | `endpoint`、`model`、`api_key` | `endpoint`、`model` 必填 | 接口地址、模型名、密钥 |
-| `modalities` | 空 | 模型支持的模态，如 `[text]` |
+| `modalities` | 空 | 模型支持的模态，如 `[text]`。含 `image` 时，发给这个模型的回复请求会附带人设的外观参考图（见 `appearance_image`）；不含时不带图 |
 | `context.native_window` / `configured_window` / `soft_input_budget` | 必填，均 > 0 | 必须满足 `soft_input_budget <= configured_window <= native_window`；软预算决定历史最多装多少 |
 | `context.reserved_output_tokens` / `safety_margin_tokens` | 0 | 输出预留（大于 0 时也作为请求的 `max_tokens`，推理 token 也算在内）和安全余量。记忆整理也用 `long_context` 的输出预留：摘要和笔记的默认上限（私聊 3000 / 1000 字，群聊 1500 / 300 字）建议 `long_context` 至少设 8192，否则整理容易被截断（`output_truncated`），每批的人数也会被压到 1 人 |
 | `runtime.max_concurrency` | 2 | 该模型的全局并发上限，≥ 1 |
@@ -125,8 +125,8 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `character_name` | ≤20 字，单行 | 角色名。设置后就是机器人在使用这个人格的会话里的名字：system prompt 的“你是{名字}”、上下文里的“你（名字）”、回复的回声清洗和 `/help` 都改用它；不设时用 `bots[].name` |
 | `description` | ≤2000 字 | 角色设定，渲染为“角色设定：”一段 |
 | `appearance` | ≤800 字 | 外貌描述，渲染为“外貌：”一段，位于“角色设定”之后、“说话方式”之前 |
-| `appearance_image` | 64 位小写十六进制 | 外观参考图的图片 ID（图片内容的 SHA-256），不是文件路径或网址。图片在面板上传，上传后由面板填入这个字段；图片 ID 不进系统提示 |
-| `appearance_image_skip` | 布尔，默认 `false` | 为 `true` 时回复不附带外观参考图 |
+| `appearance_image` | 64 位小写十六进制 | 外观参考图的图片 ID（图片内容的 SHA-256），不是文件路径或网址。图片在面板上传，上传后由面板填入这个字段；图片 ID 不进系统提示。只有 `appearance_image_skip` 不为 `true`、而且这次回复路由到的模型在 `modalities` 里声明了 `image` 时，回复请求才附带这张图的缩小图（放在第一条 user 消息里） |
+| `appearance_image_skip` | 布尔，默认 `false` | 为 `true` 时回复不附带外观参考图，模型支持图片也不带 |
 | `speaking_style` | ≤1000 字 | 说话方式，渲染为“说话方式：”一段 |
 | `examples` | ≤8 组；每组 `user`、`reply` 非空且各 ≤200 字 | 示例对话，渲染为“群友：… / 你：…”，并注明只示范语气和分寸、不要照搬 |
 | `adult` | 布尔，默认 `false` | 成年人设。与 `minor` 同时为 `true` 时报错 |

@@ -3,6 +3,7 @@ package core
 import (
 	"cmp"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -331,13 +332,16 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		Directive:        directive,
 		Memory:           o.injectMemory(ctx, task, pol, speakerName, triggers, targets, names, speakerRows),
 	}
-	if conv.Type == conloomapi.ConvPrivate {
-		// The bars come from the persona version SystemPrompt rendered.
-		if pv, err := o.personas.Current(ctx, task.ConversationKey, bot.PersonaTemplate); err != nil {
-			o.logStateError(task, err)
-		} else {
+	// The bars and the appearance image come from the persona version
+	// SystemPrompt rendered.
+	if pv, err := o.personas.Current(ctx, task.ConversationKey, bot.PersonaTemplate); err != nil {
+		o.log.Warn("load persona failed; replying without hidden state or appearance image",
+			"task_id", task.ID, "conversation", task.ConversationKey, "error", err)
+	} else {
+		if conv.Type == conloomapi.ConvPrivate {
 			in.State = o.stateBlock(ctx, task, bot, pv.Persona)
 		}
+		in.Image = o.appearanceImage(ctx, task, pv.Persona)
 	}
 	run := o.newSkillRun(task, bot, conv, triggers, &out)
 	if run != nil {
@@ -430,6 +434,28 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	out.meta.ReviewResult = res.Verdict
 	out.text, out.maxParts = res.Text, pol.Reply.MaxParts
 	return out
+}
+
+// appearanceImage returns the reply copy of doc's appearance image, or nil
+// when doc has none, skips it, or it cannot be read (logged): the reply goes
+// on without it.
+func (o *Orchestrator) appearanceImage(ctx context.Context, task store.TaskRecord, doc conloomapi.PersonaDoc) *contextbuilder.ImageRef {
+	if doc.AppearanceImage == "" || doc.AppearanceImageSkip {
+		return nil
+	}
+	img, err := o.st.GetPersonaImage(ctx, doc.AppearanceImage, false)
+	if err == nil && len(img.ReplyJPEG) == 0 {
+		err = errors.New("empty reply copy")
+	}
+	if err != nil {
+		o.log.Warn("load appearance image failed; replying without it", "task_id", task.ID,
+			"conversation", task.ConversationKey, "image", doc.AppearanceImage, "error", err)
+		return nil
+	}
+	return &contextbuilder.ImageRef{
+		DataURL: "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(img.ReplyJPEG),
+		Tokens:  img.ReplyTokens,
+	}
 }
 
 // history returns up to maxRecent messages before the newest, excluding the
@@ -603,6 +629,8 @@ func partsDirective(maxParts int) string {
 // Every request waits for its own admission. The response is the model's final
 // answer; a tool call written as text, a tool round cut off by the output
 // limit and tool calls in the final request are not answers (ErrEmptyOutput).
+// A profile whose modalities lack "image" gets every request without the
+// appearance image and its label, though the estimates still count them.
 func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router.Decision, in contextbuilder.Input, run *skillRun) (openai.ChatResponse, error) {
 	p := d.Profile
 	in.Budget = d.PromptBudget
@@ -613,7 +641,11 @@ func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router
 		in.Budget = min(d.PromptBudget, d.MaxPromptTokens-worst)
 	}
 	built := contextbuilder.Build(in)
-	req := openai.ChatRequest{Messages: built.Messages, MaxTokens: d.MaxOutputTokens}
+	msgs := built.Messages
+	if !slices.Contains(p.Config.Modalities, "image") {
+		msgs = contextbuilder.WithoutImage(msgs)
+	}
+	req := openai.ChatRequest{Messages: msgs, MaxTokens: d.MaxOutputTokens}
 	if run == nil {
 		return o.chat(ctx, task, d, req, built, built.EstimatedTokens, nil)
 	}

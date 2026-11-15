@@ -13,8 +13,9 @@ import (
 // PersonaDoc is a persona. CharacterName, Description, Appearance,
 // SpeakingStyle and Examples are optional; a set CharacterName is the bot's
 // name in the conversation. AppearanceImage, also optional, is the ID of an
-// appearance reference image that replies carry unless AppearanceImageSkip is
-// set; it never enters the system prompt. Adult, unless Minor is also set,
+// appearance reference image; it never enters the system prompt. A reply
+// request carries the image only when AppearanceImageSkip is not set and the
+// model it is routed to declares image support. Adult, unless Minor is also set,
 // makes ContentOpen possible (see ModeFor); ContentRules and MemoryRules only
 // take effect in it. Bars, also optional, define the hidden bars of private
 // chats (see EffectiveBars); they never enter the system prompt.

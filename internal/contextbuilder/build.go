@@ -62,6 +62,22 @@ type Input struct {
 	// ToolSchema is the JSON of the tool definitions sent with the request.
 	// It is never rendered but counts toward BaseTokens and EstimatedTokens.
 	ToolSchema string
+	// Image, when set, is the bot's appearance image. It goes on the first
+	// user message, whose text then starts with AppearanceLabel on a line of
+	// its own. It never changes the system prompt; its Tokens and the label
+	// count toward BaseTokens and EstimatedTokens.
+	Image *ImageRef
+}
+
+// AppearanceLabel starts the text of the message that carries the appearance
+// image, so the model takes the image as its own looks.
+const AppearanceLabel = "【你的外观参考图（这就是你自己的样子，不是对方发来的图片）】"
+
+// ImageRef is an image sent with the request: its data URL and its estimated
+// prompt tokens.
+type ImageRef struct {
+	DataURL string
+	Tokens  int
 }
 
 type Output struct {
@@ -78,10 +94,14 @@ var defaultLocation = sync.OnceValue(func() *time.Location {
 })
 
 // BaseTokens estimates the system prompt plus the current input (including
-// the reply target, mentions and directive), the memory block and the state
-// block, which are always sent regardless of Budget.
+// the reply target, mentions and directive), the memory block, the state
+// block and the appearance image with its label, which are always sent
+// regardless of Budget.
 func BaseTokens(in Input) int {
 	n := Estimate(renderCurrent(in), in.TokenFactor) + MessageOverhead
+	if in.Image != nil {
+		n += in.Image.Tokens + Estimate(AppearanceLabel+"\n", in.TokenFactor)
+	}
 	if in.Memory != "" {
 		n += Estimate(in.Memory+"\n\n", in.TokenFactor)
 	}
@@ -104,7 +124,8 @@ func BaseTokens(in Input) int {
 // Without a current message the directive follows that history directly. Each user
 // history line names the message it replies to (looked up in ReplyTargets)
 // and who it mentions, and the annotations count toward its cost. Bot history has echoed transcript prefixes stripped; a bot message left
-// with nothing is skipped and counted as dropped.
+// with nothing is skipped and counted as dropped. The appearance image, if
+// any, goes on the first user message (see Input.Image).
 func Build(in Input) Output {
 	loc := in.location()
 
@@ -175,6 +196,12 @@ func Build(in Input) Output {
 	out.Messages = append(out.Messages, openai.ChatMessage{Role: "user", Content: current})
 
 	out.EstimatedTokens = Estimate(in.ToolSchema, in.TokenFactor)
+	if in.Image != nil {
+		first := &out.Messages[slices.IndexFunc(out.Messages, func(m openai.ChatMessage) bool { return m.Role == "user" })]
+		first.Content = AppearanceLabel + "\n" + first.Content
+		first.Images = []string{in.Image.DataURL}
+		out.EstimatedTokens += in.Image.Tokens
+	}
 	for _, m := range out.Messages {
 		out.EstimatedTokens += Estimate(m.Content, in.TokenFactor) + MessageOverhead
 	}
@@ -434,4 +461,18 @@ func displayName(rec store.MessageRecord) string {
 		return rec.DisplayName
 	}
 	return genericMemberName
+}
+
+// WithoutImage returns msgs, as built by Build, without the appearance image
+// and its AppearanceLabel line, for a model that does not take images. msgs
+// itself is left unchanged.
+func WithoutImage(msgs []openai.ChatMessage) []openai.ChatMessage {
+	i := slices.IndexFunc(msgs, func(m openai.ChatMessage) bool { return len(m.Images) > 0 })
+	if i < 0 {
+		return msgs
+	}
+	out := slices.Clone(msgs)
+	out[i].Images = nil
+	out[i].Content = strings.TrimPrefix(out[i].Content, AppearanceLabel+"\n")
+	return out
 }

@@ -50,6 +50,83 @@ func TestChatMessage_JSON(t *testing.T) {
 	}
 }
 
+func TestChatMessage_JSONUnchangedWithoutImages(t *testing.T) {
+	msgs := []ChatMessage{
+		{Role: "system", Content: "s"},
+		{Role: "user", Content: "你好"},
+		{Role: "user"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "call_1", Name: "now", Arguments: "{}"}}},
+		{Role: "tool", ToolCallID: "call_1", Content: "调用失败。"},
+	}
+	for _, m := range msgs {
+		plain, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.Images = []string{}
+		empty, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(empty) != string(plain) {
+			t.Errorf("with empty Images = %s\nwithout          %s", empty, plain)
+		}
+	}
+	c := newTestClient(testProfile("http://127.0.0.1:9"))
+	got, err := c.requestBody(ChatRequest{Messages: []ChatMessage{{Role: "system", Content: "s"}, {Role: "user", Content: "你好", Images: []string{}}}, MaxTokens: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"max_tokens":100,"messages":[{"role":"system","content":"s"},{"role":"user","content":"你好"}],"model":"m1","stream":false}`
+	if string(got) != want {
+		t.Errorf("body = %s\nwant   %s", got, want)
+	}
+}
+
+func TestChatMessage_ImageParts(t *testing.T) {
+	const a, b = "data:image/jpeg;base64,AAAA", "data:image/jpeg;base64,BBBB"
+	cases := []struct {
+		name string
+		msg  ChatMessage
+		want string
+	}{
+		{"one image", ChatMessage{Role: "user", Content: "标签\n你好", Images: []string{a}},
+			`{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + a + `"}},{"type":"text","text":"标签\n你好"}]}`},
+		{"images in order", ChatMessage{Role: "user", Content: "你好", Images: []string{a, b}},
+			`{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + a + `"}},{"type":"image_url","image_url":{"url":"` + b + `"}},{"type":"text","text":"你好"}]}`},
+		{"image without text", ChatMessage{Role: "user", Images: []string{a}},
+			`{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + a + `"}}]}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := json.Marshal(c.msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != c.want {
+				t.Fatalf("Marshal = %s\nwant      %s", got, c.want)
+			}
+			var back ChatMessage
+			if err := json.Unmarshal(got, &back); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(back, c.msg) {
+				t.Errorf("round trip = %+v, want %+v", back, c.msg)
+			}
+		})
+	}
+
+	c := newTestClient(testProfile("http://127.0.0.1:9"))
+	body, err := c.requestBody(ChatRequest{Messages: []ChatMessage{{Role: "system", Content: "s"}, cases[0].msg}, MaxTokens: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"max_tokens":100,"messages":[{"role":"system","content":"s"},` + cases[0].want + `],"model":"m1","stream":false}`
+	if string(body) != want {
+		t.Errorf("body = %s\nwant   %s", body, want)
+	}
+}
+
 // captureServer records the request body and answers with message.
 func captureServer(t *testing.T, message string) (*httptest.Server, <-chan map[string]any) {
 	t.Helper()

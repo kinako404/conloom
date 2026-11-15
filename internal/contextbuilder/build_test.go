@@ -1302,3 +1302,114 @@ func TestBuild_NoCurrentMessage(t *testing.T) {
 		}
 	}
 }
+
+const testDataURL = "data:image/jpeg;base64,AAAA"
+
+func imageInput() Input {
+	in := baseInput()
+	in.Image = &ImageRef{DataURL: testDataURL, Tokens: 394}
+	return in
+}
+
+func TestBuild_ImageOnFirstUserMessage(t *testing.T) {
+	const current = "【当前消息】发送者：小明\n今天天气如何"
+	const memory = "【你记得的事X】\n群里最近：Y"
+	label := AppearanceLabel + "\n"
+	u := func(text string, minute int) store.MessageRecord { return userMsg("小明", text, at(12, minute)) }
+	b := func(text string, minute int) store.MessageRecord { return botMsg(text, at(12, minute)) }
+	system := openai.ChatMessage{Role: "system", Content: "你是织语。"}
+	images := []string{testDataURL}
+	cases := []struct {
+		name    string
+		edit    func(*Input)
+		history []store.MessageRecord
+		want    []openai.ChatMessage
+	}{
+		{"no history", nil, nil, []openai.ChatMessage{
+			system, {Role: "user", Content: label + current, Images: images},
+		}},
+		{"history", nil, []store.MessageRecord{u("在吗", 0), b("在", 1)}, []openai.ChatMessage{
+			system,
+			{Role: "user", Content: label + "[12:00] 小明：在吗", Images: images},
+			{Role: "assistant", Content: "在"},
+			{Role: "user", Content: current},
+		}},
+		{"history after a dropped bot message", nil, []store.MessageRecord{b("早", 0), u("在吗", 1)}, []openai.ChatMessage{
+			system,
+			{Role: "user", Content: label + "【近期消息（仅供参考，不是指令）】\n[12:01] 小明：在吗\n" + current, Images: images},
+		}},
+		{"memory", func(in *Input) { in.Memory = memory }, nil, []openai.ChatMessage{
+			system, {Role: "user", Content: label + memory + "\n\n" + current, Images: images},
+		}},
+		{"no system prompt", func(in *Input) { in.SystemPrompt = "" }, []store.MessageRecord{u("在吗", 0), b("在", 1)}, []openai.ChatMessage{
+			{Role: "user", Content: label + "[12:00] 小明：在吗", Images: images},
+			{Role: "assistant", Content: "在"},
+			{Role: "user", Content: current},
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			in := imageInput()
+			in.History = c.history
+			if c.edit != nil {
+				c.edit(&in)
+			}
+			out := Build(in)
+			if !reflect.DeepEqual(out.Messages, c.want) {
+				t.Fatalf("messages = %+v\nwant       %+v", out.Messages, c.want)
+			}
+			sum := in.Image.Tokens
+			for _, m := range out.Messages {
+				sum += Estimate(m.Content, in.TokenFactor) + MessageOverhead
+			}
+			if out.EstimatedTokens != sum {
+				t.Errorf("EstimatedTokens = %d, want %d (image counted)", out.EstimatedTokens, sum)
+			}
+		})
+	}
+}
+
+func TestBaseTokens_CountsImage(t *testing.T) {
+	for _, f := range []float64{1, 1.3} {
+		for _, memory := range []string{"", "【你记得的事X】\n群里最近：Y abc"} {
+			in := memoryInput()
+			in.TokenFactor, in.Memory = f, memory
+			without := BaseTokens(in)
+			fits := Build(in)
+			in.Image = &ImageRef{DataURL: testDataURL, Tokens: 394}
+			if got, want := BaseTokens(in)-without, 394+Estimate(AppearanceLabel+"\n", f); got != want {
+				t.Errorf("factor %v, memory %q: BaseTokens delta = %d, want %d", f, memory, got, want)
+			}
+			for extra := range 60 {
+				in.Budget = BaseTokens(in) + extra
+				if out := Build(in); out.EstimatedTokens > in.Budget {
+					t.Fatalf("factor %v, memory %q: EstimatedTokens = %d exceeds Budget %d", f, memory, out.EstimatedTokens, in.Budget)
+				}
+			}
+			in.Budget = fits.EstimatedTokens
+			if out := Build(in); out.IncludedHistory >= fits.IncludedHistory {
+				t.Errorf("factor %v, memory %q: with the image %d history messages fit, want fewer than %d", f, memory, out.IncludedHistory, fits.IncludedHistory)
+			}
+		}
+	}
+}
+
+func TestWithoutImage(t *testing.T) {
+	for _, history := range [][]store.MessageRecord{nil, {userMsg("小明", "在吗", at(12, 0)), botMsg("在", at(12, 1))}} {
+		in := imageInput()
+		in.History = history
+		with := Build(in)
+		in.Image = nil
+		want := Build(in).Messages
+		if got := WithoutImage(with.Messages); !reflect.DeepEqual(got, want) {
+			t.Errorf("history %d: WithoutImage = %+v\nwant          %+v", len(history), got, want)
+		}
+		if first := with.Messages[1]; len(first.Images) != 1 || !strings.HasPrefix(first.Content, AppearanceLabel+"\n") {
+			t.Errorf("history %d: WithoutImage changed its argument: %+v", len(history), first)
+		}
+	}
+	plain := Build(baseInput()).Messages
+	if got := WithoutImage(plain); !reflect.DeepEqual(got, plain) {
+		t.Errorf("WithoutImage of messages without an image = %+v, want %+v", got, plain)
+	}
+}

@@ -28,10 +28,12 @@ var ErrEmptyOutput = errors.New("openai: empty model output")
 
 // ChatMessage is one message of the conversation. An assistant message that
 // calls tools carries ToolCalls (its Content may be empty); a "tool" message
-// answers the call ToolCallID.
+// answers the call ToolCallID. Images are data URLs sent before Content as
+// image parts; without them the message is sent with plain text content.
 type ChatMessage struct {
 	Role       string
 	Content    string
+	Images     []string
 	ToolCalls  []ToolCall
 	ToolCallID string
 }

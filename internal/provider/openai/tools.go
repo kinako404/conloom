@@ -81,8 +81,9 @@ func (c *ToolCall) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// wireMessage is ChatMessage on the wire: content is null for an assistant
-// message that only calls tools, as OpenAI-compatible servers send it.
+// wireMessage is a ChatMessage without images on the wire: content is null
+// for an assistant message that only calls tools, as OpenAI-compatible
+// servers send it.
 type wireMessage struct {
 	Role       string     `json:"role"`
 	Content    *string    `json:"content"`
@@ -90,7 +91,36 @@ type wireMessage struct {
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
+// wirePartsMessage is a ChatMessage with images on the wire: its content is
+// the image parts followed by a text part, left out when the text is empty.
+type wirePartsMessage struct {
+	Role       string     `json:"role"`
+	Content    []wirePart `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+type wirePart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *wireImageURL `json:"image_url,omitempty"`
+}
+
+type wireImageURL struct {
+	URL string `json:"url"`
+}
+
 func (m ChatMessage) MarshalJSON() ([]byte, error) {
+	if len(m.Images) > 0 {
+		w := wirePartsMessage{Role: m.Role, ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID}
+		for _, url := range m.Images {
+			w.Content = append(w.Content, wirePart{Type: "image_url", ImageURL: &wireImageURL{URL: url}})
+		}
+		if m.Content != "" {
+			w.Content = append(w.Content, wirePart{Type: "text", Text: m.Content})
+		}
+		return json.Marshal(w)
+	}
 	w := wireMessage{Role: m.Role, ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID}
 	if m.Content != "" || len(m.ToolCalls) == 0 {
 		w.Content = &m.Content
@@ -98,14 +128,37 @@ func (m ChatMessage) MarshalJSON() ([]byte, error) {
 	return json.Marshal(w)
 }
 
+// UnmarshalJSON accepts content as a string, null, or an array of parts whose
+// images become Images and whose texts, concatenated, become Content.
 func (m *ChatMessage) UnmarshalJSON(b []byte) error {
-	var w wireMessage
+	var w struct {
+		Role       string          `json:"role"`
+		Content    json.RawMessage `json:"content"`
+		ToolCalls  []ToolCall      `json:"tool_calls"`
+		ToolCallID string          `json:"tool_call_id"`
+	}
 	if err := json.Unmarshal(b, &w); err != nil {
 		return err
 	}
 	*m = ChatMessage{Role: w.Role, ToolCalls: w.ToolCalls, ToolCallID: w.ToolCallID}
-	if w.Content != nil {
-		m.Content = *w.Content
+	content := bytes.TrimSpace(w.Content)
+	switch {
+	case len(content) == 0 || bytes.Equal(content, []byte("null")):
+		return nil
+	case content[0] != '[':
+		return json.Unmarshal(content, &m.Content)
+	}
+	var parts []wirePart
+	if err := json.Unmarshal(content, &parts); err != nil {
+		return err
+	}
+	for _, p := range parts {
+		switch {
+		case p.Type == "image_url" && p.ImageURL != nil:
+			m.Images = append(m.Images, p.ImageURL.URL)
+		case p.Type == "text":
+			m.Content += p.Text
+		}
 	}
 	return nil
 }
