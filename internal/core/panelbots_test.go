@@ -203,6 +203,9 @@ func TestPanelBots_CreateValidates(t *testing.T) {
 		{"newline", "控制字符或换行", PanelBotInput{Name: "小\n红"}},
 		{"control character", "控制字符或换行", PanelBotInput{Name: "小\x07红"}},
 		{"line separator", "控制字符或换行", PanelBotInput{Name: "小\u2028红"}},
+		{"zero-width space", "不可见的格式字符", PanelBotInput{Name: "小\u200b红"}},
+		{"bidi override", "不可见的格式字符", PanelBotInput{Name: "\u202e红小"}},
+		{"only format characters", "不可见的格式字符", PanelBotInput{Name: "\u200b\u200d\ufeff"}},
 		{"unknown template", `人设模板“nope”不存在`, PanelBotInput{Name: "小红", PersonaTemplate: "nope"}},
 		{"unknown skill", `技能“nope”不存在`, PanelBotInput{Name: "小红", Skills: []string{"time", "nope"}}},
 		{"group-only skill", `技能“grouponly”不能在私聊里用`, PanelBotInput{Name: "小红", Skills: []string{"grouponly"}}},
@@ -215,6 +218,13 @@ func TestPanelBots_CreateValidates(t *testing.T) {
 	}
 	if n := len(env.storedPanelBots(t)); n != 2 {
 		t.Fatalf("panel bots after invalid creates = %d, want 2", n)
+	}
+	if _, err := svc.Update(ctx, bot.ID, PanelBotInput{Name: "小\u2066红"}, panelBotActor); !errors.Is(err, ErrInvalidBot) ||
+		!strings.Contains(err.Error(), "不可见的格式字符") {
+		t.Errorf("rename with an isolate: err = %v, want ErrInvalidBot", err)
+	}
+	if got, _ := env.o.bots.Bot(bot.ID); got.Name != "小红" {
+		t.Errorf("name after refused rename = %q, want 小红", got.Name)
 	}
 
 	for len(env.storedPanelBots(t)) < maxPanelBots {

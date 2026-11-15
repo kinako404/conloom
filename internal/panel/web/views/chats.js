@@ -117,7 +117,7 @@ function botDialog(saved) {
     bot
       ? h('p', { class: 'hint mono' }, bot.id)
       : h('p', { class: 'hint' }, '面板 bot 只在面板里聊天，不接 QQ、Telegram 等平台。建好立即生效，不用重启。'),
-    field('名字', name, '1–32 字，不能有换行'),
+    field('名字', name, '1–32 字，不能有换行和不可见字符'),
     same,
     field('默认人设模板', template, bot
       ? '只影响之后新建的聊天，以及 bot 还没回复过的聊天；已有聊天的人设在会话的“人设”页里改'

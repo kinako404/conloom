@@ -368,6 +368,8 @@ func (s *PanelBotService) validate(in PanelBotInput) (PanelBotInput, error) {
 		return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
 	}):
 		return invalid("名字不能包含控制字符或换行")
+	case strings.ContainsFunc(out.Name, func(r rune) bool { return unicode.Is(unicode.Cf, r) }):
+		return invalid("名字不能包含零宽字符、方向控制符等不可见的格式字符")
 	}
 	if out.PersonaTemplate == "" {
 		out.PersonaTemplate = defaultPersonaTemplate
