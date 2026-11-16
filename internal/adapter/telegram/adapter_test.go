@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -395,6 +396,38 @@ func TestAdapter_RateLimitWaitsRetryAfter(t *testing.T) {
 	}
 	if ack := core.Acks()[0]; ack.Req.Status != conloomapi.AckSent || ack.Req.PlatformMessageID != "20001_501" {
 		t.Errorf("ack = %+v, want sent", ack)
+	}
+}
+
+func TestAdapter_RateLimitOnLaterPartWaitsAndResendsIt(t *testing.T) {
+	tg, core := newFakeTG(t), newFakeCore(t)
+	paragraphs := []string{strings.Repeat("好", 3000), strings.Repeat("长", 3000), strings.Repeat("文", 3000)}
+	tg.SetSend(func(call tgCall, n int) (int, string) {
+		if n == 2 {
+			return http.StatusTooManyRequests, tgError(429, "Too Many Requests: retry after 1", 1)
+		}
+		return 0, ""
+	})
+	core.Enqueue(replyAction("act_long", strings.Join(paragraphs, "\n\n"), ""))
+	startAdapter(t, tgConfig(tg.URL, core.URL, t.TempDir()), nil)
+
+	waitFor(t, 5*time.Second, "the ACK", func() bool { return len(core.Acks()) == 1 })
+	// The second part cannot be left for redelivery once the first is sent:
+	// it waits out retry_after and is sent again, then the third follows.
+	calls := tg.Calls("sendMessage")
+	var texts []string
+	for _, c := range calls {
+		texts = append(texts, c.text())
+	}
+	if want := []string{paragraphs[0], paragraphs[1], paragraphs[1], paragraphs[2]}; !slices.Equal(texts, want) {
+		t.Fatalf("sendMessage calls = %d, want the three parts with the second sent twice", len(calls))
+	}
+	if gap := calls[2].At.Sub(calls[1].At); gap < time.Second {
+		t.Errorf("second part resent after %v, want at least retry_after (1s)", gap)
+	}
+	acks := core.Acks()
+	if ack := acks[0]; len(acks) != 1 || ack.Req.Status != conloomapi.AckSent || ack.Req.PlatformMessageID != "20001_501" {
+		t.Errorf("acks = %+v, want one, sent with the first part's ID 20001_501", acks)
 	}
 }
 
