@@ -54,33 +54,43 @@ func TestCopyIntimacySide(t *testing.T) {
 
 func TestCopyDirectiveAffinity(t *testing.T) {
 	protected := map[string]string{
-		"陌生":  "保持礼貌和距离",
-		"认识":  "友好",
-		"熟悉":  "开玩笑",
-		"亲近":  "信任",
-		"很要好": "依赖、偏爱和亲近。",
+		"陌生":  "【关系提示】你们还不太熟。保持礼貌和距离，不要主动拉近关系或表现亲昵。不要涉及恋爱或性。",
+		"认识":  "【关系提示】你们已经认识。语气可以友好、放松，但不要主动发展更亲密的关系。不要涉及恋爱或性。",
+		"熟悉":  "【关系提示】你们比较熟悉。可以自然开玩笑、表达关心，但不要主动发展更亲密的关系。不要涉及恋爱或性。",
+		"亲近":  "【关系提示】你们很亲近。可以明显表现出信任、关心和偏爱。但不要发展恋爱或性关系。",
+		"很要好": "【关系提示】你们关系很好。可以自然表现出依赖、偏爱和亲近。但不要发展恋爱或性关系。",
 	}
 	for tier, want := range protected {
-		got := CopyDirectiveAffinity(tier, false)
-		if !strings.HasPrefix(got, "【关系提示】") || !strings.Contains(got, want) {
-			t.Errorf("protected %s = %q, want prefix and %q", tier, got, want)
-		}
-		if strings.Contains(got, "内容规则") || strings.Contains(got, "对方明确主动") {
-			t.Errorf("protected %s carries open-mode wording: %q", tier, got)
+		if got := CopyDirectiveAffinity(tier, false); got != want {
+			t.Errorf("protected %s = %q, want %q", tier, got, want)
 		}
 	}
 
-	open := map[string]string{
-		"陌生":  "保持克制",
-		"认识":  "轻度亲密互动",
-		"熟悉":  "拥抱、牵手",
-		"亲近":  "回应更亲密的互动",
-		"很要好": "更主动、更深入地回应",
+	open := []struct {
+		tier    string
+		want    []string
+		notWant []string
+	}{
+		{"陌生", []string{"礼貌地保持距离", "不接受恋爱关系"}, []string{"拥抱", "牵手"}},
+		{"认识", []string{"不要答应", "不接受亲密的身体接触"}, []string{"拥抱", "牵手"}},
+		{"熟悉", []string{"不要马上确定恋爱关系", "牵手"}, []string{"拥抱"}},
+		{"亲近", []string{"回应更亲密的互动"}, nil},
+		{"很要好", []string{"更主动、更深入地回应"}, nil},
 	}
-	for tier, want := range open {
-		got := CopyDirectiveAffinity(tier, true)
-		if !strings.HasPrefix(got, "【关系提示】") || !strings.Contains(got, want) {
-			t.Errorf("open %s = %q, want prefix and %q", tier, got, want)
+	for _, c := range open {
+		got := CopyDirectiveAffinity(c.tier, true)
+		if !strings.HasPrefix(got, "【关系提示】") {
+			t.Errorf("open %s = %q, want the 【关系提示】 prefix", c.tier, got)
+		}
+		for _, w := range c.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("open %s = %q, want %q", c.tier, got, w)
+			}
+		}
+		for _, w := range c.notWant {
+			if strings.Contains(got, w) {
+				t.Errorf("open %s = %q, must not contain %q", c.tier, got, w)
+			}
 		}
 	}
 	for _, tier := range []string{"亲近", "很要好"} {
