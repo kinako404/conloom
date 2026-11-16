@@ -79,7 +79,7 @@ NapCat      Adapter                 Core                          SQLite        
 ```
 
 1. **入站**：适配器从 WebSocket 读到事件，过滤掉自己发的消息和未启用的群（`internal/adapter/napcat/adapter.go:260`），转成标准 Event（`convert.go:143`）。ID 都由平台 ID 确定性生成：会话 `group_10001`、发送者 `user_20001`、消息 `msg_<消息号>`，幂等键 `napcat:<self_id>:<消息号>`。@ 机器人被转成 `mentions` 里的 `{type:"bot"}`，@ 群友转成 `{type:"user", id:"user_<QQ号>"}`（at 段带名字时填进可选的 `name`），图片只传元数据。
-2. **提交**：`POST /api/v1/events` 必须带 `Idempotency-Key`。可重试的错误按 0.5s/1s/2s 重试 3 次，仍失败就放进内存缓冲（最多 256 条），每 5 秒重提交一次。
+2. **提交**：`POST /api/v1/events` 必须带 `Idempotency-Key`。可重试的错误按 0.5s/1s/2s 重试 3 次，仍失败就放进内存缓冲（最多 256 条），每 5 秒按顺序重提交一次。缓冲里还有事件时，新事件不直接提交，而是排到缓冲末尾并立刻触发一次重提交，所以核心短暂不可用之后，事件仍按到达顺序进入核心。
 3. **幂等**（`Submit`，`internal/core/orchestrator.go:366`）：核心对原始请求体算 SHA-256。同一个键、同样的请求体，原样返回当时的 202 响应；请求体不同返回 409。同一条平台消息换个键再交，会被消息表的唯一索引拒绝。
 4. **判定**（`Decide`，`internal/core/decide.go:75`，纯函数）：按顺序命中即停——自己的消息或未启用的群 → `ignore`；命令 → `reply/command`；私聊 → `private`；@ 机器人 → `mention`；回复机器人的消息 → `reply`；在聊会话的参与者 → 一轮或规则退出（第 4 节）；其他 → `observe`（只记录，会进入以后的上下文）。核心不读适配器预填的 `trigger`，一律自己重新判定。
 5. **落库**：判定结果连同事件、消息、新任务在**一个事务**里写入（`internal/store/sqlite/ingest.go:15`），消息同时写进关键词索引 `message_fts`（5.7）。`ignore` 的消息正文不落库，只留幂等记录。事件发生时间已超过 `runtime.stale_task_after`（默认 2 分钟）的消息只记录、不回复。

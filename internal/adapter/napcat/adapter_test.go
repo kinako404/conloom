@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -876,6 +877,50 @@ func TestAdapter_BuffersEventsWhileCoreUnavailable(t *testing.T) {
 	_, codes := c.eventsFor("70001")
 	if codes[len(codes)-1] != http.StatusOK && codes[len(codes)-1] != http.StatusAccepted {
 		t.Errorf("final submit status = %d, want success", codes[len(codes)-1])
+	}
+}
+
+// acceptedOrder returns the platform message IDs of the events the core
+// accepted, in the order it answered them.
+func (c *core) acceptedOrder() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for i, ev := range c.events {
+		if code := c.eventCodes[i]; code == http.StatusOK || code == http.StatusAccepted {
+			out = append(out, ev.Message.PlatformMessageID)
+		}
+	}
+	return out
+}
+
+func TestAdapter_BufferedEventsKeepTheirOrder(t *testing.T) {
+	ob := newFakeOB(t)
+	c := newCore(t, "60s")
+	startAdapter(t, napcatConfig(ob, c, t.TempDir()), func(a *Adapter) {
+		a.submitDelays = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond}
+		a.retryInterval = 10 * time.Second
+	})
+	waitFor(t, 5*time.Second, "get_login_info", func() bool { return len(ob.Calls("get_login_info")) == 1 })
+
+	c.failEvents.Store(true)
+	ob.Push(groupMessage(10001, 20001, 70001, "第一句", false))
+	waitFor(t, 5*time.Second, "the first event buffered", func() bool { n, _ := c.eventsFor("70001"); return n >= 4 })
+	ob.Push(groupMessage(10001, 20002, 70002, "第二句", false))
+	time.Sleep(200 * time.Millisecond)
+	if n, _ := c.eventsFor("70002"); n != 0 {
+		t.Errorf("the second event was submitted %d times while the first was still buffered, want it queued behind", n)
+	}
+
+	c.failEvents.Store(false)
+	recovered := time.Now()
+	ob.Push(groupMessage(10001, 20001, 70003, "第三句", false))
+	waitFor(t, 5*time.Second, "all three events accepted", func() bool { return len(c.acceptedOrder()) == 3 })
+	if took := time.Since(recovered); took > 2*time.Second {
+		t.Errorf("buffered events accepted %v after the core recovered and a new event arrived, want them flushed at once", took)
+	}
+	if got, want := c.acceptedOrder(), []string{"70001", "70002", "70003"}; !slices.Equal(got, want) {
+		t.Errorf("accepted order = %v, want %v", got, want)
 	}
 }
 

@@ -61,6 +61,8 @@ type Adapter struct {
 
 	pendingMu sync.Mutex
 	pending   []pendingEvent
+	// flushNow wakes retryPending to submit the buffered events at once.
+	flushNow chan struct{}
 }
 
 type pendingEvent struct {
@@ -98,6 +100,7 @@ func New(cfg config.NapCatConfig, logger *slog.Logger) (*Adapter, error) {
 		reconnectMin:  backoffMin,
 		reconnectMax:  backoffMax,
 		stableSession: stableSessionAfter,
+		flushNow:      make(chan struct{}, 1),
 	}, nil
 }
 
@@ -305,9 +308,19 @@ func (a *Adapter) forwardEvents(ctx context.Context, conn *Conn, selfID string) 
 }
 
 // forward submits ev, retrying retryable failures, and buffers it for later
-// retry if the core stays unavailable.
+// retry if the core stays unavailable. While earlier events wait in the
+// buffer, ev is queued behind them at once and retryPending is woken: only
+// it submits then, so events reach the core in the order they arrived.
 func (a *Adapter) forward(ctx context.Context, key string, ev conloomapi.Event) {
 	log := a.log.With("event_id", ev.EventID, "conversation_id", ev.Conversation.ID)
+	if a.bufferBehind(key, ev) {
+		log.Debug("earlier events are buffered; queueing the event behind them")
+		select {
+		case a.flushNow <- struct{}{}:
+		default:
+		}
+		return
+	}
 	for attempt := 0; ; attempt++ {
 		resp, err := a.core.SubmitEvent(ctx, key, ev)
 		if err == nil {
@@ -338,6 +351,24 @@ func (a *Adapter) forward(ctx context.Context, key string, ev conloomapi.Event) 
 func (a *Adapter) buffer(key string, ev conloomapi.Event) {
 	a.pendingMu.Lock()
 	defer a.pendingMu.Unlock()
+	a.appendPending(key, ev)
+}
+
+// bufferBehind buffers ev if earlier events are buffered and reports whether
+// it did.
+func (a *Adapter) bufferBehind(key string, ev conloomapi.Event) bool {
+	a.pendingMu.Lock()
+	defer a.pendingMu.Unlock()
+	if len(a.pending) == 0 {
+		return false
+	}
+	a.appendPending(key, ev)
+	return true
+}
+
+// appendPending adds ev to the buffer, dropping the oldest event if it is
+// full. The caller holds pendingMu.
+func (a *Adapter) appendPending(key string, ev conloomapi.Event) {
 	if len(a.pending) >= pendingBufferSize {
 		dropped := a.pending[0]
 		a.pending = a.pending[1:]
@@ -346,7 +377,8 @@ func (a *Adapter) buffer(key string, ev conloomapi.Event) {
 	a.pending = append(a.pending, pendingEvent{key: key, ev: ev})
 }
 
-// retryPending resubmits buffered events every retryInterval until ctx is done.
+// retryPending resubmits buffered events every retryInterval, and at once
+// when forward queues an event behind them, until ctx is done.
 func (a *Adapter) retryPending(ctx context.Context) {
 	t := time.NewTicker(a.retryInterval)
 	defer t.Stop()
@@ -355,6 +387,7 @@ func (a *Adapter) retryPending(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-a.flushNow:
 		}
 		a.flushPending(ctx)
 	}
