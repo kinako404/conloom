@@ -23,6 +23,8 @@ func (s *Server) writeRoutes() {
 	s.api("DELETE /panel/api/conversations/{key}/memory/members/{user_id}", s.deleteMemberMemory)
 	s.api("POST /panel/api/conversations/{key}/memory/consolidate", s.consolidateMemory)
 	s.api("PUT /panel/api/conversations/{key}/autonomy/buffs/{name}", s.putAutonomyBar)
+	s.api("DELETE /panel/api/conversations/{key}/autonomy/bars/{name}", s.deleteAutonomyBar)
+	s.api("DELETE /panel/api/conversations/{key}/autonomy/effects/{name}", s.deleteAutonomyEffect)
 	s.api("DELETE /panel/api/conversations/{key}/autonomy/status", s.deleteAutonomyStatus)
 	s.api("POST /panel/api/conversations/{key}/messages", s.postChatMessage)
 	s.api("POST /panel/api/chats", s.createChat)

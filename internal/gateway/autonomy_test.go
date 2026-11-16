@@ -125,3 +125,70 @@ func TestGatewayAutonomy_Scopes(t *testing.T) {
 		t.Errorf("autonomy.status.clear audits = %+v", audits)
 	}
 }
+
+func TestGatewayAutonomy_RemoveBarAndEffect(t *testing.T) {
+	ms := newMemServer(t, false)
+	ms.seedAutonomyConvs(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := ms.st.AddCustomBar(ctx, store.CustomBar{ConversationKey: autonomyPrivateKey, Name: "饥饿", Description: "高=很饿",
+		TaskID: "task_1", Baseline: 30, HalfLife: 6 * time.Hour, CreatedAt: now.Add(-time.Hour)}, 70, 6); err != nil {
+		t.Fatal(err)
+	}
+	if err := ms.st.AddEffect(ctx, store.Effect{ConversationKey: autonomyPrivateKey, Name: "着凉", TaskID: "task_2",
+		StartedAt: now.Add(-time.Minute), UntilAt: now.Add(time.Hour)}, 6, now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	bar := func(name string) string { return autonomyPath + "/bars/" + url.PathEscape(name) }
+	effect := autonomyPath + "/effects/" + url.PathEscape("着凉")
+
+	st := ms.autonomyState(t, memoryReaderToken)
+	if len(st.Bars) != 3 || st.Bars[0].Custom || !st.Bars[2].Custom || st.Bars[2].Name != "饥饿" ||
+		len(st.Effects) != 1 || st.Effects[0].Name != "着凉" || st.Events[0].Kind != store.BuffKindEffectAdd {
+		t.Fatalf("state = %+v, want the bot's bar and effect", st)
+	}
+
+	for _, path := range []string{bar("饥饿"), effect} {
+		expectError(t, ms.do(t, http.MethodDelete, path, "", nil, nil), http.StatusUnauthorized, conloomapi.CodeUnauthorized)
+		expectError(t, ms.do(t, http.MethodDelete, path, memoryReaderToken, nil, nil), http.StatusForbidden, conloomapi.CodeForbidden)
+		expectError(t, ms.do(t, http.MethodDelete, path, adminToken, nil, nil), http.StatusForbidden, conloomapi.CodeForbidden)
+		expectError(t, ms.do(t, http.MethodDelete, path, "test-memory-other-token", nil, nil), http.StatusNotFound, conloomapi.CodeNotFound)
+	}
+	if e := expectError(t, ms.do(t, http.MethodDelete, bar("心情"), memoryToken, nil, nil), http.StatusBadRequest, conloomapi.CodeInvalidEvent); !strings.Contains(e.Message, "心情") {
+		t.Errorf("DELETE of the persona's bar: message %q", e.Message)
+	}
+	expectError(t, ms.do(t, http.MethodDelete, bar("口渴"), memoryToken, nil, nil), http.StatusNotFound, conloomapi.CodeNotFound)
+	expectError(t, ms.do(t, http.MethodDelete, autonomyPath+"/effects/"+url.PathEscape("饥饿"), memoryToken, nil, nil),
+		http.StatusNotFound, conloomapi.CodeNotFound)
+	expectError(t, ms.do(t, http.MethodDelete, "/api/v1/conversations/group_10001/autonomy/bars/"+url.PathEscape("饥饿"), memoryToken, nil, nil),
+		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	expectError(t, ms.do(t, http.MethodDelete, "/api/v1/conversations/group_10001/autonomy/effects/"+url.PathEscape("着凉"), memoryToken, nil, nil),
+		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	if n := len(ms.autonomyAudits(t, "autonomy.bar.remove")) + len(ms.autonomyAudits(t, "autonomy.effect.remove")); n != 0 {
+		t.Fatalf("refused DELETEs wrote %d audits", n)
+	}
+
+	for _, path := range []string{bar("饥饿"), effect} {
+		r := ms.do(t, http.MethodDelete, path, memoryToken, nil, nil)
+		if r.status != http.StatusOK || strings.TrimSpace(string(r.body)) != `{"ok":true}` {
+			t.Fatalf("DELETE %s: status %d, body %s", path, r.status, r.body)
+		}
+	}
+	st = ms.autonomyState(t, memoryToken)
+	if len(st.Bars) != 2 || len(st.Effects) != 0 || len(st.Events) != 4 {
+		t.Fatalf("state after DELETE = %+v", st)
+	}
+	for _, ev := range st.Events[:2] {
+		if ev.Source != store.BuffSourceAPI || (ev.Kind != store.BuffKindBarRemove && ev.Kind != store.BuffKindEffectRemove) {
+			t.Errorf("event %+v, want an API removal", ev)
+		}
+	}
+	for kind, name := range map[string]string{"autonomy.bar.remove": "饥饿", "autonomy.effect.remove": "着凉"} {
+		if audits := ms.autonomyAudits(t, kind); len(audits) != 1 || audits[0].Actor != "memory-main" || audits[0].Target != autonomyPrivateKey ||
+			audits[0].BotInstanceID != "bot_main" || audits[0].Detail != `{"name":"`+name+`"}` {
+			t.Errorf("%s audits = %+v", kind, audits)
+		}
+	}
+	expectError(t, ms.do(t, http.MethodDelete, bar("饥饿"), memoryToken, nil, nil), http.StatusNotFound, conloomapi.CodeNotFound)
+	expectError(t, ms.do(t, http.MethodDelete, effect, memoryToken, nil, nil), http.StatusNotFound, conloomapi.CodeNotFound)
+}

@@ -67,7 +67,7 @@ func (t *removeBuffTool) Call(ctx context.Context, inv skills.Invocation, args j
 	}
 	now, _ := clock(inv)
 	scope := memory.ScopeKeyOf(inv.ConversationKey)
-	removed, err := t.st.RemoveCustomBar(ctx, scope, name, store.BuffSourceModel, inv.TaskID, now)
+	removed, err := t.st.RemoveCustomBar(ctx, scope, name, store.BuffSourceModel, inv.TaskID, false, now)
 	switch {
 	case errors.Is(err, store.ErrBuffDuplicate):
 		return removeBuffTwice, nil

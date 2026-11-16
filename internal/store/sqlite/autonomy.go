@@ -403,7 +403,7 @@ func (db *DB) AddCustomBar(ctx context.Context, b store.CustomBar, initial float
 	})
 }
 
-func (db *DB) RemoveCustomBar(ctx context.Context, convKey, name, source, taskID string, now time.Time) (bool, error) {
+func (db *DB) RemoveCustomBar(ctx context.Context, convKey, name, source, taskID string, keepValue bool, now time.Time) (bool, error) {
 	var removed bool
 	err := db.inTx(ctx, func(tx *sql.Tx) error {
 		ok, err := removable(ctx, tx, customBarTaskQuery, convKey, name, taskID, store.BuffKindBarRemove)
@@ -416,7 +416,11 @@ func (db *DB) RemoveCustomBar(ctx context.Context, convKey, name, source, taskID
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		for _, table := range []string{"conversation_custom_bars", "conversation_buffs"} {
+		tables := []string{"conversation_custom_bars", "conversation_buffs"}
+		if keepValue {
+			tables = tables[:1]
+		}
+		for _, table := range tables {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE conversation_key = ? AND name = ?`, convKey, name); err != nil {
 				return err
 			}

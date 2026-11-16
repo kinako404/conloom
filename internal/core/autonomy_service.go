@@ -27,26 +27,30 @@ const (
 	maxBarReasonRunes = 40
 )
 
-// ErrInvalidBar refuses a bar change through the panel or the API: a bar the
-// persona does not have, a value outside 0–100 or a reason that is too long.
-// The error wrapping it says which; the panel and the API answer it with 400.
+// ErrInvalidBar refuses a bar change through the panel or the API: setting a
+// bar the chat does not have, a value outside 0–100 or a reason that is too
+// long, or removing a bar of the persona. The error wrapping it says which;
+// the panel and the API answer it with 400.
 var ErrInvalidBar = errors.New("core: invalid bar change")
 
 // AutonomyService shows and changes the hidden state of private chats, their
-// status and bars, for the panel and the API. The status, bars and bar
-// changes are those of the chat's memory scope (memory.ScopeKey): all panel
-// chats of a bot share them.
+// status, bars and effects, for the panel and the API. The status, bars,
+// effects and their changes are those of the chat's memory scope
+// (memory.ScopeKey): all panel chats of a bot share them.
 type AutonomyService struct{ o *Orchestrator }
 
 // Autonomy returns the service over the orchestrator's private chats.
 func (o *Orchestrator) Autonomy() *AutonomyService { return &AutonomyService{o: o} }
 
 // State returns the hidden state of the private chat convKey: the status
-// while it lasts, the bars of the chat's persona in its order at their values
-// decayed to now (their baselines when none is stored; stored bars the
-// persona no longer has are left out), the newest 50 bar changes first, and
-// how the bot starts the chat (privateProactiveStatus, with the chat's own
-// timers). It writes nothing, not even the persona version a reply would
+// while it lasts; the bars (scopeBars), the persona's in its order then those
+// the bot added, marked Custom, in the order added, at their values decayed
+// to now with their own baselines and half-lives (their baselines when none
+// is stored; stored bars that are neither are left out); the names of the
+// bars the bot added that a persona bar has since replaced, in the order
+// added; the effects active now; the newest 50 bar and effect changes first;
+// and how the bot starts the chat (privateProactiveStatus, with the chat's
+// own timers). It writes nothing, not even the persona version a reply would
 // create. A chat that does not exist is store.ErrNotFound, another kind of
 // conversation ErrNotPrivate.
 func (s *AutonomyService) State(ctx context.Context, convKey string) (conloomapi.AutonomyState, error) {
@@ -57,7 +61,8 @@ func (s *AutonomyService) State(ctx context.Context, convKey string) (conloomapi
 	}
 	scope := memory.ScopeKey(conv)
 	now := o.now()
-	out := conloomapi.AutonomyState{Bars: []conloomapi.AutonomyBar{}, Events: []conloomapi.AutonomyBarEvent{}}
+	out := conloomapi.AutonomyState{Bars: []conloomapi.AutonomyBar{}, ShadowedBars: []string{},
+		Effects: []conloomapi.AutonomyEffect{}, Events: []conloomapi.AutonomyBarEvent{}}
 	st, err := o.st.GetStatus(ctx, scope)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -66,7 +71,7 @@ func (s *AutonomyService) State(ctx context.Context, convKey string) (conloomapi
 	case st.UntilAt.After(now):
 		out.Status = &conloomapi.AutonomyStatus{Activity: st.Activity, StartedAt: st.StartedAt.UTC(), UntilAt: st.UntilAt.UTC()}
 	}
-	bars, err := s.bars(ctx, conv)
+	doc, custom, err := s.barDefs(ctx, conv)
 	if err != nil {
 		return conloomapi.AutonomyState{}, err
 	}
@@ -74,11 +79,27 @@ func (s *AutonomyService) State(ctx context.Context, convKey string) (conloomapi
 	if err != nil {
 		return conloomapi.AutonomyState{}, err
 	}
-	for _, b := range bars {
+	persona := doc.EffectiveBars()
+	for i, b := range scopeBars(doc, custom) {
 		cur, found := storedBar(stored, b.Name)
 		v := barValue(b, cur, found, now)
 		out.Bars = append(out.Bars, conloomapi.AutonomyBar{
 			Name: b.Name, Value: roundBar(v), Band: autonomy.Band(v), Baseline: b.Baseline, Description: b.Description,
+			Custom: i >= len(persona),
+		})
+	}
+	for _, c := range custom {
+		if isBarOf(persona, c.Name) {
+			out.ShadowedBars = append(out.ShadowedBars, c.Name)
+		}
+	}
+	effects, err := o.st.ListEffects(ctx, scope, now)
+	if err != nil {
+		return conloomapi.AutonomyState{}, err
+	}
+	for _, e := range effects {
+		out.Effects = append(out.Effects, conloomapi.AutonomyEffect{
+			Name: e.Name, Description: e.Description, StartedAt: e.StartedAt.UTC(), UntilAt: e.UntilAt.UTC(),
 		})
 	}
 	events, err := o.st.ListBuffEvents(ctx, scope, autonomyEvents)
@@ -87,7 +108,8 @@ func (s *AutonomyService) State(ctx context.Context, convKey string) (conloomapi
 	}
 	for _, e := range events {
 		out.Events = append(out.Events, conloomapi.AutonomyBarEvent{
-			Name: e.Name, Source: e.Source, Reason: e.Reason, Before: roundBar(e.Before), After: roundBar(e.After), At: e.CreatedAt.UTC(),
+			Name: e.Name, Kind: e.Kind, Source: e.Source, Reason: e.Reason, Before: roundBar(e.Before), After: roundBar(e.After),
+			At: e.CreatedAt.UTC(),
 		})
 	}
 	if out.Proactive, err = o.privateProactiveStatus(ctx, convKey); err != nil {
@@ -101,15 +123,16 @@ func (s *AutonomyService) State(ctx context.Context, convKey string) (conloomapi
 // Unlike adjust_buff it is bound by neither the limit of one change nor the
 // daily limit, and it does not count towards the latter: the bar's net change
 // on the local day stays the model's own (zero when the model has not changed
-// the bar today). name must be one of the bars of the chat's current persona,
-// and reason, trimmed, at most 40 characters; otherwise ErrInvalidBar. The
-// change is recorded as a bar event, from the bar's value decayed to now (its
-// baseline when none is stored), and audited as autonomy.buff; a failed audit
-// is only logged. A chat that does not exist is store.ErrNotFound, another
-// kind of conversation ErrNotPrivate.
+// the bar today). name must be one of the chat's bars (scopeBars: its current
+// persona's or one the bot added; the persona's wins a name), and reason,
+// trimmed, at most 40 characters; otherwise ErrInvalidBar. The change is
+// recorded as a bar event, from the bar's value decayed to now with its own
+// baseline and half-life (its baseline when none is stored), and audited as
+// autonomy.buff; a failed audit is only logged. A chat that does not exist is
+// store.ErrNotFound, another kind of conversation ErrNotPrivate.
 func (s *AutonomyService) SetBar(ctx context.Context, convKey, name string, value int, reason, source, actor string) error {
-	if source != store.BuffSourcePanel && source != store.BuffSourceAPI {
-		return fmt.Errorf("core: bar change from unknown source %q", source)
+	if err := checkPanelSource(source); err != nil {
+		return err
 	}
 	o := s.o
 	conv, err := s.privateChat(ctx, convKey)
@@ -123,17 +146,18 @@ func (s *AutonomyService) SetBar(ctx context.Context, convKey, name string, valu
 	if n := utf8.RuneCountInString(reason); n > maxBarReasonRunes {
 		return fmt.Errorf("%w: reason must be at most %d characters, got %d", ErrInvalidBar, maxBarReasonRunes, n)
 	}
-	bars, err := s.bars(ctx, conv)
+	doc, custom, err := s.barDefs(ctx, conv)
 	if err != nil {
 		return err
 	}
+	bars := scopeBars(doc, custom)
 	i := slices.IndexFunc(bars, func(b conloomapi.PersonaBar) bool { return b.Name == name })
 	if i < 0 {
 		names := make([]string, len(bars))
 		for j, b := range bars {
 			names[j] = b.Name
 		}
-		return fmt.Errorf("%w: no bar named %q; the persona's bars are %s", ErrInvalidBar, name, strings.Join(names, ", "))
+		return fmt.Errorf("%w: no bar named %q; the bars are %s", ErrInvalidBar, name, strings.Join(names, ", "))
 	}
 	bar := bars[i]
 	now := o.now()
@@ -160,6 +184,84 @@ func (s *AutonomyService) SetBar(ctx context.Context, convKey, name string, valu
 		After  int    `json:"after"`
 	}{bar.Name, source, reason, roundBar(before), roundBar(after.Value)})
 	return nil
+}
+
+// RemoveBar removes the bar name the bot added itself (add_buff) from the
+// private chat convKey, with its value, for actor through source
+// (store.BuffSourcePanel or BuffSourceAPI). When the chat's persona has since
+// gained a bar of that name, which wins the name, only the bot's bar goes
+// and the persona's keeps the value. The removal is recorded as a bar change
+// and audited as autonomy.bar.remove with the name only; a failed audit is
+// only logged. A bar the persona alone has cannot be removed: ErrInvalidBar.
+// A name the bot has no bar of is store.ErrNotFound, as is a chat that does
+// not exist; another kind of conversation is ErrNotPrivate.
+func (s *AutonomyService) RemoveBar(ctx context.Context, convKey, name, source, actor string) error {
+	if err := checkPanelSource(source); err != nil {
+		return err
+	}
+	o := s.o
+	conv, err := s.privateChat(ctx, convKey)
+	if err != nil {
+		return err
+	}
+	doc, err := s.persona(ctx, conv)
+	if err != nil {
+		return err
+	}
+	persona := isBarOf(doc.EffectiveBars(), name)
+	removed, err := o.st.RemoveCustomBar(ctx, memory.ScopeKey(conv), name, source, "", persona, o.now())
+	switch {
+	case err != nil:
+		return err
+	case !removed && persona:
+		return fmt.Errorf("%w: %q is one of the persona's bars, which cannot be removed", ErrInvalidBar, name)
+	case !removed:
+		return fmt.Errorf("core: no bar %q added by the bot: %w", name, store.ErrNotFound)
+	}
+	o.log.Info("bar removed", "conversation", convKey, "bar", name, "source", source)
+	s.audit(ctx, conv, "autonomy.bar.remove", actor, nameDetail{name})
+	return nil
+}
+
+// RemoveEffect ends the effect name the bot gave itself (add_buff) in the
+// private chat convKey early, for actor through source (store.BuffSourcePanel
+// or BuffSourceAPI). The removal is recorded as a change and audited as
+// autonomy.effect.remove with the name only; a failed audit is only logged.
+// A name that is no active effect is store.ErrNotFound (one that has run out
+// is left to the hourly purge), as is a chat that does not exist; another
+// kind of conversation is ErrNotPrivate.
+func (s *AutonomyService) RemoveEffect(ctx context.Context, convKey, name, source, actor string) error {
+	if err := checkPanelSource(source); err != nil {
+		return err
+	}
+	o := s.o
+	conv, err := s.privateChat(ctx, convKey)
+	if err != nil {
+		return err
+	}
+	scope := memory.ScopeKey(conv)
+	now := o.now()
+	active, err := o.st.ListEffects(ctx, scope, now)
+	if err != nil {
+		return err
+	}
+	removed := false
+	if slices.ContainsFunc(active, func(e store.Effect) bool { return e.Name == name }) {
+		if removed, err = o.st.RemoveEffect(ctx, scope, name, source, "", now); err != nil {
+			return err
+		}
+	}
+	if !removed {
+		return fmt.Errorf("core: no active effect %q: %w", name, store.ErrNotFound)
+	}
+	o.log.Info("effect removed", "conversation", convKey, "effect", name, "source", source)
+	s.audit(ctx, conv, "autonomy.effect.remove", actor, nameDetail{name})
+	return nil
+}
+
+// nameDetail is the audit detail of a removed bar or effect.
+type nameDetail struct {
+	Name string `json:"name"`
 }
 
 // ClearStatus ends the status of the private chat convKey for actor at once,
@@ -210,16 +312,35 @@ func (s *AutonomyService) privateChat(ctx context.Context, convKey string) (stor
 	return conv, nil
 }
 
-// bars returns the bars (conloomapi.PersonaDoc.EffectiveBars) of conv's
-// current persona version, or, while it has none, of the catalog's persona
-// template its bot's first version will copy, without creating that version.
-func (s *AutonomyService) bars(ctx context.Context, conv store.ConversationRecord) ([]conloomapi.PersonaBar, error) {
+// barDefs returns what defines the hidden bars of conv (scopeBars): conv's
+// persona (s.persona) and the bars the bot added to conv's memory scope.
+func (s *AutonomyService) barDefs(ctx context.Context, conv store.ConversationRecord) (conloomapi.PersonaDoc, []store.CustomBar, error) {
+	doc, err := s.persona(ctx, conv)
+	if err != nil {
+		return conloomapi.PersonaDoc{}, nil, err
+	}
+	custom, err := s.o.st.ListCustomBars(ctx, memory.ScopeKey(conv))
+	if err != nil {
+		return conloomapi.PersonaDoc{}, nil, err
+	}
+	return doc, custom, nil
+}
+
+// isBarOf reports whether bars has a bar named name.
+func isBarOf(bars []conloomapi.PersonaBar, name string) bool {
+	return slices.ContainsFunc(bars, func(b conloomapi.PersonaBar) bool { return b.Name == name })
+}
+
+// persona returns conv's current persona version, or, while it has none, the
+// catalog's persona template its bot's first version will copy, without
+// creating that version.
+func (s *AutonomyService) persona(ctx context.Context, conv store.ConversationRecord) (conloomapi.PersonaDoc, error) {
 	pv, err := s.o.st.LatestPersona(ctx, conv.Key)
 	switch {
 	case err == nil:
-		return pv.Persona.EffectiveBars(), nil
+		return pv.Persona, nil
 	case !errors.Is(err, store.ErrNotFound):
-		return nil, err
+		return conloomapi.PersonaDoc{}, err
 	}
 	name := "default"
 	if bot, ok := s.o.bots.Bot(conv.BotInstanceID); ok && bot.PersonaTemplate != "" {
@@ -227,9 +348,18 @@ func (s *AutonomyService) bars(ctx context.Context, conv store.ConversationRecor
 	}
 	doc, ok := s.o.personas.Template(name)
 	if !ok {
-		return nil, fmt.Errorf("core: unknown persona template %q", name)
+		return conloomapi.PersonaDoc{}, fmt.Errorf("core: unknown persona template %q", name)
 	}
-	return doc.EffectiveBars(), nil
+	return doc, nil
+}
+
+// checkPanelSource refuses a change of the hidden state through a source
+// other than the panel or the API.
+func checkPanelSource(source string) error {
+	if source != store.BuffSourcePanel && source != store.BuffSourceAPI {
+		return fmt.Errorf("core: hidden state change from unknown source %q", source)
+	}
+	return nil
 }
 
 // audit records a change of conv's hidden state by actor as kind. A failed

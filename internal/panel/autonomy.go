@@ -9,10 +9,12 @@ import (
 )
 
 // AutonomyService shows and changes the hidden state of private chats, their
-// status and bars; *core.AutonomyService is one.
+// status, bars and effects; *core.AutonomyService is one.
 type AutonomyService interface {
 	State(ctx context.Context, convKey string) (conloomapi.AutonomyState, error)
 	SetBar(ctx context.Context, convKey, name string, value int, reason, source, actor string) error
+	RemoveBar(ctx context.Context, convKey, name, source, actor string) error
+	RemoveEffect(ctx context.Context, convKey, name, source, actor string) error
 	ClearStatus(ctx context.Context, convKey, actor string) error
 }
 
@@ -25,9 +27,9 @@ func (s *Server) autonomyService(w http.ResponseWriter, r *http.Request) (Autono
 	return s.d.Autonomy, true
 }
 
-// getAutonomy shows the private chat's status, bars, recent bar changes and
-// how the bot starts the chat. Activities and reasons are data, which the
-// page shows as plain text.
+// getAutonomy shows the private chat's status, bars, effects, their recent
+// changes and how the bot starts the chat. Activities, reasons and the bot's
+// names and descriptions are data, which the page shows as plain text.
 func (s *Server) getAutonomy(w http.ResponseWriter, r *http.Request, _ *Session) {
 	svc, ok := s.autonomyService(w, r)
 	if !ok {
@@ -65,6 +67,43 @@ func (s *Server) putAutonomyBar(w http.ResponseWriter, r *http.Request, sess *Se
 		return
 	}
 	if err := svc.SetBar(r.Context(), conv.Key, r.PathValue("name"), *put.Value, put.Reason, store.BuffSourcePanel, panelActor(sess)); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteAutonomyBar removes the bar {name} the bot added from the private
+// chat, audited as autonomy.bar.remove by the service; a bar of the persona
+// is 400.
+func (s *Server) deleteAutonomyBar(w http.ResponseWriter, r *http.Request, sess *Session) {
+	svc, ok := s.autonomyService(w, r)
+	if !ok {
+		return
+	}
+	conv, ok := s.privateConversation(w, r)
+	if !ok {
+		return
+	}
+	if err := svc.RemoveBar(r.Context(), conv.Key, r.PathValue("name"), store.BuffSourcePanel, panelActor(sess)); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteAutonomyEffect ends the private chat's active effect {name} early,
+// audited as autonomy.effect.remove by the service.
+func (s *Server) deleteAutonomyEffect(w http.ResponseWriter, r *http.Request, sess *Session) {
+	svc, ok := s.autonomyService(w, r)
+	if !ok {
+		return
+	}
+	conv, ok := s.privateConversation(w, r)
+	if !ok {
+		return
+	}
+	if err := svc.RemoveEffect(r.Context(), conv.Key, r.PathValue("name"), store.BuffSourcePanel, panelActor(sess)); err != nil {
 		s.fail(w, r, err)
 		return
 	}

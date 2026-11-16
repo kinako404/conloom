@@ -1069,14 +1069,14 @@ func TestCustomBars_AddListRemove(t *testing.T) {
 
 	// A bar it did not add, such as a persona bar's value, is no custom bar.
 	setBuff(t, db, key, "心情", 60, 65, store.BuffEvent{Source: store.BuffSourcePanel, CreatedAt: dynamicAt})
-	if ok, err := db.RemoveCustomBar(ctx, key, "心情", store.BuffSourcePanel, "", minute(5)); err != nil || ok {
+	if ok, err := db.RemoveCustomBar(ctx, key, "心情", store.BuffSourcePanel, "", false, minute(5)); err != nil || ok {
 		t.Fatalf("RemoveCustomBar of a persona bar = %v, %v; want false", ok, err)
 	}
-	if ok, err := db.RemoveCustomBar(ctx, other, "饥饿", store.BuffSourcePanel, "", minute(5)); err != nil || ok {
+	if ok, err := db.RemoveCustomBar(ctx, other, "饥饿", store.BuffSourcePanel, "", false, minute(5)); err != nil || ok {
 		t.Fatalf("RemoveCustomBar in another conversation = %v, %v; want false", ok, err)
 	}
 
-	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, "", minute(5)); err != nil || !ok {
+	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, "", false, minute(5)); err != nil || !ok {
 		t.Fatalf("RemoveCustomBar = %v, %v; want true", ok, err)
 	}
 	if got := listCustomBars(t, db, key); !sameCustomBars(got, []store.CustomBar{sleepy}) {
@@ -1091,7 +1091,7 @@ func TestCustomBars_AddListRemove(t *testing.T) {
 		t.Fatalf("newest event = %+v, want the panel's removal of 饥饿 at 45: %+v", got, wantRemoved)
 	}
 	events := len(listBuffEvents(t, db, key, 50))
-	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, "", minute(6)); err != nil || ok {
+	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, "", false, minute(6)); err != nil || ok {
 		t.Fatalf("second RemoveCustomBar = %v, %v; want false", ok, err)
 	}
 	if n := len(listBuffEvents(t, db, key, 50)); n != events {
@@ -1103,6 +1103,34 @@ func TestCustomBars_AddListRemove(t *testing.T) {
 	}
 	if err := db.AddCustomBar(ctx, store.CustomBar{ConversationKey: key, CreatedAt: dynamicAt}, 30, 6); err == nil {
 		t.Fatal("AddCustomBar without a name succeeded")
+	}
+}
+
+func TestCustomBars_RemoveKeepingValue(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	key := privKey("20001")
+	addBar(t, db, hungerBar(key, "task_1", dynamicAt), 45, 6)
+
+	// The persona gained a bar 饥饿, which now shows the stored value: the
+	// bot's definition goes, the value stays.
+	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, "", true, minute(5)); err != nil || !ok {
+		t.Fatalf("RemoveCustomBar keeping the value = %v, %v; want true", ok, err)
+	}
+	if got := listCustomBars(t, db, key); len(got) != 0 {
+		t.Fatalf("bars after the removal = %+v, want none", got)
+	}
+	wantValues := []store.BuffValue{{ConversationKey: key, Name: "饥饿", Value: 45, UpdatedAt: dynamicAt}}
+	if got := getBuffs(t, db, key); !sameBuffs(got, wantValues) {
+		t.Fatalf("values after the removal = %+v, want %+v kept", got, wantValues)
+	}
+	wantRemoved := []store.BuffEvent{{ConversationKey: key, Name: "饥饿", Kind: store.BuffKindBarRemove,
+		Source: store.BuffSourcePanel, Before: 45, After: 45, CreatedAt: minute(5)}}
+	if got := listBuffEvents(t, db, key, 1); !sameBuffEvents(got, wantRemoved) {
+		t.Fatalf("newest event = %+v, want %+v", got, wantRemoved)
+	}
+	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, "", true, minute(6)); err != nil || ok {
+		t.Fatalf("second RemoveCustomBar = %v, %v; want false", ok, err)
 	}
 }
 
@@ -1132,7 +1160,7 @@ func TestCustomBars_IdempotentPerTask(t *testing.T) {
 	}
 
 	// A re-run of the task after the bar was removed adds it no more.
-	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, "", minute(2)); err != nil || !ok {
+	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, "", false, minute(2)); err != nil || !ok {
 		t.Fatalf("RemoveCustomBar = %v, %v", ok, err)
 	}
 	addBar(t, db, hunger, 45, 6)
@@ -1157,7 +1185,7 @@ func TestCustomBars_TaskChangesEachKindOnce(t *testing.T) {
 	if _, err := db.UpdateBuff(ctx, key, "饥饿", adjust, keep); !errors.Is(err, store.ErrBuffDuplicate) {
 		t.Fatalf("second adjustment by the task err = %v, want ErrBuffDuplicate", err)
 	}
-	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourceModel, "task_3", minute(2)); err != nil || !ok {
+	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourceModel, "task_3", false, minute(2)); err != nil || !ok {
 		t.Fatalf("RemoveCustomBar by the task that added it = %v, %v; want true", ok, err)
 	}
 	want := []string{"bar_remove 饥饿 task_3", "adjust 饥饿 task_3", "bar_add 饥饿 task_3"}
@@ -1167,7 +1195,7 @@ func TestCustomBars_TaskChangesEachKindOnce(t *testing.T) {
 
 	// A re-run of the task changes nothing.
 	addBar(t, db, hungerBar(key, "task_3", minute(3)), 50, 6)
-	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourceModel, "task_3", minute(3)); err != nil || ok {
+	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourceModel, "task_3", false, minute(3)); err != nil || ok {
 		t.Fatalf("RemoveCustomBar in a re-run of the task = %v, %v; want false", ok, err)
 	}
 	if got := listCustomBars(t, db, key); len(got) != 0 {
@@ -1180,7 +1208,7 @@ func TestCustomBars_TaskChangesEachKindOnce(t *testing.T) {
 	// Another task adds the bar back; the task that removed it once cannot
 	// remove it a second time.
 	addBar(t, db, hungerBar(key, "task_4", minute(4)), 50, 6)
-	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourceModel, "task_3", minute(5)); !errors.Is(err, store.ErrBuffDuplicate) || ok {
+	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourceModel, "task_3", false, minute(5)); !errors.Is(err, store.ErrBuffDuplicate) || ok {
 		t.Fatalf("second removal by the task = %v, %v; want ErrBuffDuplicate", ok, err)
 	}
 	if got := listCustomBars(t, db, key); len(got) != 1 || got[0].TaskID != "task_4" {
@@ -1228,7 +1256,7 @@ func TestCustomBars_Limit(t *testing.T) {
 		t.Fatalf("bar with limit 0 err = %v, want ErrBuffLimit", err)
 	}
 
-	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, "", minute(1)); err != nil || !ok {
+	if ok, err := db.RemoveCustomBar(ctx, key, "饥饿", store.BuffSourcePanel, "", false, minute(1)); err != nil || !ok {
 		t.Fatalf("RemoveCustomBar = %v, %v", ok, err)
 	}
 	addBar(t, db, bar("口渴", "task_3"), 30, 2)

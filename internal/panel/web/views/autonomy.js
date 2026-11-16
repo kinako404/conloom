@@ -17,6 +17,15 @@ const BAR_SOURCE = {
   api: 'API',
 };
 
+// EVENT_KIND are the kinds of a change of a bar or an effect.
+const EVENT_KIND = {
+  adjust: '调整',
+  bar_add: '新增状态条',
+  bar_remove: '删除状态条',
+  effect_add: '新增效果',
+  effect_remove: '去掉效果',
+};
+
 // PANEL is the platform of conversations held in the panel (store.PlatformPanel).
 const PANEL = 'panel';
 
@@ -41,6 +50,20 @@ function statusSection(key, status, write) {
     msg);
 }
 
+// removeButton deletes, once ask is confirmed, a bar or an effect the bot
+// added at path.
+function removeButton(msg, write, ask, path, done) {
+  const button = h('button', {
+    type: 'button',
+    class: 'danger',
+    onclick: () => {
+      if (!confirm(ask)) return undefined;
+      return write(msg, button, () => del(path), done);
+    },
+  }, '删除');
+  return button;
+}
+
 function barEditor(key, bar, msg, write) {
   const value = h('input', { type: 'number', min: 0, max: 100, step: 1, value: bar.value, 'aria-label': `${bar.name}的新值` });
   const reason = h('input', { placeholder: '原因（可选）', 'aria-label': `修改${bar.name}的原因` });
@@ -61,35 +84,114 @@ function barEditor(key, bar, msg, write) {
   }, value, reason, save);
 }
 
-function barsSection(key, bars, write) {
+// barPath is the API path of the bar name of the chat key.
+function barPath(key, name) {
+  return convPath(key, 'autonomy', 'bars', encodeURIComponent(name));
+}
+
+// shadowedNote tells of a bar the bot added that a persona bar of the same
+// name has replaced, and offers to delete it.
+function shadowedNote(key, name, msg, write) {
+  return h('p', { class: 'hint warn' },
+    `bot 自建的「${name}」和人设里的状态条同名，已由人设的那条代替、不再生效，但仍占一个自建名额。`, ' ',
+    removeButton(msg, write, `删除 bot 自建的状态条「${name}」？人设里的「${name}」和它现在的数值保留。`,
+      barPath(key, name), `已删除 bot 自建的「${name}」`));
+}
+
+function barsSection(key, bars, shadowed, write) {
   const msg = h('div');
+  const columns = [
+    {
+      title: '状态条',
+      cell: (b) => [
+        h('div', null, b.name, b.custom ? [' ', h('span', { class: 'badge' }, '自建')] : null),
+        b.description ? h('div', { class: 'muted small' }, b.description) : null,
+      ],
+    },
+    {
+      title: '当前',
+      class: 'nowrap',
+      cell: (b) => [h('meter', { min: 0, max: 100, value: b.value, 'aria-label': b.name }), ` ${b.value}（${b.band}）`],
+    },
+    { title: '基准', class: 'num', cell: (b) => String(b.baseline) },
+    { title: '设为', cell: (b) => barEditor(key, b, msg, write) },
+  ];
+  if (bars.some((b) => b.custom)) {
+    columns.push({
+      title: '操作',
+      cell: (b) => (b.custom
+        ? removeButton(msg, write, `删除 bot 自建的状态条「${b.name}」？它的数值和说明会一起删除。`,
+          barPath(key, b.name), `已删除状态条「${b.name}」`)
+        : null),
+    });
+  }
   return h('section', { class: 'card' },
     h('h2', null, '状态条'),
-    h('p', { class: 'hint' }, '数值 0–100，按人设里的半衰期逐渐回到基准。在这里设的值立即生效，不受模型调整的单次和每日上限约束。只有 bot 启用了 buff 技能时，状态条才会影响回复。'),
-    bars.length ? table([
-      {
-        title: '状态条',
-        cell: (b) => [h('div', null, b.name), b.description ? h('div', { class: 'muted small' }, b.description) : null],
-      },
-      {
-        title: '当前',
-        class: 'nowrap',
-        cell: (b) => [h('meter', { min: 0, max: 100, value: b.value, 'aria-label': b.name }), ` ${b.value}（${b.band}）`],
-      },
-      { title: '基准', class: 'num', cell: (b) => String(b.baseline) },
-      { title: '设为', cell: (b) => barEditor(key, b, msg, write) },
-    ], bars) : empty('人设里没有状态条'),
+    h('p', { class: 'hint' }, '数值 0–100，按各自的半衰期逐渐回到基准。在这里设的值立即生效，不受模型调整的单次和每日上限约束。只有 bot 启用了 buff 技能时，状态条才会影响回复。'),
+    h('p', { class: 'hint' }, '先列人设里的，再列标“自建”的：bot 用 add_buff 自己加的，可以删除；人设里的不能删除。面板不能新增状态条。'),
+    bars.length ? table(columns, bars) : empty('没有状态条'),
+    shadowed.map((name) => shadowedNote(key, name, msg, write)),
     msg);
+}
+
+// timeLeft words how long an effect has left until an RFC 3339 time, rounded
+// up to the minute below a day and to the hour from a day on, as the bot's
+// state does: "约 1 小时 20 分", "约 2 天 3 小时".
+function timeLeft(until) {
+  const minutes = Math.ceil((new Date(until).getTime() - Date.now()) / 60000);
+  if (!(minutes > 0)) return '已到期';
+  const parts = [];
+  const part = (n, unit) => { if (n > 0) parts.push(`${n} ${unit}`); };
+  if (minutes >= 24 * 60) {
+    const hours = Math.ceil(minutes / 60);
+    part(Math.floor(hours / 24), '天');
+    part(hours % 24, '小时');
+  } else {
+    part(Math.floor(minutes / 60), '小时');
+    part(minutes % 60, '分');
+  }
+  return `约 ${parts.join(' ')}`;
+}
+
+function effectsSection(key, effects, write) {
+  const msg = h('div');
+  return h('section', { class: 'card' },
+    h('h2', null, '效果'),
+    h('p', { class: 'hint' }, 'bot 用 add_buff 给自己加的临时效果，到时间自动消失，也可以在这里提前删除。面板不能新增效果。只有 bot 启用了 buff 技能时，效果才会影响回复。'),
+    effects.length ? table([
+      {
+        title: '效果',
+        cell: (e) => [h('div', null, e.name), e.description ? h('div', { class: 'muted small' }, e.description) : null],
+      },
+      { title: '剩余', class: 'nowrap', cell: (e) => timeLeft(e.until_at) },
+      { title: '开始', class: 'nowrap', cell: (e) => fmtTime(e.started_at) },
+      { title: '结束', class: 'nowrap', cell: (e) => fmtTime(e.until_at) },
+      {
+        title: '操作',
+        cell: (e) => removeButton(msg, write, `提前去掉效果「${e.name}」？`,
+          convPath(key, 'autonomy', 'effects', encodeURIComponent(e.name)), `已去掉效果「${e.name}」`),
+      },
+    ], effects) : empty('现在没有效果'),
+    msg);
+}
+
+// eventChange shows what a change did: the values of an adjustment, the
+// starting value of an added bar.
+function eventChange(e) {
+  if (e.kind === 'adjust') return `${e.before} → ${e.after}`;
+  if (e.kind === 'bar_add') return `初始 ${e.after}`;
+  return '—';
 }
 
 function eventsSection(events) {
   return h('section', { class: 'card' },
     h('h2', null, '最近变化'),
-    h('p', { class: 'hint' }, '最近 50 次状态条变化，新的在前，保留 30 天。'),
+    h('p', { class: 'hint' }, '最近 50 次状态条和效果的变化（调整数值、新增和删除），新的在前，保留 30 天。'),
     events.length ? table([
       { title: '时间', class: 'nowrap', cell: (e) => fmtTime(e.at) },
-      { title: '状态条', cell: (e) => e.name },
-      { title: '变化', class: 'nowrap', cell: (e) => `${e.before} → ${e.after}` },
+      { title: '名称', cell: (e) => e.name },
+      { title: '类型', class: 'nowrap', cell: (e) => label(EVENT_KIND, e.kind) },
+      { title: '变化', class: 'nowrap', cell: eventChange },
       { title: '原因', class: 'text', cell: (e) => e.reason || '—' },
       { title: '来源', cell: (e) => label(BAR_SOURCE, e.source) },
     ], events) : empty('最近没有变化'));
@@ -123,9 +225,9 @@ function proactiveSection(key, conv, pro, priv) {
       h('a', { href: href('conversations', key, 'policy') }, '「策略」'), '里修改。'));
 }
 
-// autonomyTab shows a private chat's hidden state: its status, bars, recent
-// bar changes and how the bot starts the chat. write is conversation.js's
-// write, which reloads the tab after a change.
+// autonomyTab shows a private chat's hidden state: its status, bars,
+// effects, their recent changes and how the bot starts the chat. write is
+// conversation.js's write, which reloads the tab after a change.
 export async function autonomyTab({ key, conv, signal, write }) {
   const [state, policy] = await Promise.all([
     get(convPath(key, 'autonomy'), null, signal),
@@ -134,7 +236,8 @@ export async function autonomyTab({ key, conv, signal, write }) {
   const priv = ((((policy.current || {}).policy || {}).proactive || {}).private) || {};
   return [
     statusSection(key, state.status, write),
-    barsSection(key, state.bars || [], write),
+    barsSection(key, state.bars || [], state.shadowed_bars || [], write),
+    effectsSection(key, state.effects || [], write),
     eventsSection(state.events || []),
     proactiveSection(key, conv, state.proactive || {}, priv),
   ];

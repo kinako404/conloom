@@ -358,13 +358,15 @@ type Store interface {
 	// the name, and ErrBuffLimit when the conversation has limit bars already.
 	// The persona's bars are the caller's to check.
 	AddCustomBar(ctx context.Context, b CustomBar, initial float64, limit int) error
-	// RemoveCustomBar deletes the conversation's bot-created bar name and its
-	// value, records a BuffKindBarRemove change by source and taskID at now (a
-	// zero now as the current time) whose Before and After are the value as
-	// last stored, and reports whether there was such a bar. When there is
-	// one but taskID already removed a bar of that name (see UpdateBuff),
-	// nothing is written and it returns ErrBuffDuplicate.
-	RemoveCustomBar(ctx context.Context, convKey, name, source, taskID string, now time.Time) (bool, error)
+	// RemoveCustomBar deletes the conversation's bot-created bar name and,
+	// unless keepValue (the persona has since gained a bar of that name, which
+	// shows the stored value now), its value; records a BuffKindBarRemove
+	// change by source and taskID at now (a zero now as the current time)
+	// whose Before and After are the value as last stored, and reports whether
+	// there was such a bar. When there is one but taskID already removed a bar
+	// of that name (see UpdateBuff), nothing is written and it returns
+	// ErrBuffDuplicate.
+	RemoveCustomBar(ctx context.Context, convKey, name, source, taskID string, keepValue bool, now time.Time) (bool, error)
 	// ListCustomBars returns the conversation's bot-created bars in the order
 	// they were added.
 	ListCustomBars(ctx context.Context, convKey string) ([]CustomBar, error)

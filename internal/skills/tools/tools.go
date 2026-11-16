@@ -41,7 +41,7 @@ type BuffStore interface {
 		apply func(cur store.BuffValue, found bool) (next store.BuffValue, before float64, err error)) (store.BuffValue, error)
 	GetBuffs(ctx context.Context, convKey string) ([]store.BuffValue, error)
 	AddCustomBar(ctx context.Context, b store.CustomBar, initial float64, limit int) error
-	RemoveCustomBar(ctx context.Context, convKey, name, source, taskID string, now time.Time) (bool, error)
+	RemoveCustomBar(ctx context.Context, convKey, name, source, taskID string, keepValue bool, now time.Time) (bool, error)
 	ListCustomBars(ctx context.Context, convKey string) ([]store.CustomBar, error)
 	AddEffect(ctx context.Context, e store.Effect, limit int, now time.Time) error
 	RemoveEffect(ctx context.Context, convKey, name, source, taskID string, now time.Time) (bool, error)

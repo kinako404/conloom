@@ -3,7 +3,9 @@ package panel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -67,7 +69,8 @@ func TestPanelAutonomy_GetPutDelete(t *testing.T) {
 	}
 	h.getJSON(path, &st)
 	if st.Bars[0].Value != 20 || st.Bars[0].Band != "偏低" || len(st.Events) != 1 ||
-		st.Events[0] != (conloomapi.AutonomyBarEvent{Name: "心情", Source: store.BuffSourcePanel, Reason: "<b>调低</b>", Before: 60, After: 20, At: h.now}) {
+		st.Events[0] != (conloomapi.AutonomyBarEvent{Name: "心情", Kind: store.BuffKindAdjust, Source: store.BuffSourcePanel, Reason: "<b>调低</b>",
+			Before: 60, After: 20, At: h.now}) {
 		t.Errorf("state after PUT = %+v", st)
 	}
 	audits := h.audits("autonomy.buff")
@@ -153,4 +156,160 @@ func TestPanelAutonomy_Unavailable(t *testing.T) {
 		http.StatusServiceUnavailable, conloomapi.CodeInternal)
 	errorBody(t, h.write(http.MethodDelete, convPath(private.Key, "autonomy", "status"), nil),
 		http.StatusServiceUnavailable, conloomapi.CodeInternal)
+	errorBody(t, h.write(http.MethodDelete, convPath(private.Key, "autonomy", "bars", "饥饿"), nil),
+		http.StatusServiceUnavailable, conloomapi.CodeInternal)
+	errorBody(t, h.write(http.MethodDelete, convPath(private.Key, "autonomy", "effects", "着凉"), nil),
+		http.StatusServiceUnavailable, conloomapi.CodeInternal)
+}
+
+// seedBotBuffs gives the private chat key the bars 精力 (since shadowed by
+// the persona's 精力), 饥饿 and 饱/饿 and the effect 着凉, as the bot added
+// them.
+func (h *writeHarness) seedBotBuffs(key string) {
+	h.t.Helper()
+	ctx := context.Background()
+	for i, b := range []store.CustomBar{
+		{Name: "精力", Description: "自建的精力", Baseline: 10, HalfLife: time.Hour},
+		{Name: "饥饿", Description: "<i>高=很饿</i>", Baseline: 30, HalfLife: 6 * time.Hour},
+		{Name: "饱/饿", Baseline: 50, HalfLife: 6 * time.Hour},
+	} {
+		b.ConversationKey, b.TaskID, b.CreatedAt = key, fmt.Sprintf("task_%d", i), h.now.Add(time.Duration(i-3)*time.Hour)
+		if err := h.db.AddCustomBar(ctx, b, float64(b.Baseline), 6); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+	started := h.now.Add(-10 * time.Minute)
+	if err := h.db.AddEffect(ctx, store.Effect{ConversationKey: key, Name: "着凉", Description: "<b>有点冷</b>", TaskID: "task_9",
+		StartedAt: started, UntilAt: h.now.Add(time.Hour)}, 6, started); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func TestPanelAutonomy_RemoveCustomBar(t *testing.T) {
+	h := newAutonomyHarness(t)
+	private := h.seedConv("qq", conloomapi.ConvPrivate, "20001")
+	h.seedMessage(private, "在吗", h.now.Add(-time.Hour), false)
+	h.seedBotBuffs(private.Key)
+	path := convPath(private.Key, "autonomy")
+	bar := func(name string) string { return convPath(private.Key, "autonomy", "bars", url.PathEscape(name)) }
+
+	raw := h.get(path)
+	if raw.Code != http.StatusOK || !strings.Contains(raw.Body.String(), `"custom":false`) {
+		t.Fatalf("GET: status %d, body %s; want custom on every bar", raw.Code, raw.Body)
+	}
+	var st conloomapi.AutonomyState
+	h.getJSON(path, &st)
+	var names []string
+	for _, b := range st.Bars {
+		names = append(names, fmt.Sprintf("%s:%v", b.Name, b.Custom))
+	}
+	if got := strings.Join(names, " "); got != "心情:false 精力:false 饥饿:true 饱/饿:true" {
+		t.Fatalf("bars = %s, want the persona's then the bot's, without its shadowed 精力", got)
+	}
+	if st.Bars[2] != (conloomapi.AutonomyBar{Name: "饥饿", Value: 30, Band: "偏低", Baseline: 30, Description: "<i>高=很饿</i>", Custom: true}) {
+		t.Errorf("饥饿 = %+v", st.Bars[2])
+	}
+	if len(st.ShadowedBars) != 1 || st.ShadowedBars[0] != "精力" {
+		t.Errorf("shadowed bars = %q, want the bot's 精力", st.ShadowedBars)
+	}
+
+	if w := h.do(http.MethodDelete, bar("饥饿"), "", withCookie(h.cookie)); w.Code != http.StatusForbidden {
+		t.Errorf("DELETE without CSRF: status %d, want 403", w.Code)
+	}
+	if e := errorBody(t, h.write(http.MethodDelete, bar("心情"), nil), http.StatusBadRequest, conloomapi.CodeInvalidEvent); !strings.Contains(e.Message, "心情") ||
+		strings.Contains(e.Message, "core:") {
+		t.Errorf("DELETE of the persona's bar: message %q", e.Message)
+	}
+	errorBody(t, h.write(http.MethodDelete, bar("口渴"), nil), http.StatusNotFound, conloomapi.CodeNotFound)
+	errorBody(t, h.write(http.MethodDelete, bar("着凉"), nil), http.StatusNotFound, conloomapi.CodeNotFound)
+	errorBody(t, h.write(http.MethodDelete, convPath(writeGroup.Key, "autonomy", "bars", "饥饿"), nil),
+		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	missing := store.ConversationKey(dataBot, "qq", conloomapi.ConvPrivate, "29999")
+	errorBody(t, h.write(http.MethodDelete, convPath(missing, "autonomy", "bars", "饥饿"), nil), http.StatusNotFound, conloomapi.CodeNotFound)
+	if n := len(h.audits("autonomy.bar.remove")); n != 0 {
+		t.Fatalf("refused DELETEs wrote %d audits", n)
+	}
+
+	for _, name := range []string{"饥饿", "饱/饿"} {
+		if w := h.write(http.MethodDelete, bar(name), nil); w.Code != http.StatusNoContent {
+			t.Fatalf("DELETE %s: status %d, body %s", name, w.Code, w.Body)
+		}
+	}
+	h.getJSON(path, &st)
+	if len(st.Bars) != 2 || st.Bars[1].Name != "精力" || st.Bars[1].Custom ||
+		st.Events[0] != (conloomapi.AutonomyBarEvent{Name: "饱/饿", Kind: store.BuffKindBarRemove, Source: store.BuffSourcePanel,
+			Before: 50, After: 50, At: h.now}) {
+		t.Fatalf("state after DELETE = %+v", st)
+	}
+
+	// The bot's own 精力, shadowed by the persona's, can go; then 精力 is the
+	// persona's alone.
+	before := st.Bars[1]
+	if w := h.write(http.MethodDelete, bar("精力"), nil); w.Code != http.StatusNoContent {
+		t.Fatalf("DELETE the bot's shadowed 精力: status %d, body %s", w.Code, w.Body)
+	}
+	if custom, err := h.db.ListCustomBars(context.Background(), private.Key); err != nil || len(custom) != 0 {
+		t.Errorf("bot's bars after DELETE = %+v, %v; want none", custom, err)
+	}
+	if raw := h.get(path); !strings.Contains(raw.Body.String(), `"shadowed_bars":[]`) {
+		t.Errorf("GET after removing the bot's 精力 = %s, want no shadowed bars", raw.Body)
+	}
+	h.getJSON(path, &st)
+	if st.Bars[1] != before {
+		t.Errorf("persona's 精力 = %+v after removing the bot's, want %+v", st.Bars[1], before)
+	}
+	errorBody(t, h.write(http.MethodDelete, bar("精力"), nil), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+
+	audits := h.audits("autonomy.bar.remove")
+	if len(audits) != 3 {
+		t.Fatalf("autonomy.bar.remove audits = %+v, want 3", audits)
+	}
+	for _, a := range audits {
+		if a.Actor != "panel:"+testUser || a.Target != private.Key || a.BotInstanceID != dataBot || !strings.HasPrefix(a.Detail, `{"name":"`) ||
+			strings.Contains(a.Detail, ",") {
+			t.Errorf("audit = %+v, want the panel user's with the name only", a)
+		}
+	}
+}
+
+func TestPanelAutonomy_RemoveEffect(t *testing.T) {
+	h := newAutonomyHarness(t)
+	private := h.seedConv("qq", conloomapi.ConvPrivate, "20001")
+	h.seedMessage(private, "在吗", h.now.Add(-time.Hour), false)
+	h.seedBotBuffs(private.Key)
+	path := convPath(private.Key, "autonomy")
+	effect := convPath(private.Key, "autonomy", "effects", "着凉")
+
+	var st conloomapi.AutonomyState
+	h.getJSON(path, &st)
+	if len(st.Effects) != 1 || st.Effects[0] != (conloomapi.AutonomyEffect{Name: "着凉", Description: "<b>有点冷</b>",
+		StartedAt: h.now.Add(-10 * time.Minute), UntilAt: h.now.Add(time.Hour)}) ||
+		st.Events[0].Kind != store.BuffKindEffectAdd || st.Events[0].Name != "着凉" {
+		t.Fatalf("state = %+v, want the effect and its addition", st)
+	}
+
+	if w := h.do(http.MethodDelete, effect, "", withCookie(h.cookie)); w.Code != http.StatusForbidden {
+		t.Errorf("DELETE without CSRF: status %d, want 403", w.Code)
+	}
+	errorBody(t, h.write(http.MethodDelete, convPath(private.Key, "autonomy", "effects", "饥饿"), nil), http.StatusNotFound, conloomapi.CodeNotFound)
+	errorBody(t, h.write(http.MethodDelete, convPath(writeGroup.Key, "autonomy", "effects", "着凉"), nil),
+		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	missing := store.ConversationKey(dataBot, "qq", conloomapi.ConvPrivate, "29999")
+	errorBody(t, h.write(http.MethodDelete, convPath(missing, "autonomy", "effects", "着凉"), nil), http.StatusNotFound, conloomapi.CodeNotFound)
+
+	if w := h.write(http.MethodDelete, effect, nil); w.Code != http.StatusNoContent {
+		t.Fatalf("DELETE: status %d, body %s", w.Code, w.Body)
+	}
+	h.getJSON(path, &st)
+	if len(st.Effects) != 0 || st.Events[0] != (conloomapi.AutonomyBarEvent{Name: "着凉", Kind: store.BuffKindEffectRemove,
+		Source: store.BuffSourcePanel, At: h.now}) {
+		t.Fatalf("state after DELETE = %+v", st)
+	}
+	errorBody(t, h.write(http.MethodDelete, effect, nil), http.StatusNotFound, conloomapi.CodeNotFound)
+
+	audits := h.audits("autonomy.effect.remove")
+	if len(audits) != 1 || audits[0].Actor != "panel:"+testUser || audits[0].Target != private.Key || audits[0].BotInstanceID != dataBot ||
+		audits[0].Detail != `{"name":"着凉"}` {
+		t.Errorf("autonomy.effect.remove audits = %+v", audits)
+	}
 }

@@ -26,8 +26,10 @@
 | `PUT /api/v1/conversations/{id}/memory/members/{user_id}` | `memory:write` | 修改某位群友的笔记、好感度 |
 | `DELETE /api/v1/conversations/{id}/memory/members/{user_id}` | `memory:write` | 忘记某位群友，等同于他发 `/忘记我` |
 | `POST /api/v1/conversations/{id}/memory/consolidate` | `memory:write` | 立即整理一次记忆；返回 202 |
-| `GET /api/v1/conversations/{id}/autonomy` | `memory:read` | 私聊的状态、状态条、最近的状态条变化和主动找人的情况 |
+| `GET /api/v1/conversations/{id}/autonomy` | `memory:read` | 私聊的状态、状态条、效果、最近的变化和主动找人的情况 |
 | `PUT /api/v1/conversations/{id}/autonomy/buffs/{name}` | `memory:write` | 把私聊的一条状态条设成指定值 |
+| `DELETE /api/v1/conversations/{id}/autonomy/bars/{name}` | `memory:write` | 删除机器人自建的一条状态条 |
+| `DELETE /api/v1/conversations/{id}/autonomy/effects/{name}` | `memory:write` | 提前去掉机器人自己加的一个效果 |
 | `DELETE /api/v1/conversations/{id}/autonomy/status` | `memory:write` | 结束私聊的当前状态，同时取消回来说话的定时 |
 | `GET /healthz` | 无 | 健康检查：查一次数据库（2 秒超时），正常返回纯文本 `ok`，失败返回 503 |
 | `GET /metrics` | 无 | Prometheus 指标，`server.metrics_enabled: false` 时不注册 |
@@ -130,13 +132,13 @@
 - 返回修改后的这位群友（格式同 `members` 里的一项）。每个有变化的字段写一条修改记录（来源 `api`，原因取 `reason`），并写审计 `memory.update`，审计里只记用户 ID 和改了哪些字段。和整理同时修改同一个人时会自动重试；仍然冲突时返回 503（`retryable: true`），可以稍后重试。
 - 记忆关闭时也可以修改，方便管理员更正冻结的数据。
 
-`DELETE …/memory/members/{user_id}` 等同于这位群友发 `/忘记我`：清空笔记和好感度，删除他的修改记录，记下忘记的时间，写审计 `memory.forget`，返回 `{"ok":true}`。记忆关闭时同样可用；群聊摘要不会逐人删除，私聊会话的对话摘要会一起清空，摘要的全部修改记录也一并删除（整理进度保留）。私聊会话还会删除机器人的当前状态、还没触发的定时（回来说话、主动找人、追问），以及状态条的数值和变化记录。面板里新建的聊天（`{id}` 是 bot 的任何一个面板聊天）作用在 bot 所有面板聊天共用的那份上：清空这个用户的笔记和好感度，清空共用的摘要、状态、状态条和变化记录，删除所有面板聊天的定时，整理进度跳到所有面板聊天里最新的消息，并删除所有面板聊天里忘记之前的语义检索数据。有几个面板用户时，他们在这个 bot 的面板聊天共用这一份，所以忘记一个面板用户也会清掉别的面板用户在用的这些共同部分（包括他们聊天里忘记之前的语义检索数据和还没整理的消息）；别的用户的笔记和好感度不变。
+`DELETE …/memory/members/{user_id}` 等同于这位群友发 `/忘记我`：清空笔记和好感度，删除他的修改记录，记下忘记的时间，写审计 `memory.forget`，返回 `{"ok":true}`。记忆关闭时同样可用；群聊摘要不会逐人删除，私聊会话的对话摘要会一起清空，摘要的全部修改记录也一并删除（整理进度保留）。私聊会话还会删除机器人的当前状态、还没触发的定时（回来说话、主动找人、追问）、状态条的数值、机器人自建的状态条和效果，以及这些的变化记录。面板里新建的聊天（`{id}` 是 bot 的任何一个面板聊天）作用在 bot 所有面板聊天共用的那份上：清空这个用户的笔记和好感度，清空共用的摘要、状态、状态条、效果和变化记录，删除所有面板聊天的定时，整理进度跳到所有面板聊天里最新的消息，并删除所有面板聊天里忘记之前的语义检索数据。有几个面板用户时，他们在这个 bot 的面板聊天共用这一份，所以忘记一个面板用户也会清掉别的面板用户在用的这些共同部分（包括他们聊天里忘记之前的语义检索数据和还没整理的消息）；别的用户的笔记和好感度不变。
 
 `POST …/memory/consolidate` 请求立即整理一次，返回 202 `{"accepted":true}`，整理在后台执行，结果可以用 `GET …/memory` 查看。会话没有开启记忆时返回 409 `MEMORY_DISABLED`；会话暂停中（`concurrency.max_interactive_requests: 0`）时返回 409 `PAUSED`。两种情况都不会整理。
 
 ## 自主状态
 
-私聊里机器人的状态（`set_status`）、状态条（`adjust_buff`）和主动找人，规则见 [使用指南](usage.md) 和 [技能](skills.md)。`{id}` 必须是私聊会话：群聊等其他会话返回 400，会话不属于令牌的机器人时返回 404。权限沿用记忆的 `memory:read`、`memory:write`。面板里新建的聊天的状态、状态条和变化记录是同一个 bot 所有面板聊天共用的（和[记忆](#记忆)一样），对哪个面板聊天读写都一样；`proactive` 和其中的定时是这个聊天自己的，回来说话的定时只在设状态的那个聊天里。
+私聊里机器人的状态（`set_status`）、状态条（`adjust_buff`，机器人还可以用 `add_buff` 自己加状态条和效果、用 `remove_buff` 删掉）和主动找人，规则见 [使用指南](usage.md) 和 [技能](skills.md)。`{id}` 必须是私聊会话：群聊等其他会话返回 400，会话不属于令牌的机器人时返回 404。权限沿用记忆的 `memory:read`、`memory:write`。面板里新建的聊天的状态、状态条、效果和变化记录是同一个 bot 所有面板聊天共用的（和[记忆](#记忆)一样），对哪个面板聊天读写都一样；`proactive` 和其中的定时是这个聊天自己的，回来说话的定时只在设状态的那个聊天里。
 
 `GET …/autonomy` 返回：
 
@@ -144,11 +146,17 @@
 {
   "status": {"activity": "洗澡", "started_at": "2026-11-14T12:10:00Z", "until_at": "2026-11-14T12:30:00Z"},
   "bars": [
-    {"name": "心情", "value": 71, "band": "偏高", "baseline": 60, "description": "高=开心放松，低=低落烦躁"},
-    {"name": "精力", "value": 70, "band": "偏高", "baseline": 70, "description": "高=有精神，低=累、困"}
+    {"name": "心情", "value": 71, "band": "偏高", "baseline": 60, "description": "高=开心放松，低=低落烦躁", "custom": false},
+    {"name": "精力", "value": 70, "band": "偏高", "baseline": 70, "description": "高=有精神，低=累、困", "custom": false},
+    {"name": "饥饿", "value": 55, "band": "中等", "baseline": 30, "description": "高=很饿", "custom": true}
+  ],
+  "shadowed_bars": [],
+  "effects": [
+    {"name": "着凉", "description": "有点冷", "started_at": "2026-11-14T11:50:00Z", "until_at": "2026-11-14T13:50:00Z"}
   ],
   "events": [
-    {"name": "心情", "source": "model", "reason": "聊到喜欢的电影", "before": 66, "after": 71, "at": "2026-11-14T12:00:00Z"}
+    {"name": "心情", "kind": "adjust", "source": "model", "reason": "聊到喜欢的电影", "before": 66, "after": 71, "at": "2026-11-14T12:00:00Z"},
+    {"name": "着凉", "kind": "effect_add", "source": "model", "reason": "", "before": 0, "after": 0, "at": "2026-11-14T11:50:00Z"}
   ],
   "proactive": {
     "enabled": true, "level": "mid", "sent_today": 1, "daily_cap": 2,
@@ -159,10 +167,12 @@
 ```
 
 - `status` 只在状态生效中（`until_at` 晚于现在）时给出，否则为 `null`。
-- `bars` 按会话当前人设的 `bars` 排列，人设没写 `bars` 时是默认的心情和精力；会话还没有人设版本时按将要使用的模板，查看不会生成人设版本。`value` 是回落到现在的值（四舍五入，没存过时是基准值），`band` 是它的档位词（很低、偏低、中等、偏高、很高）。人设里已经没有的条不列出。
-- `events` 是最近 50 次状态条变化，新的在前；`source` 为 `model`（模型调用 `adjust_buff`）、`panel` 或 `api`，`before`、`after` 四舍五入。人设里已经去掉的条，以前的变化照样列出。变化记录保留 30 天。
+- `bars` 先按会话当前人设的 `bars` 排列，人设没写 `bars` 时是默认的心情和精力；会话还没有人设版本时按将要使用的模板，查看不会生成人设版本。后面按添加的顺序列机器人用 `add_buff` 自建的条，`custom` 为 true；人设后来加了同名的条时以人设的为准，自建的那条不在 `bars` 里。`value` 是按这一条自己的基准值和半衰期回落到现在的值（四舍五入，没存过时是基准值），`band` 是它的档位词（很低、偏低、中等、偏高、很高）。人设里已经没有、也不是自建的条不列出。
+- `shadowed_bars` 是被人设同名的条代替了的自建条的名字，按添加的顺序：机器人看不到它们，也不能再调，但每条仍占一个自建名额，可以用下面的 `DELETE …/autonomy/bars/{name}` 删掉。
+- `effects` 是还在生效（`until_at` 晚于现在）的效果，按开始时间排列；到时间的不列出，由每小时的维护任务删掉。
+- `events` 是最近 50 次状态条和效果的变化，新的在前。`kind` 为 `adjust`（调整数值，`before` → `after`）、`bar_add`（新增状态条，`before`、`after` 都是初始值）、`bar_remove`（删除状态条，`before`、`after` 都是删除时存的值）、`effect_add`、`effect_remove`（增减效果，`before`、`after` 为 0）；`source` 为 `model`（模型调用工具）、`panel` 或 `api`，`before`、`after` 四舍五入。人设里已经去掉的条，以前的变化照样列出。变化记录保留 30 天。
 - `proactive`：`enabled` 是策略的 `proactive.enabled`；`level` 是生效的档位（没设时为 `mid`）；`sent_today`、`daily_cap` 是今天（`server.timezone` 的自然日）已经主动发出的条数和档位的上限；`quiet_start`、`quiet_end` 是生效的免打扰时段，`quiet_inferred` 为 true 表示按对方的作息推算；`unanswered_left` 是对方再次发言前还能主动发几条（发出的回来说话也占一条，但不计入 `sent_today`）；`timers` 是还没触发的定时，按时间排序，`kind` 为 `status_return`（回来说话）、`initiate`（主动找人）或 `follow_up`（追问）。
-- 各个列表总是数组。`activity` 和 `reason` 是模型或管理员写的文字，请按纯文本显示。
+- 各个列表总是数组。`activity`、`reason`，以及机器人自建的状态条和效果的名字、说明是模型或管理员写的文字，请按纯文本显示。
 
 `PUT …/autonomy/buffs/{name}` 把一条状态条直接设成指定值，`{name}` 是 URL 编码的条名：
 
@@ -170,9 +180,18 @@
 {"value": 20, "reason": "管理员调整"}
 ```
 
-- `value` 必填，取 0–100 的整数；`reason` 可以省略，去掉首尾空白后最多 40 字。`{name}` 必须和当前人设的某一条完全一致，否则返回 400 并列出现有的条名。
+- `value` 必填，取 0–100 的整数；`reason` 可以省略，去掉首尾空白后最多 40 字。`{name}` 必须和 `bars` 里的某一条（当前人设的，或机器人自建的）完全一致，否则返回 400 并列出现有的条名；和人设的条同名时改的是人设的那条，回落按它的基准值和半衰期。
 - 不受模型调整时单次 ±10、每天净变化 ±30 的限制，也不计入当天的净变化：模型当天已经调过的量保持不变，它当天还能再调多少不受这次修改影响。
 - 记一次来源为 `api` 的状态条变化（`before` 是修改前回落到现在的值），并写审计 `autonomy.buff`（条名、来源、原因和前后值，`actor` 是令牌名）。返回 `{"ok":true}`。
+
+`DELETE …/autonomy/bars/{name}` 删除机器人用 `add_buff` 自建的一条状态条，`{name}` 是 URL 编码的条名：
+
+- 删掉这条的定义和数值，记一次来源为 `api` 的 `bar_remove` 变化，写审计 `autonomy.bar.remove`（只记条名，`actor` 是令牌名），返回 `{"ok":true}`。
+- 人设后来加了同名的条时，只删自建的那条，人设的那条保留现在的数值。
+- 人设的状态条不能删，返回 400；没有这条自建的状态条时返回 404。
+- API 和面板都只能删，不能新增状态条或效果，新增交给机器人。
+
+`DELETE …/autonomy/effects/{name}` 提前去掉机器人用 `add_buff` 加的一个还在生效的效果：记一次来源为 `api` 的 `effect_remove` 变化，写审计 `autonomy.effect.remove`（只记名字），返回 `{"ok":true}`。没有这个效果或它已经到时间时返回 404。
 
 `DELETE …/autonomy/status` 立即结束当前状态，同时取消回来说话的定时，等同于模型调用 `set_status` 设 0 分钟：还在排队的回来说话任务找不到状态，结束时不发消息；已经开始生成的那一次不受影响。没有状态时同样成功。写审计 `autonomy.status.clear`（`cleared` 表示是否删掉了状态，删掉时附带它的内容和结束时间），返回 `{"ok":true}`。
 
@@ -186,7 +205,7 @@
 
 | 状态码 | `code` | 场景 |
 |---|---|---|
-| 400 | `INVALID_EVENT` | 请求不合法，包括人格、群策略、记忆、状态条修改校验失败，以及读写非私聊会话的自主状态；Web 管理面板导入人设模板时，文件不合格或超过 200 个模板（“一个文件最多 200 个模板”）也是 400 |
+| 400 | `INVALID_EVENT` | 请求不合法，包括人格、群策略、记忆、状态条修改校验失败、删除人设的状态条，以及读写非私聊会话的自主状态；Web 管理面板导入人设模板时，文件不合格或超过 200 个模板（“一个文件最多 200 个模板”）也是 400 |
 | 401 | `UNAUTHORIZED` | 缺少或无效的令牌 |
 | 403 | `FORBIDDEN` | 缺少 scope，或事件的机器人与令牌不一致 |
 | 404 | `NOT_FOUND` | 任务、动作或会话不存在 |

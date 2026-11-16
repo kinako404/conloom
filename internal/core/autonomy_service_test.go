@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -130,18 +131,11 @@ func TestAutonomyService_State(t *testing.T) {
 		t.Errorf("bars = %+v, want the persona's in its order, decayed, without 饥饿: %+v", got.Bars, wantBars)
 	}
 	wantEvents := []conloomapi.AutonomyBarEvent{
-		{Name: "饥饿", Source: store.BuffSourcePanel, Reason: "测试", Before: 0, After: 10, At: now.Add(-time.Hour)},
-		{Name: "心情", Source: store.BuffSourcePanel, Reason: "测试", Before: 0, After: 82, At: now.Add(-6 * time.Hour)},
+		{Name: "饥饿", Kind: store.BuffKindAdjust, Source: store.BuffSourcePanel, Reason: "测试", Before: 0, After: 10, At: now.Add(-time.Hour)},
+		{Name: "心情", Kind: store.BuffKindAdjust, Source: store.BuffSourcePanel, Reason: "测试", Before: 0, After: 82, At: now.Add(-6 * time.Hour)},
 	}
-	if len(got.Events) != len(wantEvents) {
-		t.Fatalf("events = %+v, want %+v", got.Events, wantEvents)
-	}
-	for i, ev := range got.Events {
-		w := wantEvents[i]
-		if ev.Name != w.Name || ev.Source != w.Source || ev.Reason != w.Reason || ev.Before != w.Before || ev.After != w.After ||
-			!ev.At.Equal(w.At) {
-			t.Errorf("events[%d] = %+v, want %+v", i, ev, w)
-		}
+	if !sameAutonomyEvents(got.Events, wantEvents) {
+		t.Errorf("events = %+v, want %+v", got.Events, wantEvents)
 	}
 	wantProactive, err := env.o.privateProactiveStatus(ctx, privateConvKey)
 	if err != nil {
@@ -169,7 +163,8 @@ func TestAutonomyService_StateEmptyLists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != nil || got.Events == nil || len(got.Events) != 0 || got.Proactive.Timers == nil {
+	if got.Status != nil || got.Events == nil || len(got.Events) != 0 || got.Effects == nil || len(got.Effects) != 0 ||
+		got.ShadowedBars == nil || len(got.ShadowedBars) != 0 || got.Proactive.Timers == nil {
 		t.Errorf("state = %+v, want no status and empty, non-null lists", got)
 	}
 	want := []conloomapi.AutonomyBar{
@@ -336,5 +331,244 @@ func TestAutonomyService_ClearStatus(t *testing.T) {
 	audits = env.audits(t, "autonomy.status.clear")
 	if len(audits) != 2 || !strings.Contains(audits[0].Detail+audits[1].Detail, `"cleared":false`) {
 		t.Errorf("audits after clearing nothing = %+v", audits)
+	}
+}
+
+// sameAutonomyEvents compares bar and effect changes, their times by Equal.
+func sameAutonomyEvents(got, want []conloomapi.AutonomyBarEvent) bool {
+	return slices.EqualFunc(got, want, func(a, b conloomapi.AutonomyBarEvent) bool {
+		at := a.At
+		a.At = b.At
+		return a == b && at.Equal(b.At)
+	})
+}
+
+// seedCustomState gives the private chat, with the default persona's bars
+// 心情 and 精力, the bot's bars 精力 (since shadowed by the persona's),
+// 饥饿 and 困意, an active effect 着凉 and a run-out effect 吃饱了.
+func (e *testEnv) seedCustomState(t *testing.T, now time.Time) {
+	t.Helper()
+	e.seedCustomBar(t, privateConvKey, "精力", "自建的精力", 10, time.Hour, 10, now.Add(-3*time.Hour))
+	// 饥饿 was 80 two hours, its half-life, ago and is 55 now.
+	e.seedCustomBar(t, privateConvKey, "饥饿", "高=很饿", 30, 2*time.Hour, 80, now.Add(-2*time.Hour))
+	e.seedEffect(t, privateConvKey, "吃饱了", "", now.Add(-2*time.Hour), now.Add(-time.Hour))
+	e.seedCustomBar(t, privateConvKey, "困意", "", 20, 6*time.Hour, 20, now.Add(-time.Hour))
+	e.seedEffect(t, privateConvKey, "着凉", "有点冷", now.Add(-10*time.Minute), now.Add(80*time.Minute))
+}
+
+func TestAutonomyService_StateCustomBarsAndEffects(t *testing.T) {
+	env, clock := newWakeEnv(t, nil, nil, nil)
+	env.seedPrivateMessage(t, clock, "在吗")
+	now := clock.now()
+	env.seedCustomState(t, now)
+
+	got, err := env.o.Autonomy().State(context.Background(), privateConvKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 精力's stored value is the bot's bar's 10, decayed with the persona's
+	// baseline 70 and half-life of 4 hours.
+	energy := autonomy.Decay(10, 70, 4*time.Hour, 3*time.Hour)
+	wantBars := []conloomapi.AutonomyBar{
+		{Name: "心情", Value: 60, Band: "偏高", Baseline: 60, Description: "高=开心放松，低=低落烦躁"},
+		{Name: "精力", Value: roundBar(energy), Band: autonomy.Band(energy), Baseline: 70, Description: "高=有精神，低=累、困"},
+		{Name: "饥饿", Value: 55, Band: "中等", Baseline: 30, Description: "高=很饿", Custom: true},
+		{Name: "困意", Value: 20, Band: "偏低", Baseline: 20, Custom: true},
+	}
+	if !reflect.DeepEqual(got.Bars, wantBars) {
+		t.Errorf("bars = %+v, want the persona's, then the bot's in the order added, without the shadowed 精力: %+v", got.Bars, wantBars)
+	}
+	if !slices.Equal(got.ShadowedBars, []string{"精力"}) {
+		t.Errorf("shadowed bars = %q, want the bot's 精力", got.ShadowedBars)
+	}
+	if len(got.Effects) != 1 || got.Effects[0].Name != "着凉" || got.Effects[0].Description != "有点冷" ||
+		!got.Effects[0].StartedAt.Equal(now.Add(-10*time.Minute)) || !got.Effects[0].UntilAt.Equal(now.Add(80*time.Minute)) {
+		t.Errorf("effects = %+v, want only the active 着凉", got.Effects)
+	}
+	wantEvents := []conloomapi.AutonomyBarEvent{
+		{Name: "着凉", Kind: store.BuffKindEffectAdd, Source: store.BuffSourceModel, At: now.Add(-10 * time.Minute)},
+		{Name: "困意", Kind: store.BuffKindBarAdd, Source: store.BuffSourceModel, Before: 20, After: 20, At: now.Add(-time.Hour)},
+		{Name: "吃饱了", Kind: store.BuffKindEffectAdd, Source: store.BuffSourceModel, At: now.Add(-2 * time.Hour)},
+		{Name: "饥饿", Kind: store.BuffKindBarAdd, Source: store.BuffSourceModel, Before: 80, After: 80, At: now.Add(-2 * time.Hour)},
+		{Name: "精力", Kind: store.BuffKindBarAdd, Source: store.BuffSourceModel, Before: 10, After: 10, At: now.Add(-3 * time.Hour)},
+	}
+	if !sameAutonomyEvents(got.Events, wantEvents) {
+		t.Errorf("events = %+v, want %+v", got.Events, wantEvents)
+	}
+
+	// The effect has run out: the list is empty, not null.
+	clock.set(now.Add(2 * time.Hour))
+	if got, err := env.o.Autonomy().State(context.Background(), privateConvKey); err != nil || got.Effects == nil || len(got.Effects) != 0 {
+		t.Errorf("effects after 着凉 ran out = %#v, %v; want an empty list", got.Effects, err)
+	}
+}
+
+func TestAutonomyService_SetBarOfTheBot(t *testing.T) {
+	env, clock := newWakeEnv(t, nil, nil, nil)
+	ctx := context.Background()
+	svc := env.o.Autonomy()
+	env.seedPrivateMessage(t, clock, "在吗")
+	now := clock.now()
+	env.seedCustomState(t, now)
+
+	if err := svc.SetBar(ctx, privateConvKey, "饥饿", 90, "饿了", store.BuffSourcePanel, "panel:admin"); err != nil {
+		t.Fatal(err)
+	}
+	if b := env.buffs(t)["饥饿"]; b.Value != 90 || !b.UpdatedAt.Equal(now) {
+		t.Errorf("饥饿 = %+v, want 90 now", b)
+	}
+	if ev := env.newestBuffEvent(t); ev.Name != "饥饿" || ev.Kind != store.BuffKindAdjust || ev.Source != store.BuffSourcePanel ||
+		math.Abs(ev.Before-55) > 1e-9 || ev.After != 90 {
+		t.Errorf("event = %+v, want panel 55 (decayed with the bar's own baseline and half-life) → 90", ev)
+	}
+
+	// The persona's 精力 wins the name: its baseline and half-life count.
+	if err := svc.SetBar(ctx, privateConvKey, "精力", 50, "", store.BuffSourceAPI, "memory-main"); err != nil {
+		t.Fatal(err)
+	}
+	if ev := env.newestBuffEvent(t); ev.Name != "精力" || math.Abs(ev.Before-autonomy.Decay(10, 70, 4*time.Hour, 3*time.Hour)) > 1e-9 {
+		t.Errorf("event = %+v, want 精力 decayed toward the persona's baseline", ev)
+	}
+
+	err := svc.SetBar(ctx, privateConvKey, "口渴", 50, "", store.BuffSourcePanel, "panel:admin")
+	if !errors.Is(err, ErrInvalidBar) || !strings.Contains(err.Error(), "心情, 精力, 饥饿, 困意") {
+		t.Errorf("SetBar of an unknown bar err = %v, want ErrInvalidBar listing every bar", err)
+	}
+	if n := len(env.audits(t, "autonomy.buff")); n != 2 {
+		t.Errorf("autonomy.buff audits = %d, want 2", n)
+	}
+}
+
+func TestAutonomyService_RemoveBar(t *testing.T) {
+	env, clock := newWakeEnv(t, nil, nil, nil)
+	ctx := context.Background()
+	svc := env.o.Autonomy()
+	env.seedPrivateMessage(t, clock, "在吗")
+	env.seedGroupConv(t, clock.now())
+	now := clock.now()
+	env.seedCustomState(t, now)
+	events := func() int {
+		t.Helper()
+		evs, err := env.st.ListBuffEvents(ctx, privateConvKey, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(evs)
+	}
+	before := events()
+
+	// The persona's bars cannot be removed; nor can unknown bars, effects,
+	// bars of groups or of unknown chats.
+	if err := svc.RemoveBar(ctx, privateConvKey, "心情", store.BuffSourcePanel, "panel:admin"); !errors.Is(err, ErrInvalidBar) ||
+		!strings.Contains(err.Error(), "心情") {
+		t.Errorf("RemoveBar of the persona's bar err = %v, want ErrInvalidBar", err)
+	}
+	for _, name := range []string{"口渴", "着凉", ""} {
+		if err := svc.RemoveBar(ctx, privateConvKey, name, store.BuffSourcePanel, "panel:admin"); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("RemoveBar of %q err = %v, want ErrNotFound", name, err)
+		}
+	}
+	if err := svc.RemoveBar(ctx, testConvKey, "饥饿", store.BuffSourcePanel, "panel:admin"); !errors.Is(err, ErrNotPrivate) {
+		t.Errorf("RemoveBar in a group err = %v, want ErrNotPrivate", err)
+	}
+	missing := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "private_29999")
+	if err := svc.RemoveBar(ctx, missing, "饥饿", store.BuffSourcePanel, "panel:admin"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("RemoveBar in an unknown chat err = %v, want ErrNotFound", err)
+	}
+	if err := svc.RemoveBar(ctx, privateConvKey, "饥饿", store.BuffSourceModel, "panel:admin"); err == nil || errors.Is(err, ErrInvalidBar) {
+		t.Errorf("RemoveBar as the model err = %v, want an internal error", err)
+	}
+	if n := events(); n != before || len(env.audits(t, "autonomy.bar.remove")) != 0 {
+		t.Fatalf("refused removals wrote %d events and audits %+v", n-before, env.audits(t, "autonomy.bar.remove"))
+	}
+
+	if err := svc.RemoveBar(ctx, privateConvKey, "饥饿", store.BuffSourcePanel, "panel:admin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := env.buffs(t)["饥饿"]; ok {
+		t.Errorf("饥饿's value is still stored")
+	}
+	if ev := env.newestBuffEvent(t); ev.Name != "饥饿" || ev.Kind != store.BuffKindBarRemove || ev.Source != store.BuffSourcePanel ||
+		ev.TaskID != "" || ev.Before != 80 || !ev.CreatedAt.Equal(now) {
+		t.Errorf("event = %+v, want the panel's removal of 饥饿 now", ev)
+	}
+	if err := svc.RemoveBar(ctx, privateConvKey, "饥饿", store.BuffSourcePanel, "panel:admin"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("second RemoveBar err = %v, want ErrNotFound", err)
+	}
+
+	// The bot's 精力, shadowed by the persona's: its definition goes, the
+	// persona's 精力 keeps its value.
+	stored := env.buffs(t)["精力"]
+	if err := svc.RemoveBar(ctx, privateConvKey, "精力", store.BuffSourceAPI, "memory-main"); err != nil {
+		t.Fatal(err)
+	}
+	if b := env.buffs(t)["精力"]; b != stored {
+		t.Errorf("精力 = %+v after removing the bot's 精力, want %+v kept", b, stored)
+	}
+	custom, err := env.st.ListCustomBars(ctx, privateConvKey)
+	if err != nil || len(custom) != 1 || custom[0].Name != "困意" {
+		t.Errorf("bot's bars = %+v, %v; want only 困意", custom, err)
+	}
+	if err := svc.RemoveBar(ctx, privateConvKey, "精力", store.BuffSourceAPI, "memory-main"); !errors.Is(err, ErrInvalidBar) {
+		t.Errorf("RemoveBar of the persona's 精力 err = %v, want ErrInvalidBar", err)
+	}
+	if st, err := svc.State(ctx, privateConvKey); err != nil || st.ShadowedBars == nil || len(st.ShadowedBars) != 0 {
+		t.Errorf("shadowed bars after the removal = %#v, %v; want an empty list", st.ShadowedBars, err)
+	}
+
+	audits := env.audits(t, "autonomy.bar.remove")
+	if len(audits) != 2 {
+		t.Fatalf("autonomy.bar.remove audits = %+v, want 2", audits)
+	}
+	for _, a := range audits {
+		want := map[string]string{"panel:admin": `{"name":"饥饿"}`, "memory-main": `{"name":"精力"}`}[a.Actor]
+		if a.Detail != want || a.Target != privateConvKey || a.BotInstanceID != testBot {
+			t.Errorf("audit = %+v, want detail %s", a, want)
+		}
+	}
+}
+
+func TestAutonomyService_RemoveEffect(t *testing.T) {
+	env, clock := newWakeEnv(t, nil, nil, nil)
+	ctx := context.Background()
+	svc := env.o.Autonomy()
+	env.seedPrivateMessage(t, clock, "在吗")
+	env.seedGroupConv(t, clock.now())
+	now := clock.now()
+	env.seedCustomState(t, now)
+
+	// A run-out effect is left to the hourly purge; bars are no effects.
+	for _, name := range []string{"吃饱了", "饥饿", "心情", "口渴"} {
+		if err := svc.RemoveEffect(ctx, privateConvKey, name, store.BuffSourcePanel, "panel:admin"); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("RemoveEffect of %q err = %v, want ErrNotFound", name, err)
+		}
+	}
+	if err := svc.RemoveEffect(ctx, testConvKey, "着凉", store.BuffSourcePanel, "panel:admin"); !errors.Is(err, ErrNotPrivate) {
+		t.Errorf("RemoveEffect in a group err = %v, want ErrNotPrivate", err)
+	}
+	if err := svc.RemoveEffect(ctx, privateConvKey, "着凉", store.BuffSourceModel, "panel:admin"); err == nil || errors.Is(err, store.ErrNotFound) {
+		t.Errorf("RemoveEffect as the model err = %v, want an internal error", err)
+	}
+	if len(env.audits(t, "autonomy.effect.remove")) != 0 || env.newestBuffEvent(t).Name != "着凉" {
+		t.Fatal("refused removals wrote audits or events")
+	}
+
+	if err := svc.RemoveEffect(ctx, privateConvKey, "着凉", store.BuffSourcePanel, "panel:admin"); err != nil {
+		t.Fatal(err)
+	}
+	if active, err := env.st.ListEffects(ctx, privateConvKey, now); err != nil || len(active) != 0 {
+		t.Errorf("active effects = %+v, %v; want none", active, err)
+	}
+	if ev := env.newestBuffEvent(t); ev.Name != "着凉" || ev.Kind != store.BuffKindEffectRemove || ev.Source != store.BuffSourcePanel ||
+		ev.TaskID != "" || !ev.CreatedAt.Equal(now) {
+		t.Errorf("event = %+v, want the panel's removal of 着凉 now", ev)
+	}
+	if err := svc.RemoveEffect(ctx, privateConvKey, "着凉", store.BuffSourcePanel, "panel:admin"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("second RemoveEffect err = %v, want ErrNotFound", err)
+	}
+	audits := env.audits(t, "autonomy.effect.remove")
+	if len(audits) != 1 || audits[0].Detail != `{"name":"着凉"}` || audits[0].Actor != "panel:admin" ||
+		audits[0].Target != privateConvKey || audits[0].BotInstanceID != testBot {
+		t.Errorf("autonomy.effect.remove audits = %+v", audits)
 	}
 }

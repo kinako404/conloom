@@ -3,15 +3,22 @@ package conloomapi
 import "time"
 
 // AutonomyState is the hidden state of a private chat as the panel and the
-// API show it: the status while it lasts (null otherwise), the persona's bars
-// in its order at their values decayed to now, the chat's newest bar changes
-// first and how the bot starts the chat. Activity and Reason are text the
-// model or an operator wrote; show them as plain text.
+// API show it: the status while it lasts (null otherwise), the bars (the
+// persona's in its order, then those the bot added) at their values decayed
+// to now, the names of the bars the bot added that a persona bar of the same
+// name has since replaced (ShadowedBars: the bot no longer sees them, but
+// each still counts toward its limit of bars until removed), the effects
+// still active, the chat's newest bar and effect changes first and how the
+// bot starts the chat. Activity, Reason, and the names and descriptions the
+// bot gave its bars and effects are text the model or an operator wrote;
+// show them as plain text.
 type AutonomyState struct {
-	Status    *AutonomyStatus    `json:"status"`
-	Bars      []AutonomyBar      `json:"bars"`
-	Events    []AutonomyBarEvent `json:"events"`
-	Proactive AutonomyProactive  `json:"proactive"`
+	Status       *AutonomyStatus    `json:"status"`
+	Bars         []AutonomyBar      `json:"bars"`
+	ShadowedBars []string           `json:"shadowed_bars"`
+	Effects      []AutonomyEffect   `json:"effects"`
+	Events       []AutonomyBarEvent `json:"events"`
+	Proactive    AutonomyProactive  `json:"proactive"`
 }
 
 // AutonomyStatus is what the bot is doing in a private chat, from StartedAt
@@ -22,21 +29,36 @@ type AutonomyStatus struct {
 	UntilAt   time.Time `json:"until_at"`
 }
 
-// AutonomyBar is one of the persona's hidden bars: its value decayed to now,
-// rounded, the band of that value (很低, 偏低, 中等, 偏高 or 很高), and the
-// bar's baseline and description.
+// AutonomyBar is one of the hidden bars: its value decayed to now, rounded,
+// the band of that value (很低, 偏低, 中等, 偏高 or 很高), and the bar's
+// baseline and description. Custom marks a bar the bot added itself
+// (add_buff), which can be removed; the persona's bars cannot.
 type AutonomyBar struct {
 	Name        string `json:"name"`
 	Value       int    `json:"value"`
 	Band        string `json:"band"`
 	Baseline    int    `json:"baseline"`
 	Description string `json:"description,omitempty"`
+	Custom      bool   `json:"custom"`
 }
 
-// AutonomyBarEvent is one change of a bar from Before to After, both rounded,
-// at At. Source is model, panel or api.
+// AutonomyEffect is an effect the bot gave itself (add_buff), active from
+// StartedAt until UntilAt.
+type AutonomyEffect struct {
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	StartedAt   time.Time `json:"started_at"`
+	UntilAt     time.Time `json:"until_at"`
+}
+
+// AutonomyBarEvent is one change of a bar or an effect at At. Kind is adjust
+// (a bar's value from Before to After, both rounded), bar_add (After is the
+// new bar's value), bar_remove (Before and After are its value as last
+// stored), effect_add or effect_remove (both 0). Source is model, panel or
+// api.
 type AutonomyBarEvent struct {
 	Name   string    `json:"name"`
+	Kind   string    `json:"kind"`
 	Source string    `json:"source"`
 	Reason string    `json:"reason"`
 	Before int       `json:"before"`

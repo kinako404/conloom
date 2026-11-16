@@ -4,12 +4,14 @@ import (
 	"io/fs"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/kinako404/conloom/internal/imaging"
 	"github.com/kinako404/conloom/internal/memory"
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -170,6 +172,22 @@ func TestAssets_MaxBarsMatchesPersona(t *testing.T) {
 	}
 	if want := strconv.Itoa(conloomapi.MaxPersonaBars); m[1] != want {
 		t.Errorf("MAX_BARS = %s, want conloomapi.MaxPersonaBars %s", m[1], want)
+	}
+}
+
+func TestAssets_EventKindsMatchStore(t *testing.T) {
+	js := assets(t, ".js")["views/autonomy.js"]
+	m := regexp.MustCompile(`(?s)const EVENT_KIND = \{(.*?)\};`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("views/autonomy.js has no EVENT_KIND")
+	}
+	var got []string
+	for _, k := range regexp.MustCompile(`(?m)^\s*(\w+):`).FindAllStringSubmatch(m[1], -1) {
+		got = append(got, k[1])
+	}
+	want := []string{store.BuffKindAdjust, store.BuffKindBarAdd, store.BuffKindBarRemove, store.BuffKindEffectAdd, store.BuffKindEffectRemove}
+	if !slices.Equal(got, want) {
+		t.Errorf("EVENT_KIND keys = %v, want the store's kinds %v", got, want)
 	}
 }
 

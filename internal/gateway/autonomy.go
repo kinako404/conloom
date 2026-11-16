@@ -21,8 +21,8 @@ func (s *Server) privateConversation(w http.ResponseWriter, r *http.Request, tok
 	return conv, true
 }
 
-// getAutonomy returns the private chat's status, bars, recent bar changes
-// and how the bot starts the chat (core.AutonomyService.State).
+// getAutonomy returns the private chat's status, bars, effects, their recent
+// changes and how the bot starts the chat (core.AutonomyService.State).
 func (s *Server) getAutonomy(w http.ResponseWriter, r *http.Request, tok *token) {
 	conv, ok := s.privateConversation(w, r, tok)
 	if !ok {
@@ -54,6 +54,39 @@ func (s *Server) putAutonomyBar(w http.ResponseWriter, r *http.Request, tok *tok
 	err := s.d.Orchestrator.Autonomy().SetBar(r.Context(), conv.Key, r.PathValue("name"), *put.Value, put.Reason,
 		store.BuffSourceAPI, tok.name)
 	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		OK bool `json:"ok"`
+	}{true})
+}
+
+// deleteAutonomyBar removes the bar {name} the bot added from the private
+// chat as the token, audited as autonomy.bar.remove; a bar of the persona is
+// 400.
+func (s *Server) deleteAutonomyBar(w http.ResponseWriter, r *http.Request, tok *token) {
+	conv, ok := s.privateConversation(w, r, tok)
+	if !ok {
+		return
+	}
+	if err := s.d.Orchestrator.Autonomy().RemoveBar(r.Context(), conv.Key, r.PathValue("name"), store.BuffSourceAPI, tok.name); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		OK bool `json:"ok"`
+	}{true})
+}
+
+// deleteAutonomyEffect ends the private chat's active effect {name} early as
+// the token, audited as autonomy.effect.remove.
+func (s *Server) deleteAutonomyEffect(w http.ResponseWriter, r *http.Request, tok *token) {
+	conv, ok := s.privateConversation(w, r, tok)
+	if !ok {
+		return
+	}
+	if err := s.d.Orchestrator.Autonomy().RemoveEffect(r.Context(), conv.Key, r.PathValue("name"), store.BuffSourceAPI, tok.name); err != nil {
 		s.fail(w, r, err)
 		return
 	}
