@@ -322,7 +322,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 			return out
 		}
 	}
-	relationship := o.affinityDirective(ctx, task, pol, speakerRows, system.Mode)
+	relationship := o.affinityDirective(ctx, task, pol, speakerRows, system.Mode, system.Intimacy)
 	targets := o.replyTargets(ctx, task, history, triggers)
 	if at := speakerRows[task.ActorPlatformUserID].ForgottenAt; !at.IsZero() {
 		maps.DeleteFunc(targets, func(_ string, m store.MessageRecord) bool { return m.OccurredAt.Before(at) })

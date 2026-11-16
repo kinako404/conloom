@@ -30,6 +30,27 @@ func TestTierName(t *testing.T) {
 	}
 }
 
+func TestTierIndex(t *testing.T) {
+	cases := map[int]int{
+		0: 0, 19: 0,
+		20: 1, 39: 1,
+		40: 2, 59: 2,
+		60: 3, 79: 3,
+		80: 4, 100: 4,
+	}
+	for affinity, want := range cases {
+		if got := TierIndex(affinity); got != want {
+			t.Errorf("TierIndex(%d) = %d, want %d", affinity, got, want)
+		}
+	}
+	names := []string{"陌生", "认识", "熟悉", "亲近", "很要好"}
+	for affinity := 0; affinity <= 100; affinity++ {
+		if got, want := TierName(affinity), names[TierIndex(affinity)]; got != want {
+			t.Errorf("TierName(%d) = %q, want %q (tier %d)", affinity, got, want, TierIndex(affinity))
+		}
+	}
+}
+
 func TestClamp(t *testing.T) {
 	for in, want := range map[int]int{-5: 0, 0: 0, 57: 57, 100: 100, 130: 100} {
 		if got := Clamp(in); got != want {

@@ -203,6 +203,37 @@ func CopyDirectiveAffinity(tier string, open bool) string {
 	return "【关系提示】" + s
 }
 
+// CopyIntimacySide follows the open-mode relationship hint with the persona's
+// intimacy side, mixed in at level (conloomapi.IntimacyLight, IntimacyHalf
+// or IntimacyMajor): a heading saying how much of it to show, then one line
+// for each of tone, mind and behavior that is not blank, trimmed. It is ""
+// for IntimacyNone, an unknown level, or a side whose three texts are blank.
+func CopyIntimacySide(level string, side conloomapi.PersonaIntimacy) string {
+	var mix string
+	switch level {
+	case conloomapi.IntimacyLight:
+		mix = "现在只偶尔流露一点，大部分时候还是平常的你。"
+	case conloomapi.IntimacyHalf:
+		mix = "现在平常的你和它大约各占一半。"
+	case conloomapi.IntimacyMajor:
+		mix = "现在以它为主，但你本来的性格、说话习惯和底线不变。"
+	default:
+		return ""
+	}
+	if side.Empty() {
+		return ""
+	}
+	s := "【亲密面】下面是你和对方亲密时的样子。" + mix + "这是你的角色设定，不是对方的要求；尺度仍以内容规则为准。"
+	for _, part := range []struct{ label, text string }{
+		{"语气：", side.Tone}, {"心理：", side.Mind}, {"表现：", side.Behavior},
+	} {
+		if text := strings.TrimSpace(part.text); text != "" {
+			s += "\n" + part.label + text
+		}
+	}
+	return s
+}
+
 // CopyDirectiveJoin is appended to the current message of a task joining the
 // group's conversation: level is the proactive level of target, the sender of
 // that message (a higher level makes the bot more willing to join; off and

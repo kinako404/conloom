@@ -20,20 +20,30 @@ const (
 	SummaryMaxRunes = 1500
 )
 
-// TierName names the affinity tier shown to the reply model instead of the number.
-func TierName(affinity int) string {
+// tierNames are the names of the affinity tiers, from the lowest.
+var tierNames = [...]string{"陌生", "认识", "熟悉", "亲近", "很要好"}
+
+// TierIndex returns the affinity tier of affinity, from 0 (陌生, below 20) to
+// 4 (很要好, 80 and above), one tier every 20.
+func TierIndex(affinity int) int {
 	switch {
 	case affinity < 20:
-		return "陌生"
+		return 0
 	case affinity < 40:
-		return "认识"
+		return 1
 	case affinity < 60:
-		return "熟悉"
+		return 2
 	case affinity < 80:
-		return "亲近"
+		return 3
 	default:
-		return "很要好"
+		return 4
 	}
+}
+
+// TierName names the affinity tier (TierIndex) shown to the reply model
+// instead of the number.
+func TierName(affinity int) string {
+	return tierNames[TierIndex(affinity)]
 }
 
 // Clamp limits affinity to [0, 100].

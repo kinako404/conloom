@@ -497,11 +497,15 @@ func (s *Service) Update(ctx context.Context, convKey, templateName string, put 
 
 // Prompt is a conversation's system prompt: Text built from persona version
 // Version under content mode Mode, in which the bot is called BotName.
+// Intimacy, which never enters Text, is a copy of the persona's intimacy side
+// when Mode is ContentOpen and the side is not empty (see
+// conloomapi.PersonaIntimacy.Empty), and nil otherwise.
 type Prompt struct {
-	Text    string
-	Version int
-	BotName string
-	Mode    conloomapi.ContentMode
+	Text     string
+	Version  int
+	BotName  string
+	Mode     conloomapi.ContentMode
+	Intimacy *conloomapi.PersonaIntimacy
 }
 
 // BotName is the bot's name under persona p: its character name when set,
@@ -528,7 +532,9 @@ func PlatformNameNote(name, botName string) string {
 // botName, and the rendered persona, separated by blank lines. Version,
 // content mode and configured bot name determine the prompt, so one version
 // always yields byte-identical output; it is cached per conversation for the
-// maxCachedPrompts conversations most recently asked for.
+// maxCachedPrompts conversations most recently asked for. Only in
+// ContentOpen does the result carry the persona's intimacy side (see
+// Prompt.Intimacy); the caller gets its own copy of it.
 func (s *Service) SystemPrompt(ctx context.Context, convKey, templateName, botName string) (Prompt, error) {
 	pv, err := s.Current(ctx, convKey, templateName)
 	if err != nil {
@@ -540,7 +546,7 @@ func (s *Service) SystemPrompt(ctx context.Context, convKey, templateName, botNa
 	if e, ok := s.prompts[convKey]; ok {
 		if c := e.Value.(cachedPrompt); c.version == pv.Version && c.botName == botName && c.mode == mode {
 			s.promptOrder.MoveToFront(e)
-			return c.prompt, nil
+			return c.prompt.clone(), nil
 		}
 	}
 	name := BotName(pv.Persona, botName)
@@ -552,8 +558,23 @@ func (s *Service) SystemPrompt(ctx context.Context, convKey, templateName, botNa
 		text += note + "\n\n"
 	}
 	p := Prompt{Text: text + Render(pv.Persona), Version: pv.Version, BotName: name, Mode: mode}
+	if mode == conloomapi.ContentOpen && !pv.Persona.Intimacy.Empty() {
+		p.Intimacy = pv.Persona.Intimacy
+	}
+	p = p.clone()
 	s.cachePrompt(cachedPrompt{convKey: convKey, version: pv.Version, botName: botName, mode: mode, prompt: p})
-	return p, nil
+	return p.clone(), nil
+}
+
+// clone returns p with its own copy of Intimacy, so that neither the cache nor
+// the persona shares it with a caller.
+func (p Prompt) clone() Prompt {
+	if p.Intimacy != nil {
+		in := *p.Intimacy
+		in.Levels = slices.Clone(in.Levels)
+		p.Intimacy = &in
+	}
+	return p
 }
 
 // cachePrompt caches c as its conversation's prompt, the most recently used,

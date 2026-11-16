@@ -869,7 +869,9 @@ func TestRender_IgnoresIntimacy(t *testing.T) {
 			if err != nil {
 				t.Fatalf("SystemPrompt with an intimacy side: %v", err)
 			}
-			if got != want {
+			sans := got
+			sans.Intimacy = nil
+			if sans != want {
 				t.Errorf("adult=%v in %s: prompt with an intimacy side =\n%+v\nwant\n%+v", base.Adult, key, got, want)
 			}
 			for _, text := range []string{intimacy.Tone, intimacy.Mind, intimacy.Behavior} {
@@ -878,6 +880,78 @@ func TestRender_IgnoresIntimacy(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestSystemPrompt_IntimacyOnlyOpen(t *testing.T) {
+	ctx := context.Background()
+	privateKey := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "20001")
+	side := conloomapi.PersonaIntimacy{
+		Tone: "说话放软一些", Mind: "想靠近对方", Behavior: "会多陪对方聊一会儿",
+		Levels: []string{conloomapi.IntimacyNone, conloomapi.IntimacyLight, conloomapi.IntimacyHalf, conloomapi.IntimacyMajor, conloomapi.IntimacyMajor},
+	}
+	adult := testCharacter()
+	adult.Description = "苔灯是海边小镇的灯塔看守，已经成年，做事认真。"
+	adult.Adult, adult.ContentRules = true, testContentRules
+	intimate := adult
+	intimate.Intimacy = &side
+	get := func(svc *Service, key string) Prompt {
+		t.Helper()
+		p, err := svc.SystemPrompt(ctx, key, "t", "织语")
+		if err != nil {
+			t.Fatalf("SystemPrompt: %v", err)
+		}
+		return p
+	}
+
+	plain := newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": adult})
+	svc := newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": intimate})
+	p := get(svc, privateKey)
+	if p.Mode != conloomapi.ContentOpen || p.Intimacy == nil || !reflect.DeepEqual(*p.Intimacy, side) {
+		t.Fatalf("adult in private: mode %q, intimacy %+v; want open with %+v", p.Mode, p.Intimacy, side)
+	}
+	if want := get(plain, privateKey).Text; p.Text != want {
+		t.Errorf("adult in private: prompt text with an intimacy side =\n%s\nwant\n%s", p.Text, want)
+	}
+	cached := get(svc, privateKey)
+	for _, changed := range []Prompt{p, cached} {
+		if changed.Intimacy == nil {
+			t.Fatalf("adult in private: no intimacy side in %+v", changed)
+		}
+		changed.Intimacy.Tone, changed.Intimacy.Levels[0] = "改过的语气", conloomapi.IntimacyMajor
+	}
+	if again := get(svc, privateKey); again.Intimacy == nil || !reflect.DeepEqual(*again.Intimacy, side) {
+		t.Errorf("after changing returned intimacy sides, SystemPrompt returns %+v, want %+v", again.Intimacy, side)
+	}
+	if pv, err := svc.Current(ctx, privateKey, "t"); err != nil || pv.Persona.Intimacy == nil || !reflect.DeepEqual(*pv.Persona.Intimacy, side) {
+		t.Errorf("after changing a returned intimacy side, the persona's = %+v, %v; want %+v", pv.Persona.Intimacy, err, side)
+	}
+
+	if p := get(svc, testConvKey); p.Mode != conloomapi.ContentProtected || p.Intimacy != nil {
+		t.Errorf("adult in a group: mode %q, intimacy %+v; want protected without one", p.Mode, p.Intimacy)
+	}
+
+	blank := adult
+	blank.Intimacy = &conloomapi.PersonaIntimacy{Tone: " ", Mind: "\n\t", Levels: conloomapi.DefaultIntimacyLevels()}
+	if p := get(newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": blank}), privateKey); p.Mode != conloomapi.ContentOpen || p.Intimacy != nil {
+		t.Errorf("adult in private with blank texts: mode %q, intimacy %+v; want open without one", p.Mode, p.Intimacy)
+	}
+
+	st := newTestStore(t)
+	minor := testCharacter()
+	minor.Minor, minor.Intimacy = true, &side
+	if _, err := st.AppendPersonaVersion(ctx, store.PersonaVersion{
+		ConversationKey: privateKey, TemplateName: "default", Persona: minor,
+		Reason: "edited in the database", UpdatedBy: "system",
+	}); err != nil {
+		t.Fatalf("AppendPersonaVersion: %v", err)
+	}
+	p, err := NewService(st).SystemPrompt(ctx, privateKey, "default", "织语")
+	if err != nil {
+		t.Fatalf("SystemPrompt: %v", err)
+	}
+	if p.Mode != conloomapi.ContentProtected || p.Intimacy != nil {
+		t.Errorf("stored minor with an intimacy side in private: mode %q, intimacy %+v; want protected without one", p.Mode, p.Intimacy)
 	}
 }
 

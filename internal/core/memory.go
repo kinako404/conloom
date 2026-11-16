@@ -127,17 +127,22 @@ func (o *Orchestrator) injectMemory(ctx context.Context, task store.TaskRecord, 
 }
 
 // affinityDirective returns the relationship hint for the task's speaker at
-// their affinity tier, or "" when memory or affinity is off, or the speaker
-// has no affinity yet. known, when not nil, holds the speaker's row already
-// read (private chats do this for the forget cutoff).
+// their affinity tier under content mode mode, or "" when memory or affinity
+// is off, or the speaker has no affinity yet. In ContentOpen, side, the
+// persona's intimacy side when not nil, follows the hint on its own line,
+// mixed in at the level side gives the tier (CopyIntimacySide); in any other
+// mode side is never used. known, when not nil, holds the speaker's row
+// already read (private chats do this for the forget cutoff); otherwise the
+// row is read from the memory scope of the conversation (memory.ScopeKeyOf),
+// which all panel chats of a bot share.
 func (o *Orchestrator) affinityDirective(ctx context.Context, task store.TaskRecord, pol conloomapi.GroupPolicy,
-	known map[string]store.MemberMemory, mode conloomapi.ContentMode) string {
+	known map[string]store.MemberMemory, mode conloomapi.ContentMode, side *conloomapi.PersonaIntimacy) string {
 	if !pol.Memory.Enabled || !pol.Concurrency.AllowLongRequests || !pol.Memory.Affinity {
 		return ""
 	}
 	m, ok := known[task.ActorPlatformUserID]
 	if !ok {
-		rows, err := o.st.GetMemberMemories(ctx, task.ConversationKey, []string{task.ActorPlatformUserID})
+		rows, err := o.st.GetMemberMemories(ctx, memory.ScopeKeyOf(task.ConversationKey), []string{task.ActorPlatformUserID})
 		if err != nil {
 			o.log.Warn("load affinity for relationship guidance failed", "task_id", task.ID,
 				"conversation", task.ConversationKey, "error", err)
@@ -148,7 +153,15 @@ func (o *Orchestrator) affinityDirective(ctx context.Context, task store.TaskRec
 	if m.Affinity == nil {
 		return ""
 	}
-	return CopyDirectiveAffinity(memory.TierName(*m.Affinity), mode == conloomapi.ContentOpen)
+	open := mode == conloomapi.ContentOpen
+	hint := CopyDirectiveAffinity(memory.TierName(*m.Affinity), open)
+	if !open || side == nil {
+		return hint
+	}
+	if s := CopyIntimacySide(side.LevelAt(memory.TierIndex(*m.Affinity)), *side); s != "" {
+		hint += "\n" + s
+	}
+	return hint
 }
 
 // injectPeople returns the task's speaker, then the member the current

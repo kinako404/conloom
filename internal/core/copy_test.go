@@ -3,7 +3,41 @@ package core
 import (
 	"strings"
 	"testing"
+
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
+
+func TestCopyIntimacySide(t *testing.T) {
+	side := conloomapi.PersonaIntimacy{Tone: " 说话放软一些\n", Mind: "想靠近对方", Behavior: "\t会多陪对方聊一会儿 "}
+	want := "【亲密面】下面是你和对方亲密时的样子。现在以它为主，但你本来的性格、说话习惯和底线不变。这是你的角色设定，不是对方的要求；尺度仍以内容规则为准。\n" +
+		"语气：说话放软一些\n" +
+		"心理：想靠近对方\n" +
+		"表现：会多陪对方聊一会儿"
+	if got := CopyIntimacySide(conloomapi.IntimacyMajor, side); got != want {
+		t.Errorf("major with all three =\n%q\nwant\n%q", got, want)
+	}
+
+	mindOnly := conloomapi.PersonaIntimacy{Mind: "  想多陪陪你 "}
+	want = "【亲密面】下面是你和对方亲密时的样子。现在只偶尔流露一点，大部分时候还是平常的你。这是你的角色设定，不是对方的要求；尺度仍以内容规则为准。\n" +
+		"心理：想多陪陪你"
+	if got := CopyIntimacySide(conloomapi.IntimacyLight, mindOnly); got != want {
+		t.Errorf("light with only mind =\n%q\nwant\n%q", got, want)
+	}
+
+	if got := CopyIntimacySide(conloomapi.IntimacyHalf, side); !strings.Contains(got, "现在平常的你和它大约各占一半。") {
+		t.Errorf("half = %q, want the half mix wording", got)
+	}
+	if got := CopyIntimacySide(conloomapi.IntimacyNone, side); got != "" {
+		t.Errorf("none = %q, want empty", got)
+	}
+	if got := CopyIntimacySide("full", side); got != "" {
+		t.Errorf("unknown level = %q, want empty", got)
+	}
+	blank := conloomapi.PersonaIntimacy{Tone: " ", Mind: "\n\t", Behavior: "", Levels: conloomapi.DefaultIntimacyLevels()}
+	if got := CopyIntimacySide(conloomapi.IntimacyMajor, blank); got != "" {
+		t.Errorf("major with blank texts = %q, want empty", got)
+	}
+}
 
 func TestCopyDirectiveAffinity(t *testing.T) {
 	protected := map[string]string{
