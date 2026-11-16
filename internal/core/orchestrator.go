@@ -550,7 +550,10 @@ func (o *Orchestrator) dispatch(ctx context.Context, s *submission, d Decision, 
 		}
 		addressed := d.Trigger == conloomapi.TriggerMention || d.Trigger == conloomapi.TriggerReply
 		resp, err := o.admitWith(ctx, s, AdmitNew, d.Trigger, MergeOptions{Addressed: addressed}, nil)
-		if errors.Is(err, ErrQueueFull) {
+		switch {
+		case errors.Is(err, errPaused):
+			return o.observeOnly(ctx, s, conloomapi.SuppressedPaused)
+		case errors.Is(err, ErrQueueFull):
 			return o.observeOnly(ctx, s, conloomapi.SuppressedQueueFull)
 		}
 		return resp, err
@@ -579,8 +582,13 @@ func endsTurn(command string) bool {
 	return false
 }
 
-// errRateLimited stops a new turn of a sender over the per-user rate limit.
-var errRateLimited = errors.New("core: sender is rate limited")
+// errRateLimited stops a new turn of a sender over the per-user rate limit;
+// errPaused a new task of a conversation paused after its message's policy
+// was read (see admitWith).
+var (
+	errRateLimited = errors.New("core: sender is rate limited")
+	errPaused      = errors.New("core: conversation is paused")
+)
 
 // submitTurn admits a session participant's message into their turn: their
 // pending task absorbs it, or else a continuation task starts whose merge
@@ -603,6 +611,8 @@ func (o *Orchestrator) submitTurn(ctx context.Context, s *submission, pol conloo
 		return o.limiter.Allow(s.convKey+":"+s.ev.Actor.PlatformUserID, pol.Reply.UserRateLimitPerMinute, s.now)
 	})
 	switch {
+	case errors.Is(err, errPaused):
+		return o.observeOnly(ctx, s, conloomapi.SuppressedPaused)
 	case errors.Is(err, errRateLimited):
 		return o.observeOnly(ctx, s, conloomapi.SuppressedRateLimited)
 	case errors.Is(err, ErrQueueFull):
@@ -638,6 +648,8 @@ func (o *Orchestrator) submitPrivate(ctx context.Context, s *submission, trigger
 		return o.limiter.Allow(s.convKey+":"+s.ev.Actor.PlatformUserID, pol.Reply.UserRateLimitPerMinute, s.now)
 	})
 	switch {
+	case errors.Is(err, errPaused):
+		return o.observeOnly(ctx, s, conloomapi.SuppressedPaused)
 	case errors.Is(err, errRateLimited):
 		return o.observeOnly(ctx, s, conloomapi.SuppressedRateLimited)
 	case errors.Is(err, ErrQueueFull):
@@ -899,17 +911,29 @@ func (o *Orchestrator) admit(ctx context.Context, s *submission, mode AdmitMode,
 	return o.admitWith(ctx, s, mode, trigger, MergeOptions{}, nil)
 }
 
-// admitWith is admit with the merge window opts for a new task. A non-nil
-// allowNew is asked once before a new task is stored or a task superseded;
-// if it refuses, nothing is stored and admitWith returns errRateLimited. With
-// opts.Interrupt a new task may supersede another (see supersede); if that is
-// refused, the other task's unsent reply parts are cancelled once the new
-// task is stored (see cancelUnsentParts).
+// admitWith is admit with the merge window opts for a new task. A new task
+// of a conversation paused by then is refused with errPaused and nothing is
+// stored: the policy is read again under the scheduler's lock, so a task
+// admitted after a pause's cancelActive took its snapshot never waits there
+// for the resume. A non-nil allowNew is then asked once before a new task is
+// stored or a task superseded; if it refuses, nothing is stored and admitWith
+// returns errRateLimited. With opts.Interrupt a new task may supersede another
+// (see supersede); if that is refused, the other task's unsent reply parts are
+// cancelled once the new task is stored (see cancelUnsentParts).
 func (o *Orchestrator) admitWith(ctx context.Context, s *submission, mode AdmitMode, trigger string, opts MergeOptions, allowNew func() bool) (conloomapi.EventAccepted, error) {
 	var resp conloomapi.EventAccepted
 	var allowed bool
 	var refused string
 	_, err := o.sched.AdmitWith(s.convKey, s.ev.Actor.PlatformUserID, s.ev.Message.ID, mode, opts, func(plan AdmitPlan) error {
+		if plan.NewTaskID != "" {
+			pv, err := o.policies.Current(ctx, s.convKey)
+			if err != nil {
+				return err
+			}
+			if pv.Policy.Concurrency.MaxInteractiveRequests == 0 {
+				return errPaused
+			}
+		}
 		if plan.NewTaskID != "" && allowNew != nil && !allowed {
 			if !allowNew() {
 				return errRateLimited

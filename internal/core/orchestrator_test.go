@@ -177,6 +177,18 @@ type hookStore struct {
 	failSetStatus atomic.Bool
 	// setStatus, when set, runs SetTaskStatus; set stores the status.
 	setStatus func(taskID, status string, set func() error) error
+	// beforeGetMessage, when set, runs before GetMessage loads a message.
+	beforeGetMessage func(id string)
+}
+
+func (h *hookStore) GetMessage(ctx context.Context, botID, id string) (store.MessageRecord, error) {
+	h.mu.Lock()
+	fn := h.beforeGetMessage
+	h.mu.Unlock()
+	if fn != nil {
+		fn(id)
+	}
+	return h.Store.GetMessage(ctx, botID, id)
 }
 
 func (h *hookStore) SetTaskStatus(ctx context.Context, taskID, status string) error {
@@ -829,6 +841,45 @@ func TestSubmit_PausedObserves(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if n := env.short.Calls(); n != 0 {
 		t.Fatalf("model calls = %d, want 0", n)
+	}
+}
+
+func TestSubmit_PausedWhileAcceptedObserves(t *testing.T) {
+	for _, private := range []bool{false, true} {
+		t.Run("private="+strconv.FormatBool(private), func(t *testing.T) {
+			env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) { c.Bots[0].PrivateChat = "all" }})
+			ctx := context.Background()
+			ev := env.groupEvent("20001", "你好", mentionBot, replyTo("msg_earlier"))
+			if private {
+				ev = env.event(conloomapi.ConvPrivate, "20001", "20001", "你好", replyTo("msg_earlier"))
+			}
+			convKey := store.ConversationKey(testBot, "qq", ev.Conversation.Type, ev.Conversation.ID)
+			// The conversation is paused after the message's policy was read,
+			// before its task is admitted.
+			env.hooks.mu.Lock()
+			env.hooks.beforeGetMessage = func(id string) {
+				if id == "msg_earlier" {
+					if _, err := env.policies.Pause(ctx, convKey, "test"); err != nil {
+						t.Errorf("Pause: %v", err)
+					}
+				}
+			}
+			env.hooks.mu.Unlock()
+			resp := env.submit(t, ev)
+			if resp.Disposition != conloomapi.DispositionObserve || resp.SuppressedReason != conloomapi.SuppressedPaused || resp.TaskID != "" {
+				t.Fatalf("response = %+v, want observe/paused", resp)
+			}
+			if active := env.o.sched.Active(convKey); len(active) != 0 {
+				t.Fatalf("active tasks while paused = %+v", active)
+			}
+			if _, err := env.policies.Resume(ctx, convKey, "test"); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(100 * time.Millisecond)
+			if n := env.short.Calls(); n != 0 {
+				t.Fatalf("model calls after resume = %d, want 0", n)
+			}
+		})
 	}
 }
 
