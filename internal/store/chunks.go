@@ -38,7 +38,8 @@ type ChunkRebuild struct {
 // ChunkWrite stores chunks of one conversation, all made by Model. It applies
 // only while the forget stamp of the conversation's memory scope (see
 // MemoryScopeKey) is still ForgetStamp, so that chunks cut before a member
-// was forgotten, in any chat of the scope, are never stored. Each of Rebuilt
+// was forgotten, in any chat of the scope, are never stored, and while the
+// conversation has not been deleted. Each of Rebuilt
 // first has the Model chunks within its range deleted and is then removed
 // from the queue. A CursorSeq > 0 moves the conversation's cursor forward to
 // it.

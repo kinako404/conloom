@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -381,6 +382,84 @@ func TestMigrations_OutboxTaskIndex(t *testing.T) {
 	}
 	if detail != "SEARCH outbox_actions USING INDEX outbox_actions_task (task_id=?)" {
 		t.Fatalf("query plan = %q, want search using outbox_actions_task", detail)
+	}
+}
+
+// queryPlan returns the steps of the plan SQLite makes for query.
+func queryPlan(t *testing.T, db *DB, query string, args ...any) []string {
+	t.Helper()
+	rows, err := db.r.Query(`EXPLAIN QUERY PLAN `+query, args...)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	var details []string
+	for rows.Next() {
+		var detail string
+		if err := rows.Scan(new(int), new(int), new(int), &detail); err != nil {
+			t.Fatal(err)
+		}
+		details = append(details, detail)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	return details
+}
+
+// LastReplyTask runs for every private message and ExpireOutbox every 30
+// seconds on the writer, so neither may read through all of the outbox.
+func TestOutbox_FrequentQueriesUseIndexes(t *testing.T) {
+	db := newTestDB(t)
+	now := fmtTime(time.Now())
+	plan := queryPlan(t, db, lastReplyTaskQuery, testBot, testConvKey, "20001")
+	if want := "SEARCH o USING INDEX outbox_actions_conversation (conversation_key=?)"; !slices.Contains(plan, want) {
+		t.Errorf("LastReplyTask plan = %q, want a step %q", plan, want)
+	}
+	for _, step := range plan {
+		if strings.Contains(step, "TEMP B-TREE") {
+			t.Errorf("LastReplyTask plan = %q, want no sorting", plan)
+		}
+	}
+	plan = queryPlan(t, db, expireOutboxQuery, store.OutboxExpired, now)
+	if want := []string{"SEARCH outbox_actions USING INDEX outbox_actions_live (expires_at<?)"}; !slices.Equal(plan, want) {
+		t.Errorf("ExpireOutbox plan = %q, want %q", plan, want)
+	}
+}
+
+func TestMigration0018_IndexesExistingActions(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "conloom.db")
+	old, err := open(ctx, path, migrationsUpTo(t, 17))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	past := convAction("pending_past", testConvKey, now)
+	past.ExpiresAt = now.Add(-time.Second)
+	leased := convAction("leased_past", testConvKeyB, now)
+	leased.Status, leased.ExpiresAt = store.OutboxLeased, now.Add(-time.Second)
+	acked := convAction("acked_past", testConvKey, now)
+	acked.Status, acked.ExpiresAt = store.OutboxAcked, now.Add(-time.Second)
+	insertActions(t, old, past, leased, convAction("pending_future", testConvKey, now), acked)
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if n, err := db.ExpireOutbox(ctx, now); err != nil || n != 2 {
+		t.Fatalf("ExpireOutbox after migrating = %d, %v; want 2", n, err)
+	}
+	for id, want := range map[string]string{
+		"pending_past": store.OutboxExpired, "leased_past": store.OutboxExpired,
+		"pending_future": store.OutboxPending, "acked_past": store.OutboxAcked,
+	} {
+		if status, _ := outboxStatus(t, db, id); status != want {
+			t.Errorf("%s = %s, want %s", id, status, want)
+		}
 	}
 }
 

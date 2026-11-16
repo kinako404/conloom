@@ -32,12 +32,16 @@ func (db *DB) GetGroupMemory(ctx context.Context, convKey string) (store.GroupMe
 	return g, nil
 }
 
-// PutGroupMemory stores g, replacing the conversation's row; UpdatedAt is
-// stored as now.
+// PutGroupMemory stores g as the conversation's row if it has none, and
+// otherwise only moves the stored cursor forward to g.CursorSeq, keeping the
+// rest; UpdatedAt is stored as now. A row read before a forget
+// (ForgetPrivateScope) committed thus cannot bring back the cleared summary
+// or the cursor from before it.
 func (db *DB) PutGroupMemory(ctx context.Context, g store.GroupMemory) error {
-	return db.inTx(ctx, func(tx *sql.Tx) error {
-		return putGroupMemory(ctx, tx, g, "excluded.cursor_seq")
-	})
+	_, err := db.w.ExecContext(ctx, `INSERT INTO group_memory (`+groupMemoryCols+`) VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (conversation_key) DO UPDATE SET cursor_seq = `+cursorForward+`, updated_at = excluded.updated_at`,
+		g.ConversationKey, g.Summary, g.CursorSeq, fmtTime(g.LastRunAt), g.LastError, fmtTime(time.Now()))
+	return err
 }
 
 // putGroupMemory upserts g, setting the cursor of an existing row to cursorExpr.
