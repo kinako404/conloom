@@ -382,6 +382,54 @@ func TestWake_StatusReturnWithoutStatusIsSkipped(t *testing.T) {
 	}
 }
 
+func TestWake_StatusReturnRecheckedBeforeSending(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		// status is the task's: a pause cancels it at once.
+		status string
+		change func(t *testing.T, env *testEnv, until time.Time)
+	}{
+		{"status cleared", conloomapi.TaskSucceeded, func(t *testing.T, env *testEnv, _ time.Time) {
+			if err := env.o.Autonomy().ClearStatus(context.Background(), privateConvKey, "panel:admin"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"proactive replies off", conloomapi.TaskSucceeded, func(t *testing.T, env *testEnv, _ time.Time) {
+			if _, _, err := env.policies.SetProactiveEnabled(context.Background(), privateConvKey, false, "test"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"chat paused", conloomapi.TaskCancelled, func(t *testing.T, env *testEnv, _ time.Time) {
+			if _, err := env.policies.Pause(context.Background(), privateConvKey, "test"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"newer status", conloomapi.TaskSucceeded, func(t *testing.T, env *testEnv, until time.Time) {
+			env.setWakeStatus(t, "散步", until, until.Add(time.Hour))
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			model := newGatedModel()
+			env, clock := newWakeEnv(t, model.handle, nil, nil)
+			t.Cleanup(model.open)
+			env.seedPrivateMessage(t, clock, "我去洗个澡")
+			until := clock.now().Add(20 * time.Minute)
+			timer := env.setWakeStatus(t, "洗澡", clock.now(), until)
+			clock.set(until)
+
+			id := env.startWake(t, timer)
+			waitUntil(t, "model called", func() bool { return model.calls.Load() == 1 })
+			c.change(t, env, until)
+			model.open()
+			task := env.waitWake(t, id)
+			if len(task.Actions) != 0 || task.Status != c.status ||
+				c.status == conloomapi.TaskSucceeded && task.Meta.ReviewResult != reviewResultSkipped {
+				t.Fatalf("status return = %+v, want it %s without a reply", task, c.status)
+			}
+		})
+	}
+}
+
 func TestWake_SkipSendsNothing(t *testing.T) {
 	env, clock := newWakeEnv(t, answer(SkipMarker), nil, nil)
 	env.seedPrivateMessage(t, clock, "晚安")
