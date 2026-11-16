@@ -267,7 +267,7 @@ panel:
 | `GET persona-templates` | 人设模板目录 `templates`，按名字排序。每项 `name`、`source`（`db` 或 `builtin`）、`persona_name`、`character_name`、`appearance_image`（没有参考图时为空字符串）、`users`（运行时用它作默认模板的 bot，每项 `id`、`name`、`source`，没有时为空列表）、`updated_by` 和 `updated_at`（最后写入的人和时间，内置的 `default` 为空字符串和 `null`） |
 | `GET persona-templates/{name}` | 单个模板：列表里的字段，加上整份人设 `persona`；不存在返回 404 |
 | `GET persona-templates/{name}/export` | 下载这个模板的导出文件 `persona-<模板名>.json`，不存在返回 404；写审计 `persona.template.export`（`HEAD` 只返回响应头，不写审计）。见 [人设模板和外观参考图](#人设模板和外观参考图) |
-| `GET persona-templates/export` | 下载全部模板的导出文件 `persona-templates-<YYYYMMDD>.json`（`server.timezone` 的当地日期）；写审计 `persona.template.export`（`HEAD` 只返回响应头，不写审计） |
+| `GET persona-templates/export` | 下载全部模板的导出文件 `persona-templates-<YYYYMMDD>.json`（`server.timezone` 的当地日期）；写审计 `persona.template.export`（`HEAD` 只返回响应头，不写审计）。文件一个模板一个模板地写出，同一时间只有一张参考图在内存里；已经开始写之后读取某个模板失败时，连接直接断开，下载失败，不会留下半截文件 |
 | `GET persona-images/{id}?size=` | 图片本身：`size` 为 `reply`（默认，缩小图，`image/jpeg`）或 `original`（原图，`image/png` 或 `image/jpeg`）；其他值返回 400，图片不存在返回 404 |
 | `GET tasks?status=&bot=&conversation=&before=&limit=` | 任务列表 |
 | `GET tasks/{id}` | 任务详情：任务、meta、动作、模型调用 |

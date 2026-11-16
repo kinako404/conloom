@@ -178,38 +178,86 @@ func (s *Server) exportAllTemplates(w http.ResponseWriter, r *http.Request, sess
 	s.exportTemplates(w, r, sess, nil, "", "persona-templates-"+s.now().In(s.location()).Format("20060102")+".json")
 }
 
-// exportTemplates answers the persona templates names, all of them when
-// none, as an exchange file (see persona.Service.Export) to save as
-// filename, and audits the export for target with the names exported. HEAD
-// only answers the headers, or 404 for an unknown name: it neither builds the
-// file nor audits an export.
+// exportTemplates answers the persona templates names, all of them by name
+// when none, as an exchange file (see persona.Service.Export) to save as
+// filename, and audits the export for target with the names exported. An
+// unknown name is 404. The file is the exchange file indented by two spaces,
+// written one template at a time so that at most one appearance image is in
+// memory. The first template is read before anything is written, so that its
+// failure is an error response; a template that fails after the file has
+// started aborts the response. HEAD only answers the headers, or 404 for an
+// unknown name: it neither builds the file nor audits an export.
 func (s *Server) exportTemplates(w http.ResponseWriter, r *http.Request, sess *Session, names []string, target, filename string) {
-	if r.Method == http.MethodHead {
-		for _, name := range names {
-			if _, ok := s.d.Personas.Template(name); !ok {
-				s.writeError(w, r, http.StatusNotFound, conloomapi.CodeNotFound, "not found")
-				return
-			}
+	if names == nil {
+		for _, info := range s.d.Personas.Templates() {
+			names = append(names, info.Name)
 		}
+	}
+	for _, name := range names {
+		if _, ok := s.d.Personas.Template(name); !ok {
+			s.writeError(w, r, http.StatusNotFound, conloomapi.CodeNotFound, "not found")
+			return
+		}
+	}
+	if r.Method == http.MethodHead {
 		writeDownloadHeaders(w, filename)
 		return
 	}
-	f, err := s.d.Personas.Export(r.Context(), names)
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	exported := make([]string, len(f.Templates))
-	for i, t := range f.Templates {
-		exported[i] = t.Name
+	ctx := r.Context()
+	var first []byte
+	if len(names) > 0 {
+		var err error
+		if first, err = s.exportedTemplate(ctx, names[0]); err != nil {
+			s.fail(w, r, err)
+			return
+		}
 	}
 	s.audit(r, sess, "", "persona.template.export", target, struct {
 		Templates []string `json:"templates"`
-	}{exported})
+	}{names})
 	writeDownloadHeaders(w, filename)
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(f)
+	format, _ := json.Marshal(persona.ExchangeFormat)
+	exportedAt, _ := json.Marshal(s.now().UTC().Truncate(time.Second))
+	if _, err := fmt.Fprintf(w, "{\n  \"format\": %s,\n  \"version\": %d,\n  \"exported_at\": %s,\n  \"templates\": [",
+		format, persona.ExchangeVersion, exportedAt); err != nil {
+		return
+	}
+	for i, name := range names {
+		data, sep := first, "\n    "
+		first = nil
+		if i > 0 {
+			var err error
+			if data, err = s.exportedTemplate(ctx, name); err != nil {
+				if ctx.Err() == nil {
+					s.log.Error("persona template export aborted", "trace_id", traceID(ctx), "template", name, "error", err)
+				}
+				panic(http.ErrAbortHandler)
+			}
+			sep = ",\n    "
+		}
+		if _, err := io.WriteString(w, sep); err != nil {
+			return
+		}
+		if _, err := w.Write(data); err != nil {
+			return
+		}
+	}
+	end := "\n  ]\n}\n"
+	if len(names) == 0 {
+		end = "]\n}\n"
+	}
+	_, _ = io.WriteString(w, end)
+}
+
+// exportedTemplate returns the persona template name as Export exports it,
+// with its appearance image, as JSON indented as an item of the templates of
+// the exchange file exportTemplates writes.
+func (s *Server) exportedTemplate(ctx context.Context, name string) ([]byte, error) {
+	f, err := s.d.Personas.Export(ctx, []string{name})
+	if err != nil {
+		return nil, err
+	}
+	return json.MarshalIndent(f.Templates[0], "    ", "  ")
 }
 
 // writeDownloadHeaders answers 200 with the headers of a JSON file to save as
