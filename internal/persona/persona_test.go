@@ -839,6 +839,48 @@ func TestSystemPrompt_BarsNotRendered(t *testing.T) {
 	}
 }
 
+func TestRender_IgnoresIntimacy(t *testing.T) {
+	ctx := context.Background()
+	privateKey := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "20001")
+	intimacy := &conloomapi.PersonaIntimacy{
+		Tone: "说话放软一些", Mind: "想靠近对方", Behavior: "会多陪对方聊一会儿",
+		Levels: []string{conloomapi.IntimacyNone, conloomapi.IntimacyLight, conloomapi.IntimacyHalf, conloomapi.IntimacyMajor, conloomapi.IntimacyMajor},
+	}
+	adult := conloomapi.DefaultPersona()
+	adult.Description = "设定"
+	adult.Adult, adult.ContentRules = true, testContentRules
+	for _, base := range []conloomapi.PersonaDoc{conloomapi.DefaultPersona(), adult} {
+		withIntimacy := base
+		withIntimacy.Intimacy = intimacy
+		if err := Validate(withIntimacy); err != nil {
+			t.Fatalf("Validate: %v", err)
+		}
+		if got, want := Render(withIntimacy), Render(base); got != want {
+			t.Errorf("adult=%v: Render with an intimacy side =\n%q\nwant\n%q", base.Adult, got, want)
+		}
+		for _, key := range []string{testConvKey, privateKey} {
+			plain := newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": base})
+			intimate := newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": withIntimacy})
+			want, err := plain.SystemPrompt(ctx, key, "t", "织语")
+			if err != nil {
+				t.Fatalf("SystemPrompt without an intimacy side: %v", err)
+			}
+			got, err := intimate.SystemPrompt(ctx, key, "t", "织语")
+			if err != nil {
+				t.Fatalf("SystemPrompt with an intimacy side: %v", err)
+			}
+			if got != want {
+				t.Errorf("adult=%v in %s: prompt with an intimacy side =\n%+v\nwant\n%+v", base.Adult, key, got, want)
+			}
+			for _, text := range []string{intimacy.Tone, intimacy.Mind, intimacy.Behavior} {
+				if strings.Contains(got.Text, text) {
+					t.Errorf("adult=%v in %s: prompt contains %q", base.Adult, key, text)
+				}
+			}
+		}
+	}
+}
+
 func TestService_SystemPromptStoredMinorAdultIsProtected(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
@@ -955,6 +997,63 @@ func TestUpdate_RejectsMinorAdult(t *testing.T) {
 	minor.Adult = false
 	if pv, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Persona: &minor}, "29999"); err != nil || !pv.Persona.Minor {
 		t.Errorf("minor persona = %+v, %v; want accepted", pv, err)
+	}
+}
+
+func TestUpdate_RejectsMinorIntimacy(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := newServiceWith(t, st, nil)
+	if _, err := svc.Current(ctx, testConvKey, "default"); err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	minor := conloomapi.DefaultPersona()
+	minor.Minor = true
+	minor.Intimacy = &conloomapi.PersonaIntimacy{Mind: "想靠近对方"}
+	stored, err := st.AppendPersonaVersion(ctx, store.PersonaVersion{
+		ConversationKey: testConvKey, TemplateName: "default", Persona: minor,
+		Reason: "edited in the database", UpdatedBy: "system",
+	})
+	if err != nil {
+		t.Fatalf("AppendPersonaVersion: %v", err)
+	}
+
+	const want = "a minor persona cannot have an intimacy side"
+	for _, c := range []struct {
+		name string
+		put  conloomapi.PersonaPut
+	}{
+		{"persona", conloomapi.PersonaPut{Persona: &minor}},
+		{"rollback", conloomapi.PersonaPut{RollbackTo: &stored.Version}},
+	} {
+		_, err := svc.Update(ctx, testConvKey, "default", c.put, "29999")
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v, want ErrInvalid containing %q", c.name, err, want)
+		}
+	}
+	if after, _ := st.LatestPersona(ctx, testConvKey); after.Version != stored.Version {
+		t.Errorf("rejected updates appended versions: latest = %d, want %d", after.Version, stored.Version)
+	}
+	if err := svc.PutTemplate(ctx, "young", minor, "panel:admin"); !errors.Is(err, ErrInvalidTemplate) || !strings.Contains(err.Error(), want) {
+		t.Errorf("PutTemplate: err = %v, want ErrInvalidTemplate containing %q", err, want)
+	}
+	if _, ok := svc.Template("young"); ok {
+		t.Error("rejected template is in the catalog")
+	}
+
+	levelsOnly := minor
+	levelsOnly.Intimacy = &conloomapi.PersonaIntimacy{Levels: conloomapi.DefaultIntimacyLevels()}
+	if _, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Persona: &levelsOnly}, "29999"); err != nil {
+		t.Errorf("minor persona with levels only: %v", err)
+	}
+	neither := minor
+	neither.Minor = false
+	if pv, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Persona: &neither}, "29999"); err != nil ||
+		!reflect.DeepEqual(pv.Persona.Intimacy, neither.Intimacy) {
+		t.Errorf("persona neither adult nor minor with an intimacy side = %+v, %v; want accepted", pv, err)
+	}
+	if latest, err := st.LatestPersona(ctx, testConvKey); err != nil || !reflect.DeepEqual(latest.Persona.Intimacy, neither.Intimacy) {
+		t.Errorf("stored intimacy side = %+v, %v; want %+v", latest.Persona.Intimacy, err, neither.Intimacy)
 	}
 }
 

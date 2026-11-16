@@ -18,7 +18,10 @@ import (
 // request carries the image only when AppearanceImageSkip is not set and the
 // model it is routed to declares image support. Adult, unless Minor is also set,
 // makes ContentOpen possible (see ModeFor); ContentRules and MemoryRules only
-// take effect in it. Bars, also optional, define the hidden bars of private
+// take effect in it. Intimacy, also optional, is the intimacy side (see
+// PersonaIntimacy): it too only takes effect in ContentOpen, it never enters
+// the system prompt, and a minor persona cannot have one (see
+// ValidateContent). Bars, also optional, define the hidden bars of private
 // chats (see EffectiveBars); they never enter the system prompt.
 type PersonaDoc struct {
 	PersonaName         string           `json:"persona_name" yaml:"persona_name"`
@@ -36,6 +39,7 @@ type PersonaDoc struct {
 	Adult               bool             `json:"adult,omitempty" yaml:"adult,omitempty"`
 	Minor               bool             `json:"minor,omitempty" yaml:"minor,omitempty"`
 	ContentRules        string           `json:"content_rules,omitempty" yaml:"content_rules,omitempty"`
+	Intimacy            *PersonaIntimacy `json:"intimacy,omitempty" yaml:"intimacy,omitempty"`
 	MemoryRules         string           `json:"memory_rules,omitempty" yaml:"memory_rules,omitempty"`
 	Bars                []PersonaBar     `json:"bars,omitempty" yaml:"bars,omitempty"`
 }
@@ -62,7 +66,58 @@ type PersonaBar struct {
 	Description string   `json:"description,omitempty" yaml:"description,omitempty"`
 }
 
-// Persona text limits, counted in runes.
+// PersonaIntimacy is a persona's intimacy side: how the character sounds
+// (Tone), feels (Mind) and acts (Behavior) when close to someone. Levels
+// says, for each affinity tier from the lowest, how much of it a reply mixes
+// in; omitted, it is DefaultIntimacyLevels. An intimacy side whose three
+// texts are all blank is no intimacy side (see Empty).
+type PersonaIntimacy struct {
+	Tone     string   `json:"tone,omitempty" yaml:"tone,omitempty"`
+	Mind     string   `json:"mind,omitempty" yaml:"mind,omitempty"`
+	Behavior string   `json:"behavior,omitempty" yaml:"behavior,omitempty"`
+	Levels   []string `json:"levels,omitempty" yaml:"levels,omitempty"`
+}
+
+// Values of PersonaIntimacy.Levels, from mixing in none of the intimacy side
+// to mixing in the most.
+const (
+	IntimacyNone  = "none"
+	IntimacyLight = "light"
+	IntimacyHalf  = "half"
+	IntimacyMajor = "major"
+)
+
+// intimacyLevels are the values of PersonaIntimacy.Levels in increasing order.
+var intimacyLevels = []string{IntimacyNone, IntimacyLight, IntimacyHalf, IntimacyMajor}
+
+// DefaultIntimacyLevels returns a new slice of the levels an intimacy side
+// without Levels uses, one per affinity tier from the lowest.
+func DefaultIntimacyLevels() []string {
+	return []string{IntimacyNone, IntimacyNone, IntimacyLight, IntimacyHalf, IntimacyMajor}
+}
+
+// Empty reports whether in is nil or its three texts are all blank.
+func (in *PersonaIntimacy) Empty() bool {
+	return in == nil ||
+		strings.TrimSpace(in.Tone) == "" && strings.TrimSpace(in.Mind) == "" && strings.TrimSpace(in.Behavior) == ""
+}
+
+// LevelAt returns the level of affinity tier tier, 0 being the lowest: from
+// Levels, or from DefaultIntimacyLevels when Levels is empty or in is nil.
+// A tier out of range is IntimacyNone.
+func (in *PersonaIntimacy) LevelAt(tier int) string {
+	levels := DefaultIntimacyLevels()
+	if in != nil && len(in.Levels) > 0 {
+		levels = in.Levels
+	}
+	if tier < 0 || tier >= len(levels) {
+		return IntimacyNone
+	}
+	return levels[tier]
+}
+
+// Persona text limits, counted in runes. MaxIntimacyRunes bounds the three
+// texts of an intimacy side together.
 const (
 	MaxCharacterNameRunes  = 20
 	MaxDescriptionRunes    = 2000
@@ -71,6 +126,7 @@ const (
 	MaxPersonaExamples     = 8
 	MaxExampleRunes        = 200
 	MaxContentRulesRunes   = 2000
+	MaxIntimacyRunes       = 800
 	MaxMemoryRulesRunes    = 1000
 	MaxPersonaBars         = 4
 	MaxBarNameRunes        = 6
@@ -259,6 +315,26 @@ func (p PersonaDoc) Validate() error {
 	maxRunes("speaking_style", p.SpeakingStyle, MaxSpeakingStyleRunes)
 	maxRunes("content_rules", p.ContentRules, MaxContentRulesRunes)
 	maxRunes("memory_rules", p.MemoryRules, MaxMemoryRulesRunes)
+	if in := p.Intimacy; in != nil {
+		total := 0
+		for _, text := range []string{in.Tone, in.Mind, in.Behavior} {
+			total += utf8.RuneCountInString(strings.TrimSpace(text))
+		}
+		if total > MaxIntimacyRunes {
+			fail("intimacy must be at most %d characters across tone, mind and behavior, got %d", MaxIntimacyRunes, total)
+		}
+		if n, tiers := len(in.Levels), len(DefaultIntimacyLevels()); n > 0 && n != tiers {
+			fail("intimacy.levels must have exactly %d items, got %d", tiers, n)
+		}
+		for i, level := range in.Levels {
+			switch rank := slices.Index(intimacyLevels, level); {
+			case rank < 0:
+				fail("intimacy.levels[%d] must be one of none|light|half|major, got %q", i, level)
+			case i > 0 && rank < slices.Index(intimacyLevels, in.Levels[i-1]):
+				fail("intimacy.levels[%d] must not be lower than intimacy.levels[%d], got %s after %s", i, i-1, level, in.Levels[i-1])
+			}
+		}
+	}
 	if n := len(p.Examples); n > MaxPersonaExamples {
 		fail("examples must have at most %d items, got %d", MaxPersonaExamples, n)
 	}

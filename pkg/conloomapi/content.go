@@ -21,10 +21,15 @@ func ModeFor(doc PersonaDoc, convType string) ContentMode {
 	return ContentProtected
 }
 
-// ValidateContent rejects a persona marked both minor and adult.
+// ValidateContent rejects a minor persona that is also adult or has an
+// intimacy side (see PersonaIntimacy.Empty), reporting both when both apply.
 func ValidateContent(doc PersonaDoc) error {
-	if doc.Adult && doc.Minor {
-		return errors.New("a minor persona cannot be adult")
+	var errs []error
+	if doc.Minor && doc.Adult {
+		errs = append(errs, errors.New("a minor persona cannot be adult"))
 	}
-	return nil
+	if doc.Minor && !doc.Intimacy.Empty() {
+		errs = append(errs, errors.New("a minor persona cannot have an intimacy side"))
+	}
+	return errors.Join(errs...)
 }

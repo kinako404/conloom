@@ -393,3 +393,153 @@ func TestPersona_GenderJSONAndYAML(t *testing.T) {
 		t.Errorf("YAML gender = %q, want %q", doc.Gender, GenderMale)
 	}
 }
+
+func TestPersonaIntimacy_LevelAtDefaults(t *testing.T) {
+	in := &PersonaIntimacy{Tone: "x"}
+	for tier, want := range []string{IntimacyNone, IntimacyNone, IntimacyLight, IntimacyHalf, IntimacyMajor} {
+		if got := in.LevelAt(tier); got != want {
+			t.Errorf("LevelAt(%d) = %q, want %q", tier, got, want)
+		}
+	}
+	for _, tier := range []int{5, -1} {
+		if got := in.LevelAt(tier); got != IntimacyNone {
+			t.Errorf("LevelAt(%d) = %q, want none", tier, got)
+		}
+	}
+	custom := &PersonaIntimacy{Levels: []string{IntimacyLight, IntimacyHalf, IntimacyHalf, IntimacyMajor, IntimacyMajor}}
+	if got := custom.LevelAt(0); got != IntimacyLight {
+		t.Errorf("custom LevelAt(0) = %q, want light", got)
+	}
+	if got := (*PersonaIntimacy)(nil).LevelAt(4); got != IntimacyMajor {
+		t.Errorf("nil LevelAt(4) = %q, want the default major", got)
+	}
+
+	if !(*PersonaIntimacy)(nil).Empty() {
+		t.Error("nil Empty() = false, want true")
+	}
+	if !(&PersonaIntimacy{Tone: "  \n"}).Empty() {
+		t.Error(`{Tone: "  \n"} Empty() = false, want true`)
+	}
+	if !(&PersonaIntimacy{Levels: DefaultIntimacyLevels()}).Empty() {
+		t.Error("levels only: Empty() = false, want true")
+	}
+	if (&PersonaIntimacy{Behavior: " 牵手 "}).Empty() {
+		t.Error("behavior set: Empty() = true, want false")
+	}
+
+	d := DefaultIntimacyLevels()
+	d[0] = IntimacyMajor
+	if got := DefaultIntimacyLevels(); got[0] != IntimacyNone {
+		t.Errorf("DefaultIntimacyLevels after changing a returned slice = %v, want a fresh slice", got)
+	}
+}
+
+func TestPersonaDocValidate_Intimacy(t *testing.T) {
+	levels := func(l ...string) *PersonaIntimacy { return &PersonaIntimacy{Tone: "说话放软一些", Levels: l} }
+	tests := []struct {
+		name     string
+		intimacy *PersonaIntimacy
+		want     []string
+	}{
+		{"nil", nil, nil},
+		{"800 runes", &PersonaIntimacy{
+			Tone:     " " + strings.Repeat("语", 300) + "\n",
+			Mind:     strings.Repeat("心", 150) + "\n" + strings.Repeat("想", 149),
+			Behavior: "\t" + strings.Repeat("行", 200) + "  ",
+		}, nil},
+		{"801 runes", &PersonaIntimacy{
+			Tone:     strings.Repeat("语", 300),
+			Mind:     strings.Repeat("心", 300),
+			Behavior: " " + strings.Repeat("行", 201) + "\n",
+		}, []string{"intimacy", "800", "got 801"}},
+		{"levels omitted", levels(), nil},
+		{"levels all none", levels(IntimacyNone, IntimacyNone, IntimacyNone, IntimacyNone, IntimacyNone), nil},
+		{"levels all major", levels(IntimacyMajor, IntimacyMajor, IntimacyMajor, IntimacyMajor, IntimacyMajor), nil},
+		{"levels default", levels(DefaultIntimacyLevels()...), nil},
+		{"levels only, texts empty", &PersonaIntimacy{Levels: DefaultIntimacyLevels()}, nil},
+		{"3 levels", levels(IntimacyNone, IntimacyLight, IntimacyHalf), []string{"intimacy.levels", "5", "got 3"}},
+		{"6 levels", levels(IntimacyNone, IntimacyNone, IntimacyLight, IntimacyHalf, IntimacyMajor, IntimacyMajor),
+			[]string{"intimacy.levels", "got 6"}},
+		{"unknown level", levels(IntimacyNone, IntimacyNone, IntimacyLight, IntimacyHalf, "full"),
+			[]string{"intimacy.levels[4]", `"full"`}},
+		{"empty level", levels(IntimacyNone, "", IntimacyLight, IntimacyHalf, IntimacyMajor), []string{"intimacy.levels[1]"}},
+		{"decreasing", levels(IntimacyNone, IntimacyLight, IntimacyNone, IntimacyHalf, IntimacyMajor), []string{"intimacy.levels[2]"}},
+		{"decreasing at the top", levels(IntimacyNone, IntimacyNone, IntimacyLight, IntimacyMajor, IntimacyHalf),
+			[]string{"intimacy.levels[4]"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := DefaultPersona()
+			p.Intimacy = tt.intimacy
+			err := p.Validate()
+			if len(tt.want) == 0 {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			for _, w := range tt.want {
+				if err == nil || !strings.Contains(err.Error(), w) {
+					t.Errorf("err = %v, want containing %q", err, w)
+				}
+			}
+		})
+	}
+
+	p := DefaultPersona()
+	p.Style.Warmth = 2
+	p.Intimacy = &PersonaIntimacy{Mind: strings.Repeat("心", 801), Levels: []string{IntimacyMajor, "full", IntimacyNone}}
+	err := p.Validate()
+	for _, want := range []string{"style.warmth", "intimacy must be", "intimacy.levels must", "intimacy.levels[1]"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
+func TestPersonaIntimacy_JSONAndYAML(t *testing.T) {
+	b, err := json.Marshal(DefaultPersona())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "intimacy") {
+		t.Errorf("persona without an intimacy side encodes an intimacy key: %s", b)
+	}
+
+	p := DefaultPersona()
+	p.ContentRules = "规则"
+	p.Intimacy = &PersonaIntimacy{Tone: "说话放软一些", Levels: DefaultIntimacyLevels()}
+	b, err = json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"content_rules":"规则","intimacy":{"tone":"说话放软一些","levels":["none","none","light","half","major"]}`; !strings.Contains(string(b), want) {
+		t.Errorf("JSON %s missing %s", b, want)
+	}
+	var back PersonaDoc
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(back, p) {
+		t.Errorf("JSON round trip = %+v, want %+v", back, p)
+	}
+
+	var doc PersonaDoc
+	src := `
+persona_name: 测试人格
+intimacy:
+  tone: 说话放软一些
+  mind: |
+    想靠近对方
+  behavior: 会多陪对方聊一会儿
+  levels: [none, light, light, half, major]
+`
+	if err := yaml.Unmarshal([]byte(src), &doc); err != nil {
+		t.Fatal(err)
+	}
+	want := &PersonaIntimacy{Tone: "说话放软一些", Mind: "想靠近对方\n", Behavior: "会多陪对方聊一会儿",
+		Levels: []string{IntimacyNone, IntimacyLight, IntimacyLight, IntimacyHalf, IntimacyMajor}}
+	if !reflect.DeepEqual(doc.Intimacy, want) {
+		t.Errorf("YAML intimacy = %+v, want %+v", doc.Intimacy, want)
+	}
+}

@@ -176,10 +176,11 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `adult` | 布尔，默认 `false` | 成年人设。与 `minor` 同时为 `true` 时报错 |
 | `minor` | 布尔，默认 `false` | 未成年角色。未成年或孩童化的角色要标上，标了就始终是保护模式 |
 | `content_rules` | ≤2000 字 | 内容规则，只在开放模式下生效：原文加入回复提示词；为空则不加 |
+| `intimacy` | 三段合计 ≤800 字；`levels` 正好 5 项、不递减 | 亲密面，好感度越高混进回复越多，只在开放模式下生效，见下面的“亲密面” |
 | `memory_rules` | ≤1000 字 | 记忆规则，只在开放模式下生效：替换记忆整理提示词的第 6 条；为空则省略这一条 |
 | `bars` | ≤4 条 | 私聊的隐藏状态条，见下面的“状态条” |
 
-`character_name`、`gender`、`description`、`appearance`、`speaking_style`、`examples`，`appearance_image`、`appearance_image_skip`，以及 `content_rules`、`memory_rules`、`bars`，都可以省略。字数按字符计（去掉首尾空白后），超出时面板、`PUT …/persona` 和旧配置的启动校验都会拒绝并指出字段；`appearance_image` 不为空又不是 64 位小写十六进制时、`gender` 不为空又不是 `female` 或 `male` 时同样拒绝。
+`character_name`、`gender`、`description`、`appearance`、`speaking_style`、`examples`，`appearance_image`、`appearance_image_skip`，以及 `content_rules`、`intimacy`、`memory_rules`、`bars`，都可以省略。字数按字符计（去掉首尾空白后），超出时面板、`PUT …/persona` 和旧配置的启动校验都会拒绝并指出字段；`appearance_image` 不为空又不是 64 位小写十六进制时、`gender` 不为空又不是 `female` 或 `male` 时同样拒绝。
 
 模板引用的 `appearance_image` 在保存时必须是已上传的图片。从旧配置文件导入的模板原样保留图片 ID，不检查图片是否存在：图还没上传时新会话照样复制这个 ID，回复时读不到图就记一条警告、不带图照常回复；`/persona use` 和面板、API 里的套用模板会因为图片不存在而失败（接口返回 400）。先在面板里上传这张图（同一张图得到同一个 ID）。
 
@@ -212,11 +213,39 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
   - 回复提示词加入内置的保护规则：不参与色情、性暗示、露骨内容和恋爱暧昧，被往这些方向引时用角色的方式岔开，对方反复这样引时温和但明确地说这类话题不合适；
   - 记忆整理使用内置的第 6 条；
   - 回复发出前过一道内置的露骨词表，命中就整条拦截并写审计，不受 `review` 段任何开关影响。
-  - `content_rules`、`memory_rules` 不生效。
+  - `content_rules`、`memory_rules`、`intimacy` 不生效。
 
 `minor` 和 `adult` 不能同时为 `true`：`PUT …/persona` 的整份替换、套模板、回滚，面板的修改，以及旧配置模板的启动校验都会拒绝，报错 “a minor persona cannot be adult”。即使库里存着同时为 `true` 的旧数据，运行时也按保护模式处理。代码里没有任何角色名单，是否未成年完全由部署者在人设里用 `minor` 标出。`content_rules` 由部署者自己编写，本项目不提供示例规则。
 
 好感度通过【关系提示】影响回复：保护模式只调整态度和情感，不涉及恋爱或性；开放模式按档位逐步放开亲密推进，具体尺度由 `content_rules` 决定。关系提示不改 system prompt，计入上下文预算。
+
+### 亲密面
+
+`intimacy` 是角色和对方亲近时的样子。好感度档位越高，回复里混进亲密面的比例越大，但角色本来的性格不变。每个模板单独写，不同角色互不影响。字段：
+
+| 字段 | 限制 | 说明 |
+|---|---|---|
+| `tone` | 三段合计 ≤800 字，可以多行 | 语气 |
+| `mind` | 同上 | 心理 |
+| `behavior` | 同上 | 表现 |
+| `levels` | 正好 5 项，后一项不能比前一项少 | 每个好感度档位混多少，依次对应陌生、认识、熟悉、亲近、很要好。每项取 `none`（不混）、`light`（少量）、`half`（一半）或 `major`（为主）。省略时为 `["none", "none", "light", "half", "major"]` |
+
+- 四个字段都可以省略。字数是三段各自去掉首尾空白后相加。三段都为空（只有空白也算空）时，等于没有设置亲密面。
+- 只在开放模式下生效。群聊、没标 `adult` 的私聊、标了 `minor` 的人设都是保护模式，亲密面一个字都不发给模型。没标 `adult` 也没标 `minor` 的人设可以填，只是不会生效。
+- 标了 `minor` 的人设不能填亲密面：`PUT …/persona` 的整份替换、套模板、回滚，面板的修改，导入人设模板，以及旧配置模板的启动校验都会拒绝，报错 “a minor persona cannot have an intimacy side”。三段都为空、只写了 `levels` 的不算。
+- 亲密面不进系统提示：同一个人设写不写 `intimacy`，系统提示逐字节相同。
+- 超出限制时面板和 `PUT …/persona` 都会拒绝并指出字段，例如 `intimacy.levels[2]`。
+
+写法示例：
+
+```json
+"intimacy": {
+  "tone": "……",
+  "mind": "……",
+  "behavior": "……",
+  "levels": ["none", "none", "light", "half", "major"]
+}
+```
 
 ## 群策略
 

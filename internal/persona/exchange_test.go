@@ -703,6 +703,51 @@ func TestImport_ProtectedModeRule(t *testing.T) {
 	}
 }
 
+func TestImport_MinorIntimacy(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := newServiceWith(t, st, nil)
+	young := tagged("甲")
+	young.Minor = true
+	young.Intimacy = &conloomapi.PersonaIntimacy{Mind: "想靠近对方"}
+	raw, err := json.Marshal(exchangeFile(exchangeTemplate("owl", tagged("夜猫"), nil), exchangeTemplate("young", young, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"minor":true,"intimacy":{"mind":"想靠近对方"}`)) {
+		t.Fatalf("exchange file %s does not carry the intimacy side", raw)
+	}
+	var f ExchangeFile
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []ConflictMode{ConflictFail, ConflictOverwrite, ConflictRename} {
+		_, err := svc.Import(ctx, f, mode, "panel:admin")
+		if !errors.Is(err, ErrInvalidTemplate) || !errors.Is(err, ErrInvalid) ||
+			!strings.Contains(err.Error(), "a minor persona cannot have an intimacy side") || !strings.Contains(err.Error(), `"young"`) {
+			t.Errorf("Import (%s) of a minor persona with an intimacy side err = %v, want ErrInvalidTemplate", mode, err)
+		}
+		checkUnchanged(t, st, svc, []string{})
+	}
+
+	grownup, plain, levelsOnly := tagged("乙"), tagged("丙"), tagged("丁")
+	grownup.Adult = true
+	grownup.Intimacy = &conloomapi.PersonaIntimacy{Tone: "说话放软一些", Mind: "想靠近对方", Behavior: "会多陪对方聊一会儿",
+		Levels: []string{conloomapi.IntimacyNone, conloomapi.IntimacyLight, conloomapi.IntimacyLight, conloomapi.IntimacyHalf, conloomapi.IntimacyMajor}}
+	plain.Intimacy = &conloomapi.PersonaIntimacy{Tone: "说话放软一些"}
+	levelsOnly.Minor = true
+	levelsOnly.Intimacy = &conloomapi.PersonaIntimacy{Levels: conloomapi.DefaultIntimacyLevels()}
+	if _, err := svc.Import(ctx, exchangeFile(exchangeTemplate("grownup", grownup, nil), exchangeTemplate("plain", plain, nil),
+		exchangeTemplate("levels", levelsOnly, nil)), ConflictFail, "panel:admin"); err != nil {
+		t.Fatalf("Import of an adult, a plain and a levels-only minor persona with intimacy sides: %v", err)
+	}
+	for name, want := range map[string]conloomapi.PersonaDoc{"grownup": grownup, "plain": plain, "levels": levelsOnly} {
+		if got, _ := svc.Template(name); !reflect.DeepEqual(got, want) {
+			t.Errorf("imported %s = %+v, want %+v", name, got, want)
+		}
+	}
+}
+
 func TestImport_AppearanceImageID(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)

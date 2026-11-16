@@ -113,6 +113,30 @@ func TestValidateConfig_MinorTemplateAdult(t *testing.T) {
 	}
 }
 
+func TestValidateConfig_MinorTemplateIntimacy(t *testing.T) {
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	adult := conloomapi.DefaultPersona()
+	adult.Adult = true
+	adult.Intimacy = &conloomapi.PersonaIntimacy{Tone: "说话放软一些", Levels: conloomapi.DefaultIntimacyLevels()}
+	minor := conloomapi.DefaultPersona()
+	minor.Minor = true
+	minor.Intimacy = &conloomapi.PersonaIntimacy{Levels: conloomapi.DefaultIntimacyLevels()}
+	cfg.LegacyPersonaTemplates = map[string]conloomapi.PersonaDoc{"grownup": adult, "child": minor}
+	if err := cfg.ValidateServe(); err != nil {
+		t.Fatalf("adult template with an intimacy side and minor template with levels only: %v", err)
+	}
+	minor.Intimacy = &conloomapi.PersonaIntimacy{Mind: "想靠近对方"}
+	cfg.LegacyPersonaTemplates["child"] = minor
+	err := cfg.ValidateServe()
+	if want := "a minor persona cannot have an intimacy side"; err == nil || !strings.Contains(err.Error(), "persona_templates.child.") ||
+		!strings.Contains(err.Error(), want) {
+		t.Errorf("err = %v, want naming persona_templates.child and containing %q", err, want)
+	}
+	if err != nil && strings.Contains(err.Error(), "persona_templates.grownup") {
+		t.Errorf("err = %v, names the adult template", err)
+	}
+}
+
 func TestValidate_ConfigBotTemplateNotChecked(t *testing.T) {
 	cfg := mustLoad(t, "testdata/valid.yaml")
 	if cfg.LegacyPersonaTemplates != nil {

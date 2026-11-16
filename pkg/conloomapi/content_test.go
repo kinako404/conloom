@@ -79,3 +79,41 @@ func TestValidate_ContentRulesLength(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateContent_MinorIntimacy(t *testing.T) {
+	const minorAdult, minorIntimacy = "a minor persona cannot be adult", "a minor persona cannot have an intimacy side"
+	side := &PersonaIntimacy{Mind: "想靠近"}
+
+	minor := DefaultPersona()
+	minor.Minor, minor.Intimacy = true, side
+	if err := ValidateContent(minor); err == nil || err.Error() != minorIntimacy {
+		t.Errorf("minor with an intimacy side: err = %v, want exactly %q", err, minorIntimacy)
+	}
+
+	levelsOnly := DefaultPersona()
+	levelsOnly.Minor = true
+	levelsOnly.Intimacy = &PersonaIntimacy{Tone: " ", Mind: "\n", Levels: DefaultIntimacyLevels()}
+	if err := ValidateContent(levelsOnly); err != nil {
+		t.Errorf("minor with levels only: %v", err)
+	}
+
+	neither := DefaultPersona()
+	neither.Intimacy = side
+	if err := ValidateContent(neither); err != nil {
+		t.Errorf("neither adult nor minor, with an intimacy side: %v", err)
+	}
+	adult := neither
+	adult.Adult = true
+	if err := ValidateContent(adult); err != nil {
+		t.Errorf("adult with an intimacy side: %v", err)
+	}
+
+	both := DefaultPersona()
+	both.Minor, both.Adult, both.Intimacy = true, true, side
+	err := ValidateContent(both)
+	for _, want := range []string{minorAdult, minorIntimacy} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("minor adult with an intimacy side: err = %v, want containing %q", err, want)
+		}
+	}
+}
