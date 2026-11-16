@@ -446,9 +446,10 @@ func TestPersonaForm_IntimacySection(t *testing.T) {
 	}
 }
 
-// Each affinity tier of the intimacy side has an optional bound under its
-// level, saved as intimacy.bounds, whose placeholder is the tier's built-in
-// bound from GET affinity-bounds, read once when the form opens. Line breaks
+// Each affinity tier of the intimacy side has an optional bound, a full-width
+// row named after the tier under the level selects, saved as intimacy.bounds,
+// whose placeholder and title are the tier's built-in bound from GET
+// affinity-bounds, read once when the form opens. Line breaks
 // a bound brings are removed, not refused; saving refuses a bound over
 // conloomapi.MaxIntimacyBoundRunes after trimming. The three texts and the
 // bounds all blank save no intimacy side, and blank bounds no bounds; bounds
@@ -469,9 +470,11 @@ func TestPersonaForm_IntimacyBounds(t *testing.T) {
 
 	shown := strings.ReplaceAll(js, "${MAX_INTIMACY_BOUND}", limit[1])
 	for _, want := range []string{
-		"get('affinity-bounds')", "'空着就用内置边界'", "b.placeholder = defaults[i] || '';",
+		"get('affinity-bounds')", "b.placeholder = text;\n    b.title = text;",
+		"showDefault(b, defaults[i] || '')", "showDefault(b, '空着就用内置边界')",
 		"const savedBounds = doc.bounds || [];", "h('input', { type: 'text', value: savedBounds[i] || '' })",
-		"field(tier, levels[i]), field('边界（可选）', bounds[i])",
+		"h('div', { class: 'form-grid' }, INTIMACY_TIERS.map((tier, i) => field(tier, levels[i]))),\n" +
+			"    INTIMACY_TIERS.map((tier, i) => field(`${tier} · 边界（可选）`, bounds[i])));",
 		"'边界替换这一档内置的分寸说明，空着就用内置的；它不能越过内容规则。'",
 		".value.replace(/[\\r\\n]/g, '')", "[...v.trim()].length > MAX_INTIMACY_BOUND", "`每档边界最多 150 字`",
 		"clearBar.hidden = !minor.checked || (total() === 0 && !hasBound());",

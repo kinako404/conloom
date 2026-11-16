@@ -224,9 +224,10 @@ function appearanceEditor(base) {
 }
 
 // intimacyEditor edits a persona's intimacy side: its three texts, counted
-// together after trimming, and a level and a bound per affinity tier. A bound
-// input's placeholder is the tier's built-in bound, read from the server once;
-// a bound loses the line breaks it was pasted with. minor and adult are the
+// together after trimming, and a level and a bound per affinity tier, the
+// bounds a full-width row each under the levels. A bound input's placeholder
+// and title are the tier's built-in bound, read from the server once; a bound
+// loses the line breaks it was pasted with. minor and adult are the
 // form's checkboxes: a minor persona gets the section disabled, and while it
 // still has text or a bound a button, outside the section, that empties the
 // three texts and the bounds; one that is not adult a note that the section
@@ -243,11 +244,15 @@ function intimacyEditor(base, { minor, adult }) {
   const levels = INTIMACY_TIERS.map((_, i) => select(INTIMACY_LEVELS, saved[i]));
   const savedBounds = doc.bounds || [];
   const bounds = INTIMACY_TIERS.map((_, i) => h('input', { type: 'text', value: savedBounds[i] || '' }));
+  const showDefault = (b, text) => {
+    b.placeholder = text;
+    b.title = text;
+  };
   get('affinity-bounds').then((res) => {
     const defaults = (res && res.defaults) || [];
-    for (const [i, b] of bounds.entries()) b.placeholder = defaults[i] || '';
+    for (const [i, b] of bounds.entries()) showDefault(b, defaults[i] || '');
   }, () => {
-    for (const b of bounds) b.placeholder = '空着就用内置边界';
+    for (const b of bounds) showDefault(b, '空着就用内置边界');
   });
   const boundValues = () => bounds.map((b) => b.value.replace(/[\r\n]/g, ''));
   const hasBound = () => boundValues().some((v) => v.trim() !== '');
@@ -270,8 +275,8 @@ function intimacyEditor(base, { minor, adult }) {
     field('心理', mind),
     field('表现', behavior),
     count,
-    h('div', { class: 'form-grid' }, INTIMACY_TIERS.map((tier, i) => h('div', null,
-      field(tier, levels[i]), field('边界（可选）', bounds[i])))));
+    h('div', { class: 'form-grid' }, INTIMACY_TIERS.map((tier, i) => field(tier, levels[i]))),
+    INTIMACY_TIERS.map((tier, i) => field(`${tier} · 边界（可选）`, bounds[i])));
   const sync = () => {
     section.disabled = minor.checked;
     minorNote.hidden = !minor.checked;
