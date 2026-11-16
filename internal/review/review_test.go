@@ -106,6 +106,50 @@ func TestOutput_BlockedWordSanitize(t *testing.T) {
 	}
 }
 
+func TestOutput_BlockedWordsMatchFolded(t *testing.T) {
+	r := New(nil, Options{})
+	pol := basicPolicy()
+	pol.BlockedWords = []string{"坏词", "BadWord", ""}
+	cases := []struct{ in, sanitized string }{
+		{"这里有坏\u200b词出现", "这里有**出现"},
+		{"a坏\ufeff词b坏词c", "a**b**c"},
+		{"say ＢＡＤＷＯＲＤ now", "say ******* now"},
+		{"say badword now", "say ******* now"},
+		{"bad\u2060word, BADWORD!", "*******, *******!"},
+		{"ba\u0301dword", "*******"},
+	}
+	for _, c := range cases {
+		pol.Action = VerdictBlock
+		if got := r.Output(c.in, pol); got.Verdict != VerdictBlock || got.Text != "" {
+			t.Errorf("block Output(%q) = %+v, want it blocked", c.in, got)
+		}
+		pol.Action = VerdictSanitize
+		if got := r.Output(c.in, pol); got.Text != c.sanitized || got.Verdict != VerdictSanitize ||
+			!slices.Contains(got.Reasons, reasonBlockedWord) {
+			t.Errorf("sanitize Output(%q) = %+v, want %q", c.in, got, c.sanitized)
+		}
+	}
+
+	// A compatibility form folding to more than one letter is masked whole;
+	// invalid UTF-8 is matched around.
+	pol.BlockedWords, pol.Action = []string{"fi", "f"}, VerdictSanitize
+	if got := r.Output("\ufb01ne \ufb00", pol); got.Text != "**ne *" {
+		t.Errorf("sanitize of ligatures = %q, want %q", got.Text, "**ne *")
+	}
+	pol.BlockedWords = []string{"坏词"}
+	if got := r.Output("坏\xff坏词\xff", pol); got.Text != "坏\xff**\xff" {
+		t.Errorf("sanitize around invalid UTF-8 = %q", got.Text)
+	}
+
+	// Words stay apart: white space and punctuation are not dropped.
+	pol.BlockedWords, pol.Action = []string{"hell", "坏词"}, VerdictBlock
+	for _, in := range []string{"the llama", "坏，词", "ok"} {
+		if got := r.Output(in, pol); got.Verdict != VerdictAllow || got.Text != in {
+			t.Errorf("Output(%q) = %+v, want it allowed", in, got)
+		}
+	}
+}
+
 func TestOutput_BlockedWordAllow(t *testing.T) {
 	pol := basicPolicy()
 	pol.Action = "allow"
