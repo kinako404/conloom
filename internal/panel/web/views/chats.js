@@ -3,7 +3,7 @@ import { get, post, put, request, convPath, isAbort, currentUser, logout } from 
 import { go, href, withQuery } from '../lib/router.js';
 import { fmtTime, fmtClock } from '../lib/format.js';
 import { SECTIONS } from '../lib/sections.js';
-import { chatPane, deleteChatConfirmed } from './chat.js';
+import { chatBar, chatPane, deleteChatConfirmed } from './chat.js';
 import { avatarEl } from './avatar.js';
 
 // PANEL is the source of a bot created in the panel and the platform of the
@@ -394,21 +394,6 @@ function allIcon() {
     s('path', { d: 'M20 8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-1v3l-4-3h-4' }));
 }
 
-// chatHead tops the chat pane: ← back to the list, shown on a narrow screen,
-// the bot and who it talks with, a link to the conversation's page and
-// 删除这个聊天. bot is null when the chat is not known.
-function chatHead({ key, title, bot, onBack, onDelete }) {
-  return h('div', { class: 'tg-head' },
-    h('button', { type: 'button', class: 'tg-back', title: '返回', 'aria-label': '返回', onclick: onBack }, '←'),
-    bot ? avatarEl(bot, 40) : null,
-    h('div', { class: 'tg-head-name' },
-      h('strong', null, bot ? bot.name || bot.id : key),
-      title ? h('span', { class: 'muted small' }, title) : null),
-    h('span', { class: 'spacer' }),
-    h('a', { href: href('conversations', key) }, '会话详情'),
-    onDelete ? h('button', { type: 'button', class: 'link danger', onclick: onDelete }, '删除这个聊天') : null);
-}
-
 // chatPage lays out the chat page like Telegram Desktop: a rail of folders
 // (≡, 全部 and a folder per bot), the chat list of the folder chosen, and the
 // chat open. load reads the list; select(key, signal) shows the chat key, or
@@ -432,7 +417,7 @@ function chatPage() {
   let ticks = 0;
   const listMsg = h('div');
   const pollMsg = h('div');
-  const paneMsg = h('div');
+  const paneMsg = h('div', { class: 'tg-pane-msg' });
   const folders = h('div', { class: 'tg-folders' });
   const botBar = h('div');
   const list = h('ul', { class: 'tg-chats' });
@@ -777,12 +762,13 @@ function chatPage() {
     let bot = shown ? { id: shown.group.id, name: shown.group.name || shown.group.id, avatar: shown.group.avatar || '' } : null;
     let title = shown ? shown.chat.title || key : '';
     const onDelete = () => removeChat(key);
-    mount(pane, chatHead({ key, title, bot, onBack }), loading());
+    const bar = (b, t) => chatBar({ key, bot: b, title: t, onBack, signal });
+    mount(pane, bar(bot, title), loading());
     try {
       if (!shown) {
         const conv = await get(convPath(key), null, signal);
         if (conv.platform !== PANEL) {
-          mount(pane, chatHead({ key, title: conv.platform_conversation_id, bot: null, onBack }),
+          mount(pane, bar(null, conv.platform_conversation_id),
             errorBox({ message: '聊天页只能打开面板里新建的聊天。' }),
             h('p', null, h('a', { href: href('conversations', key) }, '打开会话详情')));
           return;
@@ -791,10 +777,10 @@ function chatPage() {
         bot = { id: conv.bot_instance_id, name: conv.bot_name || conv.bot_instance_id, avatar: g ? g.avatar || '' : '' };
         title = conv.platform_conversation_id;
       }
-      const nodes = await chatPane({ key, signal, hint: PANEL_HINT, bot, onBack, onDelete });
-      if (!signal.aborted) mount(pane, chatHead({ key, title, bot, onBack, onDelete }), paneMsg, nodes);
+      const [head, ...body] = await chatPane({ key, signal, hint: PANEL_HINT, bot, title, onBack, onDelete });
+      if (!signal.aborted) mount(pane, head, paneMsg, body);
     } catch (err) {
-      if (!isAbort(err) && !signal.aborted) mount(pane, chatHead({ key, title, bot, onBack }), errorBox(err));
+      if (!isAbort(err) && !signal.aborted) mount(pane, bar(bot, title), errorBox(err));
     }
   }
 

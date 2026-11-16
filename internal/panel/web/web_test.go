@@ -362,6 +362,62 @@ func TestAssets_ChatEnterSendsOnlyWithKeyboard(t *testing.T) {
 	}
 }
 
+// The chat pane looks like Telegram: a top bar with ← back on a narrow
+// screen, the bot, 正在输入… and a ⋮ menu holding 会话详情, the 建议回复
+// switch and 删除这个聊天; bubbles left and right with the time inside, a
+// tail on the last of a group and no 面板 tag; date pills between days; and a
+// growing box with a round ➤ button. The pane's own top bar replaces the one
+// views/chats.js had.
+func TestChatPane_TelegramStyle(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js := files["views/chat.js"]
+	for _, want := range []string{
+		"'正在输入…'", "'会话详情'", "'建议回复：开'", "'建议回复：关'", "'删除这个聊天'", "'➤'", "title: '发送'",
+		"onBack", "onDelete", "avatarEl(bot, 40)", "import { avatarEl } from './avatar.js';",
+		"m.channel && m.channel !== 'panel'", "`${d.getMonth() + 1}月${d.getDate()}日`", "`${d.getFullYear()}年${",
+		"const MAX_LINES = 6;", "send.disabled = true;",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chat.js lacks %q", want)
+		}
+	}
+	for _, gone := range []string{"'面板'", "type: 'checkbox'", "'对方正在输入…'"} {
+		if strings.Contains(js, gone) {
+			t.Errorf("views/chat.js still has %q", gone)
+		}
+	}
+	chats := files["views/chats.js"]
+	for _, gone := range []string{"chatHead", "tg-head", "tg-back"} {
+		if strings.Contains(chats, gone) {
+			t.Errorf("views/chats.js still has the interim header (%q)", gone)
+		}
+	}
+	css := files["style.css"]
+	for _, gone := range []string{".tg-head", ".tg-back", ".bubble", ".chat-options"} {
+		if strings.Contains(css, gone) {
+			t.Errorf("style.css still has %q", gone)
+		}
+	}
+	for _, c := range []struct{ name, re string }{
+		{"a tail on the last bubble of a group", `\.chat-app \.tg-msg\.tail \.tg-bubble::after\s*\{`},
+		{"a round send button", `\.chat-app \.tg-send\s*\{[^}]*border-radius:\s*50%;`},
+		{"own bubbles on the right", `\.chat-app \.tg-msg\.out\s*\{[^}]*align-self:\s*flex-end;`},
+		{"full-width suggestion buttons", `\.chat-app \.tg-keys button\s*\{[^}]*width:\s*100%;`},
+		{"no ← on a wide screen", `\.chat-app \.tg-bar-back\s*\{[^}]*display:\s*none;`},
+	} {
+		if !regexp.MustCompile(c.re).MatchString(css) {
+			t.Errorf("style.css lacks %s (%s)", c.name, c.re)
+		}
+	}
+	m := regexp.MustCompile(`const NARROW = '([^']+)';`).FindStringSubmatch(chats)
+	if m == nil {
+		t.Fatal("views/chats.js has no NARROW media query")
+	}
+	if !regexp.MustCompile(`\.chat-app \.tg-bar-back\s*\{[^}]*display:\s*inline-flex;`).MatchString(mediaBlock(t, css, m[1])) {
+		t.Errorf("style.css @media %s does not show ← back to the list", m[1])
+	}
+}
+
 var cssRule = regexp.MustCompile(`([^{}]+)\{([^{}]*)\}`)
 
 // iOS Safari zooms in on a focused field whose text is under 16px and does not
@@ -656,7 +712,8 @@ func TestAssets_ChatSuggestions(t *testing.T) {
 	js := assets(t, ".js")["views/chat.js"]
 	for _, want := range []string{
 		"const SUGGEST_KEY = 'conloom.chat.suggestions';", "localStorage.getItem(SUGGEST_KEY) !== SUGGEST_OFF",
-		"localStorage.setItem(SUGGEST_KEY, SUGGEST_OFF)", "checked: suggestionsOn()", "toggle, '建议回复'",
+		"localStorage.setItem(SUGGEST_KEY, SUGGEST_OFF)", "let suggestOn = suggestionsOn();", "saveSuggestionsOn(suggestOn);",
+		"suggestOn ? '建议回复：开' : '建议回复：关'", "suggestOn && !gone",
 		"post(convPath(key, 'suggestions'), { after_seq: seq })", "last.seq === seq", "!botTyping", "last.from_bot",
 		"seq !== sentAfter", "if (last !== null) sentAfter = last.seq;",
 		"if (!items.length || !wanted(seq)) return;", "onclick: () => submit(text)",
