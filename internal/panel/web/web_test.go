@@ -443,15 +443,18 @@ func TestAssets_AppearanceLimitsMatchServer(t *testing.T) {
 
 // The chat offers reply suggestions behind a 建议回复 switch the browser keeps,
 // on unless turned off; it asks for those after the newest message, drops an
-// answer that is no longer wanted, sends a suggestion when clicked and drops
-// the suggestions when the user types or a message comes.
+// answer that is no longer wanted, also once the user answered that message,
+// sends a suggestion when clicked, keeps one that failed to send in the box,
+// and drops the suggestions when the user types or a message comes.
 func TestAssets_ChatSuggestions(t *testing.T) {
 	js := assets(t, ".js")["views/chat.js"]
 	for _, want := range []string{
 		"const SUGGEST_KEY = 'conloom.chat.suggestions';", "localStorage.getItem(SUGGEST_KEY) !== SUGGEST_OFF",
 		"localStorage.setItem(SUGGEST_KEY, SUGGEST_OFF)", "checked: suggestionsOn()", "toggle, '建议回复'",
 		"post(convPath(key, 'suggestions'), { after_seq: seq })", "last.seq === seq", "!botTyping", "last.from_bot",
+		"seq !== sentAfter", "if (last !== null) sentAfter = last.seq;",
 		"if (!items.length || !wanted(seq)) return;", "onclick: () => submit(text)",
+		"if (!input.value.trim()) input.value = text;",
 		"input.addEventListener('input', clearSuggestions)", "if (!added) clearSuggestions();",
 	} {
 		if !strings.Contains(js, want) {

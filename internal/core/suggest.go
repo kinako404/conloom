@@ -61,9 +61,10 @@ var errNoSuggestions = errors.New("core: no JSON array in the suggestions")
 // recently asked for; while a chat's suggestions are being generated, other
 // requests in that chat wait for them, and share them when they are for the
 // same message. The list is empty, never nil, when the message is not the
-// chat's newest or not the bot's, or generating fails (logged); see suggest.
-// A conversation on another platform is ErrNotPanelChat, an unknown one
-// store.ErrNotFound, and a request whose ctx ends while it waits ctx's error.
+// chat's newest or not the bot's, even if its suggestions are still cached,
+// or generating fails (logged); see suggest. A conversation on another
+// platform is ErrNotPanelChat, an unknown one store.ErrNotFound, and a
+// request whose ctx ends while it waits ctx's error.
 func (o *Orchestrator) Suggest(ctx context.Context, convKey string, afterSeq int64) ([]string, error) {
 	conv, err := o.panelConversation(ctx, convKey)
 	if err != nil {
@@ -71,6 +72,14 @@ func (o *Orchestrator) Suggest(ctx context.Context, convKey string, afterSeq int
 	}
 	if conv.Platform != store.PlatformPanel {
 		return nil, ErrNotPanelChat
+	}
+	newest, err := o.st.RecentMessages(ctx, convKey, 1)
+	if err != nil {
+		o.log.Warn("load newest message for reply suggestions failed", "conversation", convKey, "error", err)
+		return []string{}, nil
+	}
+	if len(newest) == 0 || newest[0].Seq != afterSeq || !newest[0].FromBot {
+		return []string{}, nil
 	}
 	for {
 		items, cached, f, lead := o.suggestions.join(convKey, afterSeq)
@@ -108,7 +117,9 @@ func (o *Orchestrator) leadSuggestions(conv store.ConversationRecord, f *suggest
 // replies. Lines the content mode's output review does not let through
 // unchanged are dropped, and at most suggestCount kept. It returns none when
 // seq is not the chat's newest message or that is not the bot's, there is no
-// short_context profile or its breaker is open, or anything fails (logged).
+// short_context profile, it may not see private chats
+// (privacy.allow_sensitive_content, which replies obey too) or its breaker is
+// open, or anything fails (logged).
 // The work is not tied to a request, so suggestions whose requester left
 // still serve the next one; it takes at most suggestTimeout and ends at
 // Close. The model call is recorded with purpose suggest, failed or not; no
@@ -118,7 +129,7 @@ func (o *Orchestrator) suggest(conv store.ConversationRecord, seq int64) []strin
 	ctx, cancel := context.WithTimeout(o.bgCtx, o.suggestTimeout)
 	defer cancel()
 	p, ok := o.router.Profile(router.RoleShort)
-	if !ok || o.router.BreakerOpen(router.RoleShort) {
+	if !ok || !p.Config.Privacy.AllowSensitiveContent || o.router.BreakerOpen(router.RoleShort) {
 		return none
 	}
 	recent, err := o.st.RecentMessages(ctx, conv.Key, suggestHistory)

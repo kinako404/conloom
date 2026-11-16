@@ -118,6 +118,10 @@ func TestSuggestions_CachedPerSeq(t *testing.T) {
 
 	more := env.addPanelLines(t, key, "是啊", panelLineBot+"下次带上我")
 	next := more[len(more)-1].Seq
+	if got := env.suggest(t, key, first); len(got) != 0 || env.short.Calls() != 1 {
+		t.Fatalf("older message while still cached = %q after %d calls, want none: it is no longer the newest",
+			got, env.short.Calls())
+	}
 	if got := env.suggest(t, key, next); !slices.Equal(got, suggestWant) {
 		t.Fatalf("newer message = %q, want %q", got, suggestWant)
 	}
@@ -178,55 +182,82 @@ func TestSuggestions_CacheKeepsRecentChats(t *testing.T) {
 	}
 }
 
-func TestSuggestions_SingleFlight(t *testing.T) {
-	release := make(chan struct{})
+// blockedSuggestEnv is a test env whose short model answers suggestJSON only
+// once release is called, and a function asking for the suggestions of a
+// message of the chat key in the background, whose results arrive on results.
+func blockedSuggestEnv(t *testing.T) (env *testEnv, key string, ask func(seq int64), results <-chan []string, release func()) {
+	t.Helper()
+	gate := make(chan struct{})
 	var once sync.Once
-	env := newTestOrchestrator(t, testOpts{short: func(map[string]any) (int, string) {
-		<-release
+	release = func() { once.Do(func() { close(gate) }) }
+	env = newTestOrchestrator(t, testOpts{short: func(map[string]any) (int, string) {
+		<-gate
 		return 200, suggestJSON
 	}})
-	t.Cleanup(func() { once.Do(func() { close(release) }) })
-	key, first := env.seedPanelChat(t, "在吗", panelLineBot+"在的")
-
-	type result struct {
-		seq   int64
-		items []string
-	}
-	results := make(chan result, 4)
-	ask := func(seq int64) {
+	t.Cleanup(release)
+	key = env.createChat(t, testBot)
+	out := make(chan []string, 4)
+	ask = func(seq int64) {
 		go func() {
 			got, err := env.o.Suggest(context.Background(), key, seq)
 			if err != nil {
 				t.Errorf("Suggest(%d): %v", seq, err)
 			}
-			results <- result{seq, got}
+			out <- got
 		}()
 	}
-	for range 3 {
-		ask(first)
-	}
-	waitUntil(t, "the first request to reach the model", func() bool { return env.short.Calls() == 1 })
-	// A request for the next message waits for the generation in progress.
-	more := env.addPanelLines(t, key, "吃了吗", panelLineBot+"吃过了")
-	next := more[len(more)-1].Seq
-	ask(next)
-	time.Sleep(100 * time.Millisecond)
-	if n := env.short.Calls(); n != 1 {
-		t.Fatalf("model calls while one is generating = %d, want 1", n)
-	}
-	once.Do(func() { close(release) })
-	for range 4 {
+	return env, key, ask, out, release
+}
+
+func receiveSuggestions(t *testing.T, results <-chan []string, n int) {
+	t.Helper()
+	for range n {
 		select {
-		case r := <-results:
-			if !slices.Equal(r.items, suggestWant) {
-				t.Errorf("Suggest(%d) = %q, want %q", r.seq, r.items, suggestWant)
+		case got := <-results:
+			if !slices.Equal(got, suggestWant) {
+				t.Errorf("suggestions = %q, want %q", got, suggestWant)
 			}
 		case <-time.After(waitLimit):
 			t.Fatal("timed out waiting for the suggestions")
 		}
 	}
+}
+
+func TestSuggestions_SingleFlight(t *testing.T) {
+	env, key, ask, results, release := blockedSuggestEnv(t)
+	msgs := env.addPanelLines(t, key, "在吗", panelLineBot+"在的")
+	for range 3 {
+		ask(msgs[1].Seq)
+	}
+	waitUntil(t, "the first request to reach the model", func() bool { return env.short.Calls() == 1 })
+	time.Sleep(100 * time.Millisecond)
+	if n := env.short.Calls(); n != 1 {
+		t.Fatalf("model calls while one is generating = %d, want 1", n)
+	}
+	release()
+	receiveSuggestions(t, results, 3)
+	if n := env.short.Calls(); n != 1 {
+		t.Fatalf("model calls = %d, want 1 shared by the three requests", n)
+	}
+}
+
+// A request for a newer message waits for the chat's generation in progress,
+// then makes its own.
+func TestSuggestions_SingleFlightNewerMessageWaits(t *testing.T) {
+	env, key, ask, results, release := blockedSuggestEnv(t)
+	msgs := env.addPanelLines(t, key, "在吗", panelLineBot+"在的")
+	ask(msgs[1].Seq)
+	waitUntil(t, "the first request to reach the model", func() bool { return env.short.Calls() == 1 })
+	more := env.addPanelLines(t, key, "吃了吗", panelLineBot+"吃过了")
+	ask(more[1].Seq)
+	time.Sleep(100 * time.Millisecond)
+	if n := env.short.Calls(); n != 1 {
+		t.Fatalf("model calls while one is generating = %d, want 1", n)
+	}
+	release()
+	receiveSuggestions(t, results, 2)
 	if n := env.short.Calls(); n != 2 {
-		t.Fatalf("model calls = %d, want 2: one shared by the first message's requests, one for the next", n)
+		t.Fatalf("model calls = %d, want 2: the newer message's after the first", n)
 	}
 }
 
@@ -413,6 +444,29 @@ func TestSuggestions_PanelOnly(t *testing.T) {
 	}
 	if n := env.short.Calls(); n != calls {
 		t.Errorf("model calls = %d, want %d: none for suggestions", n, calls)
+	}
+}
+
+// Panel chats are private: a short_context profile not allowed sensitive
+// content never sees them, as for replies.
+func TestSuggestions_SensitiveContentGate(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{short: answer(suggestJSON), configure: func(c *config.Config) {
+		p := c.ModelProfiles[string(router.RoleShort)]
+		p.Privacy.AllowSensitiveContent = false
+		c.ModelProfiles[string(router.RoleShort)] = p
+	}})
+	written := recordUsage(t, env)
+	key, seq := env.seedPanelChat(t, "在吗", panelLineBot+"在的")
+	for i := range 2 {
+		if got := env.suggest(t, key, seq); len(got) != 0 {
+			t.Fatalf("request %d = %q, want none", i+1, got)
+		}
+	}
+	if n := env.short.Calls() + env.long.Calls(); n != 0 {
+		t.Errorf("model calls = %d, want none: the profile may not see private chats", n)
+	}
+	if calls := written(); len(calls) != 0 {
+		t.Errorf("recorded calls = %+v, want none", calls)
 	}
 }
 

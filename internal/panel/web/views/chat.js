@@ -84,11 +84,13 @@ export async function chatPane({ key, signal, hint }) {
   // only while it shows some.
   const chips = h('li', { class: 'chat-suggestions' });
   let after = 0;
-  // last is the newest message shown, botTyping what the last poll said and
-  // asked the seq suggestions were last asked for.
+  // last is the newest message shown, botTyping what the last poll said,
+  // asked the seq suggestions were last asked for and sentAfter the seq of
+  // the newest message when the user last sent one.
   let last = null;
   let botTyping = true;
   let asked = 0;
+  let sentAfter = 0;
 
   const nearBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   const clearSuggestions = () => {
@@ -138,9 +140,9 @@ export async function chatPane({ key, signal, hint }) {
   };
   // wanted reports whether suggestions after the message seq would still be
   // shown: the switch is on, the bot's turn is done with seq its newest
-  // message, and the box is empty.
+  // message, the user has not answered it yet and the box is empty.
   const wanted = (seq) => toggle.checked && !gone && !signal.aborted && !botTyping &&
-    last !== null && last.from_bot && last.seq === seq && !input.value.trim();
+    last !== null && last.from_bot && last.seq === seq && seq !== sentAfter && !input.value.trim();
   // suggest asks, once per message, for suggestions after the newest message
   // when they are wanted, and shows them unless meanwhile they no longer are.
   // A failure shows nothing.
@@ -197,9 +199,12 @@ export async function chatPane({ key, signal, hint }) {
   }
   signal.addEventListener('abort', () => clearTimeout(timer));
 
-  // submit sends text, typed or a suggestion, as the user.
+  // submit sends text, typed or a suggestion, as the user; suggestions for
+  // the message it answers are no longer shown. Text that fails to send is
+  // left in the box, a suggestion's too, unless the box has other text.
   const submit = async (text) => {
     if (!text.trim() || send.disabled || gone) return;
+    if (last !== null) sentAfter = last.seq;
     clearSuggestions();
     send.disabled = true;
     mount(sendError);
@@ -211,8 +216,12 @@ export async function chatPane({ key, signal, hint }) {
       poll();
     } catch (err) {
       if (isAbort(err)) return;
-      if (err.status === 404) markGone();
-      else mount(sendError, errorBox(err));
+      if (err.status === 404) {
+        markGone();
+      } else {
+        mount(sendError, errorBox(err));
+        if (!input.value.trim()) input.value = text;
+      }
     } finally {
       send.disabled = gone;
       if (!gone) input.focus();
