@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -468,6 +469,42 @@ func TestService_SystemPromptStablePerVersion(t *testing.T) {
 	}
 }
 
+func TestService_UpdateKeepsTheTemplateOfAnEditedPersona(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := newServiceWith(t, st, map[string]conloomapi.PersonaDoc{"lighthouse": testCharacter()})
+
+	edited := testCharacter()
+	edited.Style.Humor = 0.9
+	v1, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Persona: &edited}, "29999")
+	if err != nil || v1.Version != 1 || v1.TemplateName != "default" {
+		t.Fatalf("first version, an edit = %+v, %v; want it recorded with the template passed", v1, err)
+	}
+	if _, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Template: "lighthouse"}, "29999"); err != nil {
+		t.Fatal(err)
+	}
+	edited.Style.Humor = 0.1
+	v3, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Persona: &edited}, "29999")
+	if err != nil || v3.Version != 3 || v3.TemplateName != "lighthouse" {
+		t.Fatalf("edit of the lighthouse version = %+v, %v; want it recorded with template lighthouse", v3, err)
+	}
+	if latest, _ := st.LatestPersona(ctx, testConvKey); latest.TemplateName != "lighthouse" {
+		t.Errorf("stored template of the edit = %q, want lighthouse", latest.TemplateName)
+	}
+
+	// A version stored before versions recorded their template has none: an
+	// edit of it is recorded with the template passed.
+	other := store.ConversationKey(testBot, "qq", conloomapi.ConvGroup, "group_10002")
+	if _, err := st.AppendPersonaVersion(ctx, store.PersonaVersion{ConversationKey: other, Persona: testCharacter(),
+		Reason: "init", UpdatedBy: "system"}); err != nil {
+		t.Fatal(err)
+	}
+	if v2, err := svc.Update(ctx, other, "default", conloomapi.PersonaPut{Persona: &edited}, "29999"); err != nil ||
+		v2.TemplateName != "default" {
+		t.Errorf("edit of a version without a template = %+v, %v; want template default", v2, err)
+	}
+}
+
 func TestService_UpdateFromTemplate(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
@@ -876,6 +913,45 @@ func TestService_ForgetDropsCachedPrompt(t *testing.T) {
 	}
 	if _, ok := svc.prompts[other]; !ok {
 		t.Error("Forget dropped another conversation's prompt")
+	}
+}
+
+func TestService_PromptCacheBounded(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newTestStore(t))
+	svc.promptLimit = 2
+	key := func(id string) string { return store.ConversationKey(testBot, "qq", conloomapi.ConvGroup, id) }
+	a, b, c := key("10001"), key("10002"), key("10003")
+	prompt := func(convKey string) Prompt {
+		t.Helper()
+		p, err := svc.SystemPrompt(ctx, convKey, "default", "小助手")
+		if err != nil {
+			t.Fatalf("SystemPrompt(%s): %v", convKey, err)
+		}
+		return p
+	}
+	cached := func() []string {
+		svc.promptMu.Lock()
+		defer svc.promptMu.Unlock()
+		return slices.Sorted(maps.Keys(svc.prompts))
+	}
+	prompt(a)
+	first := prompt(b)
+	prompt(a)
+	prompt(c)
+	if got, want := cached(), []string{a, c}; !slices.Equal(got, want) {
+		t.Errorf("cached prompts = %v, want %v without the least recently used", got, want)
+	}
+	if again := prompt(b); again != first {
+		t.Errorf("prompt rebuilt after eviction = %+v, want %+v", again, first)
+	}
+	if got, want := cached(), []string{b, c}; !slices.Equal(got, want) {
+		t.Errorf("cached prompts = %v, want %v", got, want)
+	}
+	svc.Forget(c)
+	prompt(a)
+	if got, want := cached(), []string{a, b}; !slices.Equal(got, want) {
+		t.Errorf("cached prompts after Forget = %v, want %v", got, want)
 	}
 }
 

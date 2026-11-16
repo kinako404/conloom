@@ -43,7 +43,8 @@ const skillFileName = "SKILL.md"
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 
 // Load returns the built-in skills, replaced or extended by the skills in dir
-// (each <name>/SKILL.md; "" for none). Any invalid file is ErrInvalid.
+// (each <name>/SKILL.md, where <name> may be a symlink to a directory; "" for
+// none). Any invalid file, and a symlink that leads nowhere, is ErrInvalid.
 func Load(dir string) (map[string]Skill, error) {
 	out := map[string]Skill{}
 	entries, err := fs.ReadDir(builtinFS, "builtin")
@@ -69,7 +70,18 @@ func Load(dir string) (map[string]Skill, error) {
 		return nil, fmt.Errorf("%w: skills.dir: %w", ErrInvalid, err)
 	}
 	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		isDir := e.IsDir()
+		if e.Type()&fs.ModeSymlink != 0 {
+			info, err := os.Stat(filepath.Join(dir, e.Name()))
+			if err != nil {
+				return nil, fmt.Errorf("%w: skills.dir: %w", ErrInvalid, err)
+			}
+			isDir = info.IsDir()
+		}
+		if !isDir {
 			continue
 		}
 		file := filepath.Join(dir, e.Name(), skillFileName)

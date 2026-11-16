@@ -107,6 +107,38 @@ func TestLoad_DirOverridesAndAdds(t *testing.T) {
 	}
 }
 
+func TestLoad_SymlinkedSkillDirs(t *testing.T) {
+	dir, elsewhere := t.TempDir(), t.TempDir()
+	writeSkill(t, elsewhere, "time", skillFile("time", "", "- 只在被问到时间时调用 now。"))
+	if err := os.Symlink(filepath.Join(elsewhere, "time"), filepath.Join(dir, "time")); err != nil {
+		t.Fatal(err)
+	}
+	notes := filepath.Join(elsewhere, "notes.txt")
+	if err := os.WriteFile(notes, []byte("not a skill"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(notes, filepath.Join(dir, "notes")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if tm := got["time"]; tm.Body != "- 只在被问到时间时调用 now。" || tm.Source != filepath.Join(dir, "time", "SKILL.md") {
+		t.Errorf("time through a symlinked directory = %+v, want the one in %s", tm, elsewhere)
+	}
+	if len(got) != 4 {
+		t.Errorf("skills = %v, want the built-in ones with time replaced and the linked file left out", got)
+	}
+
+	if err := os.Symlink(filepath.Join(elsewhere, "missing"), filepath.Join(dir, "weather")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "weather") {
+		t.Errorf("Load with a broken symlink = %v, want ErrInvalid naming it", err)
+	}
+}
+
 func TestLoad_Invalid(t *testing.T) {
 	cases := []struct {
 		name, sub, content, want string

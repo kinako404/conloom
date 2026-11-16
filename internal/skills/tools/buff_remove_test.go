@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,5 +176,63 @@ func TestBuffTools_PanelChatsShareTheScope(t *testing.T) {
 			len(effects)+len(events) != 0 {
 			t.Errorf("stored under the chat %s: %+v %+v %+v", key, bars, effects, events)
 		}
+	}
+}
+
+func TestBuffTools_PanelChatsKeepOtherPersonasBars(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	seedPanelChats(t, st)
+	a, b := panelA, panelB
+	scope := memory.ScopeKeyOf(a)
+	if _, err := st.AppendPersonaVersion(ctx, store.PersonaVersion{ConversationKey: a, TemplateName: "default",
+		Persona: conloomapi.DefaultPersona(), Reason: "init", UpdatedBy: "system"}); err != nil {
+		t.Fatal(err)
+	}
+	// B's persona has a bar of its own and none of A's.
+	own := conloomapi.DefaultPersona()
+	own.Bars = []conloomapi.PersonaBar{{Name: "体力", Baseline: 50, HalfLife: conloomapi.Duration{Duration: 2 * time.Hour}}}
+	add := newAddBuff(st, newPolicies(st, true, true), own)
+	remove := newRemoveBuff(st, own)
+	day := testNow.In(shanghai).Format(time.DateOnly)
+	seedBuff(t, st, scope, "心情", 80, day, 5, testNow)
+	inB := invocation(b, "panel_admin", "小明")
+
+	for _, args := range []string{
+		`{"kind":"bar","name":"心情","baseline":50,"value":10}`,
+		`{"kind":"effect","name":"精力","minutes":30}`,
+	} {
+		if got, want := call(t, add, inB, args), "是固定的状态条，换个名字。"; !strings.HasSuffix(got, want) {
+			t.Errorf("add_buff(%s) in B of a bar of A's persona = %q, want it refused", args, got)
+		}
+	}
+	checkBuff(t, st, scope, "心情", 80, day, 5)
+	if bars, effects := customBarsOf(t, st, scope), effectsOf(t, st, scope, testNow); len(bars)+len(effects) != 0 {
+		t.Errorf("scope bars %+v and effects %+v after refused adds, want none", bars, effects)
+	}
+	if got, want := call(t, add, inB, `{"kind":"bar","name":"饥饿","baseline":30}`), "已加上状态条：饥饿，现在偏低。"; got != want {
+		t.Errorf("add_buff in B of a name no persona has = %q, want %q", got, want)
+	}
+
+	// 心情 was added by the bot in B before: removing it in B keeps the value
+	// A's persona bar shows.
+	if err := st.AddCustomBar(ctx, store.CustomBar{ConversationKey: scope, Name: "心情", TaskID: "task_old",
+		Baseline: 10, HalfLife: time.Hour, CreatedAt: testNow.Add(-time.Hour)}, 80, 6); err != nil {
+		t.Fatal(err)
+	}
+	seedBuff(t, st, scope, "心情", 80, day, 5, testNow)
+	inB.TaskID = "task_rm"
+	if got, want := call(t, remove, inB, `{"name":"心情"}`), "已删掉状态条：心情。"; got != want {
+		t.Errorf("remove_buff in B of its bar named like A's = %q, want %q", got, want)
+	}
+	if got := barNames(customBarsOf(t, st, scope)); !reflect.DeepEqual(got, []string{"饥饿"}) {
+		t.Errorf("scope bars = %v, want [饥饿]", got)
+	}
+	checkBuff(t, st, scope, "心情", 80, day, 5)
+	if got, want := call(t, remove, inB, `{"name":"饥饿"}`), "已删掉状态条：饥饿。"; got != want {
+		t.Errorf("remove_buff in B of a bar no persona has = %q, want %q", got, want)
+	}
+	if _, ok := buffOf(t, st, scope, "饥饿"); ok {
+		t.Error("the value of a removed bar no persona has is still stored")
 	}
 }

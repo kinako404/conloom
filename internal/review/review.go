@@ -11,6 +11,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -103,9 +105,10 @@ func (r *Reviewer) Input(text string, _ conloomapi.ReviewPolicy) Result {
 }
 
 // Output runs the outbound pipeline: strip [CQ:...] codes, redact secrets,
-// apply blocked words per pol.Action, truncate to the output rune limit, and
-// block blank results. It ignores pol.ReviewOutput because the basic rules are
-// always on.
+// apply blocked words per pol.Action (matched folded, see foldBlocked; a
+// sanitized match becomes one * per rune of the word), truncate to the output
+// rune limit, and block blank results. It ignores pol.ReviewOutput because the
+// basic rules are always on.
 func (r *Reviewer) Output(text string, pol conloomapi.ReviewPolicy) Result {
 	var reasons []string
 
@@ -139,13 +142,18 @@ func (r *Reviewer) Output(text string, pol conloomapi.ReviewPolicy) Result {
 	}
 
 	matched := false
-	for _, w := range pol.BlockedWords {
-		if w == "" || !strings.Contains(out, w) {
-			continue
-		}
-		matched = true
-		if pol.Action == VerdictSanitize {
-			out = strings.ReplaceAll(out, w, strings.Repeat("*", utf8.RuneCountInString(w)))
+	if len(pol.BlockedWords) > 0 {
+		folded := foldBlocked(out)
+		for _, w := range pol.BlockedWords {
+			spans := folded.spans(w)
+			if len(spans) == 0 {
+				continue
+			}
+			matched = true
+			if pol.Action == VerdictSanitize {
+				out = maskSpans(out, spans, strings.Repeat("*", utf8.RuneCountInString(w)))
+				folded = foldBlocked(out)
+			}
 		}
 	}
 	if matched {
@@ -181,6 +189,81 @@ func finish(text string, reasons []string, modified, block bool) Result {
 		res.Verdict = VerdictSanitize
 	}
 	return res
+}
+
+// foldedText is a text folded for blocked-word matching (foldBlocked): from[i]
+// and to[i] are the byte range in the text of the rune that folded byte i
+// came from.
+type foldedText struct {
+	text     string
+	from, to []int
+}
+
+// foldBlocked folds s for blocked-word matching rune by rune: NFKD, so that
+// full-width and other compatibility forms match their plain letters, then
+// lower case, dropping format characters such as zero-width spaces and
+// combining marks. White space and punctuation are kept, so that words do not
+// join into false matches.
+func foldBlocked(s string) foldedText {
+	var b strings.Builder
+	var f foldedText
+	for i := 0; i < len(s); {
+		c, size := utf8.DecodeRuneInString(s[i:])
+		var r string
+		if c < utf8.RuneSelf {
+			r = string(unicode.ToLower(c))
+		} else {
+			r = strings.Map(func(c rune) rune {
+				if unicode.In(c, unicode.Cf, unicode.Mn, unicode.Me) {
+					return -1
+				}
+				return c
+			}, strings.ToLower(norm.NFKD.String(s[i:i+size])))
+		}
+		b.WriteString(r)
+		for range len(r) {
+			f.from, f.to = append(f.from, i), append(f.to, i+size)
+		}
+		i += size
+	}
+	f.text = b.String()
+	return f
+}
+
+// spans returns the byte ranges of the text that hold word, folded alike, in
+// order and without overlaps; none for a word that folds to nothing.
+func (f foldedText) spans(word string) [][2]int {
+	w := foldBlocked(word).text
+	if w == "" {
+		return nil
+	}
+	var spans [][2]int
+	for i := 0; ; i += len(w) {
+		j := strings.Index(f.text[i:], w)
+		if j < 0 {
+			return spans
+		}
+		i += j
+		span := [2]int{f.from[i], f.to[i+len(w)-1]}
+		if n := len(spans); n > 0 && span[0] < spans[n-1][1] {
+			spans[n-1][1] = max(spans[n-1][1], span[1])
+			continue
+		}
+		spans = append(spans, span)
+	}
+}
+
+// maskSpans replaces each of spans, ordered byte ranges of s, with mask.
+func maskSpans(s string, spans [][2]int, mask string) string {
+	var b strings.Builder
+	last := 0
+	for _, sp := range spans {
+		b.WriteString(s[last:sp[0]])
+		b.WriteString(mask)
+		last = sp[1]
+	}
+	b.WriteString(s[last:])
+	return b.String()
 }
 
 func truncateRunes(s string, limit int) (string, bool) {

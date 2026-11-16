@@ -189,8 +189,9 @@ func (s *AutonomyService) SetBar(ctx context.Context, convKey, name string, valu
 // RemoveBar removes the bar name the bot added itself (add_buff) from the
 // private chat convKey, with its value, for actor through source
 // (store.BuffSourcePanel or BuffSourceAPI). When the chat's persona has since
-// gained a bar of that name, which wins the name, only the bot's bar goes
-// and the persona's keeps the value. The removal is recorded as a bar change
+// gained a bar of that name, which wins the name, or another chat of its
+// shared panel scope has a persona with one (otherPersonaBar), only the bot's
+// bar goes and the persona's keeps the value. The removal is recorded as a bar change
 // and audited as autonomy.bar.remove with the name only; a failed audit is
 // only logged. A bar the persona alone has cannot be removed: ErrInvalidBar.
 // A name the bot has no bar of is store.ErrNotFound, as is a chat that does
@@ -209,7 +210,13 @@ func (s *AutonomyService) RemoveBar(ctx context.Context, convKey, name, source, 
 		return err
 	}
 	persona := isBarOf(doc.EffectiveBars(), name)
-	removed, err := o.st.RemoveCustomBar(ctx, memory.ScopeKey(conv), name, source, "", persona, o.now())
+	keepValue := persona
+	if !keepValue {
+		if keepValue, err = s.otherPersonaBar(ctx, conv, name); err != nil {
+			return err
+		}
+	}
+	removed, err := o.st.RemoveCustomBar(ctx, memory.ScopeKey(conv), name, source, "", keepValue, o.now())
 	switch {
 	case err != nil:
 		return err
@@ -329,6 +336,33 @@ func (s *AutonomyService) barDefs(ctx context.Context, conv store.ConversationRe
 // isBarOf reports whether bars has a bar named name.
 func isBarOf(bars []conloomapi.PersonaBar, name string) bool {
 	return slices.ContainsFunc(bars, func(b conloomapi.PersonaBar) bool { return b.Name == name })
+}
+
+// otherPersonaBar reports whether the latest persona version of another chat
+// of conv's memory scope (memory.ScopeChats) has a bar called name: the panel
+// chats of a bot keep their bars' values in their shared scope by name,
+// whatever persona each has. A chat without a persona version is left out.
+func (s *AutonomyService) otherPersonaBar(ctx context.Context, conv store.ConversationRecord, name string) (bool, error) {
+	chats, err := memory.ScopeChats(ctx, s.o.st, memory.ScopeKey(conv))
+	if err != nil {
+		return false, err
+	}
+	for _, chat := range chats {
+		if chat == conv.Key {
+			continue
+		}
+		pv, err := s.o.st.LatestPersona(ctx, chat)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			continue
+		case err != nil:
+			return false, err
+		}
+		if isBarOf(pv.Persona.EffectiveBars(), name) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // persona returns conv's current persona version, or, while it has none, the
