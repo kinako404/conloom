@@ -517,7 +517,7 @@ func TestPanelBots_DeleteBusyThenRetry(t *testing.T) {
 	if _, err := env.o.CreatePanelChat(ctx, bot.ID, "admin", "小明"); !errors.Is(err, ErrBotDeleting) {
 		t.Errorf("CreatePanelChat during the delete: err = %v, want ErrBotDeleting", err)
 	}
-	if _, err := env.o.SubmitPanel(ctx, busy, "admin", "还在吗"); !errors.Is(err, ErrBotDeleting) {
+	if _, _, err := env.o.SubmitPanel(ctx, busy, "admin", "还在吗"); !errors.Is(err, ErrBotDeleting) {
 		t.Errorf("SubmitPanel during the delete: err = %v, want ErrBotDeleting", err)
 	}
 	if _, err := svc.Update(ctx, bot.ID, PanelBotInput{Name: "小蓝"}, panelBotActor); !errors.Is(err, ErrBotDeleting) {
@@ -526,7 +526,7 @@ func TestPanelBots_DeleteBusyThenRetry(t *testing.T) {
 	if err := svc.Delete(ctx, bot.ID, "小红", panelBotActor); !errors.Is(err, ErrBotDeleting) {
 		t.Errorf("second Delete during the delete: err = %v, want ErrBotDeleting", err)
 	}
-	if _, err := env.o.SubmitPanel(ctx, otherKey, "admin", "还在吗"); err != nil {
+	if _, _, err := env.o.SubmitPanel(ctx, otherKey, "admin", "还在吗"); err != nil {
 		t.Errorf("SubmitPanel to another bot's chat during the delete: %v", err)
 	}
 	release()

@@ -28,36 +28,38 @@ const (
 // message is stored on the panel channel and the bot's replies there are
 // delivered to the panel only (see replyChannel). It speaks as
 // panel_<panelUser>, under the display name the chat was created with, and
-// returns the new message's ID. A conversation on another platform is
+// returns the new message's ID and, when the message is stored but will not
+// be answered, why (conloomapi.EventAccepted.SuppressedReason, such as
+// paused, rate_limited or queue_full). A conversation on another platform is
 // ErrNotPanelChat; an unknown conversation, also one deleted meanwhile (see
 // DeletePanelChat), store.ErrNotFound; one whose bot is being deleted (see
 // PanelBotService.Delete) ErrBotDeleting.
-func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text string) (messageID string, err error) {
+func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text string) (messageID, suppressed string, err error) {
 	botID, _, _ := strings.Cut(convKey, ":")
 	if err := o.panelBots.notDeleting(botID); err != nil {
-		return "", err
+		return "", "", err
 	}
 	unlock := o.panelLocks.lock(convKey)
 	defer unlock()
 	// The bot may have been marked while the chat's lock was awaited.
 	if err := o.panelBots.notDeleting(botID); err != nil {
-		return "", err
+		return "", "", err
 	}
 	conv, err := o.panelConversation(ctx, convKey)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if conv.Platform != store.PlatformPanel {
-		return "", ErrNotPanelChat
+		return "", "", ErrNotPanelChat
 	}
 	if conv.Type != conloomapi.ConvPrivate {
-		return "", ErrNotPrivate
+		return "", "", ErrNotPrivate
 	}
 	if strings.TrimSpace(text) == "" || utf8.RuneCountInString(text) > panelTextMax {
-		return "", ErrBadText
+		return "", "", ErrBadText
 	}
 	if _, ok := o.bots.Bot(conv.BotInstanceID); !ok {
-		return "", fmt.Errorf("%w: unknown bot %q", store.ErrNotFound, conv.BotInstanceID)
+		return "", "", fmt.Errorf("%w: unknown bot %q", store.ErrNotFound, conv.BotInstanceID)
 	}
 	actorID := PanelActorID(panelUser)
 	pmid := ids.New("panel")
@@ -73,12 +75,13 @@ func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text
 	}
 	body, err := json.Marshal(ev)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	if _, _, err := o.submitOn(ctx, conv.BotInstanceID, pmid, body, ev, store.ChannelPanel); err != nil {
-		return "", err
+	resp, _, err := o.submitOn(ctx, conv.BotInstanceID, pmid, body, ev, store.ChannelPanel)
+	if err != nil {
+		return "", "", err
 	}
-	return ev.Message.ID, nil
+	return ev.Message.ID, resp.SuppressedReason, nil
 }
 
 // panelDisplayName is the name actorID goes by in the panel chat conv: the

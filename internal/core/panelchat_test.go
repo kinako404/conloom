@@ -34,7 +34,7 @@ func privateWait(d time.Duration) func(*config.Config) {
 
 func (e *testEnv) submitPanel(t *testing.T, convKey, panelUser, text string) string {
 	t.Helper()
-	id, err := e.o.SubmitPanel(context.Background(), convKey, panelUser, text)
+	id, _, err := e.o.SubmitPanel(context.Background(), convKey, panelUser, text)
 	if err != nil {
 		t.Fatalf("SubmitPanel(%q): %v", text, err)
 	}
@@ -149,10 +149,22 @@ func TestSubmitPanel_RateLimited(t *testing.T) {
 		c.DefaultGroupPolicy.Reply.UserRateLimitPerMinute = 1
 	}})
 	key := env.createChat(t, testBot)
-	env.waitTask(t, env.panelResponse(t, env.submitPanel(t, key, "admin", "在吗")).TaskID)
-	resp := env.panelResponse(t, env.submitPanel(t, key, "admin", "还在吗"))
+	ctx := context.Background()
+	first, suppressed, err := env.o.SubmitPanel(ctx, key, "admin", "在吗")
+	if err != nil || suppressed != "" {
+		t.Fatalf("first SubmitPanel = %q, suppressed %q, %v; want an answered message", first, suppressed, err)
+	}
+	env.waitTask(t, env.panelResponse(t, first).TaskID)
+	id, suppressed, err := env.o.SubmitPanel(ctx, key, "admin", "还在吗")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := env.panelResponse(t, id)
 	if resp.Disposition != conloomapi.DispositionObserve || resp.SuppressedReason != conloomapi.SuppressedRateLimited {
 		t.Fatalf("panel message response = %+v, want observed as rate limited", resp)
+	}
+	if suppressed != conloomapi.SuppressedRateLimited {
+		t.Errorf("SubmitPanel suppressed = %q, want %q", suppressed, conloomapi.SuppressedRateLimited)
 	}
 }
 
@@ -173,11 +185,11 @@ func TestSubmitPanel_Errors(t *testing.T) {
 		{"blank", key, " \n ", ErrBadText},
 		{"too long", key, strings.Repeat("长", 2001), ErrBadText},
 	} {
-		if _, err := env.o.SubmitPanel(ctx, c.key, "admin", c.text); !errors.Is(err, c.want) {
+		if _, _, err := env.o.SubmitPanel(ctx, c.key, "admin", c.text); !errors.Is(err, c.want) {
 			t.Errorf("%s: err = %v, want %v", c.name, err, c.want)
 		}
 	}
-	if _, err := env.o.SubmitPanel(ctx, key, "admin", strings.Repeat("长", 2000)); err != nil {
+	if _, _, err := env.o.SubmitPanel(ctx, key, "admin", strings.Repeat("长", 2000)); err != nil {
 		t.Errorf("2000 characters: %v", err)
 	}
 }
@@ -201,7 +213,7 @@ func TestSubmitPanel_RejectsPlatform(t *testing.T) {
 	}
 	before := stored()
 	for _, key := range []string{private, testConvKey} {
-		if _, err := env.o.SubmitPanel(ctx, key, "admin", "你好"); !errors.Is(err, ErrNotPanelChat) {
+		if _, _, err := env.o.SubmitPanel(ctx, key, "admin", "你好"); !errors.Is(err, ErrNotPanelChat) {
 			t.Errorf("%s: err = %v, want ErrNotPanelChat", key, err)
 		}
 	}
@@ -480,7 +492,7 @@ func TestDeletePanelChat_SubmitWaitsAndFindsNothing(t *testing.T) {
 	})
 	submitted := make(chan error, 1)
 	go func() {
-		_, err := env.o.SubmitPanel(ctx, key, "admin", "还在吗")
+		_, _, err := env.o.SubmitPanel(ctx, key, "admin", "还在吗")
 		submitted <- err
 	}()
 	select {
@@ -582,7 +594,7 @@ func TestDeletePanelChat_DoesNotBlockOtherChats(t *testing.T) {
 
 	submitted := make(chan error, 1)
 	go func() {
-		_, err := env.o.SubmitPanel(ctx, other, "admin", "在吗")
+		_, _, err := env.o.SubmitPanel(ctx, other, "admin", "在吗")
 		submitted <- err
 	}()
 	select {

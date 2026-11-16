@@ -292,7 +292,7 @@ panel:
 | `DELETE conversations/{key}/autonomy/bars/{name}` | 删除 bot 自建的这条状态条，规则同 API（人设后来加了同名条时只删自建的那条，人设的保留数值），变化记录的来源为 `panel`，审计 `autonomy.bar.remove`，返回 204；不是私聊、删人设的状态条时返回 400，没有这条自建的状态条时返回 404 |
 | `DELETE conversations/{key}/autonomy/effects/{name}` | 提前去掉 bot 的这个效果，变化记录的来源为 `panel`，审计 `autonomy.effect.remove`，返回 204；不是私聊返回 400，没有这个还在生效的效果时返回 404 |
 | `DELETE conversations/{key}/autonomy/status` | 结束私聊的当前状态并取消回来说话的定时，返回 204；不是私聊返回 400 |
-| `POST conversations/{key}/messages` | 面板聊天发消息，请求 `{"text"}`，返回 202 `{"message_id"}`。只限 `panel` 平台的会话；平台上的会话（私聊和群聊）、文本为空或超过 2000 字时返回 400，什么都不存；bot 正在删除时返回 409 `CHAT_BUSY` |
+| `POST conversations/{key}/messages` | 面板聊天发消息，请求 `{"text"}`，返回 202 `{"message_id"}`；消息存下了但 bot 不会回复时（如聊天暂停、限流、队列满）另带 `suppressed_reason`，取值同 API 的 `POST /events`（`paused`、`rate_limited`、`queue_full` 等）。只限 `panel` 平台的会话；平台上的会话（私聊和群聊）、文本为空或超过 2000 字时返回 400，什么都不存；bot 正在删除时返回 409 `CHAT_BUSY` |
 | `POST chats` | 新建面板聊天，请求 `{"bot_instance_id","display_name"}`，返回 201 `{"key"}`；bot 不存在时返回 404，正在删除时返回 409 `CHAT_BUSY` |
 | `DELETE conversations/{key}` | 删除面板聊天，返回 204；不是 `panel` 平台的会话返回 400；聊天里被取消的任务 5 秒内没停下时返回 409 `CHAT_BUSY`，可以重试 |
 | `PUT persona-templates/{name}` | 请求 `{"persona","reason"}`（`persona` 必填，是整份人设，`reason` 只进审计），覆盖同名模板或新建模板；返回模板，格式同 `GET persona-templates/{name}`，新建时 201，否则 200。名字或内容不合规则、图片不存在返回 400 |
