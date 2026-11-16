@@ -440,7 +440,9 @@ func TestPersonaForm_IntimacySection(t *testing.T) {
 		"notAdultNote.hidden = minor.checked || adult.checked;",
 		"'清空亲密面'", "clearBar.hidden = !minor.checked || total() === 0;", "for (const t of texts) t.value = '';",
 		"minor.addEventListener('change', sync);", "adult.addEventListener('change', sync);",
-		"intimacyEditor(base, { minor, adult })", "persona.intimacy = side.value;", "delete persona.intimacy;",
+		"const intimacy = intimacyEditor(base, { minor, adult });", "h('h3', null, '亲密面'),\n  intimacy.el,",
+		"const side = intimacy.read();\n    if (side.error) return { error: side.error };",
+		"if (side.value) persona.intimacy = side.value;\n    else delete persona.intimacy;",
 	} {
 		if !strings.Contains(shown, want) {
 			t.Errorf("views/personaform.js lacks %q", want)
