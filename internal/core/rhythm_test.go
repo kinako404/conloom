@@ -527,6 +527,59 @@ func TestPrivate_CancelledTaskIsNotSuperseded(t *testing.T) {
 	}
 }
 
+func TestPrivate_SupersededBeforeMarkedRunningStaysCancelled(t *testing.T) {
+	env := newPrivateEnv(t, 30*time.Millisecond, nil, nil)
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(proceed) }) })
+	statusAfter := make(chan string, 1)
+	var first atomic.Bool
+	env.hooks.mu.Lock()
+	env.hooks.setStatus = func(taskID, status string, set func() error) error {
+		if status != conloomapi.TaskRunning || !first.CompareAndSwap(false, true) {
+			return set()
+		}
+		// The runner has read the task as queued and is about to mark it
+		// running.
+		close(entered)
+		<-proceed
+		err := set()
+		rec, gerr := env.st.GetTask(context.Background(), testBot, taskID)
+		if gerr != nil {
+			t.Errorf("GetTask: %v", gerr)
+		}
+		statusAfter <- rec.Status
+		return err
+	}
+	env.hooks.mu.Unlock()
+	// A completion of the first task, if any, waits until its stored status
+	// was read above.
+	env.hooks.setOnComplete(func(store.TaskCompletion) { <-proceed })
+
+	ev1 := env.privateEvent("帮我想个名字")
+	firstTask := env.submit(t, ev1)
+	select {
+	case <-entered:
+	case <-time.After(waitLimit):
+		t.Fatal("timed out waiting for the runner to mark its task running")
+	}
+	second := env.submit(t, env.privateEvent("给猫起的"))
+	if second.Disposition != conloomapi.DispositionReply || second.TaskID == firstTask.TaskID {
+		t.Fatalf("follow-up response = %+v", second)
+	}
+	once.Do(func() { close(proceed) })
+	select {
+	case got := <-statusAfter:
+		if got != conloomapi.TaskCancelled {
+			t.Fatalf("superseded task after its runner marked it running = %s, want cancelled", got)
+		}
+	case <-time.After(waitLimit):
+		t.Fatal("timed out waiting for the runner to mark its task running")
+	}
+	requireCancelledWithoutActions(t, env, firstTask.TaskID)
+	requireOneReply(t, env, second.TaskID)
+}
+
 // forgetPrivateUser forgets privateUser the way the API and the panel do,
 // without a command and so without ending their turn.
 func forgetPrivateUser(t *testing.T, env *testEnv) {

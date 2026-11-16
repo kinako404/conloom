@@ -15,6 +15,7 @@ import (
 
 	"github.com/kinako404/conloom/internal/autonomy"
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/ids"
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/review"
 	"github.com/kinako404/conloom/internal/skills"
@@ -380,6 +381,96 @@ func TestWake_StatusReturnWithoutStatusIsSkipped(t *testing.T) {
 	if n := env.modelCalls(); n != 0 {
 		t.Errorf("model calls = %d, want 0", n)
 	}
+}
+
+func TestWake_StatusReturnRecheckedBeforeSending(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		// status is the task's: a pause cancels it at once.
+		status string
+		change func(t *testing.T, env *testEnv, until time.Time)
+	}{
+		{"status cleared", conloomapi.TaskSucceeded, func(t *testing.T, env *testEnv, _ time.Time) {
+			if err := env.o.Autonomy().ClearStatus(context.Background(), privateConvKey, "panel:admin"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"proactive replies off", conloomapi.TaskSucceeded, func(t *testing.T, env *testEnv, _ time.Time) {
+			if _, _, err := env.policies.SetProactiveEnabled(context.Background(), privateConvKey, false, "test"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"chat paused", conloomapi.TaskCancelled, func(t *testing.T, env *testEnv, _ time.Time) {
+			if _, err := env.policies.Pause(context.Background(), privateConvKey, "test"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"newer status", conloomapi.TaskSucceeded, func(t *testing.T, env *testEnv, until time.Time) {
+			env.setWakeStatus(t, "散步", until, until.Add(time.Hour))
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			model := newGatedModel()
+			env, clock := newWakeEnv(t, model.handle, nil, nil)
+			t.Cleanup(model.open)
+			env.seedPrivateMessage(t, clock, "我去洗个澡")
+			until := clock.now().Add(20 * time.Minute)
+			timer := env.setWakeStatus(t, "洗澡", clock.now(), until)
+			clock.set(until)
+
+			id := env.startWake(t, timer)
+			waitUntil(t, "model called", func() bool { return model.calls.Load() == 1 })
+			c.change(t, env, until)
+			model.open()
+			task := env.waitWake(t, id)
+			if len(task.Actions) != 0 || task.Status != c.status ||
+				c.status == conloomapi.TaskSucceeded && task.Meta.ReviewResult != reviewResultSkipped {
+				t.Fatalf("status return = %+v, want it %s without a reply", task, c.status)
+			}
+		})
+	}
+}
+
+func TestWake_CancelledInitiateIsPlannedAgain(t *testing.T) {
+	t.Run("running", func(t *testing.T) {
+		model := newGatedModel()
+		env, clock := newWakeEnv(t, model.handle, nil, nil)
+		t.Cleanup(model.open)
+		env.seedPrivateMessage(t, clock, "晚安")
+		clock.set(clock.now().Add(5 * time.Hour))
+		id := env.startWake(t, env.armWake(t, store.TimerInitiate, clock.now()))
+		waitUntil(t, "model called", func() bool { return model.calls.Load() == 1 })
+		task, err := env.o.CancelTask(context.Background(), testBot, id)
+		if err != nil || task.Status != conloomapi.TaskCancelled {
+			t.Fatalf("CancelTask = %+v, %v; want cancelled", task, err)
+		}
+		model.open()
+		env.waitWake(t, id)
+		env.onlyInitiate(t)
+	})
+	t.Run("queued", func(t *testing.T) {
+		env, clock := newWakeEnv(t, nil, nil, nil)
+		env.seedPrivateMessage(t, clock, "晚安")
+		clock.set(clock.now().Add(5 * time.Hour))
+		now := clock.now()
+		id := ids.New("task")
+		// Stored by fireTimer but not scheduled yet, as before Recover.
+		_, err := env.st.Ingest(context.Background(), store.Ingest{
+			Event: store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "seed:" + id, EventID: "evt_" + id,
+				Response: []byte("{}"), CreatedAt: now},
+			NewTask: &store.TaskRecord{ID: id, BotInstanceID: testBot, ConversationKey: privateConvKey,
+				Status: conloomapi.TaskQueued, ActorPlatformUserID: privateUser, Meta: conloomapi.TaskMeta{Trigger: TriggerInitiate},
+				EventOccurredAt: now, CreatedAt: now, UpdatedAt: now},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		task, err := env.o.CancelTask(context.Background(), testBot, id)
+		if err != nil || task.Status != conloomapi.TaskCancelled {
+			t.Fatalf("CancelTask = %+v, %v; want cancelled", task, err)
+		}
+		env.onlyInitiate(t)
+	})
 }
 
 func TestWake_SkipSendsNothing(t *testing.T) {

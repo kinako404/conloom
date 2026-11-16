@@ -193,7 +193,7 @@
 
 `DELETE …/autonomy/effects/{name}` 提前去掉机器人用 `add_buff` 加的一个还在生效的效果：记一次来源为 `api` 的 `effect_remove` 变化，写审计 `autonomy.effect.remove`（只记名字），返回 `{"ok":true}`。没有这个效果或它已经到时间时返回 404。
 
-`DELETE …/autonomy/status` 立即结束当前状态，同时取消回来说话的定时，等同于模型调用 `set_status` 设 0 分钟：还在排队的回来说话任务找不到状态，结束时不发消息；已经开始生成的那一次不受影响。没有状态时同样成功。写审计 `autonomy.status.clear`（`cleared` 表示是否删掉了状态，删掉时附带它的内容和结束时间），返回 `{"ok":true}`。
+`DELETE …/autonomy/status` 立即结束当前状态，同时取消回来说话的定时，等同于模型调用 `set_status` 设 0 分钟：还在排队的回来说话任务找不到状态，结束时不发消息；已经开始生成的那一次在写结果前会再查一次状态，状态已没有时同样不发。没有状态时同样成功。写审计 `autonomy.status.clear`（`cleared` 表示是否删掉了状态，删掉时附带它的内容和结束时间），返回 `{"ok":true}`。
 
 ## 错误格式
 

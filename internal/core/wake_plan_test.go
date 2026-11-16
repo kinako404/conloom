@@ -5,12 +5,14 @@ import (
 	"math/rand/v2"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kinako404/conloom/internal/autonomy"
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -380,5 +382,53 @@ func TestPrivateProactiveStatus_InferredQuiet(t *testing.T) {
 	}
 	if !strings.Contains(CopyPrivateProactiveStatus(got.Level, got.SentToday, got.DailyCap, "08:00–16:00", CopyQuietInferred, true), "按你的作息推算") {
 		t.Error("inferred quiet hours not named in the status copy")
+	}
+}
+
+func TestPrivateProactiveStatus_PanelChatQuietSinceForget(t *testing.T) {
+	env, clock := newWakeEnv(t, nil, nil, nil)
+	ctx := context.Background()
+	key, err := env.o.CreatePanelChat(ctx, testBot, "admin", "小红")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := PanelActorID("admin")
+	first := time.Date(2026, 11, 6, 0, 10, 0, 0, env.o.loc)
+	for d := range 6 {
+		for h := range 8 {
+			at := first.AddDate(0, 0, d).Add(time.Duration(h) * time.Hour)
+			id := "msg_panel_" + strconv.Itoa(d*8+h)
+			_, err := env.st.Ingest(ctx, store.Ingest{
+				Event: store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "seed:" + id, EventID: "evt_" + id,
+					Response: []byte("{}"), CreatedAt: at},
+				Message: &store.MessageRecord{ID: id, BotInstanceID: testBot, ConversationKey: key, Platform: store.PlatformPanel,
+					PlatformMessageID: id, ActorID: user, PlatformUserID: user, DisplayName: "小红", Text: "在吗",
+					Channel: store.ChannelPanel, OccurredAt: at, CreatedAt: at},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	clock.set(first.AddDate(0, 0, 6))
+	got, err := env.o.privateProactiveStatus(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.QuietInferred {
+		t.Fatalf("status before the forget = %+v, want inferred quiet hours", got)
+	}
+
+	// After the panel user is forgotten, the messages before it no longer
+	// shape the quiet hours.
+	if err := env.st.ForgetMember(ctx, memory.ScopeKeyOf(key), user, clock.now()); err != nil {
+		t.Fatal(err)
+	}
+	got, err = env.o.privateProactiveStatus(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.QuietInferred || got.QuietStart != "00:30" || got.QuietEnd != "08:00" {
+		t.Fatalf("status after the forget = %+v, want the default quiet hours", got)
 	}
 }

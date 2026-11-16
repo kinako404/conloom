@@ -284,7 +284,7 @@ func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 		return "", joinNoFewMessages
 	}
 	newest := window[len(window)-1]
-	if now.Sub(newest.OccurredAt) >= o.staleAfter {
+	if o.joinStale(newest, p, now) {
 		return "", joinNoStale
 	}
 	speakers, err := o.joinSpeakers(ctx, convKey, window, p, now)
@@ -349,7 +349,7 @@ func (o *Orchestrator) guestQuestion(ctx context.Context, convKey string, window
 		return joinSpeaker{}, store.MessageRecord{}, false, nil
 	}
 	newest := window[len(window)-1]
-	if !isClearQuestion(newest.Text) || now.Sub(newest.OccurredAt) >= o.staleAfter ||
+	if !isClearQuestion(newest.Text) || o.joinStale(newest, pol.Proactive, now) ||
 		o.inSession(convKey, newest.PlatformUserID, now, pol.Reply.ContinuationWindow.Duration) {
 		return joinSpeaker{}, store.MessageRecord{}, false, nil
 	}
@@ -362,6 +362,13 @@ func (o *Orchestrator) guestQuestion(ctx context.Context, convKey string, window
 		return joinSpeaker{}, store.MessageRecord{}, false, nil
 	}
 	return speakers[0], target, true, nil
+}
+
+// joinStale reports whether newest, the newest message of a join window, is
+// stale at now: StaleTaskAfter or longer passed since the lull after it ended,
+// so a join lull of any length still lets the bot join.
+func (o *Orchestrator) joinStale(newest store.MessageRecord, p conloomapi.ProactivePolicy, now time.Time) bool {
+	return now.Sub(newest.OccurredAt) >= p.JoinLull.Duration+o.staleAfter
 }
 
 // joinWindow returns the member messages since since that are not commands

@@ -139,7 +139,8 @@ func (o *Orchestrator) backfillMessageIndex() {
 
 // recoverTask resumes or fails one unfinished task unless this process
 // already schedules or owns it. Only a task outside the scheduler is claimed,
-// so the claim never turns away the task's own runner.
+// so the claim never turns away the task's own runner. A private reply task
+// gets its merge window back (see restoredMerge).
 func (o *Orchestrator) recoverTask(ctx context.Context, t store.TaskRecord, now time.Time, staleAfter time.Duration) (recovery, error) {
 	if slices.ContainsFunc(o.sched.Active(t.ConversationKey), func(q QueuedTask) bool { return q.TaskID == t.ID }) {
 		return recoverSkipped, nil
@@ -154,10 +155,26 @@ func (o *Orchestrator) recoverTask(ctx context.Context, t store.TaskRecord, now 
 		at := time.Now()
 		o.sched.Restore(QueuedTask{
 			TaskID: rec.ID, ConversationKey: rec.ConversationKey, ActorID: schedActor(rec),
-			TriggerMessageIDs: rec.TriggerMessageIDs, EnqueuedAt: at, ReadyAt: at,
+			TriggerMessageIDs: rec.TriggerMessageIDs, EnqueuedAt: at, ReadyAt: at, merge: o.restoredMerge(ctx, rec),
 		})
 	}
 	return r, err
+}
+
+// restoredMerge is the merge window a restored task was created with: a
+// private reply task's (privateMerge, with Interrupt, so a follow-up can still
+// supersede it once it finished), none for other tasks. A policy that cannot
+// be read keeps only Interrupt.
+func (o *Orchestrator) restoredMerge(ctx context.Context, rec store.TaskRecord) MergeOptions {
+	if convType(rec.ConversationKey) != conloomapi.ConvPrivate || isWake(rec.Meta.Trigger) {
+		return MergeOptions{}
+	}
+	pv, err := o.policies.Current(ctx, rec.ConversationKey)
+	if err != nil {
+		o.log.Warn("load policy of restored private task failed", "task_id", rec.ID, "conversation", rec.ConversationKey, "error", err)
+		return MergeOptions{Interrupt: true}
+	}
+	return privateMerge(pv.Policy)
 }
 
 func (o *Orchestrator) recoverOwned(ctx context.Context, t store.TaskRecord, now time.Time, staleAfter time.Duration) (recovery, store.TaskRecord, error) {
@@ -177,7 +194,10 @@ func (o *Orchestrator) recoverOwned(ctx context.Context, t store.TaskRecord, now
 	case rec.Command != "":
 		return recoverRan, rec, o.runStoredCommand(ctx, rec)
 	}
-	if err := o.st.SetTaskStatus(ctx, rec.ID, conloomapi.TaskQueued); err != nil {
+	switch err := o.st.SetTaskStatus(ctx, rec.ID, conloomapi.TaskQueued); {
+	case errors.Is(err, store.ErrTaskFinished):
+		return recoverSkipped, rec, nil
+	case err != nil:
 		return recoverSkipped, rec, err
 	}
 	return recoverRequeued, rec, nil

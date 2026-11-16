@@ -267,8 +267,8 @@ type nameDetail struct {
 // ClearStatus ends the status of the private chat convKey for actor at once,
 // as set_status with minutes 0 does: the status, expired or not, is deleted
 // with the status_return timer of the chat it was set in, so the bot does not
-// come back to talk, and a status return already queued finds no status and
-// ends without a message. It is audited as autonomy.status.clear, also when
+// come back to talk, and a status return already queued, or waiting for its
+// model, finds no status and ends without a message. It is audited as autonomy.status.clear, also when
 // there was no status; a failed audit is only logged. A chat that does not
 // exist is store.ErrNotFound, another kind of conversation ErrNotPrivate.
 func (s *AutonomyService) ClearStatus(ctx context.Context, convKey, actor string) error {

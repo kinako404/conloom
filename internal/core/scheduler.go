@@ -49,8 +49,9 @@ type QueuedTask struct {
 	// ignoreCooldown once a message with MergeOptions.IgnoreCooldown created
 	// or merged into it; closed once its actor's turn ended (see EndTurn).
 	addressed, deferred, ignoreCooldown, closed bool
-	// merge is the merge window the task was created with; zero fields (as
-	// in restored tasks) follow the conversation's SessionConfig.
+	// merge is the merge window the task was created with (or restored
+	// with, see Restore); zero fields follow the conversation's
+	// SessionConfig.
 	merge MergeOptions
 }
 
@@ -307,7 +308,8 @@ func (s *Scheduler) AdmitWith(convKey, actorID, messageID string, mode AdmitMode
 	return AdmitResult{TaskID: t.TaskID, Created: true}, nil
 }
 
-// Restore enqueues a task recovered after a restart, keeping its ReadyAt.
+// Restore enqueues a task recovered after a restart, keeping its ReadyAt and
+// merge window.
 func (s *Scheduler) Restore(t QueuedTask) {
 	sess := s.lockSession(t.ConversationKey, true)
 	if sess == nil {

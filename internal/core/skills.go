@@ -39,6 +39,10 @@ const (
 	// assistantTokensFallback bounds an assistant message when the profile
 	// reserves no output tokens.
 	assistantTokensFallback = 1024
+	// minToolHistoryTokens is the least room for history a reply with skills
+	// must keep once a worst-case tool round is reserved; with less it goes
+	// without skills (see call).
+	minToolHistoryTokens = 1024
 
 	// toolResultPreface starts every tool result the model receives, so it
 	// reads the result as material rather than instructions.
@@ -138,6 +142,16 @@ func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, 
 		Location:          o.loc,
 	}
 	return run
+}
+
+// withSkills returns in with run's skill section and tool definitions, or in
+// as it is when run is nil.
+func withSkills(in contextbuilder.Input, run *skillRun) contextbuilder.Input {
+	if run != nil {
+		in.SystemPrompt += "\n\n" + run.set.Section
+		in.ToolSchema = run.schema
+	}
+	return in
 }
 
 // worstRound bounds the prompt growth of one tool round: an assistant

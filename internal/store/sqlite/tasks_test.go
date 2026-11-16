@@ -143,3 +143,26 @@ func TestListUnfinishedTasks(t *testing.T) {
 		t.Fatalf("unfinished = %v", got)
 	}
 }
+
+func TestSetTaskStatus_FinishedTaskUnchanged(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	ingestTask(t, db, "1", conloomapi.TaskQueued)
+	if err := db.SetTaskStatus(ctx, "task_1", conloomapi.TaskRunning); err != nil {
+		t.Fatalf("SetTaskStatus running: %v", err)
+	}
+	if err := db.CompleteTask(ctx, store.TaskCompletion{
+		TaskID: "task_1", Status: conloomapi.TaskCancelled, ErrorCode: conloomapi.CodeTaskCancelled,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []string{conloomapi.TaskRunning, conloomapi.TaskQueued} {
+		if err := db.SetTaskStatus(ctx, "task_1", status); !errors.Is(err, store.ErrTaskFinished) {
+			t.Fatalf("SetTaskStatus %s on a cancelled task err = %v, want ErrTaskFinished", status, err)
+		}
+	}
+	task, err := db.GetTask(ctx, testBot, "task_1")
+	if err != nil || task.Status != conloomapi.TaskCancelled {
+		t.Fatalf("task = %+v, %v; want cancelled", task, err)
+	}
+}

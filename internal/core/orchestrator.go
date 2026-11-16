@@ -550,7 +550,10 @@ func (o *Orchestrator) dispatch(ctx context.Context, s *submission, d Decision, 
 		}
 		addressed := d.Trigger == conloomapi.TriggerMention || d.Trigger == conloomapi.TriggerReply
 		resp, err := o.admitWith(ctx, s, AdmitNew, d.Trigger, MergeOptions{Addressed: addressed}, nil)
-		if errors.Is(err, ErrQueueFull) {
+		switch {
+		case errors.Is(err, errPaused):
+			return o.observeOnly(ctx, s, conloomapi.SuppressedPaused)
+		case errors.Is(err, ErrQueueFull):
 			return o.observeOnly(ctx, s, conloomapi.SuppressedQueueFull)
 		}
 		return resp, err
@@ -579,8 +582,13 @@ func endsTurn(command string) bool {
 	return false
 }
 
-// errRateLimited stops a new turn of a sender over the per-user rate limit.
-var errRateLimited = errors.New("core: sender is rate limited")
+// errRateLimited stops a new turn of a sender over the per-user rate limit;
+// errPaused a new task of a conversation paused after its message's policy
+// was read (see admitWith).
+var (
+	errRateLimited = errors.New("core: sender is rate limited")
+	errPaused      = errors.New("core: conversation is paused")
+)
 
 // submitTurn admits a session participant's message into their turn: their
 // pending task absorbs it, or else a continuation task starts whose merge
@@ -603,6 +611,8 @@ func (o *Orchestrator) submitTurn(ctx context.Context, s *submission, pol conloo
 		return o.limiter.Allow(s.convKey+":"+s.ev.Actor.PlatformUserID, pol.Reply.UserRateLimitPerMinute, s.now)
 	})
 	switch {
+	case errors.Is(err, errPaused):
+		return o.observeOnly(ctx, s, conloomapi.SuppressedPaused)
 	case errors.Is(err, errRateLimited):
 		return o.observeOnly(ctx, s, conloomapi.SuppressedRateLimited)
 	case errors.Is(err, ErrQueueFull):
@@ -631,19 +641,26 @@ func (o *Orchestrator) submitPrivate(ctx context.Context, s *submission, trigger
 	if pol.Concurrency.MaxInteractiveRequests == 0 {
 		return o.observeOnly(ctx, s, conloomapi.SuppressedPaused)
 	}
-	opts := MergeOptions{
-		Debounce: pol.Reply.PrivateWait.Duration, MaxMergeWindow: pol.Reply.PrivateMaxWait.Duration, Interrupt: true,
-	}
-	resp, err := o.admitWith(ctx, s, AdmitNew, trigger, opts, func() bool {
+	resp, err := o.admitWith(ctx, s, AdmitNew, trigger, privateMerge(pol), func() bool {
 		return o.limiter.Allow(s.convKey+":"+s.ev.Actor.PlatformUserID, pol.Reply.UserRateLimitPerMinute, s.now)
 	})
 	switch {
+	case errors.Is(err, errPaused):
+		return o.observeOnly(ctx, s, conloomapi.SuppressedPaused)
 	case errors.Is(err, errRateLimited):
 		return o.observeOnly(ctx, s, conloomapi.SuppressedRateLimited)
 	case errors.Is(err, ErrQueueFull):
 		return o.observeOnly(ctx, s, conloomapi.SuppressedQueueFull)
 	}
 	return resp, err
+}
+
+// privateMerge is the merge window of a private reply task under pol (see
+// submitPrivate).
+func privateMerge(pol conloomapi.GroupPolicy) MergeOptions {
+	return MergeOptions{
+		Debounce: pol.Reply.PrivateWait.Duration, MaxMergeWindow: pol.Reply.PrivateMaxWait.Duration, Interrupt: true,
+	}
 }
 
 // errSuperseded stops a runner whose task was superseded (see supersede).
@@ -899,17 +916,29 @@ func (o *Orchestrator) admit(ctx context.Context, s *submission, mode AdmitMode,
 	return o.admitWith(ctx, s, mode, trigger, MergeOptions{}, nil)
 }
 
-// admitWith is admit with the merge window opts for a new task. A non-nil
-// allowNew is asked once before a new task is stored or a task superseded;
-// if it refuses, nothing is stored and admitWith returns errRateLimited. With
-// opts.Interrupt a new task may supersede another (see supersede); if that is
-// refused, the other task's unsent reply parts are cancelled once the new
-// task is stored (see cancelUnsentParts).
+// admitWith is admit with the merge window opts for a new task. A new task
+// of a conversation paused by then is refused with errPaused and nothing is
+// stored: the policy is read again under the scheduler's lock, so a task
+// admitted after a pause's cancelActive took its snapshot never waits there
+// for the resume. A non-nil allowNew is then asked once before a new task is
+// stored or a task superseded; if it refuses, nothing is stored and admitWith
+// returns errRateLimited. With opts.Interrupt a new task may supersede another
+// (see supersede); if that is refused, the other task's unsent reply parts are
+// cancelled once the new task is stored (see cancelUnsentParts).
 func (o *Orchestrator) admitWith(ctx context.Context, s *submission, mode AdmitMode, trigger string, opts MergeOptions, allowNew func() bool) (conloomapi.EventAccepted, error) {
 	var resp conloomapi.EventAccepted
 	var allowed bool
 	var refused string
 	_, err := o.sched.AdmitWith(s.convKey, s.ev.Actor.PlatformUserID, s.ev.Message.ID, mode, opts, func(plan AdmitPlan) error {
+		if plan.NewTaskID != "" {
+			pv, err := o.policies.Current(ctx, s.convKey)
+			if err != nil {
+				return err
+			}
+			if pv.Policy.Concurrency.MaxInteractiveRequests == 0 {
+				return errPaused
+			}
+		}
 		if plan.NewTaskID != "" && allowNew != nil && !allowed {
 			if !allowNew() {
 				return errRateLimited
@@ -1074,37 +1103,47 @@ func taskError(code, traceID string) *conloomapi.ErrorBody {
 
 // CancelTask cancels a queued or running task and returns its state. If the
 // task is being executed (a running reply or a command in progress) it waits
-// briefly for the executor to record the outcome.
+// briefly for the executor to record the outcome. An initiate task (see
+// wake.go) it cancelled has the chat's next initiate planned
+// (replanInitiate): its timer went when it fired, and cancelling one message
+// does not stop the bot from starting the chat later.
 func (o *Orchestrator) CancelTask(ctx context.Context, botID, taskID string) (conloomapi.Task, error) {
 	rec, err := o.st.GetTask(ctx, botID, taskID)
 	if err != nil {
 		return conloomapi.Task{}, err
 	}
-	if !taskFinished(rec.Status) {
-		done, err := o.cancel(ctx, botID, rec.ConversationKey, taskID)
-		if err != nil {
-			return conloomapi.Task{}, err
-		}
-		if done != nil {
-			t := time.NewTimer(cancelWait)
-			select {
-			case <-done:
-			case <-t.C:
-			case <-ctx.Done():
-				t.Stop()
-				return conloomapi.Task{}, ctx.Err()
-			}
-			t.Stop()
-		}
+	if taskFinished(rec.Status) {
+		return o.GetTask(ctx, botID, taskID)
 	}
-	return o.GetTask(ctx, botID, taskID)
+	done, err := o.cancel(ctx, botID, rec.ConversationKey, taskID)
+	if err != nil {
+		return conloomapi.Task{}, err
+	}
+	if done != nil {
+		t := time.NewTimer(cancelWait)
+		select {
+		case <-done:
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+			return conloomapi.Task{}, ctx.Err()
+		}
+		t.Stop()
+	}
+	task, err := o.GetTask(ctx, botID, taskID)
+	if err == nil && rec.Meta.Trigger == TriggerInitiate && task.Status == conloomapi.TaskCancelled {
+		o.replanInitiate(context.WithoutCancel(ctx), rec.ConversationKey)
+	}
+	return task, err
 }
 
 // cancel cancels taskID. If another party owns the task, the returned channel
 // closes when it lets go; a runner owner records the cancellation itself.
-// Otherwise cancel takes ownership, marks the stored task cancelled and
-// returns a nil channel; a runner dispatched meanwhile finds the task owned
-// and does not run it.
+// Otherwise cancel takes ownership, marks the stored task cancelled, even if
+// ctx ends meanwhile, and returns a nil channel; a runner dispatched meanwhile
+// finds the task owned and does not run it. Only once the cancellation is
+// stored does the task leave the scheduler, so a task whose cancellation
+// failed stays scheduled rather than queued with no runner.
 func (o *Orchestrator) cancel(ctx context.Context, botID, convKey, taskID string) (<-chan struct{}, error) {
 	o.mu.Lock()
 	ow, owned := o.owners[taskID]
@@ -1116,16 +1155,21 @@ func (o *Orchestrator) cancel(ctx context.Context, botID, convKey, taskID string
 		o.owners[taskID] = ow
 	}
 	o.mu.Unlock()
-	o.sched.Cancel(convKey, taskID)
 	if owned {
+		o.sched.Cancel(convKey, taskID)
 		return ow.done, nil
 	}
 	defer o.release(taskID, ow)
+	ctx = context.WithoutCancel(ctx)
 	rec, err := o.st.GetTask(ctx, botID, taskID)
-	if err != nil || taskFinished(rec.Status) {
+	if err == nil && !taskFinished(rec.Status) {
+		err = o.complete(ctx, rec, conloomapi.TaskCancelled, rec.Meta, conloomapi.CodeTaskCancelled, nil)
+	}
+	if err != nil {
 		return nil, err
 	}
-	return nil, o.complete(ctx, rec, conloomapi.TaskCancelled, rec.Meta, conloomapi.CodeTaskCancelled, nil)
+	o.sched.Cancel(convKey, taskID)
+	return nil, nil
 }
 
 // claim makes the caller the only owner of taskID until release. It returns
@@ -1177,7 +1221,8 @@ func (o *Orchestrator) complete(ctx context.Context, task store.TaskRecord, stat
 	ow.commit.Lock()
 	defer ow.commit.Unlock()
 	if ow.superseded {
-		// The runner may have marked the task running after it was superseded.
+		// supersede stored the task as cancelled; it is stored so again with
+		// the meta of the run.
 		if meta.Trigger == "" {
 			meta.Trigger = task.Meta.Trigger
 		}

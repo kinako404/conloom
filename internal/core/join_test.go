@@ -831,3 +831,59 @@ func TestJoin_DirectiveNamesSanitized(t *testing.T) {
 		t.Fatalf("join request current = %q, want suffix %q", c, want)
 	}
 }
+
+func TestJoin_LongLullIsNotStale(t *testing.T) {
+	const lull = 3 * time.Minute
+	for _, c := range []struct {
+		name  string
+		after time.Duration
+		want  string
+	}{
+		{"right after the lull", lull + time.Second, ""},
+		{"stale after the lull", lull + defaultStaleTaskAfter, joinNoStale},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			clock := &offsetClock{}
+			env := newTestOrchestrator(t, testOpts{now: clock.now, configure: joinConfig(lull, func(c *config.Config) {
+				c.DefaultGroupPolicy.Proactive.JoinWindow = conloomapi.Duration{Duration: 10 * time.Minute}
+			})})
+			env.seedMember(t, "20001", conloomapi.ProactiveHigh, time.Now().Add(-time.Hour))
+			env.chat(t, line{"20002", "今天好热"}, line{"20001", matchText}, line{"20003", "是啊是啊"})
+			env.o.stopLull(testConvKey)
+			clock.advance(c.after)
+			id, reason := env.o.considerJoin(testConvKey)
+			if c.want == "" && id == "" {
+				t.Fatalf("considerJoin %s after the last message did not join: %s", c.after, reason)
+			}
+			if c.want != "" && (id != "" || reason != c.want) {
+				t.Fatalf("considerJoin = %q, %q; want no task, reason %q", id, reason, c.want)
+			}
+		})
+	}
+}
+
+func TestJoin_GuestQuestionAfterLongLullIsNotStale(t *testing.T) {
+	const lull = 3 * time.Minute
+	env := newTestOrchestrator(t, testOpts{configure: joinConfig(lull, nil)})
+	env.seedMember(t, "20002", conloomapi.ProactiveHigh, time.Now().Add(-time.Hour))
+	q := env.chat(t, line{"20002", "猫娘可爱吗"})[0]
+	env.o.stopLull(testConvKey)
+	ctx := context.Background()
+	pv, err := env.policies.Current(ctx, testConvKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := env.st.RecentMessages(ctx, testConvKey, joinScanLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Add(lull + time.Second)
+	window := joinWindow(msgs, now.Add(-pv.Policy.Proactive.JoinWindow.Duration), pv.Policy.Reply.CommandPrefix)
+	_, target, ok, err := env.o.guestQuestion(ctx, testConvKey, window, msgs, pv.Policy, now)
+	if err != nil || !ok || target.ID != q.Message.ID {
+		t.Fatalf("guestQuestion right after the lull = %+v, %v, %v; want the question %s", target, ok, err, q.Message.ID)
+	}
+	if _, _, ok, _ := env.o.guestQuestion(ctx, testConvKey, window, msgs, pv.Policy, now.Add(defaultStaleTaskAfter)); ok {
+		t.Fatal("guestQuestion answered a question stale after the lull")
+	}
+}

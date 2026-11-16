@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/kinako404/conloom/internal/store"
@@ -96,9 +97,17 @@ func (db *DB) GetTask(ctx context.Context, botID, taskID string) (store.TaskReco
 }
 
 func (db *DB) SetTaskStatus(ctx context.Context, taskID, status string) error {
-	res, err := db.w.ExecContext(ctx, `UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`,
-		status, fmtTime(time.Now()), taskID)
-	return affectedOne(res, err)
+	res, err := db.w.ExecContext(ctx, `UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status IN (?, ?)`,
+		status, fmtTime(time.Now()), taskID, conloomapi.TaskQueued, conloomapi.TaskRunning)
+	err = affectedOne(res, err)
+	if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	var found int
+	if err := db.w.QueryRowContext(ctx, `SELECT 1 FROM tasks WHERE id = ?`, taskID).Scan(&found); err != nil {
+		return notFound(err)
+	}
+	return store.ErrTaskFinished
 }
 
 func (db *DB) CompleteTask(ctx context.Context, c store.TaskCompletion) error {

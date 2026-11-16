@@ -539,6 +539,33 @@ func (o *Orchestrator) wakeAllowed(ctx context.Context, task store.TaskRecord, k
 	return unansweredAllows(kind, started, total), nil
 }
 
+// statusReturnAllowed reports whether the bot may still send the reply of a
+// status return task w ran for: proactive replies are on, the chat is not
+// paused and its user may still chat privately (the daily cap does not apply),
+// and the status it returns from, which wakeDirective read before the model
+// call, is still that of the conversation's memory scope: set in this chat and
+// ending at w.statusUntil.
+func (o *Orchestrator) statusReturnAllowed(ctx context.Context, task store.TaskRecord, w *wakeRun) (bool, error) {
+	pv, err := o.policies.Current(ctx, task.ConversationKey)
+	if err != nil {
+		return false, err
+	}
+	pol := pv.Policy
+	bot, ok := o.bots.Bot(task.BotInstanceID)
+	if !ok || !pol.Proactive.Enabled || pol.Concurrency.MaxInteractiveRequests == 0 ||
+		!privateAllowed(bot, convPlatform(task.ConversationKey), task.ActorPlatformUserID) {
+		return false, nil
+	}
+	st, err := o.st.GetStatus(ctx, memory.ScopeKeyOf(task.ConversationKey))
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return st.Origin() == task.ConversationKey && st.UntilAt.Equal(w.statusUntil), nil
+}
+
 // unansweredAllows reports whether, after started initiates and follow-ups
 // and total messages in all (status returns too, see unanswered) since the
 // user's last message, the bot may start one of kind: total is below
@@ -668,8 +695,9 @@ func (o *Orchestrator) userWroteSince(ctx context.Context, convKey string, at ti
 // in finishWake under the conversation's proactive lock: one told to stop
 // (cancelWakes, /stop) ends cancelled; with a reply, one whose user wrote or
 // was forgotten after it was created ends cancelled too, and an initiate or
-// follow-up the bot may no longer send (wakeAllowed) ends skipped. A failed
-// check is logged and skips the reply.
+// follow-up the bot may no longer send (wakeAllowed), or a status return
+// whose status is gone or that may no longer be sent (statusReturnAllowed),
+// ends skipped. A failed check is logged and skips the reply.
 func (o *Orchestrator) withholdWake(ctx context.Context, task store.TaskRecord, out *outcome) {
 	withhold := func(reason string, cancel bool) {
 		o.log.Info("wake reply withheld", "task_id", task.ID, "conversation", task.ConversationKey, "reason", reason)
@@ -709,10 +737,12 @@ func (o *Orchestrator) withholdWake(ctx context.Context, task store.TaskRecord, 
 		withhold("forgotten", true)
 		return
 	}
+	var ok bool
 	if out.wake.kind == store.TimerStatusReturn {
-		return
+		ok, err = o.statusReturnAllowed(ctx, task, out.wake)
+	} else {
+		ok, err = o.wakeAllowed(ctx, task, out.wake.kind)
 	}
-	ok, err := o.wakeAllowed(ctx, task, out.wake.kind)
 	if err != nil {
 		fail(err)
 		return
