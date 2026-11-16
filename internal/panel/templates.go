@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kinako404/conloom/internal/persona"
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -180,15 +181,17 @@ func (s *Server) exportAllTemplates(w http.ResponseWriter, r *http.Request, sess
 
 // exportTemplates answers the persona templates names, all of them by name
 // when none, as an exchange file (see persona.Service.Export) to save as
-// filename, and audits the export for target with the names exported. An
+// filename, and audits the export for target with the names to export. An
 // unknown name is 404. The file is the exchange file indented by two spaces,
 // written one template at a time so that at most one appearance image is in
 // memory. The first template is read before anything is written, so that its
 // failure is an error response; a template that fails after the file has
-// started aborts the response. HEAD only answers the headers, or 404 for an
-// unknown name: it neither builds the file nor audits an export.
+// started aborts the response. Exporting them all, a template deleted after
+// the names were listed is left out. HEAD only answers the headers, or 404
+// for an unknown name: it neither builds the file nor audits an export.
 func (s *Server) exportTemplates(w http.ResponseWriter, r *http.Request, sess *Session, names []string, target, filename string) {
-	if names == nil {
+	all := names == nil
+	if all {
 		for _, info := range s.d.Personas.Templates() {
 			names = append(names, info.Name)
 		}
@@ -204,12 +207,18 @@ func (s *Server) exportTemplates(w http.ResponseWriter, r *http.Request, sess *S
 		return
 	}
 	ctx := r.Context()
+	deleted := func(err error) bool { return all && errors.Is(err, store.ErrNotFound) }
 	var first []byte
-	if len(names) > 0 {
-		var err error
-		if first, err = s.exportedTemplate(ctx, names[0]); err != nil {
+	for len(names) > 0 && first == nil {
+		data, err := s.exportedTemplate(ctx, names[0])
+		switch {
+		case deleted(err):
+			names = names[1:]
+		case err != nil:
 			s.fail(w, r, err)
 			return
+		default:
+			first = data
 		}
 	}
 	s.audit(r, sess, "", "persona.template.export", target, struct {
@@ -222,17 +231,23 @@ func (s *Server) exportTemplates(w http.ResponseWriter, r *http.Request, sess *S
 		format, persona.ExchangeVersion, exportedAt); err != nil {
 		return
 	}
+	written := 0
 	for i, name := range names {
-		data, sep := first, "\n    "
-		first = nil
+		data := first
 		if i > 0 {
 			var err error
 			if data, err = s.exportedTemplate(ctx, name); err != nil {
+				if deleted(err) {
+					continue
+				}
 				if ctx.Err() == nil {
 					s.log.Error("persona template export aborted", "trace_id", traceID(ctx), "template", name, "error", err)
 				}
 				panic(http.ErrAbortHandler)
 			}
+		}
+		sep := "\n    "
+		if written > 0 {
 			sep = ",\n    "
 		}
 		if _, err := io.WriteString(w, sep); err != nil {
@@ -241,9 +256,10 @@ func (s *Server) exportTemplates(w http.ResponseWriter, r *http.Request, sess *S
 		if _, err := w.Write(data); err != nil {
 			return
 		}
+		written++
 	}
 	end := "\n  ]\n}\n"
-	if len(names) == 0 {
+	if written == 0 {
 		end = "]\n}\n"
 	}
 	_, _ = io.WriteString(w, end)

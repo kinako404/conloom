@@ -678,6 +678,37 @@ func TestTemplatesAPI_ExportImageReadFails(t *testing.T) {
 	checkTemplateAudits(t, h, "persona.template.export", "")
 }
 
+func TestTemplatesAPI_ExportAllSkipsTemplateDeletedMeanwhile(t *testing.T) {
+	h, spy, _ := newExportHarness(t)
+	lighthouse := h.template("lighthouse").AppearanceImage
+	// moon is deleted while lighthouse, written before it, is read.
+	spy.onRead = func(id string) error {
+		if id == lighthouse {
+			return h.srv.d.Personas.DeleteTemplate(context.Background(), "moon")
+		}
+		return nil
+	}
+	w := httptest.NewRecorder()
+	if v := serveExport(h, w, templatesExportPath); v != nil {
+		t.Fatalf("export panicked: %v (%.300s)", v, w.Body)
+	}
+	f := decodeExport(t, w, "persona-templates-20261113.json")
+	var names []string
+	for _, tpl := range f.Templates {
+		names = append(names, tpl.Name)
+	}
+	if !slices.Equal(names, []string{"cat", "default", "lighthouse"}) {
+		t.Fatalf("exported templates = %v, want cat, default and lighthouse", names)
+	}
+	want, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := w.Body.String(); got != string(want)+"\n" {
+		t.Errorf("export is not the exchange file indented by two spaces:\n%.600s\nwant\n%.600s", got, want)
+	}
+}
+
 func TestTemplatesAPI_ImportModes(t *testing.T) {
 	h := newBotsHarness(t)
 	ctx := context.Background()
