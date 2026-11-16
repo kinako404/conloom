@@ -239,7 +239,7 @@ panel:
 
 | 接口 | 说明 |
 |---|---|
-| `POST login` | 请求 `{"name","password"}`，成功返回 `{"user","csrf_token","expires_at"}` 并设置 cookie |
+| `POST login` | 请求 `{"name","password"}`，`name` 去掉首尾空白后再比对（区分大小写），成功返回 `{"user","csrf_token","expires_at"}` 并设置 cookie |
 | `GET session` | 当前用户、`csrf_token`、过期时间 |
 | `POST logout` | 删除会话、清掉 cookie，返回 204 |
 

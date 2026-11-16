@@ -153,6 +153,25 @@ func TestAssets_ImportsResolve(t *testing.T) {
 	}
 }
 
+// Phone keyboards capitalize and correct a plain text field and may add a
+// space after a suggested word; the login name field turns that off and the
+// name is sent trimmed.
+func TestAssets_LoginNameNotAutocorrected(t *testing.T) {
+	js := assets(t, ".js")["views/login.js"]
+	m := regexp.MustCompile(`const name = h\('input', \{([^}]*)\}\);`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("views/login.js has no name input")
+	}
+	for _, attr := range []string{`autocapitalize: 'none'`, `autocorrect: 'off'`, `spellcheck: 'false'`} {
+		if !strings.Contains(m[1], attr) {
+			t.Errorf("name input lacks %s: {%s}", attr, m[1])
+		}
+	}
+	if !regexp.MustCompile(`\blogin\(name\.value\.trim\(\),`).MatchString(js) {
+		t.Error("views/login.js does not send the name trimmed")
+	}
+}
+
 func TestAssets_InitialAffinityMatchesMemory(t *testing.T) {
 	js := assets(t, ".js")["views/conversation.js"]
 	m := regexp.MustCompile(`const INITIAL_AFFINITY = (\d+);`).FindStringSubmatch(js)
