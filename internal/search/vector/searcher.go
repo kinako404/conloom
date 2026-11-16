@@ -22,7 +22,8 @@ import (
 const (
 	// DefaultQueryTimeout bounds embedding a query.
 	DefaultQueryTimeout = 2 * time.Second
-	// cachedConversations is how many conversations' vectors stay in memory.
+	// cachedConversations is how many conversations' vectors stay in memory;
+	// a search of a memory scope with more chats keeps all of them.
 	cachedConversations = 8
 	// After breakerFailures queries in a row fail to be embedded, searches
 	// skip the service for breakerCooldown; then one query tries it again.
@@ -60,7 +61,8 @@ type SearcherDeps struct {
 
 // Searcher is a search.VectorSearcher over the chunks of the embedder's
 // model. It keeps the vectors of the last 8 conversations searched in
-// memory, brought up to date with the stored chunks at every search, so new
+// memory, or of every chat of the memory scope last searched when it has
+// more, brought up to date with the stored chunks at every search, so new
 // chunks are found and deleted ones never are, nor are those of a chat no
 // longer in the memory scope searched. After 3 queries in a row fail to be
 // embedded it returns no hits without asking the service for a minute, then
@@ -152,7 +154,7 @@ func (s *Searcher) Search(ctx context.Context, convKey, query string, r search.R
 	}
 	var hits []search.Hit
 	for _, chat := range chats {
-		e, err := s.load(ctx, chat, model)
+		e, err := s.load(ctx, chat, model, len(chats))
 		if err != nil {
 			return nil, err
 		}
@@ -219,8 +221,9 @@ func (s *Searcher) record(ctx context.Context, err error, trial bool) {
 
 // load returns the conversation's chunks of model as currently stored: the
 // cached ones when none was deleted since, plus any added; otherwise all of
-// them read again.
-func (s *Searcher) load(ctx context.Context, convKey, model string) (*entry, error) {
+// them read again. It caches them keeping at least keep conversations (see
+// put).
+func (s *Searcher) load(ctx context.Context, convKey, model string, keep int) (*entry, error) {
 	s.mu.Lock()
 	var old *entry
 	if el, ok := s.cache[convKey]; ok {
@@ -257,7 +260,7 @@ func (s *Searcher) load(ctx context.Context, convKey, model string) (*entry, err
 		e = &entry{convKey: convKey, model: model}
 		e.add(all)
 	}
-	s.put(e)
+	s.put(e, keep)
 	return e, nil
 }
 
@@ -269,8 +272,10 @@ func (e *entry) add(chunks []store.MemoryChunk) {
 }
 
 // put caches e as its conversation's newest entry, evicting the least
-// recently searched conversation beyond cachedConversations.
-func (s *Searcher) put(e *entry) {
+// recently searched conversations beyond cachedConversations, or beyond keep
+// when larger: a search loads the chats of its scope one by one and keeps
+// them all, so that none evicts another the next search needs.
+func (s *Searcher) put(e *entry, keep int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if el, ok := s.cache[e.convKey]; ok {
@@ -279,7 +284,7 @@ func (s *Searcher) put(e *entry) {
 		return
 	}
 	s.cache[e.convKey] = s.lru.PushFront(e)
-	for s.lru.Len() > cachedConversations {
+	for s.lru.Len() > max(cachedConversations, keep) {
 		last := s.lru.Back()
 		s.lru.Remove(last)
 		delete(s.cache, last.Value.(*entry).convKey)
