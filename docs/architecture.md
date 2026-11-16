@@ -319,7 +319,7 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 | 4 | 最近一小时评估次数 < `join_evaluations_per_hour`，主动发言次数 < `group_hourly_limit` | `budget` |
 | 5 | 有在聊会话时，只允许会话外提问，否则停在这里 | `session` |
 | 6 | `join_window` 内非机器人、非命令的消息至少 `join_min_messages` 条（最新一条是明确提问时可以豁免） | `few_messages` |
-| 7 | 最新一条消息没有过时 | `stale` |
+| 7 | 最新一条消息没有过时：距今不到 `join_lull + runtime.stale_task_after`，即停顿结束后不到 `stale_task_after`（`joinStale`），所以较长的 `join_lull` 也不会让每次评估都判为过时 | `stale` |
 | 8 | 窗口里至少有一位**目标资格人**发过言 | `no_eligible` |
 | 9 | 有人提问，或窗口文本和某位目标资格人的兴趣画像匹配 | `irrelevant` |
 | 10 | 能找到目标消息：目标资格人发的最新一条、没有任何 @、没有回复别人 | `no_target` |
