@@ -304,4 +304,5 @@ details > summary { cursor: pointer; color: var(--accent); white-space: nowrap; 
   dl.kv dd { margin-bottom: 6px; }
   .chat-page { grid-template-columns: 1fr; }
   .chat-side { max-height: none; }
+  input, select, textarea, textarea.json { font-size: 16px; }
 }

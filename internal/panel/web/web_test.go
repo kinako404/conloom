@@ -217,6 +217,45 @@ func TestAssets_ChatScrollsIntoViewOnNarrowScreens(t *testing.T) {
 	}
 }
 
+var cssRule = regexp.MustCompile(`([^{}]+)\{([^{}]*)\}`)
+
+// iOS Safari zooms in on a focused field whose text is under 16px and does not
+// zoom back out, so on a narrow screen every rule that sizes the text of a
+// form control is overridden to 16px.
+func TestAssets_FormControlsAre16pxOnNarrowScreens(t *testing.T) {
+	css := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(assets(t, ".css")["style.css"], "")
+	block := mediaBlock(t, css, "(max-width: 699px)")
+	big := map[string]bool{}
+	for _, m := range cssRule.FindAllStringSubmatch(block, -1) {
+		if regexp.MustCompile(`font-size:\s*16px`).MatchString(m[2]) {
+			for _, sel := range strings.Split(m[1], ",") {
+				big[strings.TrimSpace(sel)] = true
+			}
+		}
+	}
+	control := regexp.MustCompile(`(?:^|[\s>+~])(?:input|select|textarea)(?:$|[.\[:])[^\s>+~]*$`)
+	sized := regexp.MustCompile(`(?:^|[;\s])font(?:-size)?\s*:`)
+	checked := 0
+	for _, m := range cssRule.FindAllStringSubmatch(strings.Replace(css, block, "", 1), -1) {
+		if !sized.MatchString(m[2]) {
+			continue
+		}
+		for _, sel := range strings.Split(m[1], ",") {
+			sel = strings.TrimSpace(sel)
+			if !control.MatchString(sel) {
+				continue
+			}
+			checked++
+			if !big[sel] {
+				t.Errorf("style.css: %q sets a font size but is not 16px on a narrow screen", sel)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("style.css: found no rule sizing the text of a form control")
+	}
+}
+
 func TestAssets_InitialAffinityMatchesMemory(t *testing.T) {
 	js := assets(t, ".js")["views/conversation.js"]
 	m := regexp.MustCompile(`const INITIAL_AFFINITY = (\d+);`).FindStringSubmatch(js)
