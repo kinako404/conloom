@@ -1,9 +1,11 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/provider/openai"
+	"github.com/kinako404/conloom/internal/router"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -535,7 +538,44 @@ func TestConsolidate_PrivateNeedsALongModelAllowingSensitiveContent(t *testing.T
 			if _, err := e.st.GetGroupMemory(context.Background(), ScopeKeyOf(convKey)); !errors.Is(err, store.ErrNotFound) {
 				t.Errorf("GetGroupMemory err = %v, want no row (nothing recorded)", err)
 			}
+			// The startup warning says it once; every run skipping only logs
+			// at debug level.
+			if logs := e.logs.String(); strings.Contains(logs, "skipped") {
+				t.Errorf("skipped runs logged above debug level:\n%s", logs)
+			}
 		})
+	}
+}
+
+func TestWarnPrivateMemoryNotSensitive(t *testing.T) {
+	cfg := func(allowSensitive, groupOn, privateOn bool) *config.Config {
+		long := config.ModelProfile{Privacy: config.Privacy{AllowSensitiveContent: allowSensitive}}
+		c := &config.Config{DefaultGroupPolicy: conloomapi.DefaultGroupPolicy(),
+			ModelProfiles: map[string]config.ModelProfile{string(router.RoleLong): long}}
+		c.DefaultGroupPolicy.Memory.Enabled = groupOn
+		p := conloomapi.DefaultGroupPolicy()
+		p.Memory.Enabled = privateOn
+		c.DefaultPrivatePolicy = &p
+		return c
+	}
+	for _, c := range []struct {
+		name string
+		cfg  *config.Config
+		warn bool
+	}{
+		{"private memory, not sensitive", cfg(false, false, true), true},
+		{"private memory, sensitive", cfg(true, false, true), false},
+		{"group memory only, not sensitive", cfg(false, true, false), false},
+		{"no long model", &config.Config{DefaultGroupPolicy: conloomapi.DefaultGroupPolicy()}, false},
+	} {
+		var buf bytes.Buffer
+		WarnPrivateMemoryNotSensitive(c.cfg, slog.New(slog.NewTextHandler(&buf, nil)))
+		if got := strings.Contains(buf.String(), "level=WARN"); got != c.warn {
+			t.Errorf("%s: warned = %v, want %v: %s", c.name, got, c.warn, buf.String())
+		}
+		if c.warn && !strings.Contains(buf.String(), "allow_sensitive_content") {
+			t.Errorf("%s: warning does not name the setting: %s", c.name, buf.String())
+		}
 	}
 }
 

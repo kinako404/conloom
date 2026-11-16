@@ -117,6 +117,19 @@ func WarnOutputReservation(cfg *config.Config, log *slog.Logger) {
 		"reserved_output_tokens", reserved, "recommended", RecommendedOutputTokens)
 }
 
+// WarnPrivateMemoryNotSensitive logs a warning when the default private policy
+// of cfg turns memory on while the long model may not see sensitive content:
+// private chats and the panel's shared scope are then never consolidated (see
+// Run).
+func WarnPrivateMemoryNotSensitive(cfg *config.Config, log *slog.Logger) {
+	long, ok := cfg.ModelProfiles[string(router.RoleLong)]
+	if !ok || long.Privacy.AllowSensitiveContent || !cfg.PrivatePolicy().Memory.Enabled {
+		return
+	}
+	log.Warn("private memory is on but long_context does not allow sensitive content; private and panel chats will not be consolidated",
+		"setting", "long_context.privacy.allow_sensitive_content")
+}
+
 // consLimits are a conversation's reduced batch limits after truncated,
 // timed-out, refused or unreadable model calls; zero fields mean the
 // defaults.
@@ -253,6 +266,11 @@ func (c *Consolidator) run(ctx context.Context, convKey string, manual bool) (Re
 	if !mp.Enabled || !pv.Policy.Concurrency.AllowLongRequests {
 		return Result{Skipped: "disabled"}, 0, nil
 	}
+	private := convTypeOf(convKey) == conloomapi.ConvPrivate
+	if private && !c.longAllowsSensitive() {
+		c.d.Logger.Debug("memory consolidation skipped: the long-context model may not see private chats", "conversation", convKey)
+		return Result{Skipped: "long_unavailable"}, 0, nil
+	}
 	if !manual && c.inBackoff(convKey) {
 		return Result{Skipped: "backoff"}, 0, nil
 	}
@@ -271,7 +289,6 @@ func (c *Consolidator) run(ctx context.Context, convKey string, manual bool) (Re
 
 	var res Result
 	promptTokens := 0
-	private := convTypeOf(convKey) == conloomapi.ConvPrivate
 	for res.Batches < maxBatchesPerRun {
 		if res.Batches > 0 {
 			if sc, err = resolveScope(ctx, c.d.Store, convKey); err != nil {
@@ -713,6 +730,14 @@ func (c *Consolidator) stuckAt(convKey string, cursor int64, b consBatch) bool {
 	}
 	c.stuck[convKey] = s
 	return false
+}
+
+// longAllowsSensitive reports whether the long model may see sensitive
+// content, as a private conversation's consolidation needs (the router then
+// still checks its breaker and context).
+func (c *Consolidator) longAllowsSensitive() bool {
+	p, ok := c.d.Router.Profile(router.RoleLong)
+	return ok && p.Config.Privacy.AllowSensitiveContent
 }
 
 // putGroupState stores g's cursor, run time and error, keeping the stored

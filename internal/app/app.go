@@ -198,6 +198,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Usage:     rec,
 	})
 	memory.WarnOutputReservation(cfg, logger)
+	memory.WarnPrivateMemoryNotSensitive(cfg, logger)
 	sched := memory.NewScheduler(memory.SchedulerDeps{
 		Store:    st,
 		Policies: policies,

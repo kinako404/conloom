@@ -106,7 +106,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `runtime.max_retries` | 2 | 网络错误、429、5xx 的重试次数，0~5 |
 | `runtime.gpu_kv_cache_tokens` | 0 | 准入控制的 token 预算，0 表示不限；设了就必须 ≥ `configured_window`，否则路由放行的大请求会被准入拒绝 |
 | `runtime.cpu_offloaded_kv_tokens`、`runtime.prefix_caching` | — | 可以写，目前不生效 |
-| `privacy.allow_sensitive_content` | false | 私聊（包括面板聊天）的回复和记忆整理只会路由到为 `true` 的模型；`long_context` 为 `false` 时私聊不整理记忆 |
+| `privacy.allow_sensitive_content` | false | 私聊（包括面板聊天）的回复和记忆整理只会路由到为 `true` 的模型；`long_context` 为 `false` 时私聊不整理记忆（私聊默认策略开启了记忆时，启动日志有一条 warn） |
 | `privacy.data_location` | — | 说明性标签（如 `remote` 表示数据会离开本机），代码不读取 |
 | `extra_body` | 空 | 原样合并进请求体，例如 `enable_thinking: false`；它可以覆盖 `model`、`messages` 等字段，请谨慎使用 |
 | `token_estimate_factor` | 1.0 | token 估算系数，≥ 0，0 视为 1 |
