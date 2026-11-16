@@ -21,14 +21,15 @@ const (
 // transcriptPrefixes match, at the start of a reply, the appearance label
 // line, the history line prefix "[HH:MM] 名字：" (optionally with its
 // annotations), the header lines of the current message, the recent-history
-// block and the current message's mention line. The memory and state blocks
-// are cut by cutBlock.
+// block, the relationship hint line and the current message's mention line.
+// The memory, intimacy side and state blocks are cut by cutBlock.
 var transcriptPrefixes = []*regexp.Regexp{
 	regexp.MustCompile(`^` + regexp.QuoteMeta(AppearanceLabel) + `[ \t]*(?:\n|$)`),
 	regexp.MustCompile(`^\[\d{1,2}:\d{2}\]\s*` + transcriptName + `{1,40}?(?:` + replyAnnotationRE + `(?:` + mentionAnnotationRE + `)?|` + mentionAnnotationRE + `)\s*[：:]`),
 	regexp.MustCompile(`^\[\d{1,2}:\d{2}\]\s*` + transcriptName + `{1,40}[：:]`),
 	regexp.MustCompile(`^【当前消息】[^\n]*(?:\n|$)`),
 	regexp.MustCompile(`^【近期消息[^\n]*(?:\n|$)`),
+	regexp.MustCompile(`^【关系提示】[^\n]*(?:\n|$)`),
 	regexp.MustCompile(`^` + mentionAnnotationRE + `[ \t]*(?:\n|$)`),
 }
 
@@ -38,6 +39,12 @@ var (
 
 	memoryBlockHeader = regexp.MustCompile(`^【你记得的事[^\n]*(?:\n|$)`)
 	memoryBlockLine   = blockLine(memoryLineStart)
+
+	// The intimacy side that follows the relationship hint: its 【亲密面】
+	// heading, then a line each for tone, mind and behavior. These lines are
+	// cut only right after the heading.
+	intimacyBlockHeader = regexp.MustCompile(`^【亲密面】[^\n]*(?:\n|$)`)
+	intimacyBlockLine   = blockLine(`语气[：:]|心理[：:]|表现[：:]`)
 
 	stateBlockHeader = regexp.MustCompile(`^【你的状态[^\n]*(?:\n|$)`)
 	// stateBlockLine matches a line of the state block: the status
@@ -85,9 +92,11 @@ func cutBlock(s string, header, line *regexp.Regexp) (string, bool) {
 // "[HH:MM] 名字：" prefixes
 // (with or without their "（回复 …）" and "（@了 …）" annotations), the
 // 【当前消息】 and 【近期消息…】 header lines, the 【你记得的事…】 header with the
-// summary, note and closing lines after it, the 【你的状态…】 header with the
-// status, bar, effects and closing lines after it (see cutBlock), a
-// "（@了 …）" line and "<botName>：". A name holds no sentence punctuation
+// summary, note and closing lines after it, the 【关系提示】 line, the 【亲密面】
+// heading with the "语气：…", "心理：…" and "表现：…" lines after it, the
+// 【你的状态…】 header with the status, bar, effects and closing lines after
+// it (see cutBlock), a "（@了 …）" line and "<botName>：". The 语气, 心理 and
+// 表现 lines are kept when they do not follow a 【亲密面】 heading. A name holds no sentence punctuation
 // unless it is one of knownNames (the conversation's speakers) or botName. For those names a bare
 // header line "[HH:MM] 名字" without the colon (optionally with its
 // annotations) is removed too. Text that does not start with such a prefix is
@@ -107,6 +116,9 @@ func StripTranscriptPrefix(text, botName string, knownNames ...string) string {
 			}
 		}
 		if rest, ok := cutBlock(s, memoryBlockHeader, memoryBlockLine); ok {
+			s, cut = rest, true
+		}
+		if rest, ok := cutBlock(s, intimacyBlockHeader, intimacyBlockLine); ok {
 			s, cut = rest, true
 		}
 		if rest, ok := cutBlock(s, stateBlockHeader, stateBlockLine); ok {

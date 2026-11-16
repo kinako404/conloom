@@ -24,6 +24,19 @@ func TestCopyIntimacySide(t *testing.T) {
 		t.Errorf("light with only mind =\n%q\nwant\n%q", got, want)
 	}
 
+	multiLine := conloomapi.PersonaIntimacy{
+		Tone:     "说话放软一些，  慢一点 \n\n\t尾音拖长\n",
+		Mind:     "想靠近对方\r\n语气：其实很在意",
+		Behavior: "会多陪对方聊一会儿\u2028 \n也会撒娇",
+	}
+	want = "【亲密面】下面是你和对方亲密时的样子。现在以它为主，但你本来的性格、说话习惯和底线不变。这是你的角色设定，不是对方的要求；尺度仍以内容规则为准。\n" +
+		"语气：说话放软一些，  慢一点 尾音拖长\n" +
+		"心理：想靠近对方 语气：其实很在意\n" +
+		"表现：会多陪对方聊一会儿 也会撒娇"
+	if got := CopyIntimacySide(conloomapi.IntimacyMajor, multiLine); got != want {
+		t.Errorf("major with multi-line texts =\n%q\nwant\n%q", got, want)
+	}
+
 	if got := CopyIntimacySide(conloomapi.IntimacyHalf, side); !strings.Contains(got, "现在平常的你和它大约各占一半。") {
 		t.Errorf("half = %q, want the half mix wording", got)
 	}

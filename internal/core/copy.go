@@ -1,6 +1,7 @@
 package core
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -203,11 +204,17 @@ func CopyDirectiveAffinity(tier string, open bool) string {
 	return "【关系提示】" + s
 }
 
+// intimacyLineBreaks matches a run of line breaks inside an intimacy text,
+// with the spaces and tabs around it.
+var intimacyLineBreaks = regexp.MustCompile(`[ \t]*[\n\v\f\r\x{85}\x{2028}\x{2029}][ \t\n\v\f\r\x{85}\x{2028}\x{2029}]*`)
+
 // CopyIntimacySide follows the open-mode relationship hint with the persona's
 // intimacy side, mixed in at level (conloomapi.IntimacyLight, IntimacyHalf
 // or IntimacyMajor): a heading saying how much of it to show, then one line
-// for each of tone, mind and behavior that is not blank, trimmed. It is ""
-// for IntimacyNone, an unknown level, or a side whose three texts are blank.
+// for each of tone, mind and behavior that is not blank, trimmed, with each
+// run of line breaks inside it (and the spaces and tabs around them) folded
+// to one space, so a text cannot add lines of its own. It is "" for
+// IntimacyNone, an unknown level, or a side whose three texts are blank.
 func CopyIntimacySide(level string, side conloomapi.PersonaIntimacy) string {
 	var mix string
 	switch level {
@@ -228,7 +235,7 @@ func CopyIntimacySide(level string, side conloomapi.PersonaIntimacy) string {
 		{"语气：", side.Tone}, {"心理：", side.Mind}, {"表现：", side.Behavior},
 	} {
 		if text := strings.TrimSpace(part.text); text != "" {
-			s += "\n" + part.label + text
+			s += "\n" + part.label + intimacyLineBreaks.ReplaceAllLiteralString(text, " ")
 		}
 	}
 	return s
