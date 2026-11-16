@@ -220,6 +220,17 @@ func (f *fakeOB) Calls(action string) []obCall {
 	return out
 }
 
+// privateMessage builds a private message event from 小红 in array format.
+func privateMessage(userID, msgID int64, text string) map[string]any {
+	return map[string]any{
+		"time": time.Now().Unix(), "self_id": fakeSelfID, "post_type": "message", "message_type": "private",
+		"sub_type": "friend", "message_id": msgID, "user_id": userID,
+		"message":     []any{map[string]any{"type": "text", "data": map[string]any{"text": text}}},
+		"raw_message": text, "font": 14,
+		"sender": map[string]any{"user_id": userID, "nickname": "小红", "card": ""},
+	}
+}
+
 // groupMessage builds a group message event in array format.
 func groupMessage(groupID, userID, msgID int64, text string, atBot bool) map[string]any {
 	var segs []any

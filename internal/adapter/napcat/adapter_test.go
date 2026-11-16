@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -65,7 +66,7 @@ model_profiles:
     privacy: {data_location: remote, allow_sensitive_content: true}
 default_group_policy:
   concurrency: {max_interactive_requests: 1, max_queued_requests: 10, priority: normal, allow_long_requests: true}
-  reply: {command_prefix: /, continuation_window: 0s, debounce: 20ms, min_reply_interval: 0s, user_rate_limit_per_minute: 30}
+  reply: {command_prefix: /, continuation_window: 0s, debounce: 20ms, min_reply_interval: 0s, user_rate_limit_per_minute: 30, private_wait: 20ms, private_max_wait: 1s}
   context: {max_recent_messages: 50, max_context_tokens: 0}
   review: {level: basic, review_input: true, review_output: true, action: block}
 runtime:
@@ -462,8 +463,8 @@ func TestAdapter_GroupMentionRoundTrip(t *testing.T) {
 
 	waitFor(t, 2*time.Second, "the ACK", func() bool { return len(c.ackRecords()) == 1 })
 	ack := c.ackRecords()[0]
-	if ack.Code != http.StatusOK || ack.Req.Status != conloomapi.AckSent || ack.Req.PlatformMessageID != "50001" {
-		t.Errorf("ack = %+v, want 200 sent with platform message 50001", ack)
+	if ack.Code != http.StatusOK || ack.Req.Status != conloomapi.AckSent || ack.Req.PlatformMessageID != "group_10001_50001" {
+		t.Errorf("ack = %+v, want 200 sent with platform message group_10001_50001", ack)
 	}
 	r.stop(t)
 	requireNoLeak(t, r.logs, "在吗？")
@@ -488,7 +489,7 @@ func TestAdapter_SelfAndDisabledGroupNotForwarded(t *testing.T) {
 	if n := c.eventCount(); n != 1 {
 		t.Errorf("core received %d events, want only the enabled group's message", n)
 	}
-	if n, _ := c.eventsFor("70004"); n != 1 {
+	if n, _ := c.eventsFor("group_10001_70004"); n != 1 {
 		t.Errorf("enabled group message submitted %d times, want 1", n)
 	}
 	r.stop(t)
@@ -496,13 +497,13 @@ func TestAdapter_SelfAndDisabledGroupNotForwarded(t *testing.T) {
 
 	db := c.openStore()
 	ctx := context.Background()
-	for _, id := range []string{"msg_70001", "msg_70002", "msg_70003"} {
+	for _, id := range []string{"msg_group_10001_70001", "msg_group_10001_70002", "msg_group_10002_70003"} {
 		if _, err := db.GetMessage(ctx, testBotID, id); !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("GetMessage(%s) err = %v, want not found", id, err)
 		}
 	}
-	if _, err := db.GetMessage(ctx, testBotID, "msg_70004"); err != nil {
-		t.Errorf("GetMessage(msg_70004): %v", err)
+	if _, err := db.GetMessage(ctx, testBotID, "msg_group_10001_70004"); err != nil {
+		t.Errorf("GetMessage(msg_group_10001_70004): %v", err)
 	}
 }
 
@@ -550,8 +551,8 @@ func TestAdapter_AckFailureDoesNotResend(t *testing.T) {
 	if first.Code != http.StatusBadGateway {
 		t.Errorf("first ACK code = %d, want 502", first.Code)
 	}
-	if last.ActionID != first.ActionID || last.Req.Status != conloomapi.AckSent || last.Req.PlatformMessageID != "50001" {
-		t.Errorf("final ACK = %+v, want sent for %s with platform message 50001", last, first.ActionID)
+	if last.ActionID != first.ActionID || last.Req.Status != conloomapi.AckSent || last.Req.PlatformMessageID != "group_10001_50001" {
+		t.Errorf("final ACK = %+v, want sent for %s with platform message group_10001_50001", last, first.ActionID)
 	}
 	time.Sleep(500 * time.Millisecond)
 	if n := len(ob.Calls("send_group_msg")); n != 1 {
@@ -583,8 +584,8 @@ func TestAdapter_RestartWithDedupDoesNotResend(t *testing.T) {
 	})
 	acks := c.ackRecords()
 	last := acks[len(acks)-1]
-	if last.ActionID != acks[0].ActionID || last.Req.Status != conloomapi.AckSent || last.Req.PlatformMessageID != "50001" {
-		t.Errorf("final ACK = %+v, want sent for %s with platform message 50001", last, acks[0].ActionID)
+	if last.ActionID != acks[0].ActionID || last.Req.Status != conloomapi.AckSent || last.Req.PlatformMessageID != "group_10001_50001" {
+		t.Errorf("final ACK = %+v, want sent for %s with platform message group_10001_50001", last, acks[0].ActionID)
 	}
 	if n := len(ob.Calls("send_group_msg")); n != 1 {
 		t.Errorf("send_group_msg calls = %d, want 1", n)
@@ -645,8 +646,8 @@ func TestAdapter_ResponseThenDropDoesNotResend(t *testing.T) {
 		t.Errorf("send_group_msg calls = %d, want 1", n)
 	}
 	acks := c.ackRecords()
-	if len(acks) != 1 || acks[0].Code != http.StatusOK || acks[0].Req.Status != conloomapi.AckSent || acks[0].Req.PlatformMessageID != "50001" {
-		t.Errorf("acks = %+v, want one 200 sent with platform message 50001", acks)
+	if len(acks) != 1 || acks[0].Code != http.StatusOK || acks[0].Req.Status != conloomapi.AckSent || acks[0].Req.PlatformMessageID != "group_10001_50001" {
+		t.Errorf("acks = %+v, want one 200 sent with platform message group_10001_50001", acks)
 	}
 }
 
@@ -830,12 +831,12 @@ func TestAdapter_ShutdownWaitsForInFlightSend(t *testing.T) {
 	waitFor(t, 2*time.Second, "send_group_msg", func() bool { return len(ob.Calls("send_group_msg")) == 1 })
 	r1.stop(t)
 	acks := c.ackRecords()
-	if len(acks) != 1 || acks[0].Req.Status != conloomapi.AckSent || acks[0].Req.PlatformMessageID != "50001" {
-		t.Fatalf("ACKs during shutdown = %+v, want one sent with platform message 50001", acks)
+	if len(acks) != 1 || acks[0].Req.Status != conloomapi.AckSent || acks[0].Req.PlatformMessageID != "group_10001_50001" {
+		t.Fatalf("ACKs during shutdown = %+v, want one sent with platform message group_10001_50001", acks)
 	}
 	record, err := os.ReadFile(filepath.Join(stateDir, "napcat-dedup.log"))
-	if err != nil || !strings.Contains(string(record), acks[0].ActionID+"\t") || !strings.Contains(string(record), "\t50001\n") {
-		t.Errorf("dedup log = %q (err %v), want %s recorded with 50001", record, err, acks[0].ActionID)
+	if err != nil || !strings.Contains(string(record), acks[0].ActionID+"\t") || !strings.Contains(string(record), "\tgroup_10001_50001\n") {
+		t.Errorf("dedup log = %q (err %v), want %s recorded with group_10001_50001", record, err, acks[0].ActionID)
 	}
 
 	ob.SetSend(sendReply, 0)
@@ -846,8 +847,8 @@ func TestAdapter_ShutdownWaitsForInFlightSend(t *testing.T) {
 		return acks[len(acks)-1].Code == http.StatusOK
 	})
 	last := c.ackRecords()[len(c.ackRecords())-1]
-	if last.ActionID != acks[0].ActionID || last.Req.Status != conloomapi.AckSent || last.Req.PlatformMessageID != "50001" {
-		t.Errorf("final ACK = %+v, want sent for %s with platform message 50001", last, acks[0].ActionID)
+	if last.ActionID != acks[0].ActionID || last.Req.Status != conloomapi.AckSent || last.Req.PlatformMessageID != "group_10001_50001" {
+		t.Errorf("final ACK = %+v, want sent for %s with platform message group_10001_50001", last, acks[0].ActionID)
 	}
 	if n := len(ob.Calls("send_group_msg")); n != 1 {
 		t.Errorf("send_group_msg calls = %d, want 1", n)
@@ -865,17 +866,156 @@ func TestAdapter_BuffersEventsWhileCoreUnavailable(t *testing.T) {
 
 	c.failEvents.Store(true)
 	ob.Push(groupMessage(10001, 20001, 70001, "在吗？", true))
-	waitFor(t, 5*time.Second, "four submit attempts", func() bool { n, _ := c.eventsFor("70001"); return n >= 4 })
+	waitFor(t, 5*time.Second, "four submit attempts", func() bool { n, _ := c.eventsFor("group_10001_70001"); return n >= 4 })
 	time.Sleep(50 * time.Millisecond)
-	if n, _ := c.eventsFor("70001"); n != 4 {
+	if n, _ := c.eventsFor("group_10001_70001"); n != 4 {
 		t.Errorf("submit attempts before buffering = %d, want 4 (1 + 3 retries)", n)
 	}
 	c.failEvents.Store(false)
 
 	waitFor(t, 5*time.Second, "send_group_msg after the core recovers", func() bool { return len(ob.Calls("send_group_msg")) == 1 })
-	_, codes := c.eventsFor("70001")
+	_, codes := c.eventsFor("group_10001_70001")
 	if codes[len(codes)-1] != http.StatusOK && codes[len(codes)-1] != http.StatusAccepted {
 		t.Errorf("final submit status = %d, want success", codes[len(codes)-1])
+	}
+}
+
+// acceptedOrder returns the platform message IDs of the events the core
+// accepted, in the order it answered them.
+func (c *core) acceptedOrder() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for i, ev := range c.events {
+		if code := c.eventCodes[i]; code == http.StatusOK || code == http.StatusAccepted {
+			out = append(out, ev.Message.PlatformMessageID)
+		}
+	}
+	return out
+}
+
+func TestAdapter_BufferedEventsKeepTheirOrder(t *testing.T) {
+	ob := newFakeOB(t)
+	c := newCore(t, "60s")
+	startAdapter(t, napcatConfig(ob, c, t.TempDir()), func(a *Adapter) {
+		a.submitDelays = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond}
+		a.retryInterval = 10 * time.Second
+	})
+	waitFor(t, 5*time.Second, "get_login_info", func() bool { return len(ob.Calls("get_login_info")) == 1 })
+
+	c.failEvents.Store(true)
+	ob.Push(groupMessage(10001, 20001, 70001, "第一句", false))
+	waitFor(t, 5*time.Second, "the first event buffered", func() bool { n, _ := c.eventsFor("group_10001_70001"); return n >= 4 })
+	ob.Push(groupMessage(10001, 20002, 70002, "第二句", false))
+	time.Sleep(200 * time.Millisecond)
+	if n, _ := c.eventsFor("group_10001_70002"); n != 0 {
+		t.Errorf("the second event was submitted %d times while the first was still buffered, want it queued behind", n)
+	}
+
+	c.failEvents.Store(false)
+	recovered := time.Now()
+	ob.Push(groupMessage(10001, 20001, 70003, "第三句", false))
+	waitFor(t, 5*time.Second, "all three events accepted", func() bool { return len(c.acceptedOrder()) == 3 })
+	if took := time.Since(recovered); took > 2*time.Second {
+		t.Errorf("buffered events accepted %v after the core recovered and a new event arrived, want them flushed at once", took)
+	}
+	if got, want := c.acceptedOrder(), []string{"group_10001_70001", "group_10001_70002", "group_10001_70003"}; !slices.Equal(got, want) {
+		t.Errorf("accepted order = %v, want %v", got, want)
+	}
+}
+
+// TestAdapter_SameMessageIDInTwoChats covers NapCat message IDs, which are
+// only unique within a chat: a private message with the same message_id as
+// a stored group message must not be refused as a duplicate, and the bot's
+// reply is stored under its own chat too.
+func TestAdapter_SameMessageIDInTwoChats(t *testing.T) {
+	ob := newFakeOB(t)
+	c := newCore(t, "60s")
+	r := startAdapter(t, napcatConfig(ob, c, t.TempDir()), nil)
+	waitFor(t, 5*time.Second, "get_login_info", func() bool { return len(ob.Calls("get_login_info")) == 1 })
+
+	ob.Push(groupMessage(10001, 20001, 70001, "群里的话", false))
+	waitFor(t, 5*time.Second, "the group message accepted", func() bool { return len(c.acceptedOrder()) == 1 })
+	ob.Push(privateMessage(29999, 70001, "私聊的话"))
+	waitFor(t, 5*time.Second, "both messages submitted", func() bool { return c.eventCount() == 2 })
+	if got := c.acceptedOrder(); len(got) != 2 {
+		t.Fatalf("accepted = %v, want the group and the private message although both have message_id 70001", got)
+	}
+	waitFor(t, 5*time.Second, "the private reply's ACK", func() bool { return len(c.ackRecords()) == 1 })
+	if ack := c.ackRecords()[0]; ack.Code != http.StatusOK || ack.Req.PlatformMessageID != "private_29999_50001" {
+		t.Errorf("ack = %+v, want 200 with platform message private_29999_50001", ack)
+	}
+	r.stop(t)
+	requireNoLeak(t, r.logs, "群里的话", "私聊的话")
+
+	db := c.openStore()
+	ctx := context.Background()
+	for id, fromBot := range map[string]bool{
+		"msg_group_10001_70001": false, "msg_private_29999_70001": false, "msg_private_29999_50001": true,
+	} {
+		m, err := db.GetMessage(ctx, testBotID, id)
+		if err != nil || m.FromBot != fromBot {
+			t.Errorf("GetMessage(%s) = from_bot %v, err %v; want stored with from_bot %v", id, m.FromBot, err, fromBot)
+		}
+	}
+}
+
+func TestAdapter_QuotingTheBotsReplyTriggersAReply(t *testing.T) {
+	ob := newFakeOB(t)
+	c := newCore(t, "60s")
+	startAdapter(t, napcatConfig(ob, c, t.TempDir()), nil)
+	waitFor(t, 5*time.Second, "get_login_info", func() bool { return len(ob.Calls("get_login_info")) == 1 })
+
+	ob.Push(groupMessage(10001, 20001, 70001, "在吗？", true))
+	waitFor(t, 5*time.Second, "the first reply's ACK", func() bool { return len(c.ackRecords()) == 1 })
+	quote := groupMessage(10001, 20001, 70002, "真的吗", false)
+	quote["message"] = append([]any{map[string]any{"type": "reply", "data": map[string]any{"id": "50001"}}}, quote["message"].([]any)...)
+	ob.Push(quote)
+	waitFor(t, 5*time.Second, "a reply to the quote of the bot's message", func() bool { return len(ob.Calls("send_group_msg")) == 2 })
+
+	c.mu.Lock()
+	ev := c.events[len(c.events)-1]
+	c.mu.Unlock()
+	if ev.Message.ReplyTo == nil || *ev.Message.ReplyTo != "msg_group_10001_50001" {
+		t.Errorf("reply_to = %v, want msg_group_10001_50001", ev.Message.ReplyTo)
+	}
+}
+
+func TestAdapter_UnscopedDedupEntryIsAckedScoped(t *testing.T) {
+	ob := newFakeOB(t)
+	c := newCore(t, "300ms")
+	c.failAcks.Store(true)
+	stateDir := t.TempDir()
+	r1 := startAdapter(t, napcatConfig(ob, c, stateDir), nil)
+	waitFor(t, 5*time.Second, "get_login_info", func() bool { return len(ob.Calls("get_login_info")) == 1 })
+	ob.Push(groupMessage(10001, 20001, 70001, "在吗？", true))
+	waitFor(t, 5*time.Second, "the failed ACK", func() bool { return len(c.ackRecords()) >= 1 })
+	r1.stop(t)
+
+	path := filepath.Join(stateDir, "napcat-dedup.log")
+	record, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := strings.ReplaceAll(string(record), "\tgroup_10001_50001\n", "\t50001\n")
+	if legacy == string(record) {
+		t.Fatalf("dedup log = %q, want an entry for group_10001_50001", record)
+	}
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c.failAcks.Store(false)
+	startAdapter(t, napcatConfig(ob, c, stateDir), nil)
+	waitFor(t, 10*time.Second, "a successful ACK from the new adapter", func() bool {
+		acks := c.ackRecords()
+		return acks[len(acks)-1].Code == http.StatusOK
+	})
+	if last := c.ackRecords()[len(c.ackRecords())-1]; last.Req.Status != conloomapi.AckSent || last.Req.PlatformMessageID != "group_10001_50001" {
+		t.Errorf("final ACK = %+v, want sent with platform message group_10001_50001", last)
+	}
+	if n := len(ob.Calls("send_group_msg")); n != 1 {
+		t.Errorf("send_group_msg calls = %d, want 1", n)
 	}
 }
 

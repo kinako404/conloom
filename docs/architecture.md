@@ -78,8 +78,8 @@ NapCat      Adapter                 Core                          SQLite        
   |           |-- POST /ack ---------->|-- acked + 记录机器人消息 ---->|             |
 ```
 
-1. **入站**：适配器从 WebSocket 读到事件，过滤掉自己发的消息和未启用的群（`internal/adapter/napcat/adapter.go:260`），转成标准 Event（`convert.go:143`）。ID 都由平台 ID 确定性生成：会话 `group_10001`、发送者 `user_20001`、消息 `msg_<消息号>`，幂等键 `napcat:<self_id>:<消息号>`。@ 机器人被转成 `mentions` 里的 `{type:"bot"}`，@ 群友转成 `{type:"user", id:"user_<QQ号>"}`（at 段带名字时填进可选的 `name`），图片只传元数据。
-2. **提交**：`POST /api/v1/events` 必须带 `Idempotency-Key`。可重试的错误按 0.5s/1s/2s 重试 3 次，仍失败就放进内存缓冲（最多 256 条），每 5 秒重提交一次。
+1. **入站**：适配器从 WebSocket 读到事件，过滤掉自己发的消息和未启用的群（`internal/adapter/napcat/adapter.go:264`），转成标准 Event（`convert.go:179`）。ID 都由平台 ID 确定性生成：会话 `group_10001`、发送者 `user_20001`、消息 `msg_<会话ID>_<消息号>`（如 `msg_group_10001_7001`），幂等键 `napcat:<self_id>:<会话ID>:<消息号>`。NapCat 的消息号是消息和所在会话的 31 位哈希，不同会话之间会撞号，所以按会话区分（`convert.go:164`）；引用的消息也按这个格式，适配器 ACK 的平台消息 ID 同样是 `<会话ID>_<消息号>`，发送引用时再去掉前缀。改成这个格式之前保存的消息仍是 `msg_<消息号>`：升级后群友引用这些旧消息时，核心找不到被引用的那条，按没有引用处理（同时 @ 了机器人等其他触发不受影响）。@ 机器人被转成 `mentions` 里的 `{type:"bot"}`，@ 群友转成 `{type:"user", id:"user_<QQ号>"}`（at 段带名字时填进可选的 `name`），图片只传元数据。
+2. **提交**：`POST /api/v1/events` 必须带 `Idempotency-Key`。可重试的错误按 0.5s/1s/2s 重试 3 次，仍失败就放进内存缓冲（最多 256 条），每 5 秒按顺序重提交一次。缓冲里还有事件时，新事件不直接提交，而是排到缓冲末尾并立刻触发一次重提交，所以核心短暂不可用之后，事件仍按到达顺序进入核心。
 3. **幂等**（`Submit`，`internal/core/orchestrator.go:366`）：核心对原始请求体算 SHA-256。同一个键、同样的请求体，原样返回当时的 202 响应；请求体不同返回 409。同一条平台消息换个键再交，会被消息表的唯一索引拒绝。
 4. **判定**（`Decide`，`internal/core/decide.go:75`，纯函数）：按顺序命中即停——自己的消息或未启用的群 → `ignore`；命令 → `reply/command`；私聊 → `private`；@ 机器人 → `mention`；回复机器人的消息 → `reply`；在聊会话的参与者 → 一轮或规则退出（第 4 节）；其他 → `observe`（只记录，会进入以后的上下文）。核心不读适配器预填的 `trigger`，一律自己重新判定。
 5. **落库**：判定结果连同事件、消息、新任务在**一个事务**里写入（`internal/store/sqlite/ingest.go:15`），消息同时写进关键词索引 `message_fts`（5.7）。`ignore` 的消息正文不落库，只留幂等记录。事件发生时间已超过 `runtime.stale_task_after`（默认 2 分钟）的消息只记录、不回复。
@@ -87,7 +87,7 @@ NapCat      Adapter                 Core                          SQLite        
 7. **执行**（`internal/core/runner.go:160`）：取历史、审查输入、拼 prompt、路由选模型、申请准入、调用模型，再处理 `[[SKIP]]`、清洗、审查输出（第 5 节）。
 8. **写 Outbox**：`complete` 在一个事务里写任务终态和 `outbox_actions` 行（`orchestrator.go:1066`），然后唤醒正在长轮询的适配器。是否引用触发消息由 `reply.quote` 决定（`shouldQuote`，`orchestrator.go:1182`）。`reply.max_parts` 大于 1 时一次回复可以写成几行动作，后面的带最早发送时间（3.7）。
 9. **投递**：适配器 `GET /outbox` 长轮询（最长 30 秒），只拿原平台通道的动作（面板通道见 2.2）。每个会话每次只发放最老的一条动作，并加 60 秒租约（`internal/store/sqlite/outbox.go:39`）；最老的一条还没到最早发送时间时，这个会话这次什么也不发，别的会话不受影响。
-10. **发送与 ACK**（`adapter.go:424`）：先查去重日志；发送成功后把 `action_id` 和平台消息 ID 写入去重日志并 fsync，再 `POST /outbox/{action_id}/ack`。
+10. **发送与 ACK**（`adapter.go:458`）：先查去重日志；发送成功后把 `action_id` 和平台消息 ID 写入去重日志并 fsync，再 `POST /outbox/{action_id}/ack`。
 11. **记录机器人自己的消息**：ACK 为 `sent` 时，核心在同一事务里把这条回复作为 `from_bot` 消息写进消息表和关键词索引（`internal/store/sqlite/outbox.go:102`）。之后群友回复这条消息，就会被识别为“回复机器人”；下一次调用模型时，它会作为 assistant 历史出现。
 
 ### 2.1 Telegram 的往返
@@ -100,10 +100,10 @@ NapCat      Adapter                 Core                          SQLite        
 - **ID**：私聊会话 `private_<用户ID>`，群 `group_<chat_id>`，`platform_conversation_id` 都是 chat_id。群的 chat_id 是负数，负号原样保留：核心和网关只要求 ID 非空，会话键用 `:` 分隔，不受影响。发送者 `user_<用户ID>`，幂等键 `telegram:<机器人ID>:<update_id>`。Telegram 的 message_id 只在单个会话内唯一，所以消息 ID 是 `msg_<chat_id>_<message_id>`，引用关系也用这个格式；适配器发送成功后 ACK 的平台消息 ID 是第一条消息的 `<chat_id>_<message_id>`（`convert.go:32`），第 11 步核心生成的 `msg_<平台消息ID>` 正好与用户引用它时的 `reply_to` 对上，群里回复机器人的消息因此被判定为 `reply`。
 - **@**：消息（或图片说明）的 entities 里，`mention` 文本等于 `@<机器人用户名>`（不分大小写）算 @ 机器人，这段文字从正文去掉；其他 `mention` 算 @ 群友，ID 为 `username_<用户名小写>`（entity 只带用户名），`text_mention` 带用户对象，ID 为 `user_<用户ID>`。offset 按 UTF-16 计（`convert.go:180`）。
 - **正文和命令**：文字原样提交；媒体写成 `[图片]`、`[表情]`、`[语音]`、`[视频]`、`[文件]` 占位并接上说明文字，不传附件元数据；`/start` 转成“你好”。命令带 `@<机器人用户名>` 后缀时去掉后缀；后缀是别的机器人时原样上报，核心的 `ParseCommand` 不认这种词，按普通消息处理（`convert.go:232`）。
-- **发消息**：`sendMessage` 纯文本、不设 `parse_mode`。超过 4096 个 UTF-16 单位时按空行、换行或字数拆成多条，只有第一条带 `reply_parameters`（`allow_sending_without_reply: true`）（`send.go:31`、`send.go:101`）。429 按 `retry_after` 等待后重试，最多 5 次（`send.go:189`）。
-- **“正在输入”**：核心对这条消息返回 `disposition=reply` 后，每 4 秒发一次 `sendChatAction(typing)`。每次发之前用 `GET /api/v1/tasks/{id}` 查回复任务，任务已结束就停止（需要 `tasks:read`，没有时警告一次、退回只按下面两条停止）；该会话的回复发出时停止；最长 60 秒（`typing.go:46`、`adapter.go:369`）。分条回复里，发完不是最后一条的分条（`part_index < part_count`）后再发一次“正在输入”，在后台发、不耽误投递（`send.go:177`）。
+- **发消息**：`sendMessage` 纯文本、不设 `parse_mode`。超过 4096 个 UTF-16 单位时按空行、换行或字数拆成多条，只有第一条带 `reply_parameters`（`allow_sending_without_reply: true`）（`send.go:32`、`send.go:106`）。第一条遇到 429 时不等待，不 ACK、留给租约到期后重新投递，并记下这个聊天的 `retry_after`，到期前它的动作不再发往 Telegram，别的聊天不受影响，也不会因限流记为失败；拆出的后几条已不能重新投递，仍按 `retry_after` 等待后重试，最多 5 次（`send.go:166`、`send.go:223`）。
+- **“正在输入”**：核心对这条消息返回 `disposition=reply` 后，每 4 秒发一次 `sendChatAction(typing)`。每次发之前用 `GET /api/v1/tasks/{id}` 查回复任务，任务已结束就停止（需要 `tasks:read`，没有时警告一次、退回只按下面两条停止）；该会话的回复发出时停止；最长 60 秒（`typing.go:46`、`adapter.go:369`）。分条回复里，发完不是最后一条的分条（`part_index < part_count`）后再发一次“正在输入”，在后台发、不耽误投递（`send.go:192`）。
 - **隐私模式**：Telegram 默认的隐私模式下，机器人在群里只收到发给它的命令和回复它的消息，看不到普通聊天。要让在聊会话、观望加入和上下文正常工作，需要在 BotFather 关闭隐私模式或把机器人设为群管理员，见 [接入 Telegram](telegram.md#4-群里的隐私模式)。
-- **结果不明不重发**：与 NapCat 相同。请求没写出去（连接失败）时不 ACK，等租约过期重新投递；Telegram 明确拒绝（4xx），或请求已写出但没拿到明确结果（超时、5xx、无法解析的响应），记入去重日志并以 `failed` 确认。是否写出由 `httptrace` 判断（`api.go:88`）。
+- **结果不明不重发**：与 NapCat 相同。请求没写出去（连接失败）或遇到 429 限流时不 ACK，等租约过期重新投递；Telegram 明确拒绝（429 以外的 4xx），或请求已写出但没拿到明确结果（超时、5xx、无法解析的响应），记入去重日志并以 `failed` 确认。是否写出由 `httptrace` 判断（`api.go:88`）。
 - **token**：Bot API 的请求地址含 token，`botAPI` 返回的所有错误都把 token（含各种转义形式）替换成 `REDACTED`（`api.go:61`）。
 
 ### 2.2 面板聊天的往返

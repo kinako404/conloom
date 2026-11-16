@@ -198,6 +198,66 @@ func TestDeliver_TypingBetweenPartsDoesNotHoldDelivery(t *testing.T) {
 	}
 }
 
+// sendTimes returns when sendMessage was called for each chat.
+func sendTimes(tg *fakeTG) map[int64][]time.Time {
+	out := map[int64][]time.Time{}
+	for _, c := range tg.Calls("sendMessage") {
+		out[c.num("chat_id")] = append(out[c.num("chat_id")], c.At)
+	}
+	return out
+}
+
+func TestDeliver_FloodControlHoldsOnlyItsChat(t *testing.T) {
+	tg, core := newFakeTG(t), newFakeCore(t)
+	tg.SetSend(func(call tgCall, n int) (int, string) {
+		if call.num("chat_id") == userXM && n == 1 {
+			return http.StatusTooManyRequests, tgError(429, "Too Many Requests: retry after 1", 1)
+		}
+		return 0, ""
+	})
+	core.Enqueue(replyActionTo("act_a", "给小明的", "20001"))
+	core.Enqueue(replyActionTo("act_b", "给小红的", "20002"))
+	startAdapter(t, tgConfig(tg.URL, core.URL, t.TempDir()), nil)
+
+	waitFor(t, 5*time.Second, "both ACKs", func() bool { return len(core.Acks()) == 2 })
+	times := sendTimes(tg)
+	xm, xh := times[userXM], times[20002]
+	if len(xm) != 2 || len(xh) != 1 {
+		t.Fatalf("sendMessage calls = %d to 小明 and %d to 小红, want 2 and 1", len(xm), len(xh))
+	}
+	if wait := xh[0].Sub(xm[0]); wait > 500*time.Millisecond {
+		t.Errorf("小红's reply went out %v after 小明's chat hit flood control, want it not held up", wait)
+	}
+	if gap := xm[1].Sub(xm[0]); gap < time.Second {
+		t.Errorf("小明's reply resent %v after the 429, want at least retry_after (1s)", gap)
+	}
+	for _, ack := range core.Acks() {
+		if ack.Req.Status != conloomapi.AckSent {
+			t.Errorf("ack = %+v, want sent", ack)
+		}
+	}
+}
+
+func TestDeliver_FloodControlIsNeverAFailure(t *testing.T) {
+	tg, core := newFakeTG(t), newFakeCore(t)
+	tg.SetSend(func(call tgCall, n int) (int, string) {
+		if n <= 2 {
+			return http.StatusTooManyRequests, tgError(429, "Too Many Requests: retry after 1", 1)
+		}
+		return 0, ""
+	})
+	core.Enqueue(replyAction("act_1", replyText, ""))
+	startAdapter(t, tgConfig(tg.URL, core.URL, t.TempDir()), func(a *Adapter) { a.maxRateLimitRetries = 1 })
+
+	waitFor(t, 10*time.Second, "the ACK", func() bool { return len(core.Acks()) == 1 })
+	if ack := core.Acks()[0]; ack.Req.Status != conloomapi.AckSent || ack.Req.PlatformMessageID != "20001_501" {
+		t.Errorf("ack = %+v, want sent with 20001_501 once flood control ended", ack)
+	}
+	if n := len(tg.Calls("sendMessage")); n != 3 {
+		t.Errorf("sendMessage calls = %d, want 3", n)
+	}
+}
+
 func TestDeliver_NotSentHoldsOnlyItsConversation(t *testing.T) {
 	tg, core := newFakeTG(t), newFakeCore(t)
 	core.Enqueue(replyActionTo("act_a", "给小明的第一句", "20001"))

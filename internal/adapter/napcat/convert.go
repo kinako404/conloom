@@ -149,6 +149,32 @@ func atName(data map[string]any, qq string) string {
 	return name
 }
 
+// conversationID is the standard ID of the chat of type convType ("group" or
+// "private") with the given platform ID: group_<group> or private_<user>.
+func conversationID(convType, platformID string) string {
+	return convType + "_" + platformID
+}
+
+// platformMessageID is the platform message ID of NapCat message msgID in
+// conversation convID. NapCat's message_id is a 31-bit hash of the message
+// and its chat, not unique across chats, so it is scoped by conversation like
+// the Telegram adapter's <chat>_<message>. The adapter ACKs sent messages in
+// the same form, so the core's msg_<platform ID> of a bot reply matches the
+// reply_to of a user quoting it.
+func platformMessageID(convID, msgID string) string {
+	return convID + "_" + msgID
+}
+
+// sentMessageID is the platform message ID to ACK for message msgID that
+// NapCat sent for a. An empty ID stays empty, and an ID that is already
+// scoped is returned as is.
+func sentMessageID(a conloomapi.Action, msgID string) string {
+	if !isNumericID(msgID) {
+		return msgID
+	}
+	return platformMessageID(conversationID(a.ConversationType, a.PlatformConversationID), msgID)
+}
+
 // ToStandard converts a OneBot message event into a standard Event and returns its idempotency key.
 func ToStandard(ev OBEvent, botInstanceID string) (conloomapi.Event, string, error) {
 	if ev.PostType != "message" {
@@ -168,9 +194,9 @@ func ToStandard(ev OBEvent, botInstanceID string) (conloomapi.Event, string, err
 		if !isNumericID(groupID) {
 			return conloomapi.Event{}, "", fmt.Errorf("napcat: invalid group_id %q", groupID)
 		}
-		conv = conloomapi.Conversation{Type: conloomapi.ConvGroup, ID: "group_" + groupID, PlatformConversationID: groupID}
+		conv = conloomapi.Conversation{Type: conloomapi.ConvGroup, ID: conversationID(conloomapi.ConvGroup, groupID), PlatformConversationID: groupID}
 	case "private":
-		conv = conloomapi.Conversation{Type: conloomapi.ConvPrivate, ID: "private_" + userID, PlatformConversationID: userID}
+		conv = conloomapi.Conversation{Type: conloomapi.ConvPrivate, ID: conversationID(conloomapi.ConvPrivate, userID), PlatformConversationID: userID}
 	default:
 		return conloomapi.Event{}, "", fmt.Errorf("napcat: unsupported message_type %q", ev.MessageType)
 	}
@@ -180,9 +206,10 @@ func ToStandard(ev OBEvent, botInstanceID string) (conloomapi.Event, string, err
 		return conloomapi.Event{}, "", err
 	}
 
+	pmid := platformMessageID(conv.ID, msgID)
 	msg := conloomapi.Message{
-		ID:                "msg_" + msgID,
-		PlatformMessageID: msgID,
+		ID:                "msg_" + pmid,
+		PlatformMessageID: pmid,
 		Mentions:          []conloomapi.Mention{},
 		Attachments:       []conloomapi.Attachment{},
 	}
@@ -203,7 +230,7 @@ func ToStandard(ev OBEvent, botInstanceID string) (conloomapi.Event, string, err
 				msg.Mentions = append(msg.Mentions, conloomapi.Mention{Type: "user", ID: "user_" + qq, Name: atName(seg.Data, qq)})
 			}
 		case "reply":
-			replyTo := "msg_" + dataString(seg.Data, "id")
+			replyTo := "msg_" + platformMessageID(conv.ID, dataString(seg.Data, "id"))
 			msg.ReplyTo = &replyTo
 		case "image":
 			msg.Attachments = append(msg.Attachments, conloomapi.Attachment{
@@ -247,7 +274,7 @@ func ToStandard(ev OBEvent, botInstanceID string) (conloomapi.Event, string, err
 
 	out := conloomapi.Event{
 		SchemaVersion: conloomapi.SchemaVersion,
-		EventID:       "evt_" + selfID + "_" + msgID,
+		EventID:       "evt_" + selfID + "_" + pmid,
 		EventType:     conloomapi.EventTypeMessageCreated,
 		BotInstanceID: botInstanceID,
 		Platform:      platformQQ,
@@ -265,7 +292,19 @@ func ToStandard(ev OBEvent, botInstanceID string) (conloomapi.Event, string, err
 			"napcat": map[string]any{"self_id": selfID, "sub_type": ev.SubType},
 		},
 	}
-	return out, "napcat:" + selfID + ":" + msgID, nil
+	return out, "napcat:" + selfID + ":" + conv.ID + ":" + msgID, nil
+}
+
+// replyID is the NapCat message_id that a quotes: its reply target's platform
+// message ID without the conversation prefix, or as it is for a message
+// stored before IDs were scoped. A message of another conversation is not
+// quoted.
+func replyID(a conloomapi.Action) string {
+	id := strings.TrimPrefix(a.ReplyToPlatformMessageID, conversationID(a.ConversationType, a.PlatformConversationID)+"_")
+	if !isNumericID(id) {
+		return ""
+	}
+	return id
 }
 
 // SendRequest builds the OneBot API call for an outbox action. Text is always sent
@@ -289,8 +328,8 @@ func SendRequest(a conloomapi.Action) (action string, params map[string]any, err
 	}
 
 	message := make([]map[string]any, 0, 2)
-	if a.ReplyToPlatformMessageID != "" {
-		message = append(message, map[string]any{"type": "reply", "data": map[string]any{"id": a.ReplyToPlatformMessageID}})
+	if id := replyID(a); id != "" {
+		message = append(message, map[string]any{"type": "reply", "data": map[string]any{"id": id}})
 	}
 	message = append(message, map[string]any{"type": "text", "data": map[string]any{"text": a.Content.Text}})
 
