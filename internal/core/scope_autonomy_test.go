@@ -284,10 +284,50 @@ func TestScope_CustomBarsAndEffectsShared(t *testing.T) {
 		}
 	}
 
+	// The panel and the API show the shared bar and effect in either chat.
+	state := func(key string) conloomapi.AutonomyState {
+		t.Helper()
+		s, err := env.o.Autonomy().State(ctx, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	hunger := autonomy.Decay(70, 30, 6*time.Hour, 10*time.Minute)
+	wantBar := conloomapi.AutonomyBar{Name: "饥饿", Value: roundBar(hunger), Band: autonomy.Band(hunger), Baseline: 30,
+		Description: "高=很饿", Custom: true}
+	sa, sb := state(a), state(b)
+	if len(sb.Bars) != 3 || sb.Bars[0].Custom || sb.Bars[1].Custom || sb.Bars[2] != wantBar || len(sb.Effects) != 1 ||
+		sb.Effects[0].Name != "着凉" || sb.Effects[0].Description != "有点冷" || !sb.Effects[0].UntilAt.Equal(added.Add(time.Hour)) {
+		t.Fatalf("B's view = %+v, want the persona's bars, then %+v, and the effect 着凉", sb, wantBar)
+	}
+	if !slices.Equal(sa.Bars, sb.Bars) || !slices.Equal(sa.Effects, sb.Effects) || !slices.Equal(sa.Events, sb.Events) {
+		t.Errorf("views differ:\nA %+v\nB %+v", sa, sb)
+	}
+
 	clock.set(added.Add(time.Hour))
 	inA := env.panelReply(t, a, "还冷吗")
 	if strings.Contains(inA, "效果：") || !strings.Contains(inA, "\n饥饿：") {
 		t.Errorf("A's request an hour later shows the run-out effect or lacks the bar:\n%s", inA)
+	}
+
+	// Removing through B removes the scope's bar and effect, as A sees.
+	env.seedEffect(t, scope, "头晕", "", clock.now(), clock.now().Add(30*time.Minute))
+	if err := env.o.Autonomy().RemoveEffect(ctx, b, "头晕", store.BuffSourcePanel, "panel:admin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.o.Autonomy().RemoveBar(ctx, b, "饥饿", store.BuffSourcePanel, "panel:admin"); err != nil {
+		t.Fatal(err)
+	}
+	if effects, err := env.st.ListEffects(ctx, scope, clock.now()); err != nil || len(effects) != 0 {
+		t.Errorf("scope effects after B's removal = %+v, %v; want none", effects, err)
+	}
+	if bars, err := env.st.ListCustomBars(ctx, scope); err != nil || len(bars) != 0 {
+		t.Errorf("scope bars after B's removal = %+v, %v; want none", bars, err)
+	}
+	if sa := state(a); len(sa.Bars) != 2 || len(sa.Effects) != 0 || sa.Events[0].Kind != store.BuffKindBarRemove ||
+		sa.Events[1].Kind != store.BuffKindEffectRemove || sa.Events[1].Name != "头晕" || sa.Events[1].Source != store.BuffSourcePanel {
+		t.Errorf("A's view after B's removals = %+v", sa)
 	}
 }
 

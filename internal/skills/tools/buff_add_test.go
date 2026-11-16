@@ -376,7 +376,7 @@ func TestAddBuff_NameRules(t *testing.T) {
 	inv := invocation(privateKey, "20001", "小明")
 	const badName = "名字（name）需要 1 到 6 个字，不能有空白、冒号、【】或看不见的字符。"
 	for _, name := range []string{`""`, `"  "`, `"七个字的名字呀"`, `"饿 了"`, `"饥饿："`, `"饥:饿"`, `"【饥饿】"`,
-		`"饥\u200b饿"`, `"饥\u202e饿"`, `"饥\n饿"`, `7`, `null`} {
+		`"饥\u200b饿"`, `"饥\u202e饿"`, `"饥\n饿"`, `7`, `null`, `"."`, `".."`, `"......"`} {
 		args := `{"kind":"bar","name":` + name + `,"baseline":50}`
 		if got := call(t, tool, inv, args); got != badName {
 			t.Errorf("add_buff(%s) = %q, want %q", args, got, badName)
@@ -384,6 +384,11 @@ func TestAddBuff_NameRules(t *testing.T) {
 	}
 	if got := call(t, tool, inv, `{"kind":"effect","minutes":30}`); got != badName {
 		t.Errorf("add_buff without a name = %q, want %q", got, badName)
+	}
+	// A path segment of dots only would never reach the panel's or the API's
+	// DELETE.
+	if got := call(t, tool, inv, `{"kind":"effect","name":" .. ","minutes":30}`); got != badName {
+		t.Errorf("add_buff of an effect named .. = %q, want %q", got, badName)
 	}
 	for _, c := range []struct{ args, want string }{
 		{`{"name":"饥饿","baseline":50}`, "kind 需要是 bar（数值条）或 effect（效果）。"},
@@ -426,5 +431,8 @@ func TestAddBuff_NameRules(t *testing.T) {
 	inv.TaskID = "task_next"
 	if got, want := call(t, other, inv, `{"kind":"effect","name":"好奇","minutes":30}`), "“好奇”是固定的状态条，换个名字。"; got != want {
 		t.Errorf("add_buff of the persona's bar = %q, want %q", got, want)
+	}
+	if got, want := call(t, other, inv, `{"kind":"effect","name":"头晕...","minutes":30}`), "已加上效果：头晕...，还剩约 30 分。"; got != want {
+		t.Errorf("add_buff of a name with dots and more = %q, want %q", got, want)
 	}
 }

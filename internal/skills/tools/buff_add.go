@@ -238,9 +238,11 @@ func (t *addBuffTool) full(ctx context.Context, kind, scope string, now time.Tim
 }
 
 // validBuffName reports whether name may name a bar or effect the bot adds:
-// it follows the persona's bar name rules (conloomapi.ValidBarName) and, as
-// the hidden state block shows names as they are, has no format characters
-// such as bidi controls either.
+// it follows the persona's bar name rules (conloomapi.ValidBarName); as the
+// hidden state block shows names as they are, has no format characters such
+// as bidi controls either; and is not made of dots only, a path segment the
+// panel's and the API's DELETE …/{name} would never receive.
 func validBuffName(name string) bool {
-	return conloomapi.ValidBarName(name) && !strings.ContainsFunc(name, func(r rune) bool { return unicode.Is(unicode.Cf, r) })
+	return conloomapi.ValidBarName(name) && !strings.ContainsFunc(name, func(r rune) bool { return unicode.Is(unicode.Cf, r) }) &&
+		strings.Trim(name, ".") != ""
 }
