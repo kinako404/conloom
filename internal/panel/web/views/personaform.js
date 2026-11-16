@@ -2,7 +2,7 @@
 // templates page.
 
 import { h, mount, errorBox, field, select } from '../lib/dom.js';
-import { post, upload, isAbort } from '../lib/api.js';
+import { get, post, upload, isAbort } from '../lib/api.js';
 
 const REPLY_LENGTH = { short: '短（short）', medium: '中（medium）', long: '长（long）' };
 const FOLLOWUP = { never: '从不（never）', occasionally: '偶尔（occasionally）', often: '经常（often）' };
@@ -35,6 +35,9 @@ const DEFAULT_INTIMACY_LEVELS = ['none', 'none', 'light', 'half', 'major'];
 // MAX_INTIMACY is conloomapi.MaxIntimacyRunes, the most characters the three
 // texts of an intimacy side have together.
 const MAX_INTIMACY = 800;
+// MAX_INTIMACY_BOUND is conloomapi.MaxIntimacyBoundRunes, the most characters
+// each bound of an intimacy side has.
+const MAX_INTIMACY_BOUND = 150;
 
 function fail(box, message) {
   mount(box, errorBox({ message }));
@@ -221,12 +224,15 @@ function appearanceEditor(base) {
 }
 
 // intimacyEditor edits a persona's intimacy side: its three texts, counted
-// together after trimming, and a level per affinity tier. minor and adult are
-// the form's checkboxes: a minor persona gets the section disabled, and while
-// it still has text a button, outside the section, that empties the three
-// texts; one that is not adult a note that the section takes no effect. read
-// returns {value}, the intimacy side or undefined when the three texts are
-// blank, or {error}.
+// together after trimming, and a level and a bound per affinity tier. A bound
+// input's placeholder is the tier's built-in bound, read from the server once;
+// a bound loses the line breaks it was pasted with. minor and adult are the
+// form's checkboxes: a minor persona gets the section disabled, and while it
+// still has text or a bound a button, outside the section, that empties the
+// three texts and the bounds; one that is not adult a note that the section
+// takes no effect. read returns {value}, the intimacy side, without bounds
+// when they are all blank, or undefined when the three texts and the bounds
+// are blank, or {error}.
 function intimacyEditor(base, { minor, adult }) {
   const doc = base.intimacy || {};
   const tone = h('textarea', { value: doc.tone || '' });
@@ -235,6 +241,16 @@ function intimacyEditor(base, { minor, adult }) {
   const texts = [tone, mind, behavior];
   const saved = doc.levels && doc.levels.length ? doc.levels : DEFAULT_INTIMACY_LEVELS;
   const levels = INTIMACY_TIERS.map((_, i) => select(INTIMACY_LEVELS, saved[i]));
+  const savedBounds = doc.bounds || [];
+  const bounds = INTIMACY_TIERS.map((_, i) => h('input', { type: 'text', value: savedBounds[i] || '' }));
+  get('affinity-bounds').then((res) => {
+    const defaults = (res && res.defaults) || [];
+    for (const [i, b] of bounds.entries()) b.placeholder = defaults[i] || '';
+  }, () => {
+    for (const b of bounds) b.placeholder = '空着就用内置边界';
+  });
+  const boundValues = () => bounds.map((b) => b.value.replace(/[\r\n]/g, ''));
+  const hasBound = () => boundValues().some((v) => v.trim() !== '');
   const total = () => texts.reduce((n, t) => n + [...t.value.trim()].length, 0);
   const count = h('p', { class: 'hint' });
   const showCount = () => {
@@ -254,18 +270,21 @@ function intimacyEditor(base, { minor, adult }) {
     field('心理', mind),
     field('表现', behavior),
     count,
-    h('div', { class: 'form-grid' }, INTIMACY_TIERS.map((tier, i) => field(tier, levels[i]))));
+    h('div', { class: 'form-grid' }, INTIMACY_TIERS.map((tier, i) => h('div', null,
+      field(tier, levels[i]), field('边界（可选）', bounds[i])))));
   const sync = () => {
     section.disabled = minor.checked;
     minorNote.hidden = !minor.checked;
     notAdultNote.hidden = minor.checked || adult.checked;
-    clearBar.hidden = !minor.checked || total() === 0;
+    clearBar.hidden = !minor.checked || (total() === 0 && !hasBound());
   };
   minor.addEventListener('change', sync);
   adult.addEventListener('change', sync);
   for (const t of texts) t.addEventListener('input', sync);
+  for (const b of bounds) b.addEventListener('input', sync);
   clear.addEventListener('click', () => {
     for (const t of texts) t.value = '';
+    for (const b of bounds) b.value = '';
     showCount();
     sync();
   });
@@ -273,19 +292,26 @@ function intimacyEditor(base, { minor, adult }) {
 
   const read = () => {
     const n = total();
-    if (n === 0) return { value: undefined };
+    if (n === 0 && !hasBound()) return { value: undefined };
     if (minor.checked) return { error: '未成年人设不能设置亲密面，请先清空' };
     if (n > MAX_INTIMACY) return { error: `亲密面合计最多 ${MAX_INTIMACY} 字` };
+    const written = boundValues();
+    if (written.some((v) => [...v.trim()].length > MAX_INTIMACY_BOUND)) {
+      return { error: `每档边界最多 ${MAX_INTIMACY_BOUND} 字` };
+    }
     const order = Object.keys(INTIMACY_LEVELS);
     const chosen = levels.map((l) => l.value);
     if (chosen.some((v, i) => i > 0 && order.indexOf(v) < order.indexOf(chosen[i - 1]))) {
       return { error: '亲密面的档位要从低到高不递减' };
     }
-    return { value: { tone: tone.value, mind: mind.value, behavior: behavior.value, levels: chosen } };
+    const value = { tone: tone.value, mind: mind.value, behavior: behavior.value, levels: chosen };
+    if (hasBound()) value.bounds = written;
+    return { value };
   };
   return {
     el: [
-      h('p', { class: 'hint' }, '只在成年人设的私聊里生效；群聊和保护模式下不使用。改模板不影响已有会话，要到会话的人设页套用模板。'),
+      h('p', { class: 'hint' }, '只在成年人设的私聊里生效；群聊和保护模式下不使用。改模板不影响已有会话，要到会话的人设页套用模板。',
+        '边界替换这一档内置的分寸说明，空着就用内置的；它不能越过内容规则。'),
       minorNote,
       clearBar,
       notAdultNote,

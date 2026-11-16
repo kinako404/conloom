@@ -393,8 +393,8 @@ func listItems(t *testing.T, js, name string) []string {
 // characters after trimming, against conloomapi.MaxIntimacyRunes, and a level
 // per affinity tier from the lowest, the default levels when the persona has
 // none. A minor persona gets the section disabled, a persona that is not
-// adult a note; saving refuses what the server would, and three blank texts
-// save no intimacy side.
+// adult a note; saving refuses what the server would.
+// TestPersonaForm_IntimacyBounds checks the bounds.
 func TestPersonaForm_IntimacySection(t *testing.T) {
 	js := assets(t, ".js")["views/personaform.js"]
 	m := regexp.MustCompile(`const INTIMACY_LEVELS = \{(.*?)\};`).FindStringSubmatch(js)
@@ -414,12 +414,8 @@ func TestPersonaForm_IntimacySection(t *testing.T) {
 	if got, want := listItems(t, js, "DEFAULT_INTIMACY_LEVELS"), conloomapi.DefaultIntimacyLevels(); !slices.Equal(got, want) {
 		t.Errorf("DEFAULT_INTIMACY_LEVELS = %q, want conloomapi.DefaultIntimacyLevels %q", got, want)
 	}
-	var tiers []string
-	for i := range conloomapi.DefaultIntimacyLevels() {
-		tiers = append(tiers, memory.TierName(i*20))
-	}
-	if got := listItems(t, js, "INTIMACY_TIERS"); !slices.Equal(got, tiers) {
-		t.Errorf("INTIMACY_TIERS = %q, want the affinity tiers %q", got, tiers)
+	if got, want := listItems(t, js, "INTIMACY_TIERS"), memory.TierNames(); !slices.Equal(got, want) {
+		t.Errorf("INTIMACY_TIERS = %q, want the affinity tiers %q", got, want)
 	}
 	limit := regexp.MustCompile(`const MAX_INTIMACY = (\d+);`).FindStringSubmatch(js)
 	if limit == nil {
@@ -438,11 +434,50 @@ func TestPersonaForm_IntimacySection(t *testing.T) {
 		"'未成年人设不能设置亲密面，请先清空'", "`亲密面合计最多 800 字`", "'亲密面的档位要从低到高不递减'",
 		"section.disabled = minor.checked;", "minorNote.hidden = !minor.checked;",
 		"notAdultNote.hidden = minor.checked || adult.checked;",
-		"'清空亲密面'", "clearBar.hidden = !minor.checked || total() === 0;", "for (const t of texts) t.value = '';",
+		"'清空亲密面'", "for (const t of texts) t.value = '';",
 		"minor.addEventListener('change', sync);", "adult.addEventListener('change', sync);",
 		"const intimacy = intimacyEditor(base, { minor, adult });", "h('h3', null, '亲密面'),\n  intimacy.el,",
 		"const side = intimacy.read();\n    if (side.error) return { error: side.error };",
 		"if (side.value) persona.intimacy = side.value;\n    else delete persona.intimacy;",
+	} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("views/personaform.js lacks %q", want)
+		}
+	}
+}
+
+// Each affinity tier of the intimacy side has an optional bound under its
+// level, saved as intimacy.bounds, whose placeholder is the tier's built-in
+// bound from GET affinity-bounds, read once when the form opens. Line breaks
+// a bound brings are removed, not refused; saving refuses a bound over
+// conloomapi.MaxIntimacyBoundRunes after trimming. The three texts and the
+// bounds all blank save no intimacy side, and blank bounds no bounds; bounds
+// alone keep it. A minor persona's bounds count as text: the clear button
+// shows for them and empties them, and saving refuses them.
+func TestPersonaForm_IntimacyBounds(t *testing.T) {
+	js := assets(t, ".js")["views/personaform.js"]
+	limit := regexp.MustCompile(`const MAX_INTIMACY_BOUND = (\d+);`).FindStringSubmatch(js)
+	if limit == nil {
+		t.Fatal("views/personaform.js has no MAX_INTIMACY_BOUND")
+	}
+	if want := strconv.Itoa(conloomapi.MaxIntimacyBoundRunes); limit[1] != want {
+		t.Errorf("MAX_INTIMACY_BOUND = %s, want conloomapi.MaxIntimacyBoundRunes %s", limit[1], want)
+	}
+	if n := strings.Count(js, "'affinity-bounds'"); n != 1 {
+		t.Errorf("views/personaform.js names 'affinity-bounds' %d times, want one call", n)
+	}
+
+	shown := strings.ReplaceAll(js, "${MAX_INTIMACY_BOUND}", limit[1])
+	for _, want := range []string{
+		"get('affinity-bounds')", "'空着就用内置边界'", "b.placeholder = defaults[i] || '';",
+		"const savedBounds = doc.bounds || [];", "h('input', { type: 'text', value: savedBounds[i] || '' })",
+		"field(tier, levels[i]), field('边界（可选）', bounds[i])",
+		"'边界替换这一档内置的分寸说明，空着就用内置的；它不能越过内容规则。'",
+		".value.replace(/[\\r\\n]/g, '')", "[...v.trim()].length > MAX_INTIMACY_BOUND", "`每档边界最多 150 字`",
+		"clearBar.hidden = !minor.checked || (total() === 0 && !hasBound());",
+		"for (const b of bounds) b.value = '';", "for (const b of bounds) b.addEventListener('input', sync);",
+		"if (n === 0 && !hasBound()) return { value: undefined };\n    if (minor.checked) return { error: '未成年人设不能设置亲密面，请先清空' };",
+		"if (hasBound()) value.bounds = written;",
 	} {
 		if !strings.Contains(shown, want) {
 			t.Errorf("views/personaform.js lacks %q", want)
