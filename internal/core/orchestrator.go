@@ -641,10 +641,7 @@ func (o *Orchestrator) submitPrivate(ctx context.Context, s *submission, trigger
 	if pol.Concurrency.MaxInteractiveRequests == 0 {
 		return o.observeOnly(ctx, s, conloomapi.SuppressedPaused)
 	}
-	opts := MergeOptions{
-		Debounce: pol.Reply.PrivateWait.Duration, MaxMergeWindow: pol.Reply.PrivateMaxWait.Duration, Interrupt: true,
-	}
-	resp, err := o.admitWith(ctx, s, AdmitNew, trigger, opts, func() bool {
+	resp, err := o.admitWith(ctx, s, AdmitNew, trigger, privateMerge(pol), func() bool {
 		return o.limiter.Allow(s.convKey+":"+s.ev.Actor.PlatformUserID, pol.Reply.UserRateLimitPerMinute, s.now)
 	})
 	switch {
@@ -656,6 +653,14 @@ func (o *Orchestrator) submitPrivate(ctx context.Context, s *submission, trigger
 		return o.observeOnly(ctx, s, conloomapi.SuppressedQueueFull)
 	}
 	return resp, err
+}
+
+// privateMerge is the merge window of a private reply task under pol (see
+// submitPrivate).
+func privateMerge(pol conloomapi.GroupPolicy) MergeOptions {
+	return MergeOptions{
+		Debounce: pol.Reply.PrivateWait.Duration, MaxMergeWindow: pol.Reply.PrivateMaxWait.Duration, Interrupt: true,
+	}
 }
 
 // errSuperseded stops a runner whose task was superseded (see supersede).

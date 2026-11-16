@@ -256,3 +256,49 @@ func TestRecover_SkipsCommandInProgress(t *testing.T) {
 		t.Fatalf("completions = %v, want one", got)
 	}
 }
+
+func TestRecover_PrivateFollowUpAbandonsRestoredTasksUnsentReply(t *testing.T) {
+	env := newPrivateEnv(t, 30*time.Millisecond, nil, nil)
+	now := time.Now().UTC()
+	pmid := strconv.FormatInt(1000+env.seq.Add(1), 10)
+	msgID, taskID := "msg_"+pmid, ids.New("task")
+	_, err := env.st.Ingest(context.Background(), store.Ingest{
+		Event: store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "seed:" + pmid, EventID: "evt_" + pmid},
+		Conversation: &store.ConversationRecord{
+			BotInstanceID: testBot, ID: conloomapi.ConvPrivate + "_" + privateUser, Key: privateConvKey,
+			Type: conloomapi.ConvPrivate, Platform: "qq", PlatformConversationID: privateUser,
+		},
+		Message: &store.MessageRecord{
+			ID: msgID, BotInstanceID: testBot, ConversationKey: privateConvKey, Platform: "qq",
+			PlatformMessageID: pmid, ActorID: "user_" + privateUser, PlatformUserID: privateUser, DisplayName: "小明",
+			Text: "推荐一本书", OccurredAt: now.Add(-10 * time.Second), CreatedAt: now.Add(-10 * time.Second),
+		},
+		NewTask: &store.TaskRecord{
+			ID: taskID, BotInstanceID: testBot, ConversationKey: privateConvKey, Status: conloomapi.TaskRunning,
+			ActorPlatformUserID: privateUser, TriggerMessageIDs: []string{msgID},
+			Meta: conloomapi.TaskMeta{Trigger: conloomapi.TriggerPrivate}, EventOccurredAt: now.Add(-10 * time.Second),
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := env.o.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	reply := requireOneReply(t, env, taskID)
+	waitUntil(t, "restored runner to finish", func() bool { return len(env.o.sched.Active(privateConvKey)) == 0 })
+
+	// As before the restart, a follow-up abandons the reply not handed out.
+	ev := env.privateEvent("要科幻的")
+	second := env.submit(t, ev)
+	if second.Disposition != conloomapi.DispositionReply || second.TaskID == taskID {
+		t.Fatalf("follow-up response = %+v", second)
+	}
+	if st := outboxStatusOf(t, env, reply.Actions[0].ActionID); st != store.OutboxCancelled {
+		t.Fatalf("restored task's unsent reply = %s, want cancelled", st)
+	}
+	if got, want := storedTriggers(t, env, second.TaskID), []string{msgID, ev.Message.ID}; !slices.Equal(got, want) {
+		t.Fatalf("new turn triggers = %v, want %v", got, want)
+	}
+	requireOneReply(t, env, second.TaskID)
+}
