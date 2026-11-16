@@ -96,7 +96,10 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 		return
 	}
 	if err := o.st.SetTaskStatus(dbctx, task.ID, conloomapi.TaskRunning); err != nil {
-		o.log.Error("mark task running failed", "task_id", task.ID, "error", err)
+		// The task has left the scheduler: it fails rather than stay queued
+		// with no runner.
+		o.log.Error("mark task running failed; failing the task", "task_id", task.ID, "error", err)
+		_ = o.complete(dbctx, task, conloomapi.TaskFailed, task.Meta, conloomapi.CodeInternal, nil)
 		return
 	}
 	task.TriggerMessageIDs = qt.TriggerMessageIDs

@@ -1102,9 +1102,11 @@ func (o *Orchestrator) CancelTask(ctx context.Context, botID, taskID string) (co
 
 // cancel cancels taskID. If another party owns the task, the returned channel
 // closes when it lets go; a runner owner records the cancellation itself.
-// Otherwise cancel takes ownership, marks the stored task cancelled and
-// returns a nil channel; a runner dispatched meanwhile finds the task owned
-// and does not run it.
+// Otherwise cancel takes ownership, marks the stored task cancelled, even if
+// ctx ends meanwhile, and returns a nil channel; a runner dispatched meanwhile
+// finds the task owned and does not run it. Only once the cancellation is
+// stored does the task leave the scheduler, so a task whose cancellation
+// failed stays scheduled rather than queued with no runner.
 func (o *Orchestrator) cancel(ctx context.Context, botID, convKey, taskID string) (<-chan struct{}, error) {
 	o.mu.Lock()
 	ow, owned := o.owners[taskID]
@@ -1116,16 +1118,21 @@ func (o *Orchestrator) cancel(ctx context.Context, botID, convKey, taskID string
 		o.owners[taskID] = ow
 	}
 	o.mu.Unlock()
-	o.sched.Cancel(convKey, taskID)
 	if owned {
+		o.sched.Cancel(convKey, taskID)
 		return ow.done, nil
 	}
 	defer o.release(taskID, ow)
+	ctx = context.WithoutCancel(ctx)
 	rec, err := o.st.GetTask(ctx, botID, taskID)
-	if err != nil || taskFinished(rec.Status) {
+	if err == nil && !taskFinished(rec.Status) {
+		err = o.complete(ctx, rec, conloomapi.TaskCancelled, rec.Meta, conloomapi.CodeTaskCancelled, nil)
+	}
+	if err != nil {
 		return nil, err
 	}
-	return nil, o.complete(ctx, rec, conloomapi.TaskCancelled, rec.Meta, conloomapi.CodeTaskCancelled, nil)
+	o.sched.Cancel(convKey, taskID)
+	return nil, nil
 }
 
 // claim makes the caller the only owner of taskID until release. It returns

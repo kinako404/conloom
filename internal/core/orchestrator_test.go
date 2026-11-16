@@ -171,6 +171,17 @@ type hookStore struct {
 	backfill func(batch int) (indexed, remaining int, err error)
 	// beforeArm, when set, runs before ArmTimer stores a timer.
 	beforeArm func(store.ConversationTimer)
+	// failComplete makes CompleteTask fail.
+	failComplete atomic.Bool
+	// failSetStatus makes SetTaskStatus fail.
+	failSetStatus atomic.Bool
+}
+
+func (h *hookStore) SetTaskStatus(ctx context.Context, taskID, status string) error {
+	if h.failSetStatus.Load() {
+		return errors.New("test: task status unavailable")
+	}
+	return h.Store.SetTaskStatus(ctx, taskID, status)
 }
 
 func (h *hookStore) ArmTimer(ctx context.Context, t store.ConversationTimer) error {
@@ -249,6 +260,9 @@ func (h *hookStore) CompleteTask(ctx context.Context, c store.TaskCompletion) er
 	h.mu.Unlock()
 	if hook != nil {
 		hook(c)
+	}
+	if h.failComplete.Load() {
+		return errors.New("test: task completion unavailable")
 	}
 	if err := h.Store.CompleteTask(ctx, c); err != nil {
 		return err
@@ -1120,6 +1134,68 @@ func TestCancelTask_DuringCloseRecordsCancellation(t *testing.T) {
 	}
 	if got := env.hooks.completed(resp.TaskID); !slices.Equal(got, []string{conloomapi.TaskCancelled}) {
 		t.Fatalf("completions = %v, want [cancelled]", got)
+	}
+}
+
+// restoreHeld puts the stored queued task id back into the scheduler, held
+// there for an hour.
+func (e *testEnv) restoreHeld(id, msg string) {
+	e.o.sched.Restore(QueuedTask{TaskID: id, ConversationKey: testConvKey, ActorID: "20001",
+		TriggerMessageIDs: []string{msg}, ReadyAt: time.Now().Add(time.Hour)})
+}
+
+func scheduled(env *testEnv, id string) bool {
+	return slices.ContainsFunc(env.o.sched.Active(testConvKey), func(q QueuedTask) bool { return q.TaskID == id })
+}
+
+func TestCancelTask_QueuedTaskCancelledWhenClientLeaves(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	id, msg := env.seedTask(t, "20001", "讲个故事", "", conloomapi.TaskQueued, time.Now().UTC())
+	env.restoreHeld(id, msg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The client goes away while the cancellation waits for the writer.
+	env.hooks.setOnComplete(func(c store.TaskCompletion) {
+		if c.TaskID == id {
+			cancel()
+		}
+	})
+	_, _ = env.o.CancelTask(ctx, testBot, id)
+	if task := env.getTask(t, id); task.Status != conloomapi.TaskCancelled {
+		t.Fatalf("task = %+v, want cancelled", task)
+	}
+	if scheduled(env, id) {
+		t.Fatal("cancelled task still scheduled")
+	}
+}
+
+func TestCancelTask_FailedWriteKeepsTaskScheduled(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	id, msg := env.seedTask(t, "20001", "讲个故事", "", conloomapi.TaskQueued, time.Now().UTC())
+	env.restoreHeld(id, msg)
+	env.hooks.failComplete.Store(true)
+	if _, err := env.o.CancelTask(context.Background(), testBot, id); err == nil {
+		t.Fatal("CancelTask succeeded although the cancellation was not stored")
+	}
+	env.hooks.failComplete.Store(false)
+	if task := env.getTask(t, id); task.Status != conloomapi.TaskQueued {
+		t.Fatalf("task = %+v, want queued", task)
+	}
+	if !scheduled(env, id) {
+		t.Fatal("queued task left the scheduler although its cancellation failed")
+	}
+}
+
+func TestRun_FailedRunningMarkFailsTask(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	env.hooks.failSetStatus.Store(true)
+	resp := env.submit(t, env.groupEvent("20001", "你好", mentionBot))
+	task := env.waitTask(t, resp.TaskID)
+	if task.Status != conloomapi.TaskFailed || task.Error == nil || task.Error.Code != conloomapi.CodeInternal {
+		t.Fatalf("task = %+v, want failed with %s", task, conloomapi.CodeInternal)
+	}
+	if n := env.short.Calls() + env.long.Calls(); n != 0 {
+		t.Fatalf("model calls = %d, want 0", n)
 	}
 }
 
