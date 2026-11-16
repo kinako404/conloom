@@ -1,10 +1,14 @@
 package panel
 
 import (
+	"bytes"
+	"encoding/json"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,7 +27,14 @@ import (
 // staticHandler is a panel serving assets, with no data behind its API.
 func staticHandler(t *testing.T, assets fs.FS) http.Handler {
 	t.Helper()
+	return loggingStaticHandler(t, assets, nil)
+}
+
+// loggingStaticHandler is staticHandler logging to logger.
+func loggingStaticHandler(t *testing.T, assets fs.FS, logger *slog.Logger) http.Handler {
+	t.Helper()
 	srv := New(Deps{
+		Logger: logger,
 		Config: &config.Config{Panel: &config.PanelConfig{
 			Users:       []config.PanelUser{{Name: testUser, PasswordHash: testHash(t)}},
 			SessionTTL:  dur(config.DefaultPanelSessionTTL),
@@ -87,10 +98,13 @@ func TestStatic_ServesIndexAndRedirects(t *testing.T) {
 		}
 	}
 
-	for _, p := range []string{"/panel/missing.js", "/panel/views/", "/panel/views", "/panel/views/missing.js"} {
+	for _, p := range []string{"/panel/missing.js", "/panel/views/missing.js", "/panel/favicon.ico", "/panel/views/a.js/x.css"} {
 		if w := get(p); w.Code != http.StatusNotFound {
 			t.Errorf("%s: %d, want 404", p, w.Code)
 		}
+	}
+	if w = get("/panel/views/README"); w.Code != http.StatusOK || w.Body.String() != "x" {
+		t.Errorf("/panel/views/README: %d %q, want the asset", w.Code, w.Body)
 	}
 
 	for _, p := range []string{"/panel/../config", "/panel/%2e%2e/config", "/panel/..%2fconfig", "/panel/views/../../config", "/panel//config"} {
@@ -105,6 +119,180 @@ func TestStatic_ServesIndexAndRedirects(t *testing.T) {
 	h.ServeHTTP(rec, r)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST /panel/app.js: %d, want 405", rec.Code)
+	}
+}
+
+// redirectAssets is a web root for the redirect tests.
+var redirectAssets = fstest.MapFS{
+	"index.html":   {Data: []byte("<!doctype html>")},
+	"app.js":       {Data: []byte("export {};")},
+	"views/a.js":   {Data: []byte("export {};")},
+	"views/README": {Data: []byte("x")},
+}
+
+func serve(h http.Handler, r *http.Request) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+
+func TestStatic_FragmentInPathRedirectsToTheRoute(t *testing.T) {
+	h := staticHandler(t, redirectAssets)
+	for _, c := range []struct{ target, location string }{
+		{"/panel/%23/login?next=%23%2F", "/panel/#/login?next=%23%2F"},
+		{"/panel/%23/", "/panel/#/"},
+		{"/panel/%23", "/panel/#"},
+		{"/panel/%23/conversations/bot%3Aqq%2Fx/memory", "/panel/#/conversations/bot%3Aqq%2Fx/memory"},
+		{"/panel/%23/chat?", "/panel/#/chat"},
+		{"/panel/views/%23/usage?days=7", "/panel/#/usage?days=7"},
+		{"/panel/app.js%23/x", "/panel/#/x"},
+		{"/panel/%23/a%23b", "/panel/#/a%23b"},
+		{"/panel/%23//evil.example/", "/panel/#//evil.example/"},
+		{"/panel/%23/a%0D%0ASet-Cookie:%20x=1", "/panel/#/a%0D%0ASet-Cookie:%20x=1"},
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			w := serve(h, httptest.NewRequest(method, c.target, nil))
+			if w.Code != http.StatusFound || w.Header().Get("Location") != c.location {
+				t.Errorf("%s %s: %d Location %q, want 302 to %q", method, c.target, w.Code, w.Header().Get("Location"), c.location)
+			}
+			if w.Header().Get("Set-Cookie") != "" {
+				t.Errorf("%s %s set a cookie", method, c.target)
+			}
+		}
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/panel/%23/x", nil)
+	r.URL.RawQuery = "a=1\r\nSet-Cookie: x=1\n\xff"
+	w := serve(h, r)
+	if loc := w.Header().Get("Location"); w.Code != http.StatusFound || loc != "/panel/#/x?a=1Set-Cookie:%20x=1%FF" {
+		t.Errorf("query with CR/LF: %d Location %q", w.Code, loc)
+	}
+
+	r = httptest.NewRequest(http.MethodPost, "http://"+testHost+"/panel/%23/login", nil)
+	if w := serve(h, r); w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /panel/%%23/login: %d, want 405", w.Code)
+	}
+}
+
+func TestStatic_PagePathsRedirectToTheApp(t *testing.T) {
+	h := staticHandler(t, redirectAssets)
+	for _, target := range []string{
+		"/panel/login", "/panel/login/", "/panel/conversations/x/memory", "/panel/views", "/panel/views/",
+		"/panel/app.js/", "/panel/v1.2/chat", "/panel/..%2fconfig",
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			w := serve(h, httptest.NewRequest(method, target, nil))
+			if w.Code != http.StatusFound || w.Header().Get("Location") != "/panel/" {
+				t.Errorf("%s %s: %d Location %q, want 302 to /panel/", method, target, w.Code, w.Header().Get("Location"))
+			}
+			if got := w.Header().Get("Cache-Control"); got != "no-cache" {
+				t.Errorf("%s %s: Cache-Control = %q, want no-cache", method, target, got)
+			}
+		}
+	}
+	for _, target := range []string{"/panel/missing.js", "/panel/favicon.ico", "/panel/views/missing.css", "/panel/.well-known"} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			if w := serve(h, httptest.NewRequest(method, target, nil)); w.Code != http.StatusNotFound {
+				t.Errorf("%s %s: %d, want 404", method, target, w.Code)
+			}
+		}
+	}
+	if w := serve(h, httptest.NewRequest(http.MethodGet, "/panel/views/README", nil)); w.Code != http.StatusOK {
+		t.Errorf("/panel/views/README: %d, want the asset", w.Code)
+	}
+	r := httptest.NewRequest(http.MethodPost, "http://"+testHost+"/panel/login", nil)
+	if w := serve(h, r); w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /panel/login: %d, want 405", w.Code)
+	}
+}
+
+func TestHandler_CaseVariantsOfThePrefixRedirect(t *testing.T) {
+	h := staticHandler(t, redirectAssets)
+	for _, c := range []struct{ target, location string }{
+		{"/Panel", "/panel"},
+		{"/PANEL", "/panel"},
+		{"/PANEL/", "/panel/"},
+		{"/Panel/app.js?v=1", "/panel/app.js?v=1"},
+		{"/PaNeL/api/session", "/panel/api/session"},
+		{"/Panel/%23/login?next=%23%2F", "/panel/%23/login?next=%23%2F"},
+		{"/PANEL//evil.example", "/panel//evil.example"},
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			w := serve(h, httptest.NewRequest(method, c.target, nil))
+			if w.Code != http.StatusMovedPermanently || w.Header().Get("Location") != c.location {
+				t.Errorf("%s %s: %d Location %q, want 301 to %q", method, c.target, w.Code, w.Header().Get("Location"), c.location)
+			}
+			if w.Header().Get("Content-Security-Policy") == "" {
+				t.Errorf("%s %s: no Content-Security-Policy", method, c.target)
+			}
+		}
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/PANEL/x", nil)
+	r.URL.RawQuery = "a\r\nb"
+	if w := serve(h, r); w.Code != http.StatusMovedPermanently || w.Header().Get("Location") != "/panel/x?ab" {
+		t.Errorf("query with CR/LF: %d Location %q", w.Code, w.Header().Get("Location"))
+	}
+
+	for _, target := range []string{"/panelx", "/PANELX", "/Panel.js", "/x/PANEL/"} {
+		if w := serve(h, httptest.NewRequest(http.MethodGet, target, nil)); w.Code != http.StatusNotFound {
+			t.Errorf("GET %s: %d, want 404", target, w.Code)
+		}
+	}
+	r = httptest.NewRequest(http.MethodPost, "http://"+testHost+"/PANEL/api/login", nil)
+	if w := serve(h, r); w.Code != http.StatusNotFound {
+		t.Errorf("POST /PANEL/api/login: %d, want 404", w.Code)
+	}
+}
+
+func TestHandler_LogsNotFound(t *testing.T) {
+	var logs bytes.Buffer
+	h := loggingStaticHandler(t, redirectAssets, slog.New(slog.NewJSONHandler(&logs, nil)))
+	ua := strings.Repeat("u", 150) + strings.Repeat("界", 100)
+	for _, c := range []struct{ method, target string }{
+		{http.MethodGet, "/panel/missing.js?token=s3cret"},
+		{http.MethodHead, "/panel/favicon.ico"},
+		{http.MethodGet, "/panel/api/nope"},
+		{http.MethodGet, "/nope"},
+		{http.MethodGet, "/panel/"},
+		{http.MethodGet, "/panel/login"},
+		{http.MethodGet, "/panel/%23/login"},
+		{http.MethodGet, "/PANEL/"},
+		{http.MethodGet, "/panel/app.js"},
+	} {
+		r := httptest.NewRequest(c.method, c.target, nil)
+		r.Header.Set("User-Agent", ua)
+		r.RemoteAddr = "198.51.100.7:4242"
+		serve(h, r)
+	}
+
+	if strings.Contains(logs.String(), "s3cret") {
+		t.Errorf("the query was logged: %s", logs.String())
+	}
+	var got []string
+	dec := json.NewDecoder(&logs)
+	for dec.More() {
+		var m map[string]any
+		if err := dec.Decode(&m); err != nil {
+			t.Fatal(err)
+		}
+		if m["msg"] != "panel not found" {
+			continue
+		}
+		got = append(got, m["method"].(string)+" "+m["path"].(string))
+		if m["level"] != "INFO" {
+			t.Errorf("%v: level %v, want INFO", m["path"], m["level"])
+		}
+		if want := strings.Repeat("u", 150) + strings.Repeat("界", 50); m["user_agent"] != want {
+			t.Errorf("%v: user_agent %q, want the first 200 characters", m["path"], m["user_agent"])
+		}
+		if m["remote"] != "198.51.100.7:4242" {
+			t.Errorf("%v: remote %v", m["path"], m["remote"])
+		}
+	}
+	want := []string{"GET /panel/missing.js", "HEAD /panel/favicon.ico", "GET /panel/api/nope", "GET /nope"}
+	if !slices.Equal(got, want) {
+		t.Errorf("logged %q, want %q", got, want)
 	}
 }
 

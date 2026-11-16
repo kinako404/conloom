@@ -138,10 +138,12 @@ func dummyHash(users []config.PanelUser) string {
 }
 
 // Handler serves /panel and everything under /panel/, and redirects / to
-// /panel/ for a listener of its own; every other path is not found. Every
-// response carries the security headers and API responses are not cached;
-// every request gets a trace ID and is counted by route pattern and status;
-// panics become 500 INTERNAL_ERROR responses.
+// /panel/ for a listener of its own; every other path is not found. Mangled
+// panel URLs are redirected first (see redirectMangledURL). Every response
+// carries the security headers and API responses are not cached; every
+// request gets a trace ID and is counted by route pattern and status; panics
+// become 500 INTERNAL_ERROR responses. Requests for paths of no route, for
+// files missing from the assets and for unknown APIs are logged.
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -166,7 +168,13 @@ func (s *Server) Handler() http.Handler {
 			}
 			s.countRequest(pattern, rec.status)
 		}()
+		if redirectMangledURL(rec, r) {
+			return
+		}
 		s.mux.ServeHTTP(rec, r)
+		if pattern == "" && rec.status == http.StatusNotFound {
+			s.logNotFound(r)
+		}
 	})
 }
 
@@ -178,6 +186,7 @@ func (s *Server) routes() {
 	s.dataRoutes()
 	s.writeRoutes()
 	s.mux.HandleFunc("/panel/api/", func(w http.ResponseWriter, r *http.Request) {
+		s.logNotFound(r)
 		s.writeError(w, r, http.StatusNotFound, conloomapi.CodeNotFound, "no such API")
 	})
 	s.mux.HandleFunc("GET /panel", func(w http.ResponseWriter, r *http.Request) {
