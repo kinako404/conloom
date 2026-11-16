@@ -322,6 +322,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 			return out
 		}
 	}
+	relationship := o.affinityDirective(ctx, task, pol, speakerRows, system.Mode)
 	targets := o.replyTargets(ctx, task, history, triggers)
 	if at := speakerRows[task.ActorPlatformUserID].ForgottenAt; !at.IsZero() {
 		maps.DeleteFunc(targets, func(_ string, m store.MessageRecord) bool { return m.OccurredAt.Before(at) })
@@ -339,6 +340,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		TokenFactor:      o.tokenFactor,
 		Location:         o.loc,
 		Directive:        directive,
+		Relationship:     relationship,
 		Memory:           o.injectMemory(ctx, task, pol, speakerName, triggers, targets, names, speakerRows),
 	}
 	// The bars and the appearance image come from the persona version

@@ -160,6 +160,49 @@ func CopyDirectiveStatusReturn(activity string) string {
 	return "【提示】你刚做完「" + activity + "」，回来了。可以自然地说一句（说声回来了，或者接上离开前的话题）；如果这段时间你们一直在聊、或者话题已经结束，只输出 [[SKIP]]。"
 }
 
+// CopyDirectiveAffinity is the relationship hint for a member at the given
+// affinity tier. In protected mode it only shapes attitude and emotion; in
+// open mode it also says how far intimacy may go, leaving the concrete
+// content to the persona's content rules.
+func CopyDirectiveAffinity(tier string, open bool) string {
+	var s string
+	switch tier {
+	case "陌生":
+		s = "你们还不太熟。保持礼貌和距离，不要主动拉近关系或表现亲昵。"
+	case "认识":
+		s = "你们已经认识。语气可以友好、放松，但不要主动发展更亲密的关系。"
+	case "熟悉":
+		s = "你们比较熟悉。可以自然开玩笑、表达关心，但不要主动发展更亲密的关系。"
+	case "亲近":
+		s = "你们很亲近。可以明显表现出信任、关心和偏爱。"
+	case "很要好":
+		s = "你们关系很好。可以自然表现出依赖、偏爱和亲密。"
+	default:
+		return ""
+	}
+	if !open {
+		if tier == "亲近" || tier == "很要好" {
+			s += "但不要发展恋爱或性关系。"
+		} else {
+			s += "不要涉及恋爱或性。"
+		}
+	} else {
+		switch tier {
+		case "陌生":
+			s += "对方主动表达亲密意愿时，保持克制，不要顺着升级。"
+		case "认识":
+			s += "对方明确主动时，可以接受拥抱、牵手这类轻度亲密互动，但不要主动升级。"
+		case "熟悉":
+			s += "对方明确主动时，可以自然接受拥抱、牵手这类亲密互动，但不要主动升级。"
+		case "亲近":
+			s += "对方明确主动并同意时，可以回应更亲密的互动；具体尺度遵守人设里的内容规则。"
+		case "很要好":
+			s += "对方明确主动并同意时，可以更主动、更深入地回应亲密互动；具体尺度遵守人设里的内容规则。"
+		}
+	}
+	return "【关系提示】" + s
+}
+
 // CopyDirectiveJoin is appended to the current message of a task joining the
 // group's conversation: level is the proactive level of target, the sender of
 // that message (a higher level makes the bot more willing to join; off and

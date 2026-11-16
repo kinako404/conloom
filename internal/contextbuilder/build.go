@@ -51,13 +51,19 @@ type Input struct {
 	// line, or takes its place when Current is empty. It never changes the
 	// system prompt and counts toward BaseTokens.
 	Directive string
+	// Relationship, when set, follows Memory (or starts the final user
+	// message without Memory) and precedes the state block, recent history
+	// and current message. It never changes the system prompt and counts
+	// toward BaseTokens.
+	Relationship string
 	// Memory, when set, starts the final user message, followed by a blank
-	// line and then the state block, recent history and current message. It
-	// never changes the system prompt and counts toward BaseTokens.
+	// line, then Relationship when set, the state block, recent history and
+	// current message. It never changes the system prompt and counts toward
+	// BaseTokens.
 	Memory string
 	// State, when set, is the bot's hidden state block, placed after Memory
-	// and followed by a blank line. It never changes the system prompt and
-	// counts toward BaseTokens.
+	// and Relationship and followed by a blank line. It never changes the
+	// system prompt and counts toward BaseTokens.
 	State string
 	// ToolSchema is the JSON of the tool definitions sent with the request.
 	// It is never rendered but counts toward BaseTokens and EstimatedTokens.
@@ -94,9 +100,9 @@ var defaultLocation = sync.OnceValue(func() *time.Location {
 })
 
 // BaseTokens estimates the system prompt plus the current input (including
-// the reply target, mentions and directive), the memory block, the state
-// block and the appearance image with its label, which are always sent
-// regardless of Budget.
+// the reply target, mentions and directive), the memory block, the
+// relationship hint, the state block and the appearance image with its label,
+// which are always sent regardless of Budget.
 func BaseTokens(in Input) int {
 	n := Estimate(renderCurrent(in), in.TokenFactor) + MessageOverhead
 	if in.Image != nil {
@@ -104,6 +110,9 @@ func BaseTokens(in Input) int {
 	}
 	if in.Memory != "" {
 		n += Estimate(in.Memory+"\n\n", in.TokenFactor)
+	}
+	if in.Relationship != "" {
+		n += Estimate(in.Relationship+"\n\n", in.TokenFactor)
 	}
 	if in.State != "" {
 		n += Estimate(in.State+"\n\n", in.TokenFactor)
@@ -120,7 +129,8 @@ func BaseTokens(in Input) int {
 // body is capped at HistoryMessageMaxRunes before it is costed. Roles strictly alternate after
 // the system prompt: adjacent same-role history is merged, history never
 // starts with assistant, and trailing user history is merged into the final
-// user message under recentLabel, after the memory and state blocks if any.
+// user message under recentLabel, after the memory block, relationship hint
+// and state block if any.
 // Without a current message the directive follows that history directly. Each user
 // history line names the message it replies to (looked up in ReplyTargets)
 // and who it mentions, and the annotations count toward its cost. Bot history has echoed transcript prefixes stripped; a bot message left
@@ -181,6 +191,9 @@ func Build(in Input) Output {
 	}
 	if in.State != "" {
 		current = in.State + "\n\n" + current
+	}
+	if in.Relationship != "" {
+		current = in.Relationship + "\n\n" + current
 	}
 	if in.Memory != "" {
 		current = in.Memory + "\n\n" + current

@@ -216,6 +216,8 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 
 `minor` 和 `adult` 不能同时为 `true`：`PUT …/persona` 的整份替换、套模板、回滚，面板的修改，以及旧配置模板的启动校验都会拒绝，报错 “a minor persona cannot be adult”。即使库里存着同时为 `true` 的旧数据，运行时也按保护模式处理。代码里没有任何角色名单，是否未成年完全由部署者在人设里用 `minor` 标出。`content_rules` 由部署者自己编写，本项目不提供示例规则。
 
+好感度通过【关系提示】影响回复：保护模式只调整态度和情感，不涉及恋爱或性；开放模式按档位逐步放开亲密推进，具体尺度由 `content_rules` 决定。关系提示不改 system prompt，计入上下文预算。
+
 ## 群策略
 
 `default_group_policy` 是新会话的初始群策略。通过 API 或聊天命令修改后，策略按会话存库并版本化，库里的版本优先；没有存库版本的会话一直使用配置里的默认值。策略分 `concurrency`、`reply`、`context`、`review`、`proactive`、`memory` 六段。

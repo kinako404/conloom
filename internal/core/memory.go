@@ -126,6 +126,31 @@ func (o *Orchestrator) injectMemory(ctx context.Context, task store.TaskRecord, 
 	return memory.RenderBlock(summary, entries, limit)
 }
 
+// affinityDirective returns the relationship hint for the task's speaker at
+// their affinity tier, or "" when memory or affinity is off, or the speaker
+// has no affinity yet. known, when not nil, holds the speaker's row already
+// read (private chats do this for the forget cutoff).
+func (o *Orchestrator) affinityDirective(ctx context.Context, task store.TaskRecord, pol conloomapi.GroupPolicy,
+	known map[string]store.MemberMemory, mode conloomapi.ContentMode) string {
+	if !pol.Memory.Enabled || !pol.Concurrency.AllowLongRequests || !pol.Memory.Affinity {
+		return ""
+	}
+	m, ok := known[task.ActorPlatformUserID]
+	if !ok {
+		rows, err := o.st.GetMemberMemories(ctx, task.ConversationKey, []string{task.ActorPlatformUserID})
+		if err != nil {
+			o.log.Warn("load affinity for relationship guidance failed", "task_id", task.ID,
+				"conversation", task.ConversationKey, "error", err)
+			return ""
+		}
+		m = rows[task.ActorPlatformUserID]
+	}
+	if m.Affinity == nil {
+		return ""
+	}
+	return CopyDirectiveAffinity(memory.TierName(*m.Affinity), mode == conloomapi.ContentOpen)
+}
+
 // injectPeople returns the task's speaker, then the member the current
 // message replies to (not the bot) and the members it mentions in order, each
 // once and at most injectMaxOthers besides the speaker. Mentioned actor IDs

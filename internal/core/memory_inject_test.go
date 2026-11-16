@@ -130,9 +130,10 @@ func TestMemoryInject_BlockBeforeRecentMessages(t *testing.T) {
 		{Name: "小明", Tier: "熟悉", Note: "喜欢猫"},
 		{Name: "小红", Note: "养了狗"},
 	}, 0)
+	rel := CopyDirectiveAffinity("熟悉", false)
 	last := lastContent(on)
-	if !strings.HasPrefix(last, block+"\n\n【近期消息") {
-		t.Fatalf("last user message = %q, want it to start with the block and then the recent messages", last)
+	if !strings.HasPrefix(last, block+"\n\n"+rel+"\n\n【近期消息") {
+		t.Fatalf("last user message = %q, want the block, then the relationship hint, then the recent messages", last)
 	}
 	for _, want := range []string{"小明（熟悉）：喜欢猫", "小红：养了狗"} {
 		if !strings.Contains(last, want) {
@@ -203,22 +204,27 @@ func TestMemoryInject_DisabledNoBlock(t *testing.T) {
 			if task.Status != conloomapi.TaskSucceeded {
 				t.Fatalf("task = %+v", task)
 			}
-			if all := requestText(t, env.short.Requests()[0]); strings.Contains(all, injectBlockHeader) || strings.Contains(all, "喜欢猫") {
+			if all := requestText(t, env.short.Requests()[0]); strings.Contains(all, injectBlockHeader) ||
+				strings.Contains(all, "【关系提示】") || strings.Contains(all, "喜欢猫") {
 				t.Fatalf("request carries memory:\n%s", all)
 			}
 		})
 	}
 }
 
-func TestMemoryInject_NothingRememberedNoBlock(t *testing.T) {
+func TestMemoryInject_NothingRememberedNoBlockStillGuides(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{configure: injectConfig(true)})
 	env.injectSeed(t, testConvKey, "", store.MemberMemory{PlatformUserID: "20001", Affinity: injectAffinity(52)})
 	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "你好", mentionBot)).TaskID)
 	if task.Status != conloomapi.TaskSucceeded {
 		t.Fatalf("task = %+v", task)
 	}
-	if last := lastContent(env.short.Requests()[0]); strings.Contains(last, injectBlockHeader) || strings.Contains(last, "熟悉") {
+	last := lastContent(env.short.Requests()[0])
+	if strings.Contains(last, injectBlockHeader) {
 		t.Fatalf("request carries a memory block:\n%s", last)
+	}
+	if !strings.Contains(last, "【关系提示】") || !strings.Contains(last, "熟悉") {
+		t.Fatalf("request lacks the relationship hint:\n%s", last)
 	}
 }
 
@@ -386,7 +392,7 @@ func TestMemoryInject_BlockCappedToTheReplyBudget(t *testing.T) {
 	if task.Status != conloomapi.TaskSucceeded || env.short.Calls() != 1 || env.long.Calls() != 0 {
 		t.Fatalf("task = %+v, short calls %d, long calls %d; want the reply on the short model", task, env.short.Calls(), env.long.Calls())
 	}
-	block, _, ok := strings.Cut(lastContent(env.short.Requests()[0]), "\n\n【当前消息")
+	block, _, ok := strings.Cut(lastContent(env.short.Requests()[0]), "\n\n【关系提示】")
 	if !ok || !strings.HasPrefix(block, injectBlockHeader) {
 		t.Fatalf("last user message does not start with the block: %q", block)
 	}
@@ -431,7 +437,7 @@ func TestMemoryInject_BlockCapFollowsMaxContextTokens(t *testing.T) {
 	if task.Status != conloomapi.TaskSucceeded || env.short.Calls() != 1 {
 		t.Fatalf("task = %+v, short calls %d", task, env.short.Calls())
 	}
-	block, _, _ := strings.Cut(lastContent(env.short.Requests()[0]), "\n\n【当前消息")
+	block, _, _ := strings.Cut(lastContent(env.short.Requests()[0]), "\n\n【关系提示】")
 	short := env.cfg.ModelProfiles["short_context"].Context
 	limit := int(float64(1800-short.ReservedOutputTokens-short.SafetyMarginTokens) * injectBlockShare)
 	if n := utf8.RuneCountInString(block); n > limit || !strings.Contains(block, "最新约好周六去看展。") {

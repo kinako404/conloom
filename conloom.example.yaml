@@ -213,7 +213,7 @@ default_group_policy:
   # 库中已有的旧策略版本没有本段时，按这里的设置补齐；本段缺少的键取内置默认值。
   memory:
     enabled: false                # 是否开启记忆；开启时要求 concurrency.allow_long_requests: true
-    affinity: true                # 开启记忆时是否计算好感度
+    affinity: true                # 开启记忆时是否计算好感度；好感度会通过【关系提示】影响语气和开放模式下的亲密推进
     consolidate_every: 150        # 新消息达到这么多条就整理一次，30~2000
     consolidate_interval: 6h      # 新消息不足条数时，距上次整理超过这么久且至少有 consolidate_min 条新消息也整理一次，30m~48h
     consolidate_min: 20           # 按时间整理时至少要有的新消息条数，1~2000
