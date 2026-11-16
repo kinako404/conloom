@@ -97,6 +97,31 @@ func TestConsTruncate_PrefersSentenceEnd(t *testing.T) {
 	}
 }
 
+func TestConsTruncateNote_KeepsRememberedItems(t *testing.T) {
+	item := func(s string) string { return RememberMarker + s }
+	for _, c := range []struct {
+		name, in string
+		max      int
+		want     string
+	}{
+		{"fits", "喜欢猫。" + item("生日五月"), 20, "喜欢猫。" + item("生日五月")},
+		{"no item cuts like consTruncate", "第一句。第二句很长很长", 8, "第一句。"},
+		{"only the text before the items is cut", "第一句。第二句很长很长" + item("生日五月"), 8 + 11, "第一句。" + item("生日五月")},
+		{"text before cut at the limit", "一二三四五六七八" + item("生日五月"), 3 + 11, "一二三" + item("生日五月")},
+		{"no room for the text before", "第一句。" + item("生日五月"), 11, item("生日五月")},
+		{"oldest whole items dropped", "旧。" + item("甲甲甲") + item("乙乙乙") + item("丙丙"), 2*7 + 5, item("乙乙乙") + item("丙丙")},
+		{"newest item alone over the limit", "旧。" + item("甲") + item("乙乙乙乙乙乙"), 10, string([]rune(item("乙乙乙乙乙乙"))[:10])},
+	} {
+		got := consTruncateNote(c.in, c.max)
+		if got != c.want {
+			t.Errorf("%s: consTruncateNote(%q, %d) = %q, want %q", c.name, c.in, c.max, got, c.want)
+		}
+		if n := utf8.RuneCountInString(got); n > c.max {
+			t.Errorf("%s: %d runes, over the limit %d", c.name, n, c.max)
+		}
+	}
+}
+
 func TestConsReplaceRefs(t *testing.T) {
 	names := map[string]string{"P1": "小明", "P2": "小红", "P3": "一位群友"}
 	for _, c := range []struct{ in, want string }{

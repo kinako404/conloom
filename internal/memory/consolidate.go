@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -50,12 +51,14 @@ const (
 	consOutputPerMember = 60
 )
 
-// Failure categories stored as GroupMemory.LastError.
+// Failure categories stored as GroupMemory.LastError. consSkipped comes
+// before the category of a batch that failBatch moved the cursor past.
 const (
 	consErrAdmission = "admission_error"
 	consErrModel     = "model_error"
 	consErrParse     = "parse_error"
 	consErrTruncated = "output_truncated"
+	consSkipped      = "skipped_"
 )
 
 // consMemberCap is how many members a batch may show, at least 1, for a
@@ -114,10 +117,18 @@ func WarnOutputReservation(cfg *config.Config, log *slog.Logger) {
 		"reserved_output_tokens", reserved, "recommended", RecommendedOutputTokens)
 }
 
-// consLimits are a conversation's reduced batch limits after truncated or
-// timed-out model calls; zero fields mean the defaults.
+// consLimits are a conversation's reduced batch limits after truncated,
+// timed-out, refused or unreadable model calls; zero fields mean the
+// defaults.
 type consLimits struct {
 	messages, members int
+}
+
+// consStuck counts how often a conversation's smallest batch was refused or
+// answered unreadably at cursor (see failBatch).
+type consStuck struct {
+	cursor   int64
+	failures int
 }
 
 // ConsolidatorDeps are a Consolidator's collaborators. Bots is the bot
@@ -142,10 +153,12 @@ type ConsolidatorDeps struct {
 // Consolidator updates a group's summary, member notes and affinity from its
 // new messages with the long-context model. It counts consecutive failures
 // per conversation in memory and, after consFailureLimit of them, skips
-// unrequested runs for consBackoff. A truncated or timed-out model call
-// halves the conversation's next batch limits (messages and members, down to
-// consMinBatchMessages and consMinBatchMembers); each written batch doubles
-// them back towards the defaults.
+// unrequested runs for consBackoff. A truncated, timed-out, refused or
+// unreadable model call halves the conversation's next batch limits
+// (messages and members, down to consMinBatchMessages and
+// consMinBatchMembers); each written batch doubles them back towards the
+// defaults. A smallest batch that keeps being refused or answered
+// unreadably is skipped (see failBatch).
 type Consolidator struct {
 	d             ConsolidatorDeps
 	admissionWait time.Duration
@@ -154,6 +167,7 @@ type Consolidator struct {
 	failures map[string]int
 	backoff  map[string]time.Time
 	limits   map[string]consLimits
+	stuck    map[string]consStuck
 	// fitted holds, per conversation, the last limits consFitLimits reduced
 	// and warned about.
 	fitted map[string][3]int
@@ -173,7 +187,8 @@ func NewConsolidator(d ConsolidatorDeps) *Consolidator {
 		d.Now = time.Now
 	}
 	return &Consolidator{d: d, admissionWait: consAdmissionWait,
-		failures: map[string]int{}, backoff: map[string]time.Time{}, limits: map[string]consLimits{}, fitted: map[string][3]int{}}
+		failures: map[string]int{}, backoff: map[string]time.Time{}, limits: map[string]consLimits{}, stuck: map[string]consStuck{},
+		fitted: map[string][3]int{}}
 }
 
 // Run consolidates up to maxBatchesPerRun batches of the messages after the
@@ -185,12 +200,13 @@ func NewConsolidator(d ConsolidatorDeps) *Consolidator {
 // so a chat created during the run is not skipped. It skips the run when the
 // conversation's bot is not in the directory (a deleted panel bot), when
 // memory is off, during a failure backoff (unless manual), when there is
-// nothing new, when no long-context model is available or when admission
-// stays busy. Batches are limited by the long model's input budget and,
-// through consMemberCap, by its reserved output. A failed model call or
-// truncated or unreadable output keeps the cursor, records the failure
-// category and returns an error; a cancelled ctx keeps the cursor and is not
-// a failure.
+// nothing new, when no long-context model is available (for a private
+// conversation or the shared panel scope, one whose privacy allows sensitive
+// content) or when admission stays busy. Batches are limited by the long
+// model's input budget and, through consMemberCap, by its reserved output. A
+// failed model call or truncated or unreadable output keeps the cursor
+// (unless failBatch skips the batch), records the failure category and
+// returns an error; a cancelled ctx keeps the cursor and is not a failure.
 func (c *Consolidator) Run(ctx context.Context, convKey string, manual bool) (Result, error) {
 	start := time.Now()
 	convKey = ScopeKeyOf(convKey)
@@ -325,7 +341,8 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, sc scope
 		return consOutcome{}, err
 	}
 	base := consPromptTokens(buildPrompt(style, g.Summary, nil, nil), c.d.Config.ModelProfiles[string(router.RoleLong)].TokenEstimateFactor)
-	d, err := c.d.Router.Route(router.Request{AllowLong: true, Exclude: []router.Role{router.RoleShort}, BaseTokens: base})
+	d, err := c.d.Router.Route(router.Request{AllowLong: true, Exclude: []router.Role{router.RoleShort}, BaseTokens: base,
+		Sensitive: private})
 	if err != nil {
 		c.d.Logger.Info("memory consolidation skipped: long-context model unavailable", "conversation", convKey, "error", err)
 		return consOutcome{skipped: "long_unavailable"}, nil
@@ -383,8 +400,11 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, sc scope
 		if ctx.Err() != nil {
 			return consOutcome{}, ctx.Err()
 		}
-		if errors.Is(err, context.DeadlineExceeded) {
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
 			c.shrink(convKey, b, memberCap)
+		case consRefused(err):
+			return consOutcome{}, c.failBatch(ctx, *g, b, memberCap, consErrModel, err, resp)
 		}
 		return consOutcome{}, c.fail(ctx, *g, consErrModel, err, resp)
 	}
@@ -394,7 +414,7 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, sc scope
 	}
 	out, err := parseOutput(resp.Content)
 	if err != nil {
-		return consOutcome{}, c.fail(ctx, *g, consErrParse, err, resp)
+		return consOutcome{}, c.failBatch(ctx, *g, b, memberCap, consErrParse, err, resp)
 	}
 	names := make(map[string]string, len(members))
 	written := []string{g.Summary}
@@ -641,6 +661,61 @@ func (c *Consolidator) fail(ctx context.Context, g store.GroupMemory, category s
 	return fmt.Errorf("memory: consolidate %s: %s: %w", g.ConversationKey, category, cause)
 }
 
+// failBatch records a failed batch b that the model refused (consRefused) or
+// answered unreadably, which retrying the same batch is likely to repeat.
+// Like a timeout it halves the conversation's batch limits. Once a batch of
+// at most consMinBatchMessages messages has failed this way consFailureLimit
+// times at the same cursor, it is skipped: the cursor moves past it with
+// nothing else written, the category is recorded after consSkipped and a
+// warning is logged. Either way the failure counts toward the backoff.
+func (c *Consolidator) failBatch(ctx context.Context, g store.GroupMemory, b consBatch, memberCap int, category string,
+	cause error, resp openai.ChatResponse) error {
+	if !c.stuckAt(g.ConversationKey, g.CursorSeq, b) {
+		c.shrink(g.ConversationKey, b, memberCap)
+		return c.fail(ctx, g, category, cause, resp)
+	}
+	c.d.Logger.Warn("memory consolidation skipped a batch that keeps failing", "conversation", g.ConversationKey,
+		"category", category, "after_seq", g.CursorSeq, "through_seq", b.LastSeq, "messages", b.Messages)
+	g.CursorSeq = b.LastSeq
+	return c.fail(ctx, g, consSkipped+category, cause, resp)
+}
+
+// consRefused reports whether err, from a model call, means the provider
+// refused this request rather than failing for every request: 400, 413 or
+// 422 (such as a content check or a prompt it will not take), or no text in
+// its answer (such as a content filter).
+func consRefused(err error) bool {
+	var se *openai.StatusError
+	if errors.As(err, &se) {
+		return se.Code == http.StatusBadRequest || se.Code == http.StatusRequestEntityTooLarge ||
+			se.Code == http.StatusUnprocessableEntity
+	}
+	return errors.Is(err, openai.ErrEmptyOutput)
+}
+
+// stuckAt counts a refused or unreadable failure of b at cursor when b is a
+// batch of at most consMinBatchMessages messages, and reports whether such
+// failures at cursor have reached consFailureLimit, which also resets the
+// count.
+func (c *Consolidator) stuckAt(convKey string, cursor int64, b consBatch) bool {
+	if b.Messages > consMinBatchMessages {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := c.stuck[convKey]
+	if s.cursor != cursor {
+		s = consStuck{cursor: cursor}
+	}
+	s.failures++
+	if s.failures >= consFailureLimit {
+		delete(c.stuck, convKey)
+		return true
+	}
+	c.stuck[convKey] = s
+	return false
+}
+
 // putGroupState stores g's cursor, run time and error, keeping the stored
 // summary.
 func (c *Consolidator) putGroupState(ctx context.Context, g store.GroupMemory) error {
@@ -758,6 +833,7 @@ func (c *Consolidator) clearFailures(convKey string) {
 	defer c.mu.Unlock()
 	delete(c.failures, convKey)
 	delete(c.backoff, convKey)
+	delete(c.stuck, convKey)
 }
 
 // acquire waits up to c.admissionWait for a background lease on p.

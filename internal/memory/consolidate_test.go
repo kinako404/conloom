@@ -130,8 +130,11 @@ type consOpts struct {
 	reservedOutput int
 	private        bool
 	noLong         bool
-	memory         func(*conloomapi.MemoryPolicy)
-	persona        func(*conloomapi.PersonaDoc)
+	// longNotSensitive sets the long model's privacy.allow_sensitive_content
+	// to false; every profile allows sensitive content otherwise.
+	longNotSensitive bool
+	memory           func(*conloomapi.MemoryPolicy)
+	persona          func(*conloomapi.PersonaDoc)
 }
 
 type consEnv struct {
@@ -168,6 +171,7 @@ func newConsEnv(t *testing.T, opts consOpts) *consEnv {
 			Context: config.ContextLimits{NativeWindow: 128000, ConfiguredWindow: 128000, SoftInputBudget: soft,
 				ReservedOutputTokens: opts.reservedOutput, SafetyMarginTokens: 500},
 			Runtime:             config.ProfileRuntime{MaxConcurrency: 1, Timeout: conloomapi.Duration{Duration: time.Minute}},
+			Privacy:             config.Privacy{DataLocation: "remote", AllowSensitiveContent: true},
 			TokenEstimateFactor: 1,
 		}
 	}
@@ -178,8 +182,10 @@ func newConsEnv(t *testing.T, opts consOpts) *consEnv {
 	profiles := []*router.Profile{{Role: router.RoleShort, Config: profile(8000), Client: e.short}}
 	limits := map[string]admission.Limits{string(router.RoleShort): {MaxConcurrency: 1}}
 	if !opts.noLong {
-		cfg.ModelProfiles[string(router.RoleLong)] = profile(opts.softBudget)
-		profiles = append(profiles, &router.Profile{Role: router.RoleLong, Config: profile(opts.softBudget), Client: e.long})
+		long := profile(opts.softBudget)
+		long.Privacy.AllowSensitiveContent = !opts.longNotSensitive
+		cfg.ModelProfiles[string(router.RoleLong)] = long
+		profiles = append(profiles, &router.Profile{Role: router.RoleLong, Config: long, Client: e.long})
 		limits[string(router.RoleLong)] = admission.Limits{MaxConcurrency: 1}
 	}
 	defaults := conloomapi.DefaultGroupPolicy()
@@ -502,11 +508,13 @@ func consWaitFor(t *testing.T, cond func() bool) {
 func TestConsolidate_FailureKeepsCursorAndBacksOff(t *testing.T) {
 	e := newConsEnv(t, consOpts{})
 	consSeedThree(t, e)
-	e.long.answer("抱歉，这次我整理不了")
+	e.long.setReply(func(int, openai.ChatRequest) (openai.ChatResponse, error) {
+		return openai.ChatResponse{}, &openai.StatusError{Code: 503, Body: "抱歉，这次我整理不了"}
+	})
 
 	for i := 1; i <= 3; i++ {
 		if _, err := e.c.Run(context.Background(), testConvKey, false); err == nil {
-			t.Fatalf("run %d: want error for bad JSON", i)
+			t.Fatalf("run %d: want error for the unavailable model", i)
 		}
 	}
 	g := e.group(t)
@@ -980,5 +988,24 @@ func TestConsolidate_LongCodeAtTheLimitIsNotCutIntoAnother(t *testing.T) {
 	if strings.Contains(m.Note, "小明") || utf8.RuneCountInString(m.Note) > NoteMaxRunes {
 		t.Errorf("20001 note ends %q (%d runes); P12 must not be cut to P1 and replaced", string([]rune(m.Note)[NoteMaxRunes-6:]),
 			utf8.RuneCountInString(m.Note))
+	}
+}
+
+func TestConsolidate_OverlongNoteKeepsRememberedItems(t *testing.T) {
+	e := newConsEnv(t, consOpts{})
+	note := AppendRemembered(strings.Repeat("猫", NoteMaxRunes), "我生日5月1日", NoteMaxRunes)
+	if utf8.RuneCountInString(note) != NoteMaxRunes {
+		t.Fatalf("seed note has %d runes, want the limit %d", utf8.RuneCountInString(note), NoteMaxRunes)
+	}
+	putMember(t, e.st, store.MemberMemory{ConversationKey: testConvKey, PlatformUserID: "20001", DisplayName: "小明", Note: note})
+	consSeedThree(t, e)
+	e.long.answer(`{"group_summary":"S","members":[{"ref":"P1","note":"今天去看猫了，还拍了照片。` + note + `"}]}`)
+	e.run(t, false)
+	got := getMember(t, e.st, testConvKey, "20001").Note
+	if n := utf8.RuneCountInString(got); n > NoteMaxRunes {
+		t.Errorf("note = %d runes, over the limit %d", n, NoteMaxRunes)
+	}
+	if !strings.HasSuffix(got, RememberMarker+"我生日5月1日") || !strings.HasPrefix(got, "今天去看猫了") {
+		t.Errorf("note = %q, want the new fact kept at the start and the remembered item at the end", got)
 	}
 }

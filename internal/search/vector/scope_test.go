@@ -2,7 +2,9 @@ package vector
 
 import (
 	"context"
+	"fmt"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/kinako404/conloom/internal/search"
@@ -61,5 +63,64 @@ func TestSearch_PanelScopeAcrossChats(t *testing.T) {
 	}
 	if got := found(b, "草莓"); len(got) != 1 || got[0] != (hit{b, berryB}) {
 		t.Errorf("草莓 from B after deleting A = %+v, want only B's", got)
+	}
+}
+
+// loadCounter is a ChunkReader that counts LoadChunks calls.
+type loadCounter struct {
+	ChunkReader
+	mu    sync.Mutex
+	loads int
+}
+
+func (c *loadCounter) LoadChunks(ctx context.Context, convKey, model string, afterID int64) ([]store.MemoryChunk, error) {
+	c.mu.Lock()
+	c.loads++
+	c.mu.Unlock()
+	return c.ChunkReader.LoadChunks(ctx, convKey, model, afterID)
+}
+
+func (c *loadCounter) take() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := c.loads
+	c.loads = 0
+	return n
+}
+
+func TestSearch_PanelScopeOfManyChatsStaysCached(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	const chats = cachedConversations + 2
+	var keys []string
+	for i := range chats {
+		key := store.ConversationKey(testBot, store.PlatformPanel, conloomapi.ConvPrivate, fmt.Sprintf("panel_%02d", i))
+		keys = append(keys, key)
+		e.say(key, "panel_admin", "小明", "我喜欢草莓", at(i))
+	}
+	e.run(e.indexer("m1", 16))
+	reader := &loadCounter{ChunkReader: e.st}
+	s := NewSearcher(SearcherDeps{Store: reader, Embedder: e.emb.client("m1", 16)})
+	for i := range 3 {
+		hits, err := s.Search(ctx, keys[0], "草莓", search.Range{}, chats)
+		if err != nil || len(hits) != chats {
+			t.Fatalf("search %d = %d hits, %v; want one per chat", i, len(hits), err)
+		}
+		loads := reader.take()
+		if i == 0 && loads != chats {
+			t.Fatalf("first search read chunks %d times, want once per chat (%d)", loads, chats)
+		}
+		if i > 0 && loads != 0 {
+			t.Fatalf("search %d read chunks %d times, want none: the scope's %d chats must stay cached", i, loads, chats)
+		}
+	}
+	if got := s.cachedKeys(); len(got) != chats {
+		t.Errorf("cached = %d conversations, want all %d chats of the scope", len(got), chats)
+	}
+	if _, err := s.Search(ctx, groupKey, "草莓", search.Range{}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.cachedKeys(); len(got) != cachedConversations || got[0] != groupKey {
+		t.Errorf("cached after another conversation's search = %v, want %d, newest first", got, cachedConversations)
 	}
 }

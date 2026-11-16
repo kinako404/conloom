@@ -276,6 +276,33 @@ func TestIndexer_RoundBudget(t *testing.T) {
 	}
 }
 
+func TestIndexer_FullScanOfOneChunkMovesOn(t *testing.T) {
+	e := newEnv(t)
+	first := e.say(groupKey, "20001", "小明", "我想去旅行", at(0))
+	for i := range forwardScan {
+		e.say(groupKey, "20002", "小红", fmt.Sprintf("第%d句", i), at(1).Add(time.Duration(i)*time.Second))
+	}
+	if err := e.st.ForgetMember(context.Background(), groupKey, "20002", at(20)); err != nil {
+		t.Fatal(err)
+	}
+	last := e.say(groupKey, "20001", "小明", "火锅好吃", at(21))
+	if last-first != forwardScan+1 {
+		t.Fatalf("seqs %d..%d, want the last message past the first scan", first, last)
+	}
+	e.now = at(24 * 60)
+	for range 2 {
+		e.run(e.indexer("m1", 16))
+	}
+	got := flat(e.emb.take())
+	want := []string{"[11-13 09:00] 小明：我想去旅行", "[11-13 09:21] 小明：火锅好吃"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("embedded %q, want %q: a scan of %d messages showing one chunk must not hold it back for ever", got, want, forwardScan)
+	}
+	if c := e.cursor(groupKey); c != last {
+		t.Errorf("cursor = %d, want %d", c, last)
+	}
+}
+
 func TestIndexer_ModelSwitch(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)

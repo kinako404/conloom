@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -95,4 +96,35 @@ func consTruncate(s string, maxRunes int) string {
 		}
 	}
 	return string(r)
+}
+
+// consTruncateNote cuts a note to at most maxRunes runes like consTruncate,
+// but keeps the items its member asked the bot to remember, everything from
+// the first RememberMarker on (see AppendRemembered): only the text before
+// them is cut. When the items alone are over the limit, the oldest whole
+// items are dropped, and a newest item that is still over it is cut at the
+// limit.
+func consTruncateNote(s string, maxRunes int) string {
+	if utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+	i := strings.Index(s, RememberMarker)
+	if i < 0 {
+		return consTruncate(s, maxRunes)
+	}
+	head, items := s[:i], s[i:]
+	switch room := maxRunes - utf8.RuneCountInString(items); {
+	case room > 0:
+		return consTruncate(head, room) + items
+	case room == 0:
+		return items
+	}
+	for utf8.RuneCountInString(items) > maxRunes {
+		next := strings.Index(items[len(RememberMarker):], RememberMarker)
+		if next < 0 {
+			return string([]rune(items)[:maxRunes])
+		}
+		items = items[len(RememberMarker)+next:]
+	}
+	return items
 }
