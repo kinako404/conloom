@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/kinako404/conloom/internal/admission"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/core"
+	"github.com/kinako404/conloom/internal/gateway"
 	"github.com/kinako404/conloom/internal/review"
 	"github.com/kinako404/conloom/internal/router"
 	"github.com/kinako404/conloom/internal/skills"
@@ -39,8 +41,10 @@ func (stubTool) Call(context.Context, skills.Invocation, json.RawMessage) (strin
 // newBotsHarness is a writeHarness whose panel bots, panel chats and
 // appearance descriptions are served by a real orchestrator (without a vision
 // model) over its store, on the harness's clock; deleting a persona template
-// finds the bots using it, as in the app. The config bot is dataBot, whose
-// persona template is default, the persona templates are the built-in default
+// finds the bots using it, as in the app. The config bot is dataBot (qq,
+// platform self ID 30001), named 织语, chatting privately with its admins
+// (none), in no groups, with the skill time and the persona template
+// default; the persona templates are the built-in default
 // and the stored cat, and the skills are the built-in ones, with stub tools,
 // plus grouponly, which only group chats may use.
 func newBotsHarness(t *testing.T) *writeHarness {
@@ -68,7 +72,8 @@ func newBotsHarnessUsing(t *testing.T, template string) *writeHarness {
 	}
 	h := &writeHarness{trigger: &fakeTrigger{}}
 	h.storeHarness = newStoreHarness(t,
-		[]config.BotConfig{{ID: dataBot, Platform: "qq", Name: "织语", PrivateTemplate: template, GroupTemplate: template, Skills: []string{"time"}}},
+		[]config.BotConfig{{ID: dataBot, Platform: "qq", PlatformSelfID: "30001", Name: "织语", PrivateChat: "admins",
+			PrivateTemplate: template, GroupTemplate: template, Skills: []string{"time"}}},
 		map[string]conloomapi.PersonaDoc{"cat": catPersona},
 		func(d *Deps) {
 			o, err := core.New(core.Deps{
@@ -88,16 +93,31 @@ func newBotsHarnessUsing(t *testing.T, template string) *writeHarness {
 }
 
 type botResp struct {
-	ID              string     `json:"id"`
-	Name            string     `json:"name"`
-	Source          string     `json:"source"`
-	PersonaTemplate string     `json:"persona_template"`
-	PrivateTemplate string     `json:"private_template"`
-	GroupTemplate   string     `json:"group_template"`
-	Skills          []string   `json:"skills"`
-	Problems        []string   `json:"problems"`
-	Chats           int        `json:"chats"`
-	LastMessageAt   *time.Time `json:"last_message_at"`
+	ID               string     `json:"id"`
+	Name             string     `json:"name"`
+	Source           string     `json:"source"`
+	Platform         string     `json:"platform"`
+	PlatformSelfID   string     `json:"platform_self_id"`
+	Admins           []string   `json:"admins"`
+	PrivateChat      string     `json:"private_chat"`
+	PrivateAllowlist []string   `json:"private_allowlist"`
+	Groups           []string   `json:"groups"`
+	PersonaTemplate  string     `json:"persona_template"`
+	PrivateTemplate  string     `json:"private_template"`
+	GroupTemplate    string     `json:"group_template"`
+	Skills           []string   `json:"skills"`
+	Problems         []string   `json:"problems"`
+	Chats            int        `json:"chats"`
+	LastMessageAt    *time.Time `json:"last_message_at"`
+}
+
+// harnessConfigBot is the config bot of newBotsHarnessUsing(template) as
+// GET bots lists it before any edit, with problems.
+func harnessConfigBot(template string, problems ...string) botResp {
+	return botResp{ID: dataBot, Name: "织语", Source: "config", Platform: "qq", PlatformSelfID: "30001",
+		Admins: []string{}, PrivateChat: "admins", PrivateAllowlist: []string{}, Groups: []string{},
+		PersonaTemplate: template, PrivateTemplate: template, GroupTemplate: template, Skills: []string{"time"},
+		Problems: append([]string{}, problems...)}
 }
 
 type botsResp struct {
@@ -170,8 +190,7 @@ func TestBotsAPI_CRUDAndAudit(t *testing.T) {
 	if !slices.Equal(list.Templates, []string{"cat", "default"}) {
 		t.Errorf("templates = %v, want [cat default]", list.Templates)
 	}
-	configBot := botResp{ID: dataBot, Name: "织语", Source: "config", PersonaTemplate: "default",
-		PrivateTemplate: "default", GroupTemplate: "default", Skills: []string{"time"}, Problems: []string{}}
+	configBot := harnessConfigBot("default")
 	if len(list.Bots) != 1 || !reflect.DeepEqual(list.Bots[0], configBot) {
 		t.Fatalf("bots = %+v, want only %+v", list.Bots, configBot)
 	}
@@ -199,7 +218,7 @@ func TestBotsAPI_CRUDAndAudit(t *testing.T) {
 	if !panelBotIDPattern.MatchString(created.ID) {
 		t.Fatalf("created ID %q does not match %s", created.ID, panelBotIDPattern)
 	}
-	want := botResp{ID: created.ID, Name: "小红", Source: "panel", PersonaTemplate: "cat",
+	want := botResp{ID: created.ID, Name: "小红", Source: "panel", Platform: "panel", PersonaTemplate: "cat",
 		PrivateTemplate: "cat", GroupTemplate: "cat", Skills: []string{"time", "memory"}, Problems: []string{}}
 	if !reflect.DeepEqual(created, want) {
 		t.Fatalf("created = %+v, want %+v", created, want)
@@ -249,7 +268,7 @@ func TestBotsAPI_CRUDAndAudit(t *testing.T) {
 	path := botPath(created.ID)
 	updated := decodeBot(t, h.write(http.MethodPut, path,
 		map[string]any{"name": "小绿", "persona_template": "default", "skills": []string{}}), http.StatusOK)
-	want = botResp{ID: created.ID, Name: "小绿", Source: "panel", PersonaTemplate: "default",
+	want = botResp{ID: created.ID, Name: "小绿", Source: "panel", Platform: "panel", PersonaTemplate: "default",
 		PrivateTemplate: "default", GroupTemplate: "default", Skills: []string{}, Problems: []string{}, Chats: 1}
 	if !reflect.DeepEqual(updated, want) {
 		t.Fatalf("updated = %+v, want %+v", updated, want)
@@ -300,23 +319,22 @@ func TestBotsAPI_CRUDAndAudit(t *testing.T) {
 	}
 }
 
-func TestBotsAPI_ConfigBot403(t *testing.T) {
+func TestBotsAPI_DeleteConfigBot403(t *testing.T) {
 	h := newBotsHarness(t)
 	private := h.seedConv("qq", conloomapi.ConvPrivate, "20001")
 	h.seedMessage(private, "在吗", h.now.Add(-time.Hour), false)
 
-	body := errorBody(t, h.write(http.MethodPut, botPath(dataBot),
-		map[string]any{"name": "冒名", "persona_template": "cat", "skills": []string{}}), http.StatusForbidden, conloomapi.CodeForbidden)
-	if body.Message != "bot is defined in the config file" || body.Retryable {
-		t.Errorf("PUT config bot: error %+v", body)
+	for _, confirm := range []string{"织语", "冒名"} {
+		body := errorBody(t, h.write(http.MethodDelete, botPath(dataBot), map[string]string{"confirm_name": confirm}),
+			http.StatusForbidden, conloomapi.CodeForbidden)
+		if body.Message != "bot is defined in the config file" || body.Retryable {
+			t.Errorf("DELETE config bot confirmed as %s: error %+v", confirm, body)
+		}
 	}
-	errorBody(t, h.write(http.MethodDelete, botPath(dataBot), map[string]string{"confirm_name": "织语"}),
-		http.StatusForbidden, conloomapi.CodeForbidden)
 
 	list := h.bots()
-	want := botResp{ID: dataBot, Name: "织语", Source: "config", PersonaTemplate: "default",
-		PrivateTemplate: "default", GroupTemplate: "default", Skills: []string{"time"},
-		Problems: []string{}, Chats: 1}
+	want := harnessConfigBot("default")
+	want.Chats = 1
 	if len(list.Bots) != 1 {
 		t.Fatalf("bots = %+v, want the config bot only", list.Bots)
 	}
@@ -327,10 +345,283 @@ func TestBotsAPI_ConfigBot403(t *testing.T) {
 		t.Fatalf("config bot = %+v, last message %v; want %+v, last message %s", got, last, want, h.now.Add(-time.Hour))
 	}
 	h.getJSON(convPath(private.Key), nil)
-	for _, kind := range []string{"panel.bot.update", "panel.bot.delete"} {
-		if n := len(h.audits(kind)); n != 0 {
-			t.Errorf("%s audits = %d after refused changes, want 0", kind, n)
+	if n := len(h.audits("panel.bot.delete")); n != 0 {
+		t.Errorf("panel.bot.delete audits = %d after refused deletes, want 0", n)
+	}
+}
+
+// configBotBody is a PUT bots/{id} body that sets every setting of a config
+// bot, changed by edit when not nil.
+func configBotBody(edit func(map[string]any)) map[string]any {
+	b := map[string]any{
+		"name": "小明", "admins": []string{"20001", "29999"}, "private_chat": "allowlist",
+		"private_allowlist": []string{"20002"}, "groups": []string{"10001", "10002"},
+		"private_template": "cat", "group_template": "default", "skills": []string{"time", "grouponly"},
+	}
+	if edit != nil {
+		edit(b)
+	}
+	return b
+}
+
+// configBotSettingKeys are the keys of configBotBody.
+var configBotSettingKeys = []string{"name", "admins", "private_chat", "private_allowlist", "groups",
+	"private_template", "group_template", "skills"}
+
+func TestBotsAPI_EditConfigBot(t *testing.T) {
+	h := newBotsHarness(t)
+	ctx := context.Background()
+	if err := h.db.UpsertBotInstance(ctx, dataBot, "qq", "织语"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A config bot may enable every usable skill, also one only for groups.
+	var sk struct {
+		ConfigSkills []struct {
+			Name          string   `json:"name"`
+			Description   string   `json:"description"`
+			Conversations []string `json:"conversations"`
+		} `json:"config_skills"`
+	}
+	h.getJSON("/panel/api/bots/skills", &sk)
+	var names []string
+	for _, s := range sk.ConfigSkills {
+		names = append(names, s.Name)
+		if s.Name == "grouponly" && (s.Description != "只在群里用" || !slices.Equal(s.Conversations, []string{conloomapi.ConvGroup})) {
+			t.Errorf("config skill grouponly = %+v, want its description and conversations", s)
 		}
+	}
+	if !slices.Equal(names, []string{"buff", "grouponly", "memory", "status", "time"}) {
+		t.Errorf("config skills = %v, want every registered skill with its tools", names)
+	}
+
+	// The list shows a config bot's identity and settings; a panel bot has
+	// none of the config bot's fields.
+	panelBot := h.createBot("小红", "cat")
+	var raw struct {
+		Bots []map[string]json.RawMessage `json:"bots"`
+	}
+	h.getJSON("/panel/api/bots", &raw)
+	for _, key := range []string{"platform_self_id", "admins", "private_chat", "private_allowlist", "groups"} {
+		if _, ok := raw.Bots[0][key]; !ok {
+			t.Errorf("config bot lacks %s", key)
+		}
+		if _, ok := raw.Bots[1][key]; ok {
+			t.Errorf("panel bot has %s", key)
+		}
+	}
+	if got := h.bots().Bots[0]; !reflect.DeepEqual(got, harnessConfigBot("default")) {
+		t.Fatalf("config bot = %+v, want %+v", got, harnessConfigBot("default"))
+	}
+
+	updated := decodeBot(t, h.write(http.MethodPut, botPath(dataBot), configBotBody(func(b map[string]any) {
+		b["name"] = " 小明 "
+		b["admins"] = []string{"20001", "29999", "20001"}
+	})), http.StatusOK)
+	want := botResp{ID: dataBot, Name: "小明", Source: "config", Platform: "qq", PlatformSelfID: "30001",
+		Admins: []string{"20001", "29999"}, PrivateChat: "allowlist", PrivateAllowlist: []string{"20002"},
+		Groups: []string{"10001", "10002"}, PersonaTemplate: "cat", PrivateTemplate: "cat", GroupTemplate: "default",
+		Skills: []string{"time", "grouponly"}, Problems: []string{}}
+	if !reflect.DeepEqual(updated, want) {
+		t.Fatalf("updated = %+v\nwant %+v", updated, want)
+	}
+	if got := h.bots().Bots[0]; !reflect.DeepEqual(got, want) {
+		t.Errorf("listed after the edit = %+v\nwant %+v", got, want)
+	}
+	stored, err := h.db.GetBotSettings(ctx, dataBot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.CreatedAt, stored.UpdatedAt = time.Time{}, time.Time{}
+	wantStored := store.BotSettings{BotInstanceID: dataBot, Name: "小明", Admins: []string{"20001", "29999"},
+		PrivateChat: "allowlist", PrivateAllowlist: []string{"20002"}, Groups: []string{"10001", "10002"},
+		PrivateTemplate: "cat", GroupTemplate: "default", Skills: []string{"time", "grouponly"}, UpdatedBy: "panel:" + testUser}
+	if !reflect.DeepEqual(stored, wantStored) {
+		t.Errorf("stored settings = %+v\nwant %+v", stored, wantStored)
+	}
+	insts, err := h.db.ListBotInstances(ctx)
+	if err != nil || len(insts) != 2 || insts[1] != (store.BotInstance{ID: dataBot, Platform: "qq", Name: "小明"}) {
+		t.Errorf("bot instances = %+v, %v; want %s renamed to 小明", insts, err, dataBot)
+	}
+	var tpl struct {
+		Users []templateUserResp `json:"users"`
+	}
+	h.getJSON(templatePath("cat"), &tpl)
+	if want := []templateUserResp{{dataBot, "小明", "config"}, {panelBot.ID, "小红", "panel"}}; !reflect.DeepEqual(tpl.Users, want) {
+		t.Errorf("cat users = %+v, want %+v", tpl.Users, want)
+	}
+
+	// The audit names the changed settings and keeps the platform IDs out.
+	checkBotAudit(t, h, "panel.bot.update", dataBot,
+		`"changed":["name","admins","private_chat","private_allowlist","groups","private_template","skills"]`,
+		`"name":"小明"`, `"private_chat":"allowlist"`, `"private_template":"cat"`, `"group_template":"default"`,
+		`"skills":["time","grouponly"]`)
+	detail := h.audits("panel.bot.update")[0].Detail
+	for _, id := range []string{"20001", "29999", "20002", "10001", "10002"} {
+		if strings.Contains(detail, id) {
+			t.Errorf("panel.bot.update detail %s has the platform ID %s", detail, id)
+		}
+	}
+
+	// The identity stays the config file's, and every setting is required.
+	put := func(body any) *httptest.ResponseRecorder { return h.write(http.MethodPut, botPath(dataBot), body) }
+	for _, key := range []string{"id", "platform", "platform_self_id", "persona_template", "source"} {
+		errorBody(t, put(configBotBody(func(b map[string]any) { b[key] = "x" })), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	}
+	for _, key := range configBotSettingKeys {
+		errorBody(t, put(configBotBody(func(b map[string]any) { delete(b, key) })), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+		errorBody(t, put(configBotBody(func(b map[string]any) { b[key] = nil })), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	}
+	for _, tc := range []struct {
+		key   string
+		value any
+		msg   string
+	}{
+		{"name", "", "名字不能为空"},
+		{"admins", []string{"20001", "200 01"}, "管理员：ID“200 01”不能包含空白、冒号或不可见字符"},
+		{"admins", []string{"20001\t"}, "管理员：ID“20001\t”不能包含空白、冒号或不可见字符"},
+		{"private_allowlist", []string{""}, "私聊白名单：ID 不能为空"},
+		{"private_allowlist", []string{"200\u200b02"}, "私聊白名单：ID“200\u200b02”不能包含空白、冒号或不可见字符"},
+		{"groups", []string{"qq:10001"}, "启用的群：ID“qq:10001”不能包含空白、冒号或不可见字符"},
+		{"private_chat", "everyone", "私聊开放范围必须是 off、admins、allowlist、all 之一"},
+		{"private_chat", "", "私聊开放范围必须是 off、admins、allowlist、all 之一"},
+		{"private_template", "dog", "私聊默认模板“dog”不存在"},
+		{"group_template", "dog", "群聊默认模板“dog”不存在"},
+		{"skills", []string{"time", "nope"}, "技能“nope”不存在"},
+	} {
+		body := errorBody(t, put(configBotBody(func(b map[string]any) { b[tc.key] = tc.value })), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+		if body.Message != tc.msg {
+			t.Errorf("%s %q: message %q, want %q", tc.key, tc.value, body.Message, tc.msg)
+		}
+	}
+	if got := h.bots().Bots[0]; !reflect.DeepEqual(got, want) {
+		t.Errorf("after refused edits = %+v\nwant %+v", got, want)
+	}
+	if n := len(h.audits("panel.bot.update")); n != 1 {
+		t.Errorf("panel.bot.update audits = %d after refused edits, want 1", n)
+	}
+
+	// A panel bot takes no config bot setting.
+	errorBody(t, h.write(http.MethodPut, botPath(panelBot.ID),
+		map[string]any{"name": "小红", "persona_template": "cat", "skills": []string{}, "admins": []string{}}),
+		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+
+	// Empty templates are default; a save changing one setting names only it.
+	h.advance(time.Minute) // audits are listed newest first
+	decodeBot(t, put(configBotBody(func(b map[string]any) { b["private_template"] = "" })), http.StatusOK)
+	h.advance(time.Minute)
+	decodeBot(t, put(configBotBody(func(b map[string]any) { b["private_template"], b["groups"] = "", []string{"10003"} })), http.StatusOK)
+	events := h.audits("panel.bot.update")
+	if len(events) != 3 || !strings.Contains(events[0].Detail, `"changed":["groups"]`) ||
+		!strings.Contains(events[1].Detail, `"changed":["private_template"]`) || !strings.Contains(events[1].Detail, `"private_template":"default"`) {
+		t.Errorf("panel.bot.update audits = %+v, want the private template, then the groups changed", events)
+	}
+	if b := h.bots().Bots[0]; b.PrivateTemplate != "default" || !slices.Equal(b.Groups, []string{"10003"}) {
+		t.Errorf("config bot after the last edits = %+v, want the private template default and the group 10003", b)
+	}
+}
+
+// platformEvent is the n-th message on qq to the config bot of
+// newBotsHarness, from user in the group or private chat convID, at.
+func platformEvent(n int, convType, convID, user string, at time.Time) conloomapi.Event {
+	id := strconv.Itoa(n)
+	return conloomapi.Event{
+		SchemaVersion: conloomapi.SchemaVersion, EventID: "evt_" + id, EventType: conloomapi.EventTypeMessageCreated,
+		BotInstanceID: dataBot, Platform: "qq", OccurredAt: at,
+		Conversation: conloomapi.Conversation{Type: convType, ID: convType + "_" + convID, PlatformConversationID: convID},
+		Actor:        conloomapi.Actor{ID: "user_" + user, PlatformUserID: user, DisplayName: "小明"},
+		Trigger:      conloomapi.Trigger{Type: conloomapi.TriggerObserve},
+		Message:      conloomapi.Message{ID: "msg_" + id, PlatformMessageID: id, Text: "你好"},
+	}
+}
+
+// TestBotsAPI_EditConfigBotCapabilities checks that a config bot's groups and
+// private range saved in the panel take effect in the core at once and are
+// what the adapters read from the capabilities endpoint.
+func TestBotsAPI_EditConfigBotCapabilities(t *testing.T) {
+	h := newBotsHarness(t)
+	o, ok := h.srv.d.Chat.(*core.Orchestrator)
+	if !ok {
+		t.Fatal("the harness's chat service is not the orchestrator")
+	}
+	const token = "adapter-token-qq-main"
+	gw := gateway.New(gateway.Deps{
+		Orchestrator: o, Store: h.db, Policies: h.policies, Personas: h.personas, Bots: h.srv.d.Bots,
+		Config: &config.Config{APITokens: []config.APIToken{{Name: "adapter", Token: token, BotInstanceID: dataBot,
+			Scopes: []string{conloomapi.ScopeEventsWrite}}}},
+	}).Handler()
+	call := func(method, path string, body any, idemKey string) *httptest.ResponseRecorder {
+		t.Helper()
+		var r *http.Request
+		if body == nil {
+			r = httptest.NewRequest(method, path, nil)
+		} else {
+			raw, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r = httptest.NewRequest(method, path, strings.NewReader(string(raw)))
+			r.Header.Set("Content-Type", "application/json")
+		}
+		r.Header.Set("Authorization", "Bearer "+token)
+		if idemKey != "" {
+			r.Header.Set("Idempotency-Key", idemKey)
+		}
+		w := httptest.NewRecorder()
+		gw.ServeHTTP(w, r)
+		return w
+	}
+	capabilities := func() conloomapi.Capabilities {
+		t.Helper()
+		w := call(http.MethodGet, "/api/v1/capabilities", nil, "")
+		var c conloomapi.Capabilities
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &c) != nil {
+			t.Fatalf("capabilities: status %d, body %s", w.Code, w.Body)
+		}
+		return c
+	}
+	submit := func(ev conloomapi.Event) conloomapi.EventAccepted {
+		t.Helper()
+		w := call(http.MethodPost, "/api/v1/events", ev, ev.EventID)
+		var resp conloomapi.EventAccepted
+		if w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &resp) != nil {
+			t.Fatalf("event %s: status %d, body %s", ev.EventID, w.Code, w.Body)
+		}
+		return resp
+	}
+
+	if c := capabilities(); c.BotName != "织语" || c.PlatformSelfID != "30001" || c.PrivateChat != "admins" || len(c.EnabledConversations) != 0 {
+		t.Fatalf("capabilities before the edit = %+v, want the harness's settings", c)
+	}
+	if resp := submit(platformEvent(1, conloomapi.ConvGroup, "10002", "20001", h.now)); resp.Disposition != conloomapi.DispositionIgnore ||
+		resp.SuppressedReason != conloomapi.SuppressedNotEnabled {
+		t.Fatalf("message in group 10002 before the edit = %+v, want ignored as not enabled", resp)
+	}
+	if resp := submit(platformEvent(2, conloomapi.ConvPrivate, "20002", "20002", h.now)); resp.Disposition != conloomapi.DispositionIgnore ||
+		resp.SuppressedReason != conloomapi.SuppressedPrivateNotAllowed {
+		t.Fatalf("private message from 20002 before the edit = %+v, want it not allowed", resp)
+	}
+
+	decodeBot(t, h.write(http.MethodPut, botPath(dataBot), configBotBody(nil)), http.StatusOK)
+
+	c := capabilities()
+	wantConvs := []conloomapi.ConversationRef{{Type: conloomapi.ConvGroup, PlatformID: "10001"},
+		{Type: conloomapi.ConvGroup, PlatformID: "10002"}, {Type: conloomapi.ConvPrivate, PlatformID: "20002"}}
+	if c.BotInstanceID != dataBot || c.BotName != "小明" || c.PlatformSelfID != "30001" || c.PrivateChat != "allowlist" ||
+		!slices.Equal(c.EnabledConversations, wantConvs) {
+		t.Fatalf("capabilities after the edit = %+v, want the saved groups, then the private allowlist, and private_chat allowlist", c)
+	}
+	if resp := submit(platformEvent(3, conloomapi.ConvGroup, "10002", "20003", h.now)); resp.Disposition != conloomapi.DispositionObserve {
+		t.Errorf("message in group 10002 after the edit = %+v, want it observed", resp)
+	}
+	if resp := submit(platformEvent(4, conloomapi.ConvGroup, "10009", "20003", h.now)); resp.SuppressedReason != conloomapi.SuppressedNotEnabled {
+		t.Errorf("message in group 10009 after the edit = %+v, want ignored as not enabled", resp)
+	}
+	if resp := submit(platformEvent(5, conloomapi.ConvPrivate, "20003", "20003", h.now)); resp.SuppressedReason != conloomapi.SuppressedPrivateNotAllowed {
+		t.Errorf("private message from 20003 after the edit = %+v, want it not allowed", resp)
+	}
+	if resp := submit(platformEvent(6, conloomapi.ConvPrivate, "20002", "20002", h.now.Add(time.Second))); resp.Disposition != conloomapi.DispositionReply {
+		t.Errorf("private message from the allowlisted 20002 after the edit = %+v, want a reply", resp)
 	}
 }
 

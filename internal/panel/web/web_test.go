@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/imaging"
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/store"
@@ -371,6 +372,36 @@ func TestAssets_GenderOptionsMatchPersona(t *testing.T) {
 	}
 	if !strings.Contains(js, "persona.gender = gender.value") {
 		t.Error("views/personaform.js does not save the gender select")
+	}
+}
+
+// A config bot's form offers exactly the private ranges the core knows, sends
+// every setting PUT bots/{id} requires of a config bot, one platform ID a
+// line, and only shows the identity, which is changed in the config file.
+func TestAssets_ConfigBotForm(t *testing.T) {
+	js := assets(t, ".js")["views/chats.js"]
+	m := regexp.MustCompile(`(?s)const PRIVATE_CHAT = \{(.*?)\};`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("views/chats.js has no PRIVATE_CHAT")
+	}
+	var got []string
+	for _, k := range regexp.MustCompile(`(?m)^\s*(\w+):`).FindAllStringSubmatch(m[1], -1) {
+		got = append(got, k[1])
+	}
+	if want := config.PrivateChatModes(); !slices.Equal(got, want) {
+		t.Errorf("PRIVATE_CHAT keys = %v, want config.PrivateChatModes %v", got, want)
+	}
+	for _, want := range []string{
+		"name: name.value.trim()", "admins: ids(admins)", "private_chat: privateChat.value",
+		"private_allowlist: ids(allowlist)", "groups: ids(groups)", "private_template: privateTemplate.value",
+		"group_template: groupTemplate.value", "skills: checkedSkills(boxes)",
+		".value.split('\\n').map((s) => s.trim()).filter(Boolean)", "(list || []).join('\\n')",
+		"['ID', bot.id], ['平台', bot.platform], ['平台自身 ID', bot.platform_self_id]", "在配置文件里修改'",
+		"skills: res.config_skills || []", "bot.source === PANEL ? deleteButton(bot) : null",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chats.js lacks %q", want)
+		}
 	}
 }
 

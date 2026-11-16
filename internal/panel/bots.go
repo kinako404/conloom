@@ -9,22 +9,25 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
-// PanelBotService creates, changes and deletes the bots created in the panel
-// and audits each change itself; Load publishes the stored bots again, as
-// they take effect with the current persona templates. *core.PanelBotService
-// is one.
+// PanelBotService creates, changes and deletes the bots created in the panel,
+// changes the settings of the config bots and audits each change itself;
+// Load publishes the stored bots and settings again, as they take effect
+// with the current persona templates. *core.PanelBotService is one.
 type PanelBotService interface {
 	Create(ctx context.Context, in core.PanelBotInput, actor string) (config.BotConfig, error)
 	Update(ctx context.Context, id string, in core.PanelBotInput, actor string) (config.BotConfig, error)
+	UpdateConfig(ctx context.Context, id string, in core.ConfigBotInput, actor string) (config.BotConfig, error)
 	Delete(ctx context.Context, id, confirmName, actor string) error
 	Load(ctx context.Context) error
 	PrivateSkills() []core.SkillInfo
+	ConfigSkills() []core.SkillInfo
 }
 
 // maxBotChats bounds the chats the chat page lists of one bot.
@@ -36,17 +39,20 @@ const (
 	sourcePanel  = "panel"
 )
 
-// botSummary is a bot as the bot management lists it. The persona templates
-// and Skills are as they take effect: PrivateTemplate and GroupTemplate those
-// the bot's new private chats and new groups start from, and PersonaTemplate
-// the private one, which is a panel bot's only one (it sets both). Problems
-// notes what of the bot's stored settings no longer applies. Chats counts the
-// bot's private chats and LastMessageAt is the time of their newest message,
-// null without one.
+// botSummary is a bot as the bot management lists it. The settings are as
+// they take effect: PrivateTemplate and GroupTemplate the persona templates
+// the bot's new private chats and new groups start from, PersonaTemplate the
+// private one, which is a panel bot's only one (it sets both), and, for a
+// config bot only, the settings of configBotSummary. Problems notes what of
+// the bot's stored settings no longer applies. Chats counts the bot's private
+// chats and LastMessageAt is the time of their newest message, null without
+// one.
 type botSummary struct {
-	ID              string     `json:"id"`
-	Name            string     `json:"name"`
-	Source          string     `json:"source"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Source   string `json:"source"`
+	Platform string `json:"platform"`
+	*configBotSummary
 	PersonaTemplate string     `json:"persona_template"`
 	PrivateTemplate string     `json:"private_template"`
 	GroupTemplate   string     `json:"group_template"`
@@ -54,6 +60,17 @@ type botSummary struct {
 	Problems        []string   `json:"problems"`
 	Chats           int        `json:"chats"`
 	LastMessageAt   *time.Time `json:"last_message_at"`
+}
+
+// configBotSummary is what only a config bot's summary has: its platform self
+// ID from the config file and the settings the panel edits besides the name,
+// persona templates and skills.
+type configBotSummary struct {
+	PlatformSelfID   string   `json:"platform_self_id"`
+	Admins           []string `json:"admins"`
+	PrivateChat      string   `json:"private_chat"`
+	PrivateAllowlist []string `json:"private_allowlist"`
+	Groups           []string `json:"groups"`
 }
 
 // chatGroup is a bot with its panel chats as the chat page lists them.
@@ -102,6 +119,32 @@ func (r botRequest) input() core.PanelBotInput {
 	return in
 }
 
+// configBotRequest is the body that updates the settings of a config bot,
+// which must give every field; the bot's identity stays the config file's.
+// A field left out or null is nil.
+type configBotRequest struct {
+	Name             *string   `json:"name"`
+	Admins           *[]string `json:"admins"`
+	PrivateChat      *string   `json:"private_chat"`
+	PrivateAllowlist *[]string `json:"private_allowlist"`
+	Groups           *[]string `json:"groups"`
+	PrivateTemplate  *string   `json:"private_template"`
+	GroupTemplate    *string   `json:"group_template"`
+	Skills           *[]string `json:"skills"`
+}
+
+// input is r for the service, or false when r leaves out a field.
+func (r configBotRequest) input() (core.ConfigBotInput, bool) {
+	if r.Name == nil || r.Admins == nil || r.PrivateChat == nil || r.PrivateAllowlist == nil || r.Groups == nil ||
+		r.PrivateTemplate == nil || r.GroupTemplate == nil || r.Skills == nil {
+		return core.ConfigBotInput{}, false
+	}
+	return core.ConfigBotInput{
+		Name: *r.Name, Admins: *r.Admins, PrivateChat: *r.PrivateChat, PrivateAllowlist: *r.PrivateAllowlist,
+		Groups: *r.Groups, PrivateTemplate: *r.PrivateTemplate, GroupTemplate: *r.GroupTemplate, Skills: *r.Skills,
+	}, true
+}
+
 // panelBotService is Deps.PanelBots, writing 503 when there is none.
 func (s *Server) panelBotService(w http.ResponseWriter, r *http.Request) (PanelBotService, bool) {
 	if s.d.PanelBots == nil {
@@ -117,6 +160,12 @@ func (s *Server) botSource(id string) string {
 		return sourcePanel
 	}
 	return sourceConfig
+}
+
+// isConfigBot reports whether id is a bot of the config file.
+func (s *Server) isConfigBot(id string) bool {
+	_, ok := s.d.Bots.Bot(id)
+	return ok && !s.d.Bots.IsPanel(id)
 }
 
 // privateChats maps each bot ID to the bot's stored private chats, the most
@@ -152,9 +201,14 @@ func chatActivity(st store.ConversationStats) time.Time {
 // describeBot describes b, whose private chats are chats.
 func (s *Server) describeBot(b config.BotConfig, chats []store.ConversationStats) botSummary {
 	v := botSummary{
-		ID: b.ID, Name: b.Name, Source: s.botSource(b.ID), PersonaTemplate: b.PrivateTemplate,
+		ID: b.ID, Name: b.Name, Source: s.botSource(b.ID), Platform: b.Platform, PersonaTemplate: b.PrivateTemplate,
 		PrivateTemplate: b.PrivateTemplate, GroupTemplate: b.GroupTemplate,
 		Skills: strs(b.Skills), Problems: strs(s.d.Bots.Problems(b.ID)), Chats: len(chats),
+	}
+	if v.Source == sourceConfig {
+		settings := botdir.Settings(b)
+		v.configBotSummary = &configBotSummary{PlatformSelfID: b.PlatformSelfID, Admins: settings.Admins,
+			PrivateChat: b.PrivateChat, PrivateAllowlist: settings.PrivateAllowlist, Groups: settings.Groups}
 	}
 	var last time.Time
 	for _, c := range chats {
@@ -185,24 +239,29 @@ func (s *Server) listBots(w http.ResponseWriter, r *http.Request, _ *Session) {
 	}{out, strs(s.d.Personas.TemplateNames())})
 }
 
-// listBotSkills lists the skills a panel bot may enable, by name.
+// listBotSkills lists the skills a panel bot may enable and those a config
+// bot may enable, each by name with the conversation types it applies to.
 func (s *Server) listBotSkills(w http.ResponseWriter, r *http.Request, _ *Session) {
 	bots, ok := s.panelBotService(w, r)
 	if !ok {
 		return
 	}
 	type skillView struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
+		Name          string   `json:"name"`
+		Description   string   `json:"description"`
+		Conversations []string `json:"conversations"`
 	}
-	skills := bots.PrivateSkills()
-	out := make([]skillView, 0, len(skills))
-	for _, sk := range skills {
-		out = append(out, skillView{sk.Name, sk.Description})
+	views := func(skills []core.SkillInfo) []skillView {
+		out := make([]skillView, 0, len(skills))
+		for _, sk := range skills {
+			out = append(out, skillView{sk.Name, sk.Description, strs(sk.Conversations)})
+		}
+		return out
 	}
 	s.writeJSON(w, http.StatusOK, struct {
-		Skills []skillView `json:"skills"`
-	}{out})
+		Skills       []skillView `json:"skills"`
+		ConfigSkills []skillView `json:"config_skills"`
+	}{views(bots.PrivateSkills()), views(bots.ConfigSkills())})
 }
 
 // createBot creates a panel bot; the service audits it.
@@ -224,10 +283,15 @@ func (s *Server) createBot(w http.ResponseWriter, r *http.Request, sess *Session
 }
 
 // updateBot replaces the name, persona template and skills of a panel bot,
-// which the request must all give; the service audits it.
+// which the request must all give, or the settings of a config bot (see
+// updateConfigBot); the service audits it.
 func (s *Server) updateBot(w http.ResponseWriter, r *http.Request, sess *Session) {
 	bots, ok := s.panelBotService(w, r)
 	if !ok {
+		return
+	}
+	if s.isConfigBot(r.PathValue("id")) {
+		s.updateConfigBot(w, r, sess, bots)
 		return
 	}
 	var req botRequest
@@ -244,6 +308,34 @@ func (s *Server) updateBot(w http.ResponseWriter, r *http.Request, sess *Session
 		return
 	}
 	b, err := bots.Update(r.Context(), r.PathValue("id"), req.input(), panelActor(sess))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, s.describeBot(b, chats[b.ID]))
+}
+
+// updateConfigBot replaces the settings of a config bot, which the request
+// must all give; its identity (ID, platform, platform self ID) stays the
+// config file's, and a field the request may not set is refused like any
+// unknown field.
+func (s *Server) updateConfigBot(w http.ResponseWriter, r *http.Request, sess *Session, bots PanelBotService) {
+	var req configBotRequest
+	if !s.decode(w, r, &req) {
+		return
+	}
+	in, ok := req.input()
+	if !ok {
+		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
+			"name, admins, private_chat, private_allowlist, groups, private_template, group_template and skills are all required")
+		return
+	}
+	chats, err := s.privateChats(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	b, err := bots.UpdateConfig(r.Context(), r.PathValue("id"), in, panelActor(sess))
 	if err != nil {
 		s.fail(w, r, err)
 		return

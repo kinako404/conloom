@@ -63,6 +63,29 @@ func TestBotSettings_PutGetList(t *testing.T) {
 	}
 }
 
+func TestPutBotSettings_RenamesBotInstance(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	if err := db.UpsertBotInstance(ctx, "qq-main", "qq", "小红"); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []store.BotSettings{
+		{BotInstanceID: "qq-main", Name: "小明", PrivateChat: "admins", PrivateTemplate: "default", GroupTemplate: "default"},
+		{BotInstanceID: "tg-main", Name: "小刚", PrivateChat: "admins", PrivateTemplate: "default", GroupTemplate: "default"},
+	} {
+		if err := db.PutBotSettings(ctx, s); err != nil {
+			t.Fatalf("PutBotSettings %s: %v", s.BotInstanceID, err)
+		}
+	}
+	insts, err := db.ListBotInstances(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []store.BotInstance{{ID: "qq-main", Platform: "qq", Name: "小明"}}; !reflect.DeepEqual(insts, want) {
+		t.Fatalf("bot instances = %+v, want %+v (renamed, and none added for tg-main)", insts, want)
+	}
+}
+
 func TestMigrateConfigBotSettings_StoresMissingKeepsStoredOnce(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)

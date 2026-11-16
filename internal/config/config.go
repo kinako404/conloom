@@ -259,6 +259,12 @@ func (b BotConfig) UnusedPrivateConversations() []string {
 	return ids
 }
 
+// PrivateChatModes returns the values PrivateChat may take, from the most
+// closed to the most open (see PrivateAllowed).
+func PrivateChatModes() []string {
+	return []string{"off", "admins", "allowlist", "all"}
+}
+
 // PrivateAllowed reports whether the user of platform may chat with the bot
 // privately under PrivateChat: never for "off", only admins for "admins",
 // admins and the private entries of EnabledConversations for "allowlist",

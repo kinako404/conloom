@@ -68,9 +68,9 @@ panel:
   - “最近调用”是绑定这个 bot 的 API 令牌最近一次通过鉴权的时间（通常就是它的适配器），只记在内存里，从本次进程启动起算：核心刚重启、适配器还没来得及调用时显示“自本次启动未调用”。
   - 页面下方的“进程指标”是本进程 Prometheus 指标的快照，重启后清零；需要长期曲线时请另接 Prometheus。
 - **用量**：按日期范围（最近 7、30、90 天或自定义）和分组（模型、角色、用途、bot）统计每天的调用数、失败数和 token，画每日堆叠柱状图，下面是区间合计表和逐次调用明细。统计规则见下文 [模型用量](#模型用量)。
-- **聊天**：和 bot 私聊，并管理面板 bot。地址是 `#/chat`，打开某个聊天时是 `#/chat/<会话键>`（会话键经 URL 编码），刷新页面或打开这个链接都会回到同一个聊天。以前会话详情里“聊天”标签的链接 `#/conversations/<会话键>/chat` 会自动换成这个地址，旧书签照样能用。
+- **聊天**：和 bot 私聊，管理面板 bot，修改 QQ、Telegram bot 的设置。地址是 `#/chat`，打开某个聊天时是 `#/chat/<会话键>`（会话键经 URL 编码），刷新页面或打开这个链接都会回到同一个聊天。以前会话详情里“聊天”标签的链接 `#/conversations/<会话键>/chat` 会自动换成这个地址，旧书签照样能用。
   - 左栏按 bot 分组列出面板里新建的聊天，组的顺序同 `GET bots`（先配置 bot，再按新建顺序列面板 bot），组内最近活动的在前，每个 bot 最多 200 个。QQ、Telegram 上的私聊和群聊不列出，在“会话”里查看。每项是对方的名字和最后一条消息的时间（今天的显示时刻，更早的显示日期）。用法见下文 [在面板里聊天](#在面板里聊天)。
-  - 组标题是 bot 的名字。配置文件里的 bot 标“配置”，注明“在配置文件里修改”；面板 bot 的组标题旁有“编辑”“删除”，引用的模板或技能已经不在时在标题下面标出（见 [面板 bot](#面板-bot)）。每组下面有“新建聊天”，左栏最上面有“新建 Bot”。
+  - 组标题是 bot 的名字。配置文件里的 bot 标“配置”，标题旁有“编辑”，打开它的设置表单（见 [平台 bot 的设置](#平台-bot-的设置)），不能删除；面板 bot 的组标题旁有“编辑”“删除”（见 [面板 bot](#面板-bot)）。引用的模板或技能已经不在时在标题下面标出。每组下面有“新建聊天”，左栏最上面有“新建 Bot”。
   - 左栏在打开聊天页时读取一次，新建 bot、编辑、删除和新建聊天之后重新读取；切换聊天只换右栏，左栏不重新读取，也不定时刷新。要重新读取（比如别的面板用户新建了聊天）时，点左栏上方的“刷新”。
   - 右栏是选中的聊天：标题是对方的名字和 bot，“会话详情”链接到这个会话的页面。还没选聊天时显示提示。地址里是平台上的会话时，只提示“聊天页只能打开面板里新建的聊天”，并给出会话详情的链接。
   - 窄屏（手机）上左栏在上、右栏在下，打开一个聊天时页面滚到聊天处。
@@ -134,7 +134,7 @@ panel:
 
 ### 面板 bot
 
-面板 bot 是在面板里新建、只在面板里聊天的 bot：有自己的名字、默认人设模板、技能，每个聊天有自己的人设和策略，所有聊天共用一份记忆（见 [在面板里聊天](#在面板里聊天)）；不接任何平台，也不能发网关令牌。配置文件里的 bot 在面板里只读，要改就改配置文件。用法见 [使用指南：面板 bot](usage.md#面板-bot)，设计见 `docs/superpowers/specs/2026-11-15-panel-bots-design.md`。
+面板 bot 是在面板里新建、只在面板里聊天的 bot：有自己的名字、默认人设模板、技能，每个聊天有自己的人设和策略，所有聊天共用一份记忆（见 [在面板里聊天](#在面板里聊天)）；不接任何平台，也不能发网关令牌。配置文件里的 bot（QQ、Telegram）的设置同样在面板里改，见 [平台 bot 的设置](#平台-bot-的设置)。用法见 [使用指南：面板 bot](usage.md#面板-bot)，设计见 `docs/superpowers/specs/2026-11-15-panel-bots-design.md`。
 
 - **在哪里管理**：在“聊天”页。左栏最上面的“新建 Bot”打开表单：名字、默认人设模板（下拉框，选项是 `GET bots` 的 `templates`，新建时选 `default`）、技能（复选框，列出 `GET bots/skills` 的技能和说明，新建时全选）。名字和别的 bot（包括配置 bot）重名时，表单里提示一句，不阻止保存。面板 bot 组标题旁的“编辑”打开同一个表单；“删除”打开确认框，写明会删掉几个聊天，输入和 bot 一样的名字后“删除”按钮才能点。删除返回 409 时确认框里说明原因、可以再点一次重试，左栏重新读取（可能已经删掉了一部分聊天）。正在看的聊天属于被删的 bot 时，右栏回到提示；删除返回 409 时，正在看的聊天已经被删掉的话右栏也回到提示。
 - **ID**：服务自动生成，`panel-` 加 8 位小写字母和数字，如 `panel-k3x9q2ma`；用过的 ID（包括已删除的 bot 的）不会再用。配置文件里的 bot ID 不能以 `panel-` 开头，所以两类 ID 不会冲突。
@@ -145,6 +145,25 @@ panel:
   - 某个聊天里被取消的任务 5 秒内没停下时，删除停在这里，返回 409 `CHAT_BUSY`（`retryable: true`）：已删的聊天不恢复，bot 保留、不再是“删除中”，可以重试。
   - 聊天都删完后，删掉这个 bot 的面板聊天共用的记忆（摘要、笔记、好感度、修订记录、语义检索数据、状态、状态条、效果和变化记录），再删掉 bot 和它名下残留的用户、事件记录。`bot_instances` 里的行（存着名字）、模型用量和审计记录保留，用量页按 bot 分组时把它显示为“名字（已删除）”。
 - **审计**：新建、编辑、删除分别写 `panel.bot.create`、`panel.bot.update`、`panel.bot.delete`，`actor` 为 `panel:<用户名>`，`bot_instance_id` 和目标都是这个 bot 的 ID。内容是保存的名字、默认人设模板和技能；删除时是名字和删掉的聊天数 `chats`。
+
+### 平台 bot 的设置
+
+配置文件里的 bot（QQ、Telegram）在配置文件里只写身份（`id`、`platform`、`platform_self_id`），其余设置存在数据库里，在面板里改（见 [配置参考：bots](configuration.md#bots)，设计见 `docs/superpowers/specs/2026-11-16-panel-settings-design.md` 第 3 节）。
+
+- **在哪里改**：“聊天”页左栏，配置 bot 组标题旁的“编辑”。表单最上面列出 ID、平台和平台自身 ID，只显示、不能改，注明在配置文件里修改。下面是：
+  - 显示名；名字和别的 bot 重名时提示一句，不阻止保存；
+  - 管理员，每行一个平台用户 ID；
+  - 私聊开放范围（下拉框）：关闭（`off`）、只限管理员（`admins`）、管理员和私聊白名单里的人（`allowlist`）、所有人（`all`）；
+  - 私聊白名单，每行一个平台用户 ID；开放范围不是 `allowlist` 而白名单里有 ID 时，表单提示白名单现在不生效；
+  - 启用的群，每行一个群 ID；
+  - 私聊默认模板、群聊默认模板（下拉框，选项是 `GET bots` 的 `templates`）；
+  - 技能（复选框，列出 `GET bots/skills` 的 `config_skills`，只用于群聊或只用于私聊的技能注明）。
+
+  文本框里的空行和每行首尾的空白不算。表单里显示的是运行时生效的值：模板已经不存在、技能不能用时显示的是代替它的 `default`、去掉它以后的技能，保存后 `problems` 里的说明随之消失。
+- **校验**：显示名的规则同面板 bot（去掉首尾空白后 1–32 字，不能有控制字符、换行和不可见的格式字符）；管理员、私聊白名单和群的每个 ID 不能为空，不能有空白、冒号（`:`，会话键的分隔符）和其他不可见字符，重复的只算一次；私聊开放范围必须是上面四档之一；两个模板必须存在于模板目录，不填时用 `default`；技能必须已加载、用到的工具都已注册，重复的只算一次。只用于群聊的技能也可以启用，私聊里不会用到它（技能按会话类型筛选，同配置 bot 原来的规则）。8 项都必填，ID、平台、平台自身 ID 和面板 bot 的 `persona_template` 等其他字段一律拒绝。不通过时返回 400，`message` 是中文原因，如“管理员：ID“200 01”不能包含空白、冒号或不可见字符”，什么都不改。
+- **生效**：保存后立即写入数据库并换上新的 bot 目录，core 马上按新设置工作：启用的群、管理员和私聊开放范围从下一条消息起，显示名和技能从下一次回复起；默认模板只影响之后新建的会话，以及 bot 还没回复过的会话。`GET /api/v1/capabilities` 立即返回新的显示名、启用的会话（群在前，私聊白名单在后）和私聊开放范围；适配器每 5 分钟拉一次，所以适配器那边最多 5 分钟后跟上，不用重启。显示名同时写进 `bot_instances`，以后从配置文件去掉这个 bot 时，用量页显示的“名字（已删除）”就是它。
+- **删除**：配置 bot 不能在面板里删除，`DELETE bots/{id}` 返回 403；要去掉它就从配置文件删掉再重启。
+- **审计**：每次保存写一条 `panel.bot.update`，`actor` 为 `panel:<用户名>`，`bot_instance_id` 和目标都是这个 bot 的 ID。内容是改了哪些设置 `changed`（按接口里的字段名，如 `["name","groups"]`，和保存前库里的设置比，库里还没有时和默认值比；没改任何项时为空列表），以及保存的显示名 `name`、私聊开放范围 `private_chat`、两个模板 `private_template`、`group_template` 和技能 `skills`。管理员、私聊白名单和群只记在 `changed` 里，ID 不进审计。
 
 ### 人设模板和外观参考图
 
@@ -180,7 +199,7 @@ panel:
 
 - 每次修改都写一条审计记录，`actor` 为 `panel:<用户名>`，`bot_instance_id` 是会话所属的 bot。种类沿用 API 的 `policy.update`、`persona.update`、`memory.update`、`memory.forget`、`autonomy.buff`（修改私聊的状态条）、`autonomy.bar.remove`（删除 bot 自建的状态条，只记条名）、`autonomy.effect.remove`（去掉 bot 的效果，只记名字）、`autonomy.status.clear`（结束私聊的状态）；触发整理写 `memory.consolidate`（API 触发整理不写审计）。登录成功写 `panel.login`。
 - 面板聊天的审计：发消息写 `panel.message`（内容只有消息 ID，不含正文），新建聊天写 `panel.chat.create`，删除聊天写 `panel.chat.delete`；目标都是会话键。
-- 面板 bot 的新建、编辑、删除写 `panel.bot.create`、`panel.bot.update`、`panel.bot.delete`，目标是 bot 的 ID，见 [面板 bot](#面板-bot)。
+- 面板 bot 的新建、编辑、删除写 `panel.bot.create`、`panel.bot.update`、`panel.bot.delete`，目标是 bot 的 ID，见 [面板 bot](#面板-bot)；保存配置 bot 的设置也写 `panel.bot.update`，见 [平台 bot 的设置](#平台-bot-的设置)。
 - 人设模板的写入、恢复、删除写 `persona.template.put`、`persona.template.reset`、`persona.template.delete`，目标是模板名；导出和导入写 `persona.template.export`、`persona.template.import`；上传参考图写 `persona.image.upload`，生成外观介绍写 `persona.appearance.describe`，目标是图片 ID；这几种的 `bot_instance_id` 为空，见 [人设模板和外观参考图](#人设模板和外观参考图)。
 - 策略和人设的新版本里 `updated_by` 为 `panel:<用户名>`；成员记忆的修订记录、状态条和效果的变化记录来源为 `panel`。
 - 忘记成员等同于这个人在会话里发 `/忘记我`；暂停、恢复和 `/pause`、`/resume` 写入同样的策略版本（恢复时并发回到暂停前最近一个非 0 的值）。
@@ -254,8 +273,8 @@ panel:
 | `GET usage?from=&to=&group=` | 每日分桶和区间合计；`group` 为 `model`（默认）、`role`、`purpose`、`bot`；不传日期时为截至今天的 7 天。`bots` 按 bot ID 给出每个 bot 的 `name` 和 `deleted`：bot 目录里的 bot 用当前的名字、`deleted` 为 false；只在 `bot_instances` 里登记过的（删除的面板 bot、从配置文件去掉的 bot）用登记的名字、`deleted` 为 true |
 | `GET usage/calls?from=&to=&model=&purpose=&conversation=&before=&limit=` | 调用明细，新的在前；`conversation` 是会话键 |
 | `GET metrics/live` | 本进程 Prometheus 指标的快照：计数器和仪表给值，直方图给次数、总和和按桶估算的 p50 / p95 |
-| `GET bots` | 全部 bot `bots`：先配置 bot，再按新建顺序列面板 bot。每项 `id`、`name`、`source`（`config` 或 `panel`）、`private_template` 和 `group_template`（新私聊、新群的默认模板，面板 bot 两项相同）、`persona_template`（同 `private_template`，即面板 bot 唯一的模板）和 `skills`（这几项都是运行时生效的值）、`problems`（失效引用的说明，如配置 bot 或面板 bot 的模板已不存在，没有时为空列表）、`chats`（私聊数）、`last_message_at`（这些私聊最后一条消息的时间）。另有 `templates`：可选的人设模板名，按名字排序 |
-| `GET bots/skills` | 面板 bot 可以启用的技能 `skills`（已加载、允许在私聊里用、工具齐全），每项 `name`、`description`，按名字排序 |
+| `GET bots` | 全部 bot `bots`：先配置 bot，再按新建顺序列面板 bot。每项 `id`、`name`、`source`（`config` 或 `panel`）、`platform`（面板 bot 为 `panel`）、`private_template` 和 `group_template`（新私聊、新群的默认模板，面板 bot 两项相同）、`persona_template`（同 `private_template`，即面板 bot 唯一的模板）和 `skills`（这几项都是运行时生效的值）、`problems`（失效引用的说明，如配置 bot 或面板 bot 的模板已不存在，没有时为空列表）、`chats`（私聊数）、`last_message_at`（这些私聊最后一条消息的时间）。配置 bot 另有配置文件里的 `platform_self_id`，以及运行时生效的 `admins`、`private_chat`、`private_allowlist`、`groups`（列表没有时为空列表），面板 bot 没有这几项。另有 `templates`：可选的人设模板名，按名字排序 |
+| `GET bots/skills` | 面板 bot 可以启用的技能 `skills`（已加载、允许在私聊里用、工具齐全）和配置 bot 可以启用的技能 `config_skills`（已加载、工具齐全，也包括只用于群聊的）。每项 `name`、`description`、`conversations`（适用的会话类型 `private`、`group`），按名字排序 |
 | `GET chats` | 聊天页左栏用：`bots` 按 bot 分组，顺序同 `GET bots`，每组 `id`、`name`、`source` 和这个 bot 在面板里新建的聊天 `chats`（没有时为空列表；平台上的私聊和群聊不列出）。聊天按最近活动从新到旧：取最后一条消息的时间和会话建立的时间中较晚的一个，所以刚新建、还没有消息的聊天排在最前；排好序后每个 bot 取前 200 个。每项 `key`、`title`（对方的显示名：面板用户在聊天里最新的昵称；还没人发言时是新建时填的称呼；都没有时是会话 ID）、`platform`（总是 `panel`）、`last_message_at` |
 | `GET conversations` | 全部会话 `conversations`，以及全部 bot `bots`（`id`、`name`、`platform`、`source`，“新建聊天”从这里选；面板 bot 的 `platform` 和 `source` 都是 `panel`）。私聊会话的 `proactive_level` 是生效的主动找人档位（`off`、`low`、`mid`、`high`，没设时为 `mid`），其他会话为空字符串；`memory_scope` 是会话的记忆范围键：面板里新建的聊天是 bot 的共享范围 `<bot>:panel:private:~shared`，其他会话是它自己的会话键。单个会话的接口同样有这两个字段 |
 | `GET conversations/{key}` | 单个会话 |
@@ -283,7 +302,7 @@ panel:
 | 接口 | 说明 |
 |---|---|
 | `POST bots` | 新建面板 bot，请求 `{"name","persona_template","skills"}`（`persona_template` 省略时为 `default`，`skills` 省略时不启用技能），返回 201 和新 bot，格式同 `GET bots` 的一项；校验不通过返回 400 |
-| `PUT bots/{id}` | 编辑面板 bot，请求同上，三个字段都必填，返回改后的 bot；配置 bot 返回 403 `FORBIDDEN`，不存在返回 404，正在删除返回 409 `CHAT_BUSY` |
+| `PUT bots/{id}` | 编辑面板 bot，请求同上，三个字段都必填，返回改后的 bot，格式同 `GET bots` 的一项；不存在返回 404，正在删除返回 409 `CHAT_BUSY`。`{id}` 是配置 bot 时改它的设置，请求 `{"name","admins","private_chat","private_allowlist","groups","private_template","group_template","skills"}`，8 项都必填，其他字段（包括 `id`、`platform`、`platform_self_id`、`persona_template`）返回 400；校验不通过返回 400，见 [平台 bot 的设置](#平台-bot-的设置) |
 | `DELETE bots/{id}` | 删除面板 bot 和它的全部聊天，请求 `{"confirm_name"}`，返回 204；名字不一致返回 400，配置 bot 返回 403，不存在返回 404，正在删除或有聊天的任务没停下返回 409 `CHAT_BUSY`，可以重试。见 [面板 bot](#面板-bot) |
 | `PUT conversations/{key}/policy` | 请求体同 API 的 `PolicyPut`，返回新的当前版本 |
 | `POST conversations/{key}/policy/restore` | 请求 `{"version","reason"}`，把该历史版本的策略写成新版本；该版本在主动发言（`proactive`）或记忆（`memory`）一段出现之前保存、没有这一段时，保留当前的这一段 |

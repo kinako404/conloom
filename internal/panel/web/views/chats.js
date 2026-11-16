@@ -1,4 +1,4 @@
-import { h, mount, errorBox, loading, field } from '../lib/dom.js';
+import { h, mount, errorBox, loading, field, kv } from '../lib/dom.js';
 import { get, post, put, request, convPath, isAbort } from '../lib/api.js';
 import { go, href } from '../lib/router.js';
 import { fmtTime, fmtClock } from '../lib/format.js';
@@ -16,6 +16,15 @@ const NARROW = '(max-width: 699px)';
 const MAX_DISPLAY_NAME = 32;
 
 const PANEL_HINT = '在面板里和 bot 私聊，你是这个聊天的管理员。bot 的回复只出现在面板里。每条最多 2000 字。';
+
+// PRIVATE_CHAT names the private ranges of a config bot by the values of
+// private_chat, from the most closed to the most open.
+const PRIVATE_CHAT = {
+  off: '关闭：不回复任何私聊',
+  admins: '只限管理员',
+  allowlist: '管理员和私聊白名单里的人',
+  all: '所有人',
+};
 
 // botLabel names a bot among bots to choose from: a panel bot as 名字（面板）,
 // a config bot by its name and ID.
@@ -65,6 +74,58 @@ export function newChatDialog(created) {
   return { dialog, open };
 }
 
+// nameInput is the name field of a bot's form, with a note that points out,
+// without refusing it, a name another of bots (all the bots) already has;
+// bot is the bot edited, null for a new one.
+function nameInput(bot, bots) {
+  const input = h('input', { required: true, value: bot ? bot.name : '' });
+  const same = h('p', { class: 'hint warn', hidden: true });
+  const check = () => {
+    const v = input.value.trim();
+    const others = bots.filter((b) => (!bot || b.id !== bot.id) && b.name === v);
+    same.hidden = !v || others.length === 0;
+    same.textContent = `已有同名的 bot：${others.map(botLabel).join('、')}。可以重名，只是不好区分。`;
+  };
+  input.addEventListener('input', check);
+  check();
+  return { input, same };
+}
+
+// templateSelect chooses a persona template among templates, current chosen
+// and listed first when it is not among them.
+function templateSelect(templates, current) {
+  const names = templates.includes(current) ? templates : [current, ...templates];
+  return h('select', null, names.map((t) => h('option', { value: t, selected: t === current }, t)));
+}
+
+// skillBoxes are a checkbox for each of skills, checked as checked(name)
+// says; note(skill), when given, adds a hint to its label.
+function skillBoxes(skills, checked, note) {
+  return skills.map((sk) => ({
+    name: sk.name,
+    box: h('input', { type: 'checkbox', checked: checked(sk.name) }),
+    description: sk.description,
+    note: note ? note(sk) : '',
+  }));
+}
+
+// checkedSkills names the skills whose box is checked.
+function checkedSkills(boxes) {
+  return boxes.filter((b) => b.box.checked).map((b) => b.name);
+}
+
+// skillsFieldset lists boxes under 技能, or says none when there are none.
+function skillsFieldset(boxes, none) {
+  return h('fieldset', { class: 'skills' },
+    h('legend', null, '技能'),
+    boxes.length
+      ? boxes.map((b) => h('label', { class: 'skill' }, b.box,
+        h('span', null, h('strong', null, b.name),
+          b.description ? h('span', { class: 'hint' }, b.description) : null,
+          b.note ? h('span', { class: 'hint' }, b.note) : null)))
+      : h('p', { class: 'muted' }, none));
+}
+
 // botDialog creates a panel bot or edits one: its name, the persona template
 // its new chats start from and its skills. saved(bot, isNew) runs after a
 // save.
@@ -74,24 +135,9 @@ function botDialog(saved) {
   // templates and skills to choose from. bots are all the bots: a name one of
   // them already has is pointed out, not refused.
   const open = (bot, { templates, skills, bots }) => {
-    const name = h('input', { required: true, value: bot ? bot.name : '' });
-    const same = h('p', { class: 'hint warn', hidden: true });
-    const checkName = () => {
-      const v = name.value.trim();
-      const others = bots.filter((b) => (!bot || b.id !== bot.id) && b.name === v);
-      same.hidden = !v || others.length === 0;
-      same.textContent = `已有同名的 bot：${others.map(botLabel).join('、')}。可以重名，只是不好区分。`;
-    };
-    name.addEventListener('input', checkName);
-    checkName();
-    const current = bot ? bot.persona_template : 'default';
-    const names = templates.includes(current) ? templates : [current, ...templates];
-    const template = h('select', null, names.map((t) => h('option', { value: t, selected: t === current }, t)));
-    const boxes = skills.map((sk) => ({
-      name: sk.name,
-      box: h('input', { type: 'checkbox', checked: bot ? (bot.skills || []).includes(sk.name) : true }),
-      description: sk.description,
-    }));
+    const name = nameInput(bot, bots);
+    const template = templateSelect(templates, bot ? bot.persona_template : 'default');
+    const boxes = skillBoxes(skills, (s) => (bot ? (bot.skills || []).includes(s) : true));
     const msg = h('div');
     const save = h('button', { type: 'submit', class: 'primary' }, bot ? '保存' : '新建');
     const cancel = h('button', { type: 'button', onclick: () => dialog.close() }, '取消');
@@ -101,9 +147,9 @@ function botDialog(saved) {
         save.disabled = true;
         mount(msg);
         const body = {
-          name: name.value.trim(),
+          name: name.input.value.trim(),
           persona_template: template.value,
-          skills: boxes.filter((b) => b.box.checked).map((b) => b.name),
+          skills: checkedSkills(boxes),
         };
         try {
           const res = bot ? await put(`bots/${encodeURIComponent(bot.id)}`, body) : await post('bots', body);
@@ -120,18 +166,107 @@ function botDialog(saved) {
     bot
       ? h('p', { class: 'hint mono' }, bot.id)
       : h('p', { class: 'hint' }, '面板 bot 只在面板里聊天，不接 QQ、Telegram 等平台。建好立即生效，不用重启。'),
-    field('名字', name, '1–32 字，不能有换行和不可见字符'),
-    same,
+    field('名字', name.input, '1–32 字，不能有换行和不可见字符'),
+    name.same,
     field('默认人设模板', template, bot
       ? '只影响之后新建的聊天，以及 bot 还没回复过的聊天；已有聊天的人设在会话的“人设”页里改'
       : '新建的聊天从这个模板开始'),
-    h('fieldset', { class: 'skills' },
-      h('legend', null, '技能'),
-      boxes.length
-        ? boxes.map((b) => h('label', { class: 'skill' }, b.box,
-          h('span', null, h('strong', null, b.name), b.description ? h('span', { class: 'hint' }, b.description) : null)))
-        : h('p', { class: 'muted' }, '没有可以在私聊里用的技能')),
+    skillsFieldset(boxes, '没有可以在私聊里用的技能'),
     h('p', { class: 'hint' }, bot ? '改名字和技能从下一次回复起生效。' : '技能默认全选，可以一个都不选。'),
+    msg,
+    h('div', { class: 'toolbar' }, save, cancel)));
+    dialog.showModal();
+  };
+  return { dialog, open };
+}
+
+// idList is a textarea of platform IDs, one a line; ids reads them back,
+// without blank lines and the spaces around each.
+function idList(list, placeholder) {
+  return h('textarea', { rows: 3, placeholder, value: (list || []).join('\n') });
+}
+
+function ids(textarea) {
+  return textarea.value.split('\n').map((s) => s.trim()).filter(Boolean);
+}
+
+// conversationsNote says which conversations a skill applies to when it is
+// not both kinds.
+function conversationsNote(sk) {
+  const convs = sk.conversations || [];
+  if (!convs.includes('private')) return '只在群聊里用';
+  if (!convs.includes('group')) return '只在私聊里用';
+  return '';
+}
+
+// configBotDialog edits the settings of a config bot (QQ, Telegram): its
+// name, admins, private range and allowlist, groups, the persona templates of
+// its new private chats and new groups and its skills. Its identity is only
+// shown: it is changed in the config file. saved(bot) runs after a save.
+function configBotDialog(saved) {
+  const dialog = h('dialog', { class: 'card dialog wide' });
+  // open shows the form for bot with the templates and skills to choose
+  // from; bots are all the bots, as for botDialog.
+  const open = (bot, { templates, skills, bots }) => {
+    const name = nameInput(bot, bots);
+    const admins = idList(bot.admins, '每行一个平台用户 ID');
+    const privateChat = h('select', null, Object.keys(PRIVATE_CHAT).map((k) =>
+      h('option', { value: k, selected: k === bot.private_chat }, PRIVATE_CHAT[k])));
+    const allowlist = idList(bot.private_allowlist, '每行一个平台用户 ID');
+    const unused = h('p', { class: 'hint warn', hidden: true }, '私聊开放范围不是“管理员和私聊白名单里的人”，白名单现在不生效。');
+    const checkAllowlist = () => {
+      unused.hidden = privateChat.value === 'allowlist' || ids(allowlist).length === 0;
+    };
+    privateChat.addEventListener('change', checkAllowlist);
+    allowlist.addEventListener('input', checkAllowlist);
+    checkAllowlist();
+    const groups = idList(bot.groups, '每行一个群 ID');
+    const privateTemplate = templateSelect(templates, bot.private_template);
+    const groupTemplate = templateSelect(templates, bot.group_template);
+    const boxes = skillBoxes(skills, (s) => (bot.skills || []).includes(s), conversationsNote);
+    const msg = h('div');
+    const save = h('button', { type: 'submit', class: 'primary' }, '保存');
+    const cancel = h('button', { type: 'button', onclick: () => dialog.close() }, '取消');
+    mount(dialog, h('form', {
+      onsubmit: async (e) => {
+        e.preventDefault();
+        save.disabled = true;
+        mount(msg);
+        const body = {
+          name: name.input.value.trim(),
+          admins: ids(admins),
+          private_chat: privateChat.value,
+          private_allowlist: ids(allowlist),
+          groups: ids(groups),
+          private_template: privateTemplate.value,
+          group_template: groupTemplate.value,
+          skills: checkedSkills(boxes),
+        };
+        try {
+          const res = await put(`bots/${encodeURIComponent(bot.id)}`, body);
+          dialog.close();
+          saved(res);
+        } catch (err) {
+          if (!isAbort(err)) mount(msg, errorBox(err));
+        } finally {
+          save.disabled = false;
+        }
+      },
+    },
+    h('h2', null, `编辑 Bot：${bot.name}`),
+    kv([['ID', bot.id], ['平台', bot.platform], ['平台自身 ID', bot.platform_self_id]]),
+    h('p', { class: 'hint' }, 'ID、平台和平台自身 ID 不能在这里改，在配置文件里修改'),
+    field('显示名', name.input, '1–32 字，不能有换行和不可见字符'),
+    name.same,
+    field('管理员', admins, '每行一个平台用户 ID，可以用 /pause 等管理员命令'),
+    field('私聊开放范围', privateChat),
+    field('私聊白名单', allowlist, '每行一个平台用户 ID，只在开放范围是“管理员和私聊白名单里的人”时生效'),
+    unused,
+    field('启用的群', groups, '每行一个群 ID；没列出的群里的消息会被忽略'),
+    field('私聊默认模板', privateTemplate, '新私聊第一次回复时复制这个模板；已有聊天的人设在会话的“人设”页里改'),
+    field('群聊默认模板', groupTemplate, '新群第一次回复时复制这个模板'),
+    skillsFieldset(boxes, '没有可以启用的技能'),
+    h('p', { class: 'hint' }, 'ID 不能有空白和冒号。保存后 core 立即按新设置工作；适配器每 5 分钟读取一次启用的群和私聊开放范围，最多 5 分钟后跟上。'),
     msg,
     h('div', { class: 'toolbar' }, save, cancel)));
     dialog.showModal();
@@ -251,6 +386,11 @@ function chatPage() {
     refresh();
   });
 
+  const configForm = configBotDialog((bot) => {
+    note(`已保存 Bot：${bot.name}`);
+    refresh();
+  });
+
   // After a delete that stopped partway, the chat on show may be gone too:
   // the list read afresh tells.
   const deleteForm = deleteBotDialog(async (bot, ok) => {
@@ -262,9 +402,11 @@ function chatPage() {
     if (!ok && onBot && current === shown.chat.key && !find(current)) go('#/chat');
   });
 
+  // loadSkills reads the skills a panel bot and those a config bot may
+  // enable, once.
   const loadSkills = () => {
     if (!skills) {
-      skills = get('bots/skills').then((res) => res.skills || []);
+      skills = get('bots/skills');
       skills.catch(() => {
         skills = null;
       });
@@ -272,14 +414,30 @@ function chatPage() {
     return skills;
   };
 
+  // editBot opens the form of bot, a new panel bot when null: a config bot's
+  // or a panel bot's.
   const editBot = async (bot) => {
     mount(listMsg);
     try {
-      botForm.open(bot, { templates, skills: await loadSkills(), bots });
+      const res = await loadSkills();
+      if (bot && bot.source !== PANEL) {
+        configForm.open(bot, { templates, skills: res.config_skills || [], bots });
+      } else {
+        botForm.open(bot, { templates, skills: res.skills || [], bots });
+      }
     } catch (err) {
       if (!isAbort(err)) mount(listMsg, errorBox(err));
     }
   };
+
+  const deleteButton = (bot) => h('button', {
+    type: 'button',
+    class: 'link danger',
+    onclick: () => {
+      mount(listMsg);
+      deleteForm.open(bot);
+    },
+  }, '删除');
 
   const chatItem = (c) => {
     const a = h('a', { href: href('chat', c.key), title: c.last_message_at ? `最后消息 ${fmtTime(c.last_message_at)}` : '还没有消息' },
@@ -298,18 +456,10 @@ function chatPage() {
         h('strong', null, g.name || g.id),
         panelBot ? null : h('span', { class: 'badge' }, '配置'),
         h('span', { class: 'spacer' }),
-        panelBot && bot ? [
+        bot ? [
           h('button', { type: 'button', class: 'link', onclick: () => editBot(bot) }, '编辑'),
-          h('button', {
-            type: 'button',
-            class: 'link danger',
-            onclick: () => {
-              mount(listMsg);
-              deleteForm.open(bot);
-            },
-          }, '删除'),
+          bot.source === PANEL ? deleteButton(bot) : null,
         ] : null),
-      panelBot ? null : h('p', { class: 'hint' }, '在配置文件里修改'),
       ((bot && bot.problems) || []).map((p) => h('p', { class: 'hint warn' }, p)),
       chats.length ? h('ul', { class: 'chat-items' }, chats.map(chatItem)) : h('p', { class: 'muted small' }, '还没有聊天'),
       h('button', { type: 'button', onclick: () => chatDialog.open(groups, g.id) }, '新建聊天'));
@@ -384,7 +534,7 @@ function chatPage() {
         listMsg,
         list),
       pane),
-    chatDialog.dialog, botForm.dialog, deleteForm.dialog);
+    chatDialog.dialog, botForm.dialog, configForm.dialog, deleteForm.dialog);
 
   return { layout, load, select };
 }

@@ -68,6 +68,8 @@
 
 `GET /api/v1/capabilities` 返回机器人名、`platform_self_id`、当前令牌的 scopes、支持的事件和动作类型（`message.created`、`message.send`）、`trigger_types`、启用的会话列表和私聊策略。NapCat 适配器连接时拉取一次，之后每 5 分钟刷新。
 
+机器人名、启用的会话（先列启用的群，再列私聊白名单，`type` 为 `private`）和私聊策略来自数据库里 bot 的设置，在 Web 管理面板里改（见 [Web 管理面板：平台 bot 的设置](panel.md#平台-bot-的设置)）；`platform_self_id` 来自配置文件。面板里保存后，这个接口和核心立即按新设置工作，适配器在下一次刷新时拿到，最多晚 5 分钟。
+
 ## 人格
 
 `PUT /api/v1/conversations/{id}/persona` 写入新人格版本，请求体三选一：

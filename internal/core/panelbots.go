@@ -56,9 +56,22 @@ type PanelBotInput struct {
 	Skills                []string
 }
 
-// SkillInfo is a skill a panel bot may enable.
+// ConfigBotInput is what the panel sets of a config bot: its settings, as
+// store.BotSettings has them. Empty persona templates are "default".
+type ConfigBotInput struct {
+	Name                           string
+	Admins                         []string
+	PrivateChat                    string
+	PrivateAllowlist, Groups       []string
+	PrivateTemplate, GroupTemplate string
+	Skills                         []string
+}
+
+// SkillInfo is a skill a bot may enable, with the conversation types it
+// applies to.
 type SkillInfo struct {
 	Name, Description string
+	Conversations     []string
 }
 
 // PanelBotService creates, changes and deletes the panel bots, which are
@@ -119,9 +132,11 @@ func (s *PanelBotService) Load(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("core: load panel bots: %w", err)
 	}
-	if err := s.publishConfig(ctx); err != nil {
-		return err
+	settings, err := s.o.st.ListBotSettings(ctx)
+	if err != nil {
+		return fmt.Errorf("core: load bot settings: %w", err)
 	}
+	s.publishConfig(settings, true)
 	s.publish(bots, true)
 	s.o.log.Info("panel bots loaded", "count", len(bots))
 	return nil
@@ -165,9 +180,9 @@ func (s *PanelBotService) Create(ctx context.Context, in PanelBotInput, actor st
 // with in for actor, publishes it and audits it as panel.bot.update; a failed
 // audit is only logged. The change applies from the bot's next reply; the new
 // persona template only to chats without a persona yet. It returns the bot as
-// the directory has it. A config bot is ErrConfigBot, a bot being deleted
-// ErrBotDeleting, an unknown one store.ErrNotFound and invalid input
-// ErrInvalidBot.
+// the directory has it. A config bot, whose settings UpdateConfig changes, is
+// ErrConfigBot, a bot being deleted ErrBotDeleting, an unknown one
+// store.ErrNotFound and invalid input ErrInvalidBot.
 func (s *PanelBotService) Update(ctx context.Context, id string, in PanelBotInput, actor string) (config.BotConfig, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -199,6 +214,51 @@ func (s *PanelBotService) Update(ctx context.Context, id string, in PanelBotInpu
 	s.o.log.Info("panel bot updated", "bot", id)
 	s.audit(ctx, id, "panel.bot.update", actor, auditDetail(in))
 	return botdir.PanelBotConfig(b), nil
+}
+
+// UpdateConfig replaces the settings of the config bot id with in for actor:
+// it stores them, with the name of the bot's instance, publishes the config
+// bots and audits it as panel.bot.update (see configAuditDetail); a failed
+// audit is only logged. The core goes by the new settings at once: the
+// groups, admins and private range from the next message, the name and
+// skills from the next reply and the persona templates for conversations
+// without a persona yet. The adapters read them from the capabilities. It
+// returns the bot as the directory has it. A bot that is not a config bot is
+// store.ErrNotFound and invalid input ErrInvalidBot.
+func (s *PanelBotService) UpdateConfig(ctx context.Context, id string, in ConfigBotInput, actor string) (config.BotConfig, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	configBots := s.o.bots.ConfigBots()
+	i := slices.IndexFunc(configBots, func(b config.BotConfig) bool { return b.ID == id })
+	if i < 0 {
+		return config.BotConfig{}, fmt.Errorf("%w: config bot %q", store.ErrNotFound, id)
+	}
+	in, err := s.validateConfig(in)
+	if err != nil {
+		return config.BotConfig{}, err
+	}
+	rows, err := s.o.st.ListBotSettings(ctx)
+	if err != nil {
+		return config.BotConfig{}, err
+	}
+	after := store.BotSettings{BotInstanceID: id, Name: in.Name, Admins: in.Admins, PrivateChat: in.PrivateChat,
+		PrivateAllowlist: in.PrivateAllowlist, Groups: in.Groups, PrivateTemplate: in.PrivateTemplate,
+		GroupTemplate: in.GroupTemplate, Skills: in.Skills, UpdatedBy: actor, UpdatedAt: s.o.now().UTC()}
+	before := botdir.Settings(configBots[i])
+	if j := slices.IndexFunc(rows, func(r store.BotSettings) bool { return r.BotInstanceID == id }); j >= 0 {
+		before = rows[j]
+		rows[j] = after
+	} else {
+		rows = append(rows, after)
+	}
+	if err := s.o.st.PutBotSettings(ctx, after); err != nil {
+		return config.BotConfig{}, err
+	}
+	s.publishConfig(rows, false)
+	s.o.log.Info("config bot's settings updated", "bot", id)
+	s.audit(ctx, id, "panel.bot.update", actor, configAuditDetail(before, after))
+	b, _ := s.o.bots.Bot(id)
+	return b, nil
 }
 
 // Delete deletes the panel bot id for actor once confirmName, trimmed, is its
@@ -373,6 +433,29 @@ func (s *PanelBotService) freeID(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("core: no free panel bot ID after %d attempts", panelBotIDAttempts)
 }
 
+// botName returns name trimmed when it may name a bot: 1 to panelBotNameMax
+// characters without control, line separator or invisible format
+// characters. Otherwise it is ErrInvalidBot with the reason in Chinese.
+func botName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	var reason string
+	switch {
+	case name == "":
+		reason = "名字不能为空"
+	case utf8.RuneCountInString(name) > panelBotNameMax:
+		reason = fmt.Sprintf("名字最多 %d 个字", panelBotNameMax)
+	case !utf8.ValidString(name) || strings.ContainsFunc(name, func(r rune) bool {
+		return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
+	}):
+		reason = "名字不能包含控制字符或换行"
+	case strings.ContainsFunc(name, func(r rune) bool { return unicode.Is(unicode.Cf, r) }):
+		reason = "名字不能包含零宽字符、方向控制符等不可见的格式字符"
+	default:
+		return name, nil
+	}
+	return "", fmt.Errorf("%w: %s", ErrInvalidBot, reason)
+}
+
 // validate returns in as it is stored: the name trimmed, the persona
 // template "default" when empty and the skills without repeats. Invalid
 // input is ErrInvalidBot with the reason in Chinese.
@@ -380,19 +463,11 @@ func (s *PanelBotService) validate(in PanelBotInput) (PanelBotInput, error) {
 	invalid := func(format string, args ...any) (PanelBotInput, error) {
 		return PanelBotInput{}, fmt.Errorf("%w: %s", ErrInvalidBot, fmt.Sprintf(format, args...))
 	}
-	out := PanelBotInput{Name: strings.TrimSpace(in.Name), PersonaTemplate: strings.TrimSpace(in.PersonaTemplate), Skills: []string{}}
-	switch {
-	case out.Name == "":
-		return invalid("名字不能为空")
-	case utf8.RuneCountInString(out.Name) > panelBotNameMax:
-		return invalid("名字最多 %d 个字", panelBotNameMax)
-	case !utf8.ValidString(out.Name) || strings.ContainsFunc(out.Name, func(r rune) bool {
-		return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
-	}):
-		return invalid("名字不能包含控制字符或换行")
-	case strings.ContainsFunc(out.Name, func(r rune) bool { return unicode.Is(unicode.Cf, r) }):
-		return invalid("名字不能包含零宽字符、方向控制符等不可见的格式字符")
+	name, err := botName(in.Name)
+	if err != nil {
+		return PanelBotInput{}, err
 	}
+	out := PanelBotInput{Name: name, PersonaTemplate: strings.TrimSpace(in.PersonaTemplate), Skills: []string{}}
 	if out.PersonaTemplate == "" {
 		out.PersonaTemplate = defaultPersonaTemplate
 	}
@@ -404,6 +479,72 @@ func (s *PanelBotService) validate(in PanelBotInput) (PanelBotInput, error) {
 			continue
 		}
 		if problem := s.skillProblem(name); problem != "" {
+			return invalid("%s", problem)
+		}
+		out.Skills = append(out.Skills, name)
+	}
+	return out, nil
+}
+
+// validateConfig returns in as it is stored: the name trimmed, the platform
+// IDs and skills without repeats and the persona templates "default" when
+// empty. Each platform ID must be non-empty, without whitespace, ':' or other
+// invisible characters, the private range one of config.PrivateChatModes,
+// the persona templates must exist and the skills be registered with all
+// their tools; a skill only for groups is fine, the core leaves it out of
+// private chats. Invalid input is ErrInvalidBot with the reason in Chinese.
+func (s *PanelBotService) validateConfig(in ConfigBotInput) (ConfigBotInput, error) {
+	invalid := func(format string, args ...any) (ConfigBotInput, error) {
+		return ConfigBotInput{}, fmt.Errorf("%w: %s", ErrInvalidBot, fmt.Sprintf(format, args...))
+	}
+	name, err := botName(in.Name)
+	if err != nil {
+		return ConfigBotInput{}, err
+	}
+	out := ConfigBotInput{Name: name, PrivateChat: in.PrivateChat, Skills: []string{}}
+	for _, l := range []struct {
+		label string
+		ids   []string
+		out   *[]string
+	}{
+		{"管理员", in.Admins, &out.Admins},
+		{"私聊白名单", in.PrivateAllowlist, &out.PrivateAllowlist},
+		{"启用的群", in.Groups, &out.Groups},
+	} {
+		*l.out = []string{}
+		for _, id := range l.ids {
+			switch {
+			case id == "":
+				return invalid("%s：ID 不能为空", l.label)
+			case strings.ContainsFunc(id, func(r rune) bool {
+				return unicode.IsSpace(r) || !unicode.IsGraphic(r) || strings.ContainsRune(config.KeySeparator, r)
+			}):
+				return invalid("%s：ID“%s”不能包含空白、冒号或不可见字符", l.label, id)
+			case !slices.Contains(*l.out, id):
+				*l.out = append(*l.out, id)
+			}
+		}
+	}
+	if modes := config.PrivateChatModes(); !slices.Contains(modes, in.PrivateChat) {
+		return invalid("私聊开放范围必须是 %s 之一", strings.Join(modes, "、"))
+	}
+	for _, t := range []struct {
+		label, name string
+		out         *string
+	}{
+		{"私聊默认模板", in.PrivateTemplate, &out.PrivateTemplate},
+		{"群聊默认模板", in.GroupTemplate, &out.GroupTemplate},
+	} {
+		*t.out = cmp.Or(strings.TrimSpace(t.name), defaultPersonaTemplate)
+		if _, ok := s.o.personas.Template(*t.out); !ok {
+			return invalid("%s“%s”不存在", t.label, *t.out)
+		}
+	}
+	for _, name := range in.Skills {
+		if slices.Contains(out.Skills, name) {
+			continue
+		}
+		if problem := s.configSkillProblem(name); problem != "" {
 			return invalid("%s", problem)
 		}
 		out.Skills = append(out.Skills, name)
@@ -431,10 +572,23 @@ func (s *PanelBotService) skillProblem(name string) string {
 // registered skills that apply to private chats and have all their tools
 // registered.
 func (s *PanelBotService) PrivateSkills() []SkillInfo {
+	return s.skillInfos(s.skillProblem)
+}
+
+// ConfigSkills returns the skills a config bot may enable, by name: the
+// registered skills that have all their tools registered, whatever
+// conversations they apply to.
+func (s *PanelBotService) ConfigSkills() []SkillInfo {
+	return s.skillInfos(s.configSkillProblem)
+}
+
+// skillInfos returns the registered skills, by name, for which problem
+// returns "".
+func (s *PanelBotService) skillInfos(problem func(name string) string) []SkillInfo {
 	out := []SkillInfo{}
 	for _, sk := range s.o.skills.Skills() {
-		if s.skillProblem(sk.Name) == "" {
-			out = append(out, SkillInfo{Name: sk.Name, Description: sk.Description})
+		if problem(sk.Name) == "" {
+			out = append(out, SkillInfo{Name: sk.Name, Description: sk.Description, Conversations: slices.Clone(sk.Conversations)})
 		}
 	}
 	return out
@@ -469,26 +623,24 @@ func (s *PanelBotService) publish(bots []store.PanelBot, warn bool) {
 	s.o.bots.SetPanel(entries)
 }
 
-// publishConfig publishes the config bots to the directory as they take
-// effect with their stored settings (see Load), logging each problem.
-func (s *PanelBotService) publishConfig(ctx context.Context) error {
-	rows, err := s.o.st.ListBotSettings(ctx)
-	if err != nil {
-		return fmt.Errorf("core: load bot settings: %w", err)
-	}
-	stored := make(map[string]store.BotSettings, len(rows))
-	for _, r := range rows {
-		stored[r.BotInstanceID] = r
+// publishConfig publishes the config bots to the directory, each as it takes
+// effect with its settings among stored (see Load); warn logs each problem.
+func (s *PanelBotService) publishConfig(stored []store.BotSettings, warn bool) {
+	byID := make(map[string]store.BotSettings, len(stored))
+	for _, r := range stored {
+		byID[r.BotInstanceID] = r
 	}
 	configBots := s.o.bots.ConfigBots()
 	entries := make([]botdir.Entry, 0, len(configBots))
 	for _, b := range configBots {
-		if settings, ok := stored[b.ID]; ok {
+		if settings, ok := byID[b.ID]; ok {
 			b = botdir.ConfigBot(b, settings)
 		}
 		e := botdir.Entry{Bot: b}
 		for _, name := range s.templateFallback(&e) {
-			s.o.log.Warn("config bot's persona template does not exist; using default", "bot", b.ID, "template", name)
+			if warn {
+				s.o.log.Warn("config bot's persona template does not exist; using default", "bot", b.ID, "template", name)
+			}
 		}
 		e.Bot.Skills = slices.DeleteFunc(slices.Clone(e.Bot.Skills), func(name string) bool {
 			problem := s.configSkillProblem(name)
@@ -496,13 +648,14 @@ func (s *PanelBotService) publishConfig(ctx context.Context) error {
 				return false
 			}
 			e.Problems = append(e.Problems, problem)
-			s.o.log.Warn("config bot's skill is not usable; leaving it out", "bot", b.ID, "skill", name, "problem", problem)
+			if warn {
+				s.o.log.Warn("config bot's skill is not usable; leaving it out", "bot", b.ID, "skill", name, "problem", problem)
+			}
 			return true
 		})
 		entries = append(entries, e)
 	}
 	s.o.bots.SetConfig(entries)
-	return nil
 }
 
 // configSkillProblem says in Chinese why a config bot cannot use the skill
@@ -559,4 +712,38 @@ func auditDetail(in PanelBotInput) any {
 		PersonaTemplate string   `json:"persona_template"`
 		Skills          []string `json:"skills"`
 	}{in.Name, in.PersonaTemplate, in.Skills}
+}
+
+// configAuditDetail is the detail of a panel.bot.update audit event of a
+// config bot whose settings went from before to after: the settings changed,
+// by their names in the panel API, and the stored name, private range,
+// persona templates and skills. The platform IDs of the admins, the private
+// allowlist and the groups are left out.
+func configAuditDetail(before, after store.BotSettings) any {
+	changed := []string{}
+	for _, f := range []struct {
+		name string
+		same bool
+	}{
+		{"name", before.Name == after.Name},
+		{"admins", slices.Equal(before.Admins, after.Admins)},
+		{"private_chat", before.PrivateChat == after.PrivateChat},
+		{"private_allowlist", slices.Equal(before.PrivateAllowlist, after.PrivateAllowlist)},
+		{"groups", slices.Equal(before.Groups, after.Groups)},
+		{"private_template", before.PrivateTemplate == after.PrivateTemplate},
+		{"group_template", before.GroupTemplate == after.GroupTemplate},
+		{"skills", slices.Equal(before.Skills, after.Skills)},
+	} {
+		if !f.same {
+			changed = append(changed, f.name)
+		}
+	}
+	return struct {
+		Changed         []string `json:"changed"`
+		Name            string   `json:"name"`
+		PrivateChat     string   `json:"private_chat"`
+		PrivateTemplate string   `json:"private_template"`
+		GroupTemplate   string   `json:"group_template"`
+		Skills          []string `json:"skills"`
+	}{changed, after.Name, after.PrivateChat, after.PrivateTemplate, after.GroupTemplate, after.Skills}
 }

@@ -37,8 +37,15 @@ func (db *DB) ListBotSettings(ctx context.Context) ([]store.BotSettings, error) 
 }
 
 func (db *DB) PutBotSettings(ctx context.Context, s store.BotSettings) error {
-	_, err := putBotSettings(ctx, db.w, s, nowIfZero(s.UpdatedAt), true)
-	return err
+	updated := nowIfZero(s.UpdatedAt)
+	return db.inTx(ctx, func(tx *sql.Tx) error {
+		if _, err := putBotSettings(ctx, tx, s, updated, true); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE bot_instances SET name = ?, updated_at = ? WHERE id = ?`,
+			s.Name, fmtTime(updated), s.BotInstanceID)
+		return err
+	})
 }
 
 // MigrateConfigBotSettings migrates the settings of the config file's bots

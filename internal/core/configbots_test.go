@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"slices"
 	"strings"
@@ -126,5 +127,59 @@ func TestPanelBots_LoadPublishesStoredConfigBotSettings(t *testing.T) {
 		t.Errorf("private message from the allowlisted 20002 = %+v, want a reply", resp)
 	} else {
 		env.waitTask(t, resp.TaskID)
+	}
+}
+
+// TestPanelBots_UpdateConfig checks that UpdateConfig stores and publishes a
+// config bot's settings at once, clearing the problems of what was stored
+// before, keeps a group-only skill, and refuses what is not a config bot.
+func TestPanelBots_UpdateConfig(t *testing.T) {
+	env := panelBotEnv(t, testOpts{})
+	ctx := context.Background()
+	if err := env.st.PutBotSettings(ctx, store.BotSettings{BotInstanceID: testBot, Name: "小明", PrivateChat: "admins",
+		PrivateTemplate: "gone", GroupTemplate: "default", Skills: []string{"nope"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.o.PanelBots().Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(env.o.bots.Problems(testBot)); n != 2 {
+		t.Fatalf("problems before the update = %v, want the missing template and skill", env.o.bots.Problems(testBot))
+	}
+
+	in := ConfigBotInput{Name: "小红", Admins: []string{"20001"}, PrivateChat: "off", PrivateAllowlist: []string{},
+		Groups: []string{"10002"}, PrivateTemplate: "gentle", GroupTemplate: "", Skills: []string{"grouponly", "time"}}
+	got, err := env.o.PanelBots().UpdateConfig(ctx, testBot, in, panelBotActor)
+	if err != nil {
+		t.Fatalf("UpdateConfig: %v", err)
+	}
+	want := config.BotConfig{ID: testBot, Platform: "qq", PlatformSelfID: "30001", Name: "小红", Admins: []string{"20001"},
+		PrivateChat: "off", PrivateTemplate: "gentle", GroupTemplate: "default", Skills: []string{"grouponly", "time"},
+		EnabledConversations: []conloomapi.ConversationRef{{Type: conloomapi.ConvGroup, PlatformID: "10002"}}}
+	if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(mustBot(t, env), want) {
+		t.Fatalf("UpdateConfig = %+v, directory %+v; want %+v", got, mustBot(t, env), want)
+	}
+	if p := env.o.bots.Problems(testBot); len(p) != 0 {
+		t.Errorf("problems after the update = %v, want none", p)
+	}
+	if audits := env.botAudits(t, "panel.bot.update", testBot); len(audits) != 1 || audits[0].Actor != panelBotActor ||
+		!strings.Contains(audits[0].Detail, `"changed":["name","admins","private_chat","groups","private_template","skills"]`) {
+		t.Errorf("panel.bot.update audits = %+v, want one naming the changed settings", audits)
+	}
+	if resp := env.submit(t, env.groupEvent("20001", "你好")); resp.SuppressedReason != conloomapi.SuppressedNotEnabled {
+		t.Errorf("message in group 10001 after the update = %+v, want ignored as not enabled", resp)
+	}
+
+	panelBot := env.createPanelBot(t, PanelBotInput{Name: "小刚"})
+	for _, id := range []string{"bot_gone", panelBot.ID} {
+		if _, err := env.o.PanelBots().UpdateConfig(ctx, id, in, panelBotActor); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("UpdateConfig(%s) = %v, want ErrNotFound", id, err)
+		}
+	}
+	if _, err := env.o.PanelBots().Update(ctx, testBot, PanelBotInput{Name: "小红"}, panelBotActor); !errors.Is(err, ErrConfigBot) {
+		t.Errorf("Update of the config bot = %v, want ErrConfigBot", err)
+	}
+	if audits := env.botAudits(t, "panel.bot.update", testBot); len(audits) != 1 {
+		t.Errorf("panel.bot.update audits after refused updates = %d, want 1", len(audits))
 	}
 }

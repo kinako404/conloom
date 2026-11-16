@@ -302,7 +302,7 @@ func (p *problems) legacyBot(path string, l LegacyBotSettings) {
 			p.required(cpath+".platform_id", conv.PlatformID)
 		}
 	}
-	if l.PrivateChat != nil && !slices.Contains([]string{"admins", "allowlist", "all", "off"}, *l.PrivateChat) {
+	if l.PrivateChat != nil && !slices.Contains(PrivateChatModes(), *l.PrivateChat) {
 		p.addf(path+".private_chat", "must be one of admins|allowlist|all|off, got %q", *l.PrivateChat)
 	}
 	if l.PersonaTemplate != nil {

@@ -105,9 +105,10 @@ type Store interface {
 	// bot ID.
 	ListBotSettings(ctx context.Context) ([]BotSettings, error)
 	// PutBotSettings stores s as the settings of the config bot
-	// s.BotInstanceID, replacing its stored ones but keeping their CreatedAt.
-	// Nil lists are stored as empty; a zero UpdatedAt as now and a zero
-	// CreatedAt of new settings as UpdatedAt.
+	// s.BotInstanceID, replacing its stored ones but keeping their CreatedAt,
+	// and, in the same transaction, s.Name as the name of the bot's instance
+	// when it has one. Nil lists are stored as empty; a zero UpdatedAt as now
+	// and a zero CreatedAt of new settings as UpdatedAt.
 	PutBotSettings(ctx context.Context, s BotSettings) error
 	// Ingest writes an event and its derived records in one transaction. If the
 	// event's idempotency key already exists nothing is written and the stored
