@@ -401,7 +401,7 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, sc scope
 			return consOutcome{}, ctx.Err()
 		}
 		switch {
-		case errors.Is(err, context.DeadlineExceeded):
+		case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, openai.ErrEmptyOutput):
 			c.shrink(convKey, b, memberCap)
 		case consRefused(err):
 			return consOutcome{}, c.failBatch(ctx, *g, b, memberCap, consErrModel, err, resp)
@@ -682,15 +682,14 @@ func (c *Consolidator) failBatch(ctx context.Context, g store.GroupMemory, b con
 
 // consRefused reports whether err, from a model call, means the provider
 // refused this request rather than failing for every request: 400, 413 or
-// 422 (such as a content check or a prompt it will not take), or no text in
-// its answer (such as a content filter).
+// 422 (such as a content check or a prompt it will not take). An answer
+// without text is not a refusal: a reasoning model may have spent its whole
+// output reservation on reasoning, so such a batch is only halved, like one
+// that timed out.
 func consRefused(err error) bool {
 	var se *openai.StatusError
-	if errors.As(err, &se) {
-		return se.Code == http.StatusBadRequest || se.Code == http.StatusRequestEntityTooLarge ||
-			se.Code == http.StatusUnprocessableEntity
-	}
-	return errors.Is(err, openai.ErrEmptyOutput)
+	return errors.As(err, &se) && (se.Code == http.StatusBadRequest ||
+		se.Code == http.StatusRequestEntityTooLarge || se.Code == http.StatusUnprocessableEntity)
 }
 
 // stuckAt counts a refused or unreadable failure of b at cursor when b is a

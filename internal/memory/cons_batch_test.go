@@ -433,19 +433,22 @@ func TestConsolidate_RefusedBatchShrinksThenIsSkipped(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		reply func() (openai.ChatResponse, error)
-		// skipped is the last error once the batch is skipped, "" when
-		// the failure is never blamed on the batch.
+		// shrinks reports whether the failure halves the batch; skipped is
+		// the last error once the batch is skipped, "" when the failure
+		// never skips it.
+		shrinks bool
 		skipped string
 	}{
-		{"content check 400", status(400), "skipped_" + consErrModel},
-		{"request too large 413", status(413), "skipped_" + consErrModel},
-		{"no text", func() (openai.ChatResponse, error) { return openai.ChatResponse{}, openai.ErrEmptyOutput }, "skipped_" + consErrModel},
+		{"content check 400", status(400), true, "skipped_" + consErrModel},
+		{"request too large 413", status(413), true, "skipped_" + consErrModel},
+		// Such as a reasoning model spending its whole output on reasoning.
+		{"no text", func() (openai.ChatResponse, error) { return openai.ChatResponse{}, openai.ErrEmptyOutput }, true, ""},
 		{"prose refusal", func() (openai.ChatResponse, error) {
 			return openai.ChatResponse{Content: "抱歉，这段聊天记录我无法整理。", Model: "fake-long"}, nil
-		}, "skipped_" + consErrParse},
-		{"server error", status(500), ""},
-		{"rate limited", status(429), ""},
-		{"bad api key", status(401), ""},
+		}, true, "skipped_" + consErrParse},
+		{"server error", status(500), false, ""},
+		{"rate limited", status(429), false, ""},
+		{"bad api key", status(401), false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newConsEnv(t, consOpts{})
@@ -467,8 +470,12 @@ func TestConsolidate_RefusedBatchShrinksThenIsSkipped(t *testing.T) {
 			}
 			g := e.group(t)
 			if tc.skipped == "" {
-				if !slices.Equal(sizes, []int{50, 50, 50, 50, 50}) || g.CursorSeq != 0 || g.LastError != consErrModel {
-					t.Fatalf("sizes %v, group %+v; want every batch whole and the cursor kept", sizes, g)
+				want := []int{50, 50, 50, 50, 50}
+				if tc.shrinks {
+					want = []int{50, 25, 20, 20, 20}
+				}
+				if !slices.Equal(sizes, want) || g.CursorSeq != 0 || g.LastError != consErrModel {
+					t.Fatalf("sizes %v, group %+v; want sizes %v and the cursor kept", sizes, g, want)
 				}
 				if strings.Contains(e.logs.String(), "skipped a batch") {
 					t.Errorf("a failure not caused by the batch skipped it:\n%s", e.logs.String())
