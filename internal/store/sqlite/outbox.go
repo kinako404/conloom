@@ -170,10 +170,17 @@ func (db *DB) AckOutbox(ctx context.Context, botID, actionID string, ack conloom
 	return alreadyAcked, nil
 }
 
+// liveOutbox is the condition of the actions not yet delivered, pending or
+// leased. It is the WHERE of the partial index outbox_actions_live, which a
+// query can use only when it holds this condition word for word.
+const liveOutbox = `status IN ('` + store.OutboxPending + `', '` + store.OutboxLeased + `')`
+
+// expireOutboxQuery marks the live actions whose expiry has come expired,
+// through outbox_actions_live. It takes the expired status and now.
+const expireOutboxQuery = `UPDATE outbox_actions SET status = ? WHERE ` + liveOutbox + ` AND expires_at <= ?`
+
 func (db *DB) ExpireOutbox(ctx context.Context, now time.Time) (int, error) {
-	res, err := db.w.ExecContext(ctx, `UPDATE outbox_actions SET status = ?
-		WHERE status IN (?, ?) AND expires_at <= ?`,
-		store.OutboxExpired, store.OutboxPending, store.OutboxLeased, fmtTime(now))
+	res, err := db.w.ExecContext(ctx, expireOutboxQuery, store.OutboxExpired, fmtTime(now))
 	if err != nil {
 		return 0, err
 	}
@@ -190,11 +197,16 @@ func (db *DB) CancelPendingActions(ctx context.Context, taskID string, now time.
 		store.OutboxCancelled, fmtTime(now), taskID, store.OutboxPending)
 }
 
+// lastReplyTaskQuery walks the conversation's actions newest first through
+// outbox_actions_conversation and stops at the first of a reply task of the
+// actor. It takes the bot ID, the conversation key and the actor's user ID.
+const lastReplyTaskQuery = `SELECT o.task_id FROM outbox_actions o JOIN tasks t ON t.id = o.task_id
+	WHERE o.bot_instance_id = ? AND o.conversation_key = ? AND t.actor_platform_user_id = ? AND t.command = ''
+	ORDER BY o.seq DESC LIMIT 1`
+
 func (db *DB) LastReplyTask(ctx context.Context, botID, convKey, actorID string) (string, error) {
 	var taskID string
-	err := db.r.QueryRowContext(ctx, `SELECT o.task_id FROM outbox_actions o JOIN tasks t ON t.id = o.task_id
-		WHERE o.bot_instance_id = ? AND o.conversation_key = ? AND t.actor_platform_user_id = ? AND t.command = ''
-		ORDER BY o.seq DESC LIMIT 1`, botID, convKey, actorID).Scan(&taskID)
+	err := db.r.QueryRowContext(ctx, lastReplyTaskQuery, botID, convKey, actorID).Scan(&taskID)
 	return taskID, notFound(err)
 }
 
