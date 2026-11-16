@@ -172,6 +172,51 @@ func TestAssets_LoginNameNotAutocorrected(t *testing.T) {
 	}
 }
 
+// mediaBlock returns the rules inside css's @media block for query.
+func mediaBlock(t *testing.T, css, query string) string {
+	t.Helper()
+	head := "@media " + query + " {"
+	start := strings.Index(css, head)
+	if start < 0 {
+		t.Fatalf("style.css has no %q block", head)
+	}
+	depth := 0
+	for i := start + len(head) - 1; i < len(css); i++ {
+		switch css[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return css[start+len(head) : i]
+			}
+		}
+	}
+	t.Fatalf("style.css: %q block is not closed", head)
+	return ""
+}
+
+// On a narrow screen style.css puts the chat list above the chat, so opening
+// a chat scrolls it into view, and the empty pane does not point left.
+func TestAssets_ChatScrollsIntoViewOnNarrowScreens(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js := files["views/chats.js"]
+	m := regexp.MustCompile(`const NARROW = '([^']+)';`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("views/chats.js has no NARROW media query")
+	}
+	block := mediaBlock(t, files["style.css"], m[1])
+	if !regexp.MustCompile(`\.chat-page\s*\{\s*grid-template-columns:\s*1fr;`).MatchString(block) {
+		t.Errorf("style.css @media %s does not stack the chat page", m[1])
+	}
+	if !regexp.MustCompile(`if \(matchMedia\(NARROW\)\.matches\) pane\.scrollIntoView\(\);`).MatchString(js) {
+		t.Error("views/chats.js does not scroll the chat into view on a narrow screen")
+	}
+	if strings.Contains(js, "从左边") {
+		t.Error("views/chats.js points to the list on the left, which is above the chat on a narrow screen")
+	}
+}
+
 func TestAssets_InitialAffinityMatchesMemory(t *testing.T) {
 	js := assets(t, ".js")["views/conversation.js"]
 	m := regexp.MustCompile(`const INITIAL_AFFINITY = (\d+);`).FindStringSubmatch(js)
