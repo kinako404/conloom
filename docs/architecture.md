@@ -100,10 +100,10 @@ NapCat      Adapter                 Core                          SQLite        
 - **ID**：私聊会话 `private_<用户ID>`，群 `group_<chat_id>`，`platform_conversation_id` 都是 chat_id。群的 chat_id 是负数，负号原样保留：核心和网关只要求 ID 非空，会话键用 `:` 分隔，不受影响。发送者 `user_<用户ID>`，幂等键 `telegram:<机器人ID>:<update_id>`。Telegram 的 message_id 只在单个会话内唯一，所以消息 ID 是 `msg_<chat_id>_<message_id>`，引用关系也用这个格式；适配器发送成功后 ACK 的平台消息 ID 是第一条消息的 `<chat_id>_<message_id>`（`convert.go:32`），第 11 步核心生成的 `msg_<平台消息ID>` 正好与用户引用它时的 `reply_to` 对上，群里回复机器人的消息因此被判定为 `reply`。
 - **@**：消息（或图片说明）的 entities 里，`mention` 文本等于 `@<机器人用户名>`（不分大小写）算 @ 机器人，这段文字从正文去掉；其他 `mention` 算 @ 群友，ID 为 `username_<用户名小写>`（entity 只带用户名），`text_mention` 带用户对象，ID 为 `user_<用户ID>`。offset 按 UTF-16 计（`convert.go:180`）。
 - **正文和命令**：文字原样提交；媒体写成 `[图片]`、`[表情]`、`[语音]`、`[视频]`、`[文件]` 占位并接上说明文字，不传附件元数据；`/start` 转成“你好”。命令带 `@<机器人用户名>` 后缀时去掉后缀；后缀是别的机器人时原样上报，核心的 `ParseCommand` 不认这种词，按普通消息处理（`convert.go:232`）。
-- **发消息**：`sendMessage` 纯文本、不设 `parse_mode`。超过 4096 个 UTF-16 单位时按空行、换行或字数拆成多条，只有第一条带 `reply_parameters`（`allow_sending_without_reply: true`）（`send.go:31`、`send.go:101`）。429 按 `retry_after` 等待后重试，最多 5 次（`send.go:189`）。
-- **“正在输入”**：核心对这条消息返回 `disposition=reply` 后，每 4 秒发一次 `sendChatAction(typing)`。每次发之前用 `GET /api/v1/tasks/{id}` 查回复任务，任务已结束就停止（需要 `tasks:read`，没有时警告一次、退回只按下面两条停止）；该会话的回复发出时停止；最长 60 秒（`typing.go:46`、`adapter.go:369`）。分条回复里，发完不是最后一条的分条（`part_index < part_count`）后再发一次“正在输入”，在后台发、不耽误投递（`send.go:177`）。
+- **发消息**：`sendMessage` 纯文本、不设 `parse_mode`。超过 4096 个 UTF-16 单位时按空行、换行或字数拆成多条，只有第一条带 `reply_parameters`（`allow_sending_without_reply: true`）（`send.go:32`、`send.go:106`）。第一条遇到 429 时不等待，不 ACK、留给租约到期后重新投递，并记下这个聊天的 `retry_after`，到期前它的动作不再发往 Telegram，别的聊天不受影响，也不会因限流记为失败；拆出的后几条已不能重新投递，仍按 `retry_after` 等待后重试，最多 5 次（`send.go:166`、`send.go:223`）。
+- **“正在输入”**：核心对这条消息返回 `disposition=reply` 后，每 4 秒发一次 `sendChatAction(typing)`。每次发之前用 `GET /api/v1/tasks/{id}` 查回复任务，任务已结束就停止（需要 `tasks:read`，没有时警告一次、退回只按下面两条停止）；该会话的回复发出时停止；最长 60 秒（`typing.go:46`、`adapter.go:369`）。分条回复里，发完不是最后一条的分条（`part_index < part_count`）后再发一次“正在输入”，在后台发、不耽误投递（`send.go:192`）。
 - **隐私模式**：Telegram 默认的隐私模式下，机器人在群里只收到发给它的命令和回复它的消息，看不到普通聊天。要让在聊会话、观望加入和上下文正常工作，需要在 BotFather 关闭隐私模式或把机器人设为群管理员，见 [接入 Telegram](telegram.md#4-群里的隐私模式)。
-- **结果不明不重发**：与 NapCat 相同。请求没写出去（连接失败）时不 ACK，等租约过期重新投递；Telegram 明确拒绝（4xx），或请求已写出但没拿到明确结果（超时、5xx、无法解析的响应），记入去重日志并以 `failed` 确认。是否写出由 `httptrace` 判断（`api.go:88`）。
+- **结果不明不重发**：与 NapCat 相同。请求没写出去（连接失败）或遇到 429 限流时不 ACK，等租约过期重新投递；Telegram 明确拒绝（429 以外的 4xx），或请求已写出但没拿到明确结果（超时、5xx、无法解析的响应），记入去重日志并以 `failed` 确认。是否写出由 `httptrace` 判断（`api.go:88`）。
 - **token**：Bot API 的请求地址含 token，`botAPI` 返回的所有错误都把 token（含各种转义形式）替换成 `REDACTED`（`api.go:61`）。
 
 ### 2.2 面板聊天的往返

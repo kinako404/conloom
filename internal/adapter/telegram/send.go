@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kinako404/conloom/internal/obs"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -92,11 +93,15 @@ func buildSend(a conloomapi.Action) (sendPlan, error) {
 // deliver sends one action unless the dedup log shows it was already sent,
 // then ACKs it, like the NapCat adapter. If the first part never reached
 // Telegram the action is left un-ACKed for redelivery and the error is
-// returned. If Telegram refused it, or the outcome is unknown, the action is
-// recorded with an empty platform message ID and ACKed failed, so it is never
-// sent again. Once the first part is sent the action is recorded with that
-// part's ID; a later part that fails is dropped rather than risking a resend.
-// A sent action that is not the last part of its reply is followed by one
+// returned. Flood control (429) on the first part does the same, and holds
+// the chat's actions until retry_after has passed without calling Telegram,
+// so other chats are not held up and the action is never ACKed failed for
+// it. If Telegram refused it otherwise, or the outcome is unknown, the action
+// is recorded with an empty platform message ID and ACKed failed, so it is
+// never sent again. Once the first part is sent the action is recorded with
+// that part's ID; a later part, which cannot be redelivered, waits out flood
+// control, and if it fails it is dropped rather than risking a resend. A
+// sent action that is not the last part of its reply is followed by one
 // typing action, sent in the background so it never holds up delivery.
 func (a *Adapter) deliver(ctx context.Context, act conloomapi.Action) error {
 	log := a.log.With("action_id", act.ActionID, "conversation_id", act.ConversationID)
@@ -121,6 +126,10 @@ func (a *Adapter) deliver(ctx context.Context, act conloomapi.Action) error {
 		a.ack(ctx, log, act.ActionID, conloomapi.AckRequest{Status: conloomapi.AckFailed, Error: err.Error()})
 		return nil
 	}
+	if until, ok := a.floodedUntil(plan.chatID); ok {
+		log.Debug("Telegram flood control holds the chat; leaving the action for redelivery", "until", until)
+		return fmt.Errorf("telegram: sendMessage: %w: flood control until %s", errNotSent, until.Format(time.RFC3339))
+	}
 
 	var first string
 	for i, part := range plan.parts {
@@ -128,7 +137,7 @@ func (a *Adapter) deliver(ctx context.Context, act conloomapi.Action) error {
 		if i == 0 && plan.replyTo != 0 {
 			params.ReplyParameters = &replyParameters{MessageID: plan.replyTo, AllowSendingWithoutReply: true}
 		}
-		msg, err := a.sendMessage(ctx, log, params)
+		msg, err := a.sendMessage(ctx, log, params, i > 0)
 		if i == 0 {
 			a.typing.stop(plan.chatID)
 		}
@@ -152,6 +161,11 @@ func (a *Adapter) deliver(ctx context.Context, act conloomapi.Action) error {
 		if i > 0 {
 			log.Warn("reply only partly delivered; dropping the remaining parts", "parts_sent", i, "parts", len(plan.parts), "error", err)
 			break
+		}
+		if ae := (*apiError)(nil); errors.As(err, &ae) && ae.RetryAfter > 0 {
+			a.holdChat(plan.chatID, ae.RetryAfter)
+			log.Warn("Telegram flood control; leaving the action for redelivery once it ends", "retry_after", ae.RetryAfter.String())
+			return err
 		}
 		if errors.Is(err, errNotSent) {
 			if ctx.Err() != nil {
@@ -182,18 +196,38 @@ func (a *Adapter) deliver(ctx context.Context, act conloomapi.Action) error {
 	return nil
 }
 
+// holdChat holds the sends to chatID for d, the retry_after of a 429.
+func (a *Adapter) holdChat(chatID int64, d time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.floodUntil[chatID] = time.Now().Add(d)
+}
+
+// floodedUntil reports whether holdChat still holds the sends to chatID, and
+// until when.
+func (a *Adapter) floodedUntil(chatID int64) (time.Time, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	until, ok := a.floodUntil[chatID]
+	if ok && !time.Now().Before(until) {
+		delete(a.floodUntil, chatID)
+		return time.Time{}, false
+	}
+	return until, ok
+}
+
 // sendMessage sends one message under its own timeout, which ctx ending does
-// not cut short. On flood control (429) it waits retry_after and tries again,
-// up to maxRateLimitRetries times; if ctx ends while waiting, the message was
-// not sent.
-func (a *Adapter) sendMessage(ctx context.Context, log *slog.Logger, params sendMessageParams) (message, error) {
+// not cut short. If wait is set, on flood control (429) it waits retry_after
+// and tries again, up to maxRateLimitRetries times; if ctx ends while
+// waiting, the message was not sent.
+func (a *Adapter) sendMessage(ctx context.Context, log *slog.Logger, params sendMessageParams, wait bool) (message, error) {
 	for attempt := 0; ; attempt++ {
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.sendTimeout)
 		var m message
 		err := a.api.call(sctx, "sendMessage", params, &m)
 		cancel()
 		ae := (*apiError)(nil)
-		if !errors.As(err, &ae) || ae.RetryAfter <= 0 || attempt >= a.maxRateLimitRetries {
+		if !wait || !errors.As(err, &ae) || ae.RetryAfter <= 0 || attempt >= a.maxRateLimitRetries {
 			return m, err
 		}
 		log.Warn("Telegram flood control; waiting before retrying", "retry_after", ae.RetryAfter.String())

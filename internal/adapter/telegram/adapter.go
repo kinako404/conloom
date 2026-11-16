@@ -72,6 +72,9 @@ type Adapter struct {
 
 	mu             sync.Mutex
 	disabledGroups map[int64]bool
+	// floodUntil is when Telegram's flood control lets the bot send to a
+	// chat again, after a 429.
+	floodUntil map[int64]time.Time
 }
 
 // New validates cfg and returns an adapter. A nil logger discards logs.
@@ -114,6 +117,7 @@ func New(cfg config.TelegramConfig, logger *slog.Logger) (*Adapter, error) {
 		typingInterval:      4 * time.Second,
 		typingFor:           60 * time.Second,
 		disabledGroups:      map[int64]bool{},
+		floodUntil:          map[int64]time.Time{},
 	}, nil
 }
 
