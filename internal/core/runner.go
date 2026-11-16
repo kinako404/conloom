@@ -354,14 +354,12 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	}
 	run := o.newSkillRun(task, bot, conv, triggers, &out)
 	if run != nil {
-		in.SystemPrompt += "\n\n" + run.set.Section
-		in.ToolSchema = run.schema
 		out.skillCalls = run.counts
 	}
 	req := router.Request{
 		Sensitive:             conv.Type == conloomapi.ConvPrivate,
 		AllowLong:             pol.Concurrency.AllowLongRequests,
-		BaseTokens:            contextbuilder.BaseTokens(in),
+		BaseTokens:            contextbuilder.BaseTokens(withSkills(in, run)),
 		GroupMaxContextTokens: pol.Context.MaxContextTokens,
 	}
 
@@ -631,12 +629,15 @@ func partsDirective(maxParts int) string {
 }
 
 // call builds the context for the routed profile and calls the model. With
-// skills (run not nil) the prompt keeps its usual budget unless the hard
-// prompt limit leaves no room for one worst-case tool round on top of it;
-// requests offer the tools and the calls the model makes are run, their
-// results fed back, after any progress run made with an earlier model. The
-// final request offers no tools: it comes after maxToolRounds rounds, after
-// toolLoopTimeout, or when another round could overflow the prompt limit.
+// skills (run not nil) the system prompt gets the skill section and the
+// prompt keeps its usual budget unless the hard prompt limit leaves no room
+// for one worst-case tool round on top of it; requests offer the tools and the
+// calls the model makes are run, their results fed back, after any progress
+// run made with an earlier model. A profile whose hard limit, with a round
+// reserved, leaves less than minToolHistoryTokens for history gets the reply
+// without skills instead. The final request offers no tools: it comes after
+// maxToolRounds rounds, after toolLoopTimeout, or when another round could
+// overflow the prompt limit.
 // Every request waits for its own admission. The response is the model's final
 // answer; a tool call written as text, a tool round cut off by the output
 // limit and tool calls in the final request are not answers (ErrEmptyOutput).
@@ -649,7 +650,15 @@ func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router
 	worst := 0
 	if run != nil {
 		worst = worstRound(d.MaxOutputTokens, in.TokenFactor, run.maxResult)
-		in.Budget = min(d.PromptBudget, d.MaxPromptTokens-worst)
+		with := withSkills(in, run)
+		if room := d.MaxPromptTokens - worst; room-contextbuilder.BaseTokens(with) >= minToolHistoryTokens {
+			in = with
+			in.Budget = min(d.PromptBudget, room)
+		} else {
+			o.log.Warn("no room for a tool round; replying without skills", "task_id", task.ID, "role", p.Role,
+				"max_prompt_tokens", d.MaxPromptTokens, "tool_round_tokens", worst)
+			run, worst = nil, 0
+		}
 	}
 	built := contextbuilder.Build(in)
 	msgs := built.Messages

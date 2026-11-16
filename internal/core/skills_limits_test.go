@@ -71,6 +71,31 @@ func TestSkills_ToolRoundDoesNotShrinkTheSoftBudget(t *testing.T) {
 	}
 }
 
+func TestSkills_NoRoomForAToolRoundRepliesWithoutSkills(t *testing.T) {
+	text := func(map[string]any) fakeopenai.Reply { return fakeopenai.Reply{Content: "好"} }
+	recall := limitedTool{&recTool{name: "now"}, 1500}
+	// A group cap of 8000 tokens leaves the example model 5952 prompt tokens,
+	// less than a worst-case round of four 1500-rune results.
+	env := skillEnv(t, testOpts{shortTools: text, configure: func(c *config.Config) {
+		exampleShortModel(c)
+		c.DefaultGroupPolicy.Context.MaxContextTokens = 8000
+	}}, []string{"time"}, recall)
+	for i := range 20 {
+		env.submit(t, env.groupEvent("20002", fmt.Sprintf("史%03d", i)+strings.Repeat("闲", 20)))
+	}
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "几点了", mentionBot)).TaskID)
+	if len(task.Actions) != 1 || task.Actions[0].Content.Text != "好" {
+		t.Fatalf("task = %+v, want the reply", task)
+	}
+	req := env.short.Requests()[0]
+	if _, ok := req["tools"]; ok || strings.Contains(requestText(t, req), "【技能】") {
+		t.Errorf("request offers skills it has no room for: %v", req)
+	}
+	if n := historyShown(t, env); n != 20 {
+		t.Errorf("history shown = %d, want all 20 messages", n)
+	}
+}
+
 func TestSkills_DeclaredResultLimits(t *testing.T) {
 	long := &recTool{name: "now", fn: func(json.RawMessage) (string, error) { return strings.Repeat("长", 50), nil }}
 	env := skillEnv(t, testOpts{shortTools: callOnceThen("好", fakeopenai.ToolCall{ID: "a", Name: "now", Arguments: "{}"})},
