@@ -193,7 +193,7 @@ func TestChat_GivesUpAfterMaxRetries(t *testing.T) {
 
 func TestMaxChatDuration_CoversRetriesAndBackoff(t *testing.T) {
 	fake := fakeopenai.New(t, func(map[string]any) (int, string) {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 		return http.StatusBadGateway, "upstream down"
 	})
 	p := testProfile(fake.URL)
