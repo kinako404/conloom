@@ -142,7 +142,8 @@ func TestPersona_CurrentAndVersions(t *testing.T) {
 
 	var got personaResp
 	raw := dh.getJSON(convPath(group.Key, "persona"), &got)
-	if got.Current == nil || got.Current.Version != 2 || got.Current.Template != "lighthouse" ||
+	// The edit of the version copied from default keeps that template.
+	if got.Current == nil || got.Current.Version != 2 || got.Current.Template != "default" ||
 		!reflect.DeepEqual(got.Current.Persona, custom) || got.Current.Reason != "改描述" ||
 		got.Current.UpdatedBy != "panel:admin" || got.Current.CreatedAt.IsZero() {
 		t.Errorf("current = %+v", got.Current)

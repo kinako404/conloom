@@ -2,6 +2,7 @@
 package persona
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -400,8 +401,10 @@ func (s *Service) TemplateNames() []string {
 	return names
 }
 
-// Update appends a version holding put.Persona (recorded with templateName),
-// the content and template of version put.RollbackTo, or a copy of the
+// Update appends a version holding put.Persona (recorded with the template
+// of the latest version, which it edits, or templateName when there is none
+// or it records no template), the content and template of version
+// put.RollbackTo, or a copy of the
 // catalog's template put.Template (recorded as the version's template).
 // Exactly one of them must be set; an unknown template is ErrInvalid, and so
 // is a resulting persona that fails Validate or names an appearance image
@@ -440,6 +443,13 @@ func (s *Service) Update(ctx context.Context, convKey, templateName string, put 
 		}
 	} else {
 		next.Persona = *put.Persona
+		latest, err := s.st.LatestPersona(ctx, convKey)
+		switch {
+		case err == nil:
+			next.TemplateName = cmp.Or(latest.TemplateName, templateName)
+		case !errors.Is(err, store.ErrNotFound):
+			return store.PersonaVersion{}, err
+		}
 	}
 	if err := Validate(next.Persona); err != nil {
 		return store.PersonaVersion{}, err

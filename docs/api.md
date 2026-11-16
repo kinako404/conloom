@@ -72,8 +72,8 @@
 
 `PUT /api/v1/conversations/{id}/persona` 写入新人格版本，请求体三选一：
 
-- `{"persona":{…},"reason":"…"}`：写入完整人格。
-- `{"rollback_to":n,"reason":"…"}`：用第 n 版的内容新建一个版本。
+- `{"persona":{…},"reason":"…"}`：写入完整人格，版本沿用当前版本记下的模板名（还没有版本时记 bot 的 `persona_template`）。
+- `{"rollback_to":n,"reason":"…"}`：用第 n 版的内容和模板名新建一个版本。
 - `{"template":"<模板名>","reason":"…"}`：复制模板目录里的同名模板（数据库里的模板，没有保存过 `default` 时加上内置的默认人设），版本记下模板名；未知模板返回 400。
 
 人格字段和文本字数限制见 [配置参考：人设模板](configuration.md#人设模板)，超限返回 400。写入的人格（三种方式都算）`appearance_image` 不为空时必须是已经上传的图片，否则返回 400。每次写入都记审计。

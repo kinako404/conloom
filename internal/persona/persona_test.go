@@ -468,6 +468,42 @@ func TestService_SystemPromptStablePerVersion(t *testing.T) {
 	}
 }
 
+func TestService_UpdateKeepsTheTemplateOfAnEditedPersona(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := newServiceWith(t, st, map[string]conloomapi.PersonaDoc{"lighthouse": testCharacter()})
+
+	edited := testCharacter()
+	edited.Style.Humor = 0.9
+	v1, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Persona: &edited}, "29999")
+	if err != nil || v1.Version != 1 || v1.TemplateName != "default" {
+		t.Fatalf("first version, an edit = %+v, %v; want it recorded with the template passed", v1, err)
+	}
+	if _, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Template: "lighthouse"}, "29999"); err != nil {
+		t.Fatal(err)
+	}
+	edited.Style.Humor = 0.1
+	v3, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Persona: &edited}, "29999")
+	if err != nil || v3.Version != 3 || v3.TemplateName != "lighthouse" {
+		t.Fatalf("edit of the lighthouse version = %+v, %v; want it recorded with template lighthouse", v3, err)
+	}
+	if latest, _ := st.LatestPersona(ctx, testConvKey); latest.TemplateName != "lighthouse" {
+		t.Errorf("stored template of the edit = %q, want lighthouse", latest.TemplateName)
+	}
+
+	// A version stored before versions recorded their template has none: an
+	// edit of it is recorded with the template passed.
+	other := store.ConversationKey(testBot, "qq", conloomapi.ConvGroup, "group_10002")
+	if _, err := st.AppendPersonaVersion(ctx, store.PersonaVersion{ConversationKey: other, Persona: testCharacter(),
+		Reason: "init", UpdatedBy: "system"}); err != nil {
+		t.Fatal(err)
+	}
+	if v2, err := svc.Update(ctx, other, "default", conloomapi.PersonaPut{Persona: &edited}, "29999"); err != nil ||
+		v2.TemplateName != "default" {
+		t.Errorf("edit of a version without a template = %+v, %v; want template default", v2, err)
+	}
+}
+
 func TestService_UpdateFromTemplate(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
