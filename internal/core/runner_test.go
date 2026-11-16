@@ -170,7 +170,9 @@ func (e *testEnv) inContinuation(user string) bool {
 }
 
 // startContinuation has user mention the bot and waits until the bot's reply
-// makes user a participant of the group's session.
+// makes user a participant of the group's session and the scheduler no longer
+// counts the mention's task as active: a task stored as finished can still be
+// running its tail, and a message submitted then would wait for it.
 func (e *testEnv) startContinuation(t *testing.T, user string) {
 	t.Helper()
 	task := e.waitTask(t, e.submit(t, e.groupEvent(user, "在吗", mentionBot)).TaskID)
@@ -178,6 +180,7 @@ func (e *testEnv) startContinuation(t *testing.T, user string) {
 		t.Fatalf("mention task = %+v", task)
 	}
 	waitUntil(t, "continuation of "+user, func() bool { return e.inContinuation(user) })
+	e.waitIdle(t)
 }
 
 func (e *testEnv) counter(t *testing.T, name, label, value string) float64 {
