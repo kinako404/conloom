@@ -177,7 +177,7 @@ func CopyDirectiveAffinity(tier string, open bool) string {
 	case "亲近":
 		s = "你们很亲近。可以明显表现出信任、关心和偏爱。"
 	case "很要好":
-		s = "你们关系很好。可以自然表现出依赖、偏爱和亲密。"
+		s = "你们关系很好。可以自然表现出依赖、偏爱和亲近。"
 	default:
 		return ""
 	}

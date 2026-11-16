@@ -58,7 +58,7 @@ func TestCopyDirectiveAffinity(t *testing.T) {
 		"认识":  "友好",
 		"熟悉":  "开玩笑",
 		"亲近":  "信任",
-		"很要好": "依赖",
+		"很要好": "依赖、偏爱和亲近。",
 	}
 	for tier, want := range protected {
 		got := CopyDirectiveAffinity(tier, false)
