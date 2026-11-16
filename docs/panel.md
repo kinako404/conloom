@@ -282,7 +282,7 @@ panel:
 | `PUT bots/{id}` | 编辑面板 bot，请求同上，三个字段都必填，返回改后的 bot；配置 bot 返回 403 `FORBIDDEN`，不存在返回 404，正在删除返回 409 `CHAT_BUSY` |
 | `DELETE bots/{id}` | 删除面板 bot 和它的全部聊天，请求 `{"confirm_name"}`，返回 204；名字不一致返回 400，配置 bot 返回 403，不存在返回 404，正在删除或有聊天的任务没停下返回 409 `CHAT_BUSY`，可以重试。见 [面板 bot](#面板-bot) |
 | `PUT conversations/{key}/policy` | 请求体同 API 的 `PolicyPut`，返回新的当前版本 |
-| `POST conversations/{key}/policy/restore` | 请求 `{"version","reason"}`，把该历史版本的策略写成新版本 |
+| `POST conversations/{key}/policy/restore` | 请求 `{"version","reason"}`，把该历史版本的策略写成新版本；该版本在主动发言（`proactive`）或记忆（`memory`）一段出现之前保存、没有这一段时，保留当前的这一段 |
 | `POST conversations/{key}/pause`、`POST conversations/{key}/resume` | 暂停、恢复 |
 | `PUT conversations/{key}/persona` | 请求体同 API 的 `PersonaPut`（整份替换、回滚到版本、套用模板） |
 | `PUT conversations/{key}/memory/members/{user_id}` | 改备注或好感度，规则同 API |
