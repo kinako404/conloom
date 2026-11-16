@@ -471,7 +471,9 @@ func TestPersonaDocValidate_IntimacyBounds(t *testing.T) {
 		{"151 runes", five("", "", strings.Repeat("熟", 151)), []string{"intimacy.bounds[2]", "150", "got 151"}},
 		{"line break", five("可以牵手\n不接受表白"), []string{"intimacy.bounds[0]"}},
 		{"carriage return", five("", "可以牵手\r不接受表白"), []string{"intimacy.bounds[1]"}},
-		{"trailing line break", five("", "", "", "", "可以牵手\n"), []string{"intimacy.bounds[4]", "single line"}},
+		{"trailing line break", five("", "", "", "", "可以牵手\n"), nil},
+		{"trailing CRLF", five("", "", "\r\n可以牵手\r\n"), nil},
+		{"inner line break", five("", "", "", "", "可以牵手\n不接受表白\n"), []string{"intimacy.bounds[4]", "single line"}},
 		{"4 items", []string{"", "可以牵手", "", ""}, []string{"intimacy.bounds", "5", "got 4"}},
 	}
 	for _, tt := range tests {

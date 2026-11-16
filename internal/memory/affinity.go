@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"slices"
 	"time"
 
 	"github.com/kinako404/conloom/internal/store"
@@ -22,6 +23,12 @@ const (
 
 // tierNames are the names of the affinity tiers, from the lowest.
 var tierNames = [...]string{"陌生", "认识", "熟悉", "亲近", "很要好"}
+
+// TierNames returns a new slice of the names of the affinity tiers, from the
+// lowest: TierNames()[TierIndex(a)] is TierName(a).
+func TierNames() []string {
+	return slices.Clone(tierNames[:])
+}
 
 // TierIndex returns the affinity tier of affinity, from 0 (陌生, below 20) to
 // 4 (很要好, 80 and above), one tier every 20.

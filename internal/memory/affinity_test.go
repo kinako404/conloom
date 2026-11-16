@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -48,6 +49,26 @@ func TestTierIndex(t *testing.T) {
 		if got, want := TierName(affinity), names[TierIndex(affinity)]; got != want {
 			t.Errorf("TierName(%d) = %q, want %q (tier %d)", affinity, got, want, TierIndex(affinity))
 		}
+	}
+}
+
+func TestTierNames(t *testing.T) {
+	want := []string{"陌生", "认识", "熟悉", "亲近", "很要好"}
+	names := TierNames()
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("TierNames() = %v, want %v", names, want)
+	}
+	for affinity := 0; affinity <= 100; affinity++ {
+		if got, want := TierNames()[TierIndex(affinity)], TierName(affinity); got != want {
+			t.Errorf("TierNames()[TierIndex(%d)] = %q, want TierName %q", affinity, got, want)
+		}
+	}
+	names[0] = "改过的档位"
+	if got := TierNames(); !reflect.DeepEqual(got, want) {
+		t.Errorf("TierNames after changing a returned slice = %v, want a fresh %v", got, want)
+	}
+	if got := TierName(0); got != "陌生" {
+		t.Errorf("TierName(0) after changing a returned slice = %q, want 陌生", got)
 	}
 }
 

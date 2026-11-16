@@ -123,16 +123,15 @@ func (s *Server) getPersona(w http.ResponseWriter, r *http.Request, _ *Session) 
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
-// getAffinityBounds lists the affinity tiers from the lowest (tier i starts
-// at affinity i*20, see memory.TierIndex) and, for each, the built-in
-// boundary of the open-mode relationship hint (core.DefaultAffinityBound),
-// which a persona's intimacy bound for the tier replaces.
+// getAffinityBounds lists the affinity tiers from the lowest
+// (memory.TierNames) and, for each, the built-in boundary of the open-mode
+// relationship hint (core.DefaultAffinityBound), which a persona's intimacy
+// bound for the tier replaces.
 func (s *Server) getAffinityBounds(w http.ResponseWriter, _ *http.Request, _ *Session) {
-	n := len(conloomapi.DefaultIntimacyLevels())
-	tiers, defaults := make([]string, n), make([]string, n)
-	for i := range n {
-		tiers[i] = memory.TierName(i * 20)
-		defaults[i] = core.DefaultAffinityBound(tiers[i])
+	tiers := memory.TierNames()
+	defaults := make([]string, len(tiers))
+	for i, tier := range tiers {
+		defaults[i] = core.DefaultAffinityBound(tier)
 	}
 	s.writeJSON(w, http.StatusOK, struct {
 		Tiers    []string `json:"tiers"`

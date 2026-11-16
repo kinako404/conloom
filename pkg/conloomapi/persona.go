@@ -365,7 +365,7 @@ func (p PersonaDoc) Validate() error {
 		for i, bound := range in.Bounds {
 			path := fmt.Sprintf("intimacy.bounds[%d]", i)
 			maxRunes(path, bound, MaxIntimacyBoundRunes)
-			if strings.ContainsAny(bound, "\r\n") {
+			if strings.ContainsAny(strings.TrimSpace(bound), "\r\n") {
 				fail("%s must be a single line", path)
 			}
 		}
