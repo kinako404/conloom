@@ -391,3 +391,21 @@ func TestAssets_AppearanceLimitsMatchServer(t *testing.T) {
 		}
 	}
 }
+
+// A message stored without a reply says why under the chat box, by the
+// suppressed_reason of the 202 to POST messages.
+func TestAssets_ChatShowsSuppressedReason(t *testing.T) {
+	js := assets(t, ".js")["views/chat.js"]
+	if !strings.Contains(js, "res.suppressed_reason") {
+		t.Error("views/chat.js does not read suppressed_reason from the POST messages response")
+	}
+	m := regexp.MustCompile(`(?s)const SUPPRESSED = \{(.*?)\};`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("views/chat.js has no SUPPRESSED")
+	}
+	for _, reason := range []string{conloomapi.SuppressedPaused, conloomapi.SuppressedRateLimited, conloomapi.SuppressedQueueFull} {
+		if !regexp.MustCompile(`(?m)^\s*` + reason + `:`).MatchString(m[1]) {
+			t.Errorf("SUPPRESSED has no note for %s", reason)
+		}
+	}
+}

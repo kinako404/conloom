@@ -25,6 +25,21 @@ function bubble(m) {
 // GONE is shown, once, when the chat no longer exists.
 const GONE = '这个聊天已不存在，可能已经被删除。';
 
+// SUPPRESSED says why a sent message, stored all the same, gets no reply, by
+// the suppressed_reason of the 202 to POST messages.
+const SUPPRESSED = {
+  paused: '这个聊天暂停中，bot 不会回复这条消息。',
+  rate_limited: '发得太快了，bot 不会回复这条消息，稍后再发。',
+  queue_full: '待回复的消息太多，bot 不会回复这条消息，稍后再发。',
+  stale: '这条消息到得太晚，bot 不会回复。',
+};
+
+function suppressedNote(reason) {
+  const text = Object.prototype.hasOwnProperty.call(SUPPRESSED, reason)
+    ? SUPPRESSED[reason] : `bot 不会回复这条消息（${reason}）。`;
+  return h('p', { class: 'hint warn', role: 'status' }, text);
+}
+
 // chatPane talks to the bot in the panel chat key, as the panel user. It
 // opens with the latest messages, then polls GET chat with the newest seq it
 // has seen until signal fires or the chat is gone (404), which stops the
@@ -117,8 +132,9 @@ export async function chatPane({ key, signal, hint }) {
     send.disabled = true;
     mount(sendError);
     try {
-      await post(convPath(key, 'messages'), { text });
+      const res = await post(convPath(key, 'messages'), { text });
       if (input.value === text) input.value = '';
+      if (res && res.suppressed_reason) mount(sendError, suppressedNote(res.suppressed_reason));
       stick = true;
       poll();
     } catch (err) {
