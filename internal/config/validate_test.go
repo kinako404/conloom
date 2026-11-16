@@ -105,15 +105,24 @@ func TestValidateConfig_MinorTemplateAdult(t *testing.T) {
 	minor.Adult = true
 	cfg.LegacyPersonaTemplates["child"] = minor
 	err := cfg.ValidateServe()
-	if want := "persona_templates.child.adult: a minor persona cannot be adult"; err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("err = %v, want containing %q", err, want)
+	if want := "persona_templates.child: a minor persona cannot be adult"; !hasProblem(err, want) {
+		t.Errorf("err = %v, want the problem %q", err, want)
 	}
 	if err != nil && strings.Contains(err.Error(), "persona_templates.grownup") {
 		t.Errorf("err = %v, names the adult template", err)
 	}
 }
 
+// hasProblem reports whether err lists want as a whole problem line.
+func hasProblem(err error, want string) bool {
+	return err != nil && slices.Contains(strings.Split(err.Error(), "\n"), "  "+want)
+}
+
 func TestValidateConfig_MinorTemplateIntimacy(t *testing.T) {
+	const (
+		minorAdult    = "persona_templates.child: a minor persona cannot be adult"
+		minorIntimacy = "persona_templates.child: a minor persona cannot have an intimacy side"
+	)
 	cfg := mustLoad(t, "testdata/valid.yaml")
 	adult := conloomapi.DefaultPersona()
 	adult.Adult = true
@@ -125,15 +134,32 @@ func TestValidateConfig_MinorTemplateIntimacy(t *testing.T) {
 	if err := cfg.ValidateServe(); err != nil {
 		t.Fatalf("adult template with an intimacy side and minor template with levels only: %v", err)
 	}
+
 	minor.Intimacy = &conloomapi.PersonaIntimacy{Mind: "想靠近对方"}
 	cfg.LegacyPersonaTemplates["child"] = minor
 	err := cfg.ValidateServe()
-	if want := "a minor persona cannot have an intimacy side"; err == nil || !strings.Contains(err.Error(), "persona_templates.child.") ||
-		!strings.Contains(err.Error(), want) {
-		t.Errorf("err = %v, want naming persona_templates.child and containing %q", err, want)
+	if !hasProblem(err, minorIntimacy) {
+		t.Errorf("err = %v, want the problem %q", err, minorIntimacy)
+	}
+	if hasProblem(err, minorAdult) {
+		t.Errorf("err = %v, reports the minor template as adult, which it is not", err)
 	}
 	if err != nil && strings.Contains(err.Error(), "persona_templates.grownup") {
 		t.Errorf("err = %v, names the adult template", err)
+	}
+
+	minor.Adult = true
+	cfg.LegacyPersonaTemplates["child"] = minor
+	err = cfg.ValidateServe()
+	for _, want := range []string{minorAdult, minorIntimacy} {
+		if !hasProblem(err, want) {
+			t.Errorf("minor adult with an intimacy side: err = %v, want the problem %q", err, want)
+		}
+	}
+	if err != nil {
+		if n := strings.Count(err.Error(), "a minor persona"); n != 2 {
+			t.Errorf("minor adult with an intimacy side: err = %v, mentions a minor persona %d times, want 2", err, n)
+		}
 	}
 }
 

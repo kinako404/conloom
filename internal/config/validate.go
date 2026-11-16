@@ -55,16 +55,21 @@ func (p *problems) required(path, value string) {
 
 // nested records each rule violation in err under the prefix path.
 func (p *problems) nested(prefix string, err error) {
-	if err == nil {
-		return
-	}
-	errs := []error{err}
-	if j, ok := err.(interface{ Unwrap() []error }); ok {
-		errs = j.Unwrap()
-	}
-	for _, e := range errs {
+	for _, e := range unjoin(err) {
 		p.list = append(p.list, prefix+"."+e.Error())
 	}
+}
+
+// unjoin returns the errors joined in err, err alone when it joins none, or
+// none when err is nil.
+func unjoin(err error) []error {
+	if j, ok := err.(interface{ Unwrap() []error }); ok {
+		return j.Unwrap()
+	}
+	if err == nil {
+		return nil
+	}
+	return []error{err}
 }
 
 // absURL requires value, when set, to be an absolute URL with one of schemes and a host.
@@ -251,10 +256,10 @@ func (c *Config) ValidateServe() error {
 	}
 
 	for _, name := range slices.Sorted(maps.Keys(c.LegacyPersonaTemplates)) {
-		doc := c.LegacyPersonaTemplates[name]
-		p.nested("persona_templates."+name, doc.Validate())
-		if err := conloomapi.ValidateContent(doc); err != nil {
-			p.addf("persona_templates."+name+".adult", "%v", err)
+		doc, path := c.LegacyPersonaTemplates[name], "persona_templates."+name
+		p.nested(path, doc.Validate())
+		for _, err := range unjoin(conloomapi.ValidateContent(doc)) {
+			p.addf(path, "%v", err)
 		}
 	}
 	p.nested("default_group_policy", c.DefaultGroupPolicy.Validate())
