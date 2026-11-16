@@ -440,6 +440,28 @@ func TestScheduler_CancelPendingAndRunning(t *testing.T) {
 	}
 }
 
+func TestScheduler_CloseWindowKeepsTaskButStopsMerging(t *testing.T) {
+	rec := newSchedRecorder()
+	s := newTestScheduler(t, rec.run, fixedCfg(SessionConfig{
+		MaxConcurrent: 1, MaxQueued: 10, Debounce: time.Hour, MaxMergeWindow: time.Hour,
+	}))
+
+	r1 := mustAdmit(t, s, "group:10001", "20001", "m1", AdmitNew)
+	if !s.CloseWindow("group:10001", r1.TaskID) {
+		t.Fatal("CloseWindow(pending) = false")
+	}
+	r2 := mustAdmit(t, s, "group:10001", "20001", "m2", AdmitNew)
+	if r2.Merged || r2.TaskID == r1.TaskID {
+		t.Fatalf("admit after CloseWindow = %+v, want a new task", r2)
+	}
+	if n := len(s.Active("group:10001")); n != 2 {
+		t.Fatalf("Active = %d tasks, want 2", n)
+	}
+	if s.CloseWindow("group:10001", "task_x") || s.CloseWindow("group:none", r1.TaskID) {
+		t.Fatal("CloseWindow of an unknown task = true")
+	}
+}
+
 func TestScheduler_PersistErrorLeavesNoState(t *testing.T) {
 	boom := errors.New("boom")
 	failing := func(AdmitPlan) error { return boom }

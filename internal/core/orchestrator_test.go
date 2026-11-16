@@ -1229,6 +1229,30 @@ func TestCancelTask_QueuedTaskCancelledWhenClientLeaves(t *testing.T) {
 	}
 }
 
+func TestCancelTask_MessageDuringCancelGetsNewTask(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	id, msg := env.seedTask(t, "20001", "讲个故事", "", conloomapi.TaskQueued, time.Now().UTC())
+	env.restoreHeld(id, msg)
+	var resp conloomapi.EventAccepted
+	var once sync.Once
+	// The sender writes again while the cancellation is being stored.
+	env.hooks.setOnComplete(func(c store.TaskCompletion) {
+		if c.TaskID == id {
+			once.Do(func() { resp = env.submit(t, env.groupEvent("20001", "还有一个问题", mentionBot)) })
+		}
+	})
+	if _, err := env.o.CancelTask(context.Background(), testBot, id); err != nil {
+		t.Fatal(err)
+	}
+	env.hooks.setOnComplete(nil)
+	if resp.TaskID == "" || resp.TaskID == id || resp.Merged {
+		t.Fatalf("response = %+v, want a new task", resp)
+	}
+	if task := env.waitTask(t, resp.TaskID); task.Status != conloomapi.TaskSucceeded {
+		t.Fatalf("task = %+v, want succeeded", task)
+	}
+}
+
 func TestCancelTask_FailedWriteKeepsTaskScheduled(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{})
 	id, msg := env.seedTask(t, "20001", "讲个故事", "", conloomapi.TaskQueued, time.Now().UTC())

@@ -1141,9 +1141,10 @@ func (o *Orchestrator) CancelTask(ctx context.Context, botID, taskID string) (co
 // closes when it lets go; a runner owner records the cancellation itself.
 // Otherwise cancel takes ownership, marks the stored task cancelled, even if
 // ctx ends meanwhile, and returns a nil channel; a runner dispatched meanwhile
-// finds the task owned and does not run it. Only once the cancellation is
-// stored does the task leave the scheduler, so a task whose cancellation
-// failed stays scheduled rather than queued with no runner.
+// finds the task owned and does not run it. The task's merge window closes
+// first, so that no message merges into a task being cancelled, but only once
+// the cancellation is stored does the task leave the scheduler, so a task
+// whose cancellation failed stays scheduled rather than queued with no runner.
 func (o *Orchestrator) cancel(ctx context.Context, botID, convKey, taskID string) (<-chan struct{}, error) {
 	o.mu.Lock()
 	ow, owned := o.owners[taskID]
@@ -1160,6 +1161,7 @@ func (o *Orchestrator) cancel(ctx context.Context, botID, convKey, taskID string
 		return ow.done, nil
 	}
 	defer o.release(taskID, ow)
+	o.sched.CloseWindow(convKey, taskID)
 	ctx = context.WithoutCancel(ctx)
 	rec, err := o.st.GetTask(ctx, botID, taskID)
 	if err == nil && !taskFinished(rec.Status) {

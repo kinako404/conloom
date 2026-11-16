@@ -47,7 +47,8 @@ type QueuedTask struct {
 	// addressed is set once a message addressed to the bot merged into the
 	// task; deferred once it was first held (and reported to onHold);
 	// ignoreCooldown once a message with MergeOptions.IgnoreCooldown created
-	// or merged into it; closed once its actor's turn ended (see EndTurn).
+	// or merged into it; closed once its actor's turn ended (see EndTurn) or
+	// its merge window was closed (see CloseWindow).
 	addressed, deferred, ignoreCooldown, closed bool
 	// merge is the merge window the task was created with (or restored
 	// with, see Restore); zero fields follow the conversation's
@@ -341,6 +342,30 @@ func (s *Scheduler) Cancel(convKey, taskID string) bool {
 		if rt.task.TaskID == taskID {
 			rt.settled = true
 			rt.cancel()
+			return true
+		}
+	}
+	return false
+}
+
+// CloseWindow closes the merge window of the not-yet-started task taskID, or
+// settles it if it runs: later messages neither merge into it nor supersede
+// it, but it stays scheduled. It reports whether the task was found.
+func (s *Scheduler) CloseWindow(convKey, taskID string) bool {
+	sess := s.lockSession(convKey, false)
+	if sess == nil {
+		return false
+	}
+	defer sess.mu.Unlock()
+	for i := range sess.pending {
+		if t := &sess.pending[i]; t.TaskID == taskID {
+			t.closed = true
+			return true
+		}
+	}
+	for _, rt := range sess.running {
+		if rt.task.TaskID == taskID {
+			rt.settled = true
 			return true
 		}
 	}
