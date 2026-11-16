@@ -9,6 +9,7 @@ import (
 
 	"github.com/kinako404/conloom/internal/adapter/mock"
 	"github.com/kinako404/conloom/internal/memory"
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/internal/testutil/fakeopenai"
 	"github.com/kinako404/conloom/pkg/client"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -78,7 +79,7 @@ func TestE2E_PrivateSkillsWithBuiltinTools(t *testing.T) {
 	private.Memory.Enabled = true
 	private.Memory.ConsolidateMin = 1000
 	cfg.DefaultPrivatePolicy = &private
-	cfg.Bots[0].Skills = []string{"memory", "time"}
+	seedBotSettings(t, cfg, func(s *store.BotSettings) { s.Skills = []string{"memory", "time"} })
 	e := newEnv(t, cfg)
 	adminChat := mock.Conv{Type: conloomapi.ConvPrivate, PlatformID: admin.PlatformID}
 	say := func(text string) string {
@@ -163,7 +164,7 @@ func TestE2E_PrivateStatusAndBuffTools(t *testing.T) {
 	private := conloomapi.DefaultGroupPolicy()
 	private.Reply.PrivateWait = conloomapi.Duration{Duration: 100 * time.Millisecond}
 	cfg.DefaultPrivatePolicy = &private
-	cfg.Bots[0].Skills = []string{"status", "buff"}
+	seedBotSettings(t, cfg, func(s *store.BotSettings) { s.Skills = []string{"status", "buff"} })
 	e := newEnv(t, cfg)
 	adminChat := mock.Conv{Type: conloomapi.ConvPrivate, PlatformID: admin.PlatformID}
 	say := func(text string) string {

@@ -23,12 +23,9 @@
 CONLOOM_TG_BOT_TOKEN=<BotFather 给的 token>
 CONLOOM_TG_ADAPTER_TOKEN=<随机长字符串，适配器调用核心 API 用>
 CONLOOM_TG_BOT_ID=<token 冒号前的数字>
-CONLOOM_TG_ADMIN_ID=<你自己的 Telegram 用户 ID>
-CONLOOM_TG_GROUP_ID=<要开启的群的 ID，负数，如 -100 开头>
-CONLOOM_TG_FRIEND_ID=<允许私聊的另一个人的用户 ID>
 ```
 
-暂时不开群或不放行别人私聊时，删掉 `bot_tg` 里对应的那一行，也就不需要设置对应的变量（取消注释之后，被引用的变量不能为空，否则启动时报错）。
+取消注释之后，被引用的变量不能为空，否则启动时报错。
 
 取消注释之后，这三段是这样的：
 
@@ -43,11 +40,6 @@ bots:
   - id: bot_tg
     platform: telegram
     platform_self_id: ${CONLOOM_TG_BOT_ID}
-    admins: ["${CONLOOM_TG_ADMIN_ID}"]
-    enabled_conversations:
-      - {type: group, platform_id: "${CONLOOM_TG_GROUP_ID}"}     # 开启的群
-      - {type: private, platform_id: "${CONLOOM_TG_FRIEND_ID}"}  # 允许私聊的人
-    private_chat: allowlist
 
 adapters:
   telegram:
@@ -60,34 +52,29 @@ adapters:
 - 适配器令牌需要 `tasks:read`：适配器用它查回复任务是否已经结束，以便及时停止“正在输入”。缺少这个权限时适配器会打一条警告，改为在回复发出或 60 秒后停止。
 - 各字段的默认值和取值范围见 [配置参考](configuration.md#adapters)。
 
-**谁可以私聊**（`private_chat`）：
+配置文件里只写机器人的身份。管理员（Telegram 用户 ID）、启用的群、私聊开放范围和私聊白名单存在数据库里，在 Web 管理面板的聊天页编辑这个 bot（见 [配置参考：bots](configuration.md#bots)）。新加的 bot 没有管理员、没有启用的群，私聊只对管理员开放。
+
+**谁可以私聊**（私聊开放范围）：
 
 | 取值 | 谁的私聊会被回复 |
 |---|---|
-| `allowlist`（示例配置） | `admins` 里的人，以及 `enabled_conversations` 里以 `{type: private, platform_id: "<用户 ID>"}` 列出的人 |
-| `admins` | 只有 `admins` 里的人 |
+| `allowlist` | 管理员，以及私聊白名单里的人（用户 ID） |
+| `admins`（新 bot 的默认值） | 只有管理员 |
 | `all` | 所有人 |
 | `off` | 没有人 |
 
-不被允许的私聊不回复，防止陌生人消耗模型额度。名单写在配置里，增删人要重启核心；`private` 项只在 `allowlist` 下生效。比如再放行两个人：
+不被允许的私聊不回复，防止陌生人消耗模型额度。在面板里保存后核心立即按新名单工作，不用重启；适配器每 5 分钟从核心同步一次。私聊白名单只在 `allowlist` 下生效。
 
-```yaml
-    enabled_conversations:
-      - {type: private, platform_id: "20002"}
-      - {type: private, platform_id: "20003"}
-    private_chat: allowlist
-```
-
-**不知道自己的用户 ID？** 先把 `CONLOOM_TG_ADMIN_ID` 临时设成任意数字（比如 `0`，这一项不能为空）启动核心和适配器，用你的账号给机器人发一句话。核心的日志里会有一行 `event accepted`，其中 `conversation=bot_tg:telegram:private:private_<数字>`，这个数字就是你的用户 ID；同一行的 `suppressed_reason=private_not_allowed` 说明这条消息因为你还不在名单里而被忽略。别人的用户 ID 也可以这样拿到。填好后重启核心即可。
+**不知道自己的用户 ID？** 先启动核心和适配器，用你的账号给机器人发一句话。核心的日志里会有一行 `event accepted`，其中 `conversation=bot_tg:telegram:private:private_<数字>`，这个数字就是你的用户 ID；同一行的 `suppressed_reason=private_not_allowed` 说明这条消息因为你还不在名单里而被忽略。别人的用户 ID 也可以这样拿到。在面板里把它加进管理员或私聊白名单即可。
 
 ## 3. 开启群聊
 
 1. 把机器人拉进群。如果要它在群里看到所有消息，先按 [第 4 节](#4-群里的隐私模式) 处理隐私模式。
-2. 在群里发一句话。群还没开启时，核心会忽略它，适配器的日志里会出现一行 info 日志（每个群只打一次），消息为 `the bot is in a Telegram group the core does not serve; list it in bots[].enabled_conversations to enable it`，带两个字段，例如 `chat_id=-1001234567890`、`conversation_id=group_-1001234567890`。
+2. 在群里发一句话。群还没开启时，核心会忽略它，适配器的日志里会出现一行 info 日志（每个群只打一次），消息为 `the bot is in a Telegram group the core does not serve; add its chat_id to the bot's groups in the web panel to enable it`，带两个字段，例如 `chat_id=-1001234567890`、`conversation_id=group_-1001234567890`。
 
    `chat_id` 就是群 ID。核心的日志里同样有 `event accepted … conversation=bot_tg:telegram:group:group_<群 ID> suppressed_reason=not_enabled`。
-3. 把它写进 `enabled_conversations`：`{type: group, platform_id: "<群 ID>"}`。Telegram 的群 ID 是负数（超级群以 `-100` 开头），**要加引号**；用 `${CONLOOM_TG_GROUP_ID}` 时引号已经在示例里了。
-4. 重启核心。
+3. 在 Web 管理面板里编辑这个 bot，把群 ID 加进启用的群。Telegram 的群 ID 是负数（超级群以 `-100` 开头），连同负号一起填。
+4. 保存后核心立即开启这个群；适配器最多 5 分钟后同步到，不用重启。
 
 开启后，群里的行为和 QQ 群一样：@ 机器人或回复机器人的消息时它会回应，其他消息只记录（作为以后的上下文），话题合适时可能主动加入，详见 [使用指南](usage.md)。核心的标准会话 ID 是 `group_<群 ID>`，负号原样保留，通过 API 访问时也这样写，例如 `/api/v1/conversations/group_-1001234567890/policy`。
 
@@ -189,8 +176,8 @@ token 泄露了，或者只是想定期更换：
 |---|---|
 | 日志里 `getUpdates conflict` 带 `error 409: Conflict: terminated by other getUpdates request` | 另一个进程在用同一个 token 拉取更新。停掉另一个进程（另一台机器上的适配器、调试脚本等） |
 | 日志里 `error 409` 提到 webhook | 适配器运行期间有人又给机器人设置了 webhook。适配器只在启动时删除 webhook，重启适配器即可 |
-| 私聊没反应，核心日志 `suppressed_reason=private_not_allowed` | 发送者不在名单里：`allowlist` 下把他加进 `enabled_conversations` 的 `private` 项，或加进 `admins` |
-| 群里没反应，日志提示群没开启（`not_enabled`） | 按第 3 节把群 ID 加进 `enabled_conversations` 并重启核心 |
+| 私聊没反应，核心日志 `suppressed_reason=private_not_allowed` | 发送者不在名单里：在面板里把他加进私聊白名单（开放范围为 `allowlist` 时），或加为管理员 |
+| 群里没反应，日志提示群没开启（`not_enabled`） | 按第 3 节在面板里把群 ID 加进启用的群 |
 | 群里只有 @ 它的时候有时没反应、也不接话 | 隐私模式还开着，机器人看不到这些消息。按第 4 节关闭隐私模式并重新拉它进群，或设为群管理员 |
 | 日志 error `the core refused the adapter's token`，消息没有回复 | 核心对提交返回 401 或 403：`core_token` 不在 `api_tokens` 里（401），或者令牌缺少 `events:write`、绑定的不是 `bot_instance_id`（403）。适配器不会跳过这条消息，一直退避重试，Telegram 那边也不确认它；改好配置、重启核心后会自动接上 |
 | 日志 error `telegram update stuck`，带 `update_id`，之后的消息都没被处理 | 同一条更新已经连续失败超过 10 次或 5 分钟（核心 5xx、超时、连不上）。适配器不会跳过它：Telegram 最多保存 24 小时，后面的更新都排在它后面，宁可卡住也不丢消息。先按 `/healthz` 和核心日志修好核心，恢复后会自动继续。如果确认是这一条更新本身让核心一直出错、必须跳过：停止适配器，用 Bot API 调一次 `getUpdates`，参数 `offset=<update_id+1>`，把它确认掉（这条消息就丢了；请求地址含 token，注意别留在 shell 历史里），再启动适配器 |

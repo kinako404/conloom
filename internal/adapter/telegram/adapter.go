@@ -350,14 +350,15 @@ func (a *Adapter) handle(ctx context.Context, u update) bool {
 }
 
 // noteGroupNotEnabled logs, once per group and process, that the core ignores
-// a group the bot is in, with the chat ID to list in enabled_conversations.
+// a group the bot is in, with the chat ID to add to the bot's groups in the
+// web panel.
 func (a *Adapter) noteGroupNotEnabled(chatID int64, conversationID string) {
 	a.mu.Lock()
 	seen := a.disabledGroups[chatID]
 	a.disabledGroups[chatID] = true
 	a.mu.Unlock()
 	if !seen {
-		a.log.Info("the bot is in a Telegram group the core does not serve; list it in bots[].enabled_conversations to enable it",
+		a.log.Info("the bot is in a Telegram group the core does not serve; add its chat_id to the bot's groups in the web panel to enable it",
 			"chat_id", chatID, "conversation_id", conversationID)
 	}
 }

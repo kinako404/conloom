@@ -59,7 +59,7 @@ func (p personaSource) Persona(ctx context.Context, botInstanceID, convKey strin
 	if !ok {
 		return conloomapi.PersonaDoc{}, fmt.Errorf("app: unknown bot %q", botInstanceID)
 	}
-	pv, err := p.personas.Current(ctx, convKey, bot.PersonaTemplate)
+	pv, err := p.personas.Current(ctx, convKey, bot.TemplateFor(store.ConversationType(convKey)))
 	if err != nil {
 		return conloomapi.PersonaDoc{}, err
 	}
@@ -74,14 +74,20 @@ func isCommand(text, prefix string) bool {
 }
 
 // registerSkills registers tools for the loaded skills and checks the skills
-// each bot enables. Every error wraps skills.ErrInvalid.
+// an old config file still enables for a bot (config.BotConfig.Legacy), which
+// are migrated into the database. The skills stored for a bot are checked
+// when it is published to the bot directory instead. Every error wraps
+// skills.ErrInvalid.
 func registerSkills(cfg *config.Config, loaded map[string]skills.Skill, tools []skills.Tool) (*skills.Registry, error) {
 	reg, err := skills.NewRegistry(loaded, tools)
 	if err != nil {
 		return nil, err
 	}
 	for i, b := range cfg.Bots {
-		if err := reg.Check(b.Skills); err != nil {
+		if b.Legacy.Skills == nil {
+			continue
+		}
+		if err := reg.Check(*b.Legacy.Skills); err != nil {
 			return nil, fmt.Errorf("bots[%d].skills: %w", i, err)
 		}
 	}

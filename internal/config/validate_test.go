@@ -118,7 +118,7 @@ func TestValidate_ConfigBotTemplateNotChecked(t *testing.T) {
 	if cfg.LegacyPersonaTemplates != nil {
 		t.Fatalf("persona_templates of a config without them = %+v, want none, not even default", cfg.LegacyPersonaTemplates)
 	}
-	cfg.Bots[0].PersonaTemplate = "night-owl"
+	cfg.Bots[0].Legacy.PersonaTemplate = ptr("night-owl")
 	if err := cfg.ValidateServe(); err != nil {
 		t.Fatalf("bot naming a template that is not in the config file: %v", err)
 	}
@@ -133,9 +133,10 @@ func TestValidate_ConfigBotBlankTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Omitted, persona_template is default.
-	if cfg := mustLoad(t, writeConfig(t, string(base))); cfg.Bots[0].PersonaTemplate != "default" || cfg.ValidateServe() != nil {
-		t.Fatalf("bot without persona_template = %q, %v; want default, valid", cfg.Bots[0].PersonaTemplate, cfg.ValidateServe())
+	// Omitted, persona_template is not required: the template is a setting
+	// in the database.
+	if cfg := mustLoad(t, writeConfig(t, string(base))); cfg.Bots[0].Legacy.PersonaTemplate != nil || cfg.ValidateServe() != nil {
+		t.Fatalf("bot without persona_template = %v, %v; want none, valid", cfg.Bots[0].Legacy.PersonaTemplate, cfg.ValidateServe())
 	}
 	for _, v := range []string{`""`, `"  "`} {
 		yaml := strings.Replace(string(base), "    platform: qq\n", "    platform: qq\n    persona_template: "+v+"\n", 1)

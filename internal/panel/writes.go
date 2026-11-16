@@ -157,7 +157,7 @@ func (s *Server) putPersona(w http.ResponseWriter, r *http.Request, sess *Sessio
 	if !s.decode(w, r, &put) {
 		return
 	}
-	pv, err := s.d.Personas.Update(r.Context(), conv.Key, bot.PersonaTemplate, put, panelActor(sess))
+	pv, err := s.d.Personas.Update(r.Context(), conv.Key, bot.TemplateFor(conv.Type), put, panelActor(sess))
 	if !s.versionStored(w, r, pv.Version, err) {
 		return
 	}

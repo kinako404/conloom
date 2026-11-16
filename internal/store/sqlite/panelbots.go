@@ -26,7 +26,7 @@ func (db *DB) ListBotInstances(ctx context.Context) ([]store.BotInstance, error)
 }
 
 func (db *DB) CreatePanelBot(ctx context.Context, b store.PanelBot) error {
-	skills, err := marshalSkills(b.Skills)
+	skills, err := marshalList(b.Skills)
 	if err != nil {
 		return err
 	}
@@ -45,7 +45,7 @@ func (db *DB) CreatePanelBot(ctx context.Context, b store.PanelBot) error {
 }
 
 func (db *DB) UpdatePanelBot(ctx context.Context, b store.PanelBot) error {
-	skills, err := marshalSkills(b.Skills)
+	skills, err := marshalList(b.Skills)
 	if err != nil {
 		return err
 	}
@@ -119,11 +119,11 @@ func (db *DB) DeletePanelBot(ctx context.Context, id string) error {
 	})
 }
 
-// marshalSkills encodes skills as a JSON array, nil as [].
-func marshalSkills(skills []string) (string, error) {
-	if skills == nil {
-		skills = []string{}
+// marshalList encodes list as a JSON array, nil as [].
+func marshalList(list []string) (string, error) {
+	if list == nil {
+		list = []string{}
 	}
-	b, err := json.Marshal(skills)
+	b, err := json.Marshal(list)
 	return string(b), err
 }

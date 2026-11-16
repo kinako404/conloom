@@ -1252,8 +1252,8 @@ func TestCatalog_DeleteInUseAllowed(t *testing.T) {
 		}
 	}
 	bots := botdir.New([]config.BotConfig{
-		{ID: "qq-main", Platform: "qq", Name: "小明", PersonaTemplate: "lighthouse"},
-		{ID: "tg-main", Platform: "telegram", Name: "小明", PersonaTemplate: "default"},
+		{ID: "qq-main", Platform: "qq", Name: "小明", PrivateTemplate: "lighthouse", GroupTemplate: "default"},
+		{ID: "tg-main", Platform: "telegram", Name: "小明", PrivateTemplate: "default", GroupTemplate: "lighthouse"},
 	})
 	bots.SetPanel([]botdir.Entry{{Bot: botdir.PanelBotConfig(store.PanelBot{ID: "panel-a1b2c3d4", Name: "小红", PersonaTemplate: "cat"})}})
 	svc.SetTemplateUsers(bots.TemplateUsers)
@@ -1262,7 +1262,7 @@ func TestCatalog_DeleteInUseAllowed(t *testing.T) {
 		name  string
 		users []string
 	}{
-		{"lighthouse", []string{"qq-main"}},
+		{"lighthouse", []string{"qq-main", "tg-main"}},
 		{"cat", []string{"panel-a1b2c3d4"}},
 		{"free", nil},
 	} {
@@ -1278,7 +1278,7 @@ func TestCatalog_DeleteInUseAllowed(t *testing.T) {
 		t.Errorf("stored templates after deleting them all = %v, want none", names)
 	}
 	if users, err := svc.DeleteTemplate(ctx, "default"); !errors.Is(err, ErrDefaultTemplate) || users != nil {
-		t.Errorf("DeleteTemplate default = %q, %v; want ErrDefaultTemplate: tg-main uses it, and it is the fallback", users, err)
+		t.Errorf("DeleteTemplate default = %q, %v; want ErrDefaultTemplate: both config bots use it, and it is the fallback", users, err)
 	}
 }
 

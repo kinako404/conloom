@@ -77,7 +77,7 @@ func newWriteHarness(t *testing.T, mutate func(*Deps)) *writeHarness {
 	t.Helper()
 	h := &writeHarness{trigger: &fakeTrigger{}}
 	h.storeHarness = newStoreHarness(t,
-		[]config.BotConfig{{ID: dataBot, Platform: "qq", Name: "织语", PersonaTemplate: "default"}},
+		[]config.BotConfig{{ID: dataBot, Platform: "qq", Name: "织语", PrivateTemplate: "default", GroupTemplate: "default"}},
 		map[string]conloomapi.PersonaDoc{"cat": catPersona},
 		func(d *Deps) {
 			d.Audit, d.Memory = d.Store.(*sqlite.DB), h.trigger

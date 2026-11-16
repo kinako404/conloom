@@ -240,7 +240,7 @@ func (s *Server) getPersona(w http.ResponseWriter, r *http.Request, tok *token) 
 	if !ok {
 		return
 	}
-	pv, err := s.d.Personas.Current(r.Context(), conv.Key, bot.PersonaTemplate)
+	pv, err := s.d.Personas.Current(r.Context(), conv.Key, bot.TemplateFor(conv.Type))
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -261,7 +261,7 @@ func (s *Server) putPersona(w http.ResponseWriter, r *http.Request, tok *token) 
 	if !s.decodeBody(w, r, &put) {
 		return
 	}
-	pv, err := s.d.Personas.Update(r.Context(), conv.Key, bot.PersonaTemplate, put, tok.name)
+	pv, err := s.d.Personas.Update(r.Context(), conv.Key, bot.TemplateFor(conv.Type), put, tok.name)
 	if !s.stored(w, r, pv.Version, err) {
 		return
 	}

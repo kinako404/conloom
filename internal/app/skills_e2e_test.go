@@ -9,6 +9,7 @@ import (
 
 	"github.com/kinako404/conloom/internal/app"
 	"github.com/kinako404/conloom/internal/skills"
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/internal/testutil/fakeopenai"
 )
 
@@ -53,7 +54,7 @@ func TestE2E_SkillRememberRoundTrip(t *testing.T) {
 		return fakeopenai.Reply{ToolCalls: []fakeopenai.ToolCall{{ID: "call_1", Name: "remember", Arguments: `{"content":"喜欢草莓"}`}}}
 	})
 	cfg := testConfig(t, configParams{modelURL: fake.URL})
-	cfg.Bots[0].Skills = []string{"memory"}
+	seedBotSettings(t, cfg, func(s *store.BotSettings) { s.Skills = []string{"memory"} })
 	e := newEnvWith(t, cfg, app.Options{Tools: []skills.Tool{remember, &noteTool{name: "recall"}, &noteTool{name: "get_affinity"}}})
 
 	e.mention(group, alice, "记住我喜欢草莓")

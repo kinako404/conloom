@@ -20,6 +20,8 @@ import (
 	"github.com/kinako404/conloom/internal/adapter/mock"
 	"github.com/kinako404/conloom/internal/app"
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/internal/store/sqlite"
 	"github.com/kinako404/conloom/internal/testutil/fakeopenai"
 	"github.com/kinako404/conloom/pkg/client"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -55,12 +57,7 @@ api_tokens:
 bots:
   - id: bot_main
     platform: qq
-    name: 织语
     platform_self_id: "30001"
-    admins: ["29999"]
-    enabled_conversations:
-      - {type: group, platform_id: "10001"}
-    private_chat: admins
 model_profiles:
   short_context:
     endpoint: MODEL_URL
@@ -97,7 +94,9 @@ type configParams struct {
 	turnGap, turnMaxWait, turnCooldown string
 }
 
-// testConfig writes a config for p to a temporary directory and loads it.
+// testConfig writes a config for p to a temporary directory, loads it and
+// stores the settings of its bot unless the data directory has them already
+// (see seedBotSettings).
 func testConfig(t testing.TB, p configParams) *config.Config {
 	t.Helper()
 	dir := t.TempDir()
@@ -155,7 +154,52 @@ func testConfig(t testing.TB, p configParams) *config.Config {
 	if err := cfg.ValidateServe(); err != nil {
 		t.Fatalf("ValidateServe: %v", err)
 	}
+	seedBotSettings(t, cfg, nil)
 	return cfg
+}
+
+// testBotSettings are the settings testConfig stores for bot_main, as if set
+// in the panel: named 织语, admin 29999 (admin), working in group 10001 and
+// chatting privately with its admins, new conversations starting from the
+// default persona template, without skills.
+func testBotSettings() store.BotSettings {
+	return store.BotSettings{BotInstanceID: botID, Name: "织语", Admins: []string{admin.PlatformID}, PrivateChat: "admins",
+		Groups: []string{group.PlatformID}, PrivateTemplate: "default", GroupTemplate: "default", UpdatedBy: "panel:admin"}
+}
+
+// seedBotSettings stores the settings of bot_main in the database of cfg,
+// creating it: the stored ones, else testBotSettings, changed by edit when
+// it is not nil. The config file only has the bot's identity.
+func seedBotSettings(t testing.TB, cfg *config.Config, edit func(*store.BotSettings)) {
+	t.Helper()
+	ctx := context.Background()
+	if err := os.MkdirAll(cfg.Storage.DataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sqlite.Open(ctx, cfg.DBPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	s, err := db.GetBotSettings(ctx, botID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		s = testBotSettings()
+	case err != nil:
+		t.Fatal(err)
+	case edit == nil:
+		return
+	}
+	if edit != nil {
+		edit(&s)
+	}
+	if err := db.PutBotSettings(ctx, s); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type syncBuffer struct {
@@ -618,9 +662,9 @@ func TestNew_WarnsUnusedPrivateConversations(t *testing.T) {
 	}{{"admins", true}, {"all", true}, {"off", true}, {"allowlist", false}} {
 		t.Run(tt.mode, func(t *testing.T) {
 			cfg := testConfig(t, configParams{modelURL: "http://127.0.0.1:1"})
-			cfg.Bots[0].PrivateChat = tt.mode
-			cfg.Bots[0].EnabledConversations = append(cfg.Bots[0].EnabledConversations,
-				conloomapi.ConversationRef{Type: conloomapi.ConvPrivate, PlatformID: "20001"})
+			seedBotSettings(t, cfg, func(s *store.BotSettings) {
+				s.PrivateChat, s.PrivateAllowlist = tt.mode, []string{"20001"}
+			})
 			logs := &syncBuffer{}
 			a, err := app.New(cfg, slog.New(slog.NewTextHandler(logs, nil)), app.Options{})
 			if err != nil {

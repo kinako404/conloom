@@ -67,7 +67,7 @@ func contentEnv(t *testing.T, persona conloomapi.PersonaDoc, reply string) (*env
 	}
 	cfg := panelTestConfig(t, configParams{modelURL: fake.URL}, hash)
 	cfg.LegacyPersonaTemplates = map[string]conloomapi.PersonaDoc{contentTemplate: persona}
-	cfg.Bots[0].PersonaTemplate = contentTemplate
+	seedBotSettings(t, cfg, func(s *store.BotSettings) { s.PrivateTemplate, s.GroupTemplate = contentTemplate, contentTemplate })
 	cfg.DefaultGroupPolicy.Reply.MaxParts = 3
 	private := conloomapi.DefaultGroupPolicy()
 	private.Reply.MaxParts = 3

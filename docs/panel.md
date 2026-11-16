@@ -114,7 +114,7 @@ panel:
 
 ### 在面板里聊天
 
-在“聊天”页可以直接和 bot 私聊：在聊天页某个 bot 那一组下点“新建聊天”（选好了这个 bot），或者在会话列表点“新建聊天”，选择 bot（面板 bot 显示为“名字（面板）”，配置 bot 显示为“名字（ID）”）、填写 bot 对你的称呼（留空时用面板用户名，最长 32 字），提交后在聊天页打开新聊天。新会话的平台是 `panel`，会话键形如 `qq-main:panel:private:panel_<随机>`，发言人 ID 是 `panel_<面板用户名>`。这个发言人是该 bot 的管理员，可以用管理员命令；私聊白名单和 `private_chat` 开关对 `panel` 平台不生效。
+在“聊天”页可以直接和 bot 私聊：在聊天页某个 bot 那一组下点“新建聊天”（选好了这个 bot），或者在会话列表点“新建聊天”，选择 bot（面板 bot 显示为“名字（面板）”，配置 bot 显示为“名字（ID）”）、填写 bot 对你的称呼（留空时用面板用户名，最长 32 字），提交后在聊天页打开新聊天。新会话的平台是 `panel`，会话键形如 `qq-main:panel:private:panel_<随机>`，发言人 ID 是 `panel_<面板用户名>`。这个发言人是该 bot 的管理员，可以用管理员命令；私聊白名单和私聊开放范围对 `panel` 平台不生效。
 
 面板只能在这样新建的聊天里发消息。QQ、Telegram 上的私聊和群聊不能从面板发消息（接口返回 400），在“会话”里查看。
 
@@ -204,7 +204,7 @@ panel:
 - `model_profiles.*.extra_body` 只显示键名；布尔值和数字照常显示，字符串、列表、对象等其他值一律显示为 `(已设置)` 或 `(未设置)`，因为它们可能藏着凭据。
 - 接口地址（模型和向量服务的 `endpoint`，适配器的 `ws_url`、`core_url`、`api_base`）显示主机和路径，但地址里可能带凭据：`user:password@` 部分去掉，查询参数只保留参数名、值一律显示为 `(已隐藏)`，`#` 后面的部分也显示为 `(已隐藏)`；解析不了的地址只显示 `(已设置)`。
 - 默认群策略、私聊策略整段原样显示，它们只有行为设置，不含凭据。人设模板不在配置里，不显示。
-- `bots` 先列配置文件里的 bot，按文件里写的显示：引用的人设模板已经不存在时，`persona_template` 仍是文件里的名字，不是运行时改用的 `default`（bot 页标出这个问题）；再列面板 bot（`source` 为 `panel`），按生效的设置显示。
+- `bots` 先列配置文件里的 bot，按文件里写的显示，也就是只有 `id`、`platform`、`platform_self_id`（其余设置存在数据库里，见 `GET bots`）；再列面板 bot（`source` 为 `panel`），按生效的设置显示。
 - 没有配置 `embedding` 段时，`embedding` 显示为 `null`。
 
 ## 模型用量
@@ -254,7 +254,7 @@ panel:
 | `GET usage?from=&to=&group=` | 每日分桶和区间合计；`group` 为 `model`（默认）、`role`、`purpose`、`bot`；不传日期时为截至今天的 7 天。`bots` 按 bot ID 给出每个 bot 的 `name` 和 `deleted`：bot 目录里的 bot 用当前的名字、`deleted` 为 false；只在 `bot_instances` 里登记过的（删除的面板 bot、从配置文件去掉的 bot）用登记的名字、`deleted` 为 true |
 | `GET usage/calls?from=&to=&model=&purpose=&conversation=&before=&limit=` | 调用明细，新的在前；`conversation` 是会话键 |
 | `GET metrics/live` | 本进程 Prometheus 指标的快照：计数器和仪表给值，直方图给次数、总和和按桶估算的 p50 / p95 |
-| `GET bots` | 全部 bot `bots`：先配置 bot，再按新建顺序列面板 bot。每项 `id`、`name`、`source`（`config` 或 `panel`）、`persona_template` 和 `skills`（运行时生效的值）、`problems`（失效引用的说明，如配置 bot 或面板 bot 的模板已不存在，没有时为空列表）、`chats`（私聊数）、`last_message_at`（这些私聊最后一条消息的时间）。另有 `templates`：可选的人设模板名，按名字排序 |
+| `GET bots` | 全部 bot `bots`：先配置 bot，再按新建顺序列面板 bot。每项 `id`、`name`、`source`（`config` 或 `panel`）、`private_template` 和 `group_template`（新私聊、新群的默认模板，面板 bot 两项相同）、`persona_template`（同 `private_template`，即面板 bot 唯一的模板）和 `skills`（这几项都是运行时生效的值）、`problems`（失效引用的说明，如配置 bot 或面板 bot 的模板已不存在，没有时为空列表）、`chats`（私聊数）、`last_message_at`（这些私聊最后一条消息的时间）。另有 `templates`：可选的人设模板名，按名字排序 |
 | `GET bots/skills` | 面板 bot 可以启用的技能 `skills`（已加载、允许在私聊里用、工具齐全），每项 `name`、`description`，按名字排序 |
 | `GET chats` | 聊天页左栏用：`bots` 按 bot 分组，顺序同 `GET bots`，每组 `id`、`name`、`source` 和这个 bot 在面板里新建的聊天 `chats`（没有时为空列表；平台上的私聊和群聊不列出）。聊天按最近活动从新到旧：取最后一条消息的时间和会话建立的时间中较晚的一个，所以刚新建、还没有消息的聊天排在最前；排好序后每个 bot 取前 200 个。每项 `key`、`title`（对方的显示名：面板用户在聊天里最新的昵称；还没人发言时是新建时填的称呼；都没有时是会话 ID）、`platform`（总是 `panel`）、`last_message_at` |
 | `GET conversations` | 全部会话 `conversations`，以及全部 bot `bots`（`id`、`name`、`platform`、`source`，“新建聊天”从这里选；面板 bot 的 `platform` 和 `source` 都是 `panel`）。私聊会话的 `proactive_level` 是生效的主动找人档位（`off`、`low`、`mid`、`high`，没设时为 `mid`），其他会话为空字符串；`memory_scope` 是会话的记忆范围键：面板里新建的聊天是 bot 的共享范围 `<bot>:panel:private:~shared`，其他会话是它自己的会话键。单个会话的接口同样有这两个字段 |

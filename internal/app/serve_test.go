@@ -29,9 +29,6 @@ bots:
   - id: bot_main
     platform: qq
     platform_self_id: "30001"
-    admins: ["29999"]
-    enabled_conversations:
-      - {type: group, platform_id: "10001"}
 model_profiles:
   short_context:
     endpoint: http://127.0.0.1:9/v1

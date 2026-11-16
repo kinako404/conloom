@@ -6,7 +6,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 
 - 所有子命令都用 `-c <文件>` 指定配置，默认 `conloom.yaml`。真实的 `conloom.yaml` 和 `.env` 已被 `.gitignore` 排除，不要提交它们。
 - **变量展开**：支持 `${VAR}` 和 `${VAR:-默认值}`，`$$` 表示字面量 `$`。变量先从进程环境变量取，其次取配置文件**同目录**的 `.env`；`.env` 不会覆盖已经存在的进程环境变量。没有设置、也没有默认值的变量展开为空串，如果它导致某个必填字段为空，启动时的错误信息会列出这些没设置的变量。
-- **严格解析**：未知字段会被拒绝。`bots[]` 的每一项、`model_profiles` 的每一项分别在各自的默认值上解析：省略的字段取默认值，显式写出的零值保留。
+- **严格解析**：未知字段会被拒绝。`model_profiles` 的每一项在自己的默认值上解析：省略的字段取默认值，显式写出的零值保留。
 - **按子命令校验**：`serve`、`adapter napcat`、`adapter telegram`、`mock` 只校验各自用到的字段，出错时一次列出全部问题并给出字段路径，退出码为 78（配置错误；命令行用法错误是 2）。所以不用的适配器段（比如只接 QQ 时的 `adapters.telegram`）即使变量没设置也不影响其他子命令。
 - 配置里的群号、QQ 号一律写平台原始 ID。
 
@@ -19,8 +19,6 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `CONLOOM_ADAPTER_TOKEN` | 适配器调用核心 API 的令牌（随机长字符串） |
 | `CONLOOM_ADMIN_TOKEN` | 管理令牌（另一个随机长字符串） |
 | `CONLOOM_BOT_SELF_ID` | 机器人自己的 QQ 号 |
-| `CONLOOM_ADMIN_QQ` | 管理员的 QQ 号 |
-| `CONLOOM_GROUP_ID` | 启用的群号 |
 | `CONLOOM_SHORT_MODEL_ENDPOINT` / `_NAME` / `_KEY` | 短上下文模型的接口地址、模型名、API Key |
 | `CONLOOM_LONG_MODEL_ENDPOINT` / `_NAME` / `_KEY` | 长上下文模型的接口地址、模型名、API Key |
 | `CONLOOM_NAPCAT_WS_URL` | NapCat 的 WebSocket 地址，如 `ws://<NapCat 地址>:<端口>` |
@@ -36,7 +34,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `server` | 监听地址、时区、指标开关 |
 | `storage` | 数据目录 |
 | `api_tokens` | API 令牌及其权限范围 |
-| `bots` | 机器人实例 |
+| `bots` | 机器人实例的身份（ID、平台、平台自身 ID）；其余设置在面板里改 |
 | `model_profiles` | 模型配置，按角色 |
 | `persona_templates` | 旧版本的人设模板，只在升级后第一次启动时导入数据库，之后必须删除（见 [人设模板](#人设模板)） |
 | `default_group_policy` | 新会话的初始群策略 |
@@ -76,17 +74,35 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 
 ## bots
 
+配置文件里每个机器人（QQ、Telegram）只写身份：
+
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `id` | 必填 | 机器人实例 ID，不能重复；不能以 `panel-` 开头，这个前缀保留给面板里新建的 bot（见 [Web 管理面板：面板 bot](panel.md#面板-bot)）；不能含 `:`，它是会话键（`bot:平台:类型:会话`）各段的分隔符 |
 | `platform` | 必填 | 平台名，示例为 `qq`；`panel` 保留给面板里新建的聊天和 bot，不能使用；同样不能含 `:` |
-| `name` | `织语` | 显示名；人设设置了角色名时，在该会话里以角色名为准 |
 | `platform_self_id` | 必填 | 机器人自己的平台 ID，用于自回复防护 |
-| `admins` | 空 | 管理员的平台用户 ID 列表，每项不能为空 |
-| `enabled_conversations` | 空 | 只在这些会话里工作，每项 `{type: group\|private, platform_id: "<ID>"}`；未列出的群消息会被忽略。`private` 项的 `platform_id` 填用户的平台 ID，只在 `private_chat: allowlist` 时生效，用来放行这些人的私聊；其他档位下会被忽略，启动时打一条警告日志 |
-| `private_chat` | `admins` | 私聊策略：`admins`（仅管理员）、`allowlist`（管理员和 `enabled_conversations` 里列为 `private` 的人）、`all`（所有人）、`off`（关闭）。不被允许的私聊不回复 |
-| `persona_template` | `default` | 会话初始人格使用的模板名。写了就不能为空（`""` 或只有空格时加载配置失败）；模板存在数据库里，加载配置时不检查它是否存在；启动后模板不存在时记一条警告、运行时改用 `default`，面板的 bot 页标出“模板已不存在”，建出这个模板后恢复 |
-| `skills` | 空 | 启用的技能名列表，如 `[memory, time]`，不能有空项或重复；必须是内置技能或 `skills.dir` 里的技能，它们用到的工具都必须存在，否则启动失败（退出码 78）。省略或为空时不带任何工具，行为和没有技能时一样。见 [技能](skills.md) |
+
+连接和密钥（适配器配置、令牌、`.env`）也留在配置文件里。其余设置存在数据库里（迁移 `0019_bot_settings.sql`，每个 bot 一行），在 Web 管理面板里改：
+
+| 设置 | 新 bot 的默认值 | 说明 |
+|---|---|---|
+| 显示名 | bot 的 ID | 人设设置了角色名时，在该会话里以角色名为准 |
+| 管理员 | 无 | 平台用户 ID 列表，可以用 `/pause` 等命令 |
+| 私聊开放范围 | `admins` | `admins`（仅管理员）、`allowlist`（管理员和私聊白名单里的人）、`all`（所有人）、`off`（关闭）。不被允许的私聊不回复 |
+| 私聊白名单 | 无 | 用户的平台 ID，只在 `allowlist` 下生效；其他档位下不生效，启动时打一条警告日志 |
+| 启用的群 | 无 | 群的平台 ID；没列出的群里的消息会被忽略 |
+| 私聊默认模板、群聊默认模板 | `default` | 新私聊、新群第一次回复时复制的人设模板（见 [人设模板](#人设模板)）。模板不存在时记一条警告、改用 `default`，面板的 bot 页标出“人设模板“x”已不存在，暂用 default”，建出这个模板后恢复 |
+| 技能 | 无 | 启用的技能名，见 [技能](skills.md)。不存在或缺少工具的技能不生效，面板的 bot 页标出原因 |
+
+配置文件新加的 bot 在数据库里还没有设置时用上表的默认值（不写入数据库）。面板里保存后 core 立即按新设置工作；适配器每 5 分钟从 core 拉一次启用的群和私聊开放范围（`GET /api/v1/capabilities`），所以适配器那边最多 5 分钟后生效。
+
+**升级：配置文件里 `bots[]` 的设置键**。旧版本在 `bots[]` 里写 `name`、`admins`、`private_chat`、`enabled_conversations`、`persona_template`、`skills`。升级后第一次启动时，只要还有 bot 写着其中任何一个键，这些键照常解析和校验（取值规则同旧版本：`private_chat` 必须是上面四档之一，`enabled_conversations` 的 `type` 是 `group` 或 `private`、`platform_id` 和 `admins` 每项不能为空，`persona_template` 写了就不能为空，`skills` 不能有空项或重复、必须存在且工具齐全，否则启动失败，退出码 78），然后自动导入数据库：
+
+- 数据库里还没有设置的配置 bot，按旧版本的效果写入一行：没写的键取旧版本的默认值（显示名 `织语`、私聊 `admins`、模板 `default`，其余为空）；`persona_template` 同时作为私聊和群聊的默认模板；`enabled_conversations` 里的 `group` 项进启用的群，`private` 项进私聊白名单。
+- 已经有设置的 bot 跳过，以数据库为准。
+- 数据库在 `app_meta` 里记下 `config_bot_settings_migrated`，写一条审计 `bot.settings.migrate`，日志提示删除这些键。
+
+导入后必须从配置文件删掉这些键，`bots[]` 每项只留 `id`、`platform`、`platform_self_id`；之后还写着其中任何一个键时启动失败（退出码 78），报错列出哪个 bot 还写着哪些键，提示到面板里改。配置里一个这样的键都没有时什么都不做。步骤见 [部署：升级](deployment.md#备份迁移与升级)。
 
 ## model_profiles
 
@@ -113,11 +129,11 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 
 ## 人设模板
 
-人设模板只存在数据库里，在 Web 管理面板的“人设模板”页里新建、修改和删除（见 [Web 管理面板：人设模板和外观参考图](panel.md#人设模板和外观参考图)），改动立即生效，重启后还在。机器人通过 `bots[].persona_template` 引用模板，面板 bot 在面板里选。配置文件不再定义模板。使用方法见 [使用指南：人设模板](usage.md#人设模板)。
+人设模板只存在数据库里，在 Web 管理面板的“人设模板”页里新建、修改和删除（见 [Web 管理面板：人设模板和外观参考图](panel.md#人设模板和外观参考图)），改动立即生效，重启后还在。机器人按会话类型引用模板：QQ、Telegram 机器人有私聊默认模板和群聊默认模板两项设置（见 [bots](#bots)），面板 bot 只有私聊，用它的一个模板。配置文件不再定义模板。使用方法见 [使用指南：人设模板](usage.md#人设模板)。
 
 - **`default`**：数据库里没有 `default` 时，用程序内置的默认人设（下面的 JSON）。在面板里保存 `default` 后用保存的版本，“恢复为内置默认”删掉保存的版本、回到内置的。`default` 不能删除。
 - **名字**：新模板的名字只能是 1–32 个小写字母、数字、`-` 或 `_`，也不能是 `export` 或 `import`（留给面板的导出和导入），同名就是修改。从旧配置文件导入的模板保留原来的名字。
-- **删除**：除 `default` 外任何模板都能删，模板和 bot 分开管理。还有 bot（配置 bot 或面板 bot）用它作默认模板时，删除前的确认提示列出这些 bot；删除后它们改用 `default`，面板上标出“人设模板“x”已不存在，暂用 default”，重启后也一样，直到给它们另选模板（配置 bot 改 `persona_template`）或重新建一个同名模板。
+- **删除**：除 `default` 外任何模板都能删，模板和 bot 分开管理。还有 bot（配置 bot 或面板 bot）用它作默认模板时，删除前的确认提示列出这些 bot；删除后它们改用 `default`，面板上标出“人设模板“x”已不存在，暂用 default”，重启后也一样，直到给它们另选模板或重新建一个同名模板。
 - **已有会话不变**：会话第一次回复时把模板复制成自己的人设，之后各自独立。模板改了不影响已经在用它的会话，要更新得在会话里重新套用模板。
 
 内置的默认人设（面板和 `PUT …/persona` 用的都是这个 JSON 格式）：
@@ -149,7 +165,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `behavior.allow_memes` | 布尔 | 是否接梗 |
 | `behavior.ask_followup_questions` | `never` \| `occasionally` \| `often` | 追问频率 |
 | `behavior.technical_explanations` | `brief` \| `clear_and_practical` \| `detailed` | 技术解释的详细程度 |
-| `character_name` | ≤20 字，单行 | 角色名。设置后就是机器人在使用这个人格的会话里的名字：system prompt 的“你是{名字}”、上下文里的“你（名字）”、回复的回声清洗和 `/help` 都改用它；不设时用 `bots[].name` |
+| `character_name` | ≤20 字，单行 | 角色名。设置后就是机器人在使用这个人格的会话里的名字：system prompt 的“你是{名字}”、上下文里的“你（名字）”、回复的回声清洗和 `/help` 都改用它；不设时用 bot 的显示名 |
 | `gender` | `female` \| `male` | 角色性别。设置后渲染为一行“性别：女。”或“性别：男。”，位于“角色设定”之后、“外貌”之前，帮模型分清恋人、夫妻、亲属这类关系词的方向；不设时不写这一行 |
 | `description` | ≤2000 字 | 角色设定，渲染为“角色设定：”一段 |
 | `appearance` | ≤800 字 | 外貌描述，渲染为“外貌：”一段，位于“角色设定”之后、“说话方式”之前 |
@@ -408,7 +424,7 @@ panel:
 | `adapters.telegram.poll_timeout` | 50s | `getUpdates` 长轮询时长，1s–60s，按整秒计 |
 | `adapters.telegram.core_url` | 必填 | 核心的地址，`http://` 或 `https://` |
 | `adapters.telegram.core_token` | 必填 | 调用核心 API 的令牌，必须绑定 `bot_instance_id` 指定的机器人实例，否则适配器启动时报错退出 |
-| `adapters.telegram.bot_instance_id` | 必填 | 对应的机器人实例，该实例的 `platform` 为 `telegram`，`platform_self_id` 填机器人的数字 ID（token 冒号前的部分），`admins` 填 Telegram 用户 ID |
+| `adapters.telegram.bot_instance_id` | 必填 | 对应的机器人实例，该实例的 `platform` 为 `telegram`，`platform_self_id` 填机器人的数字 ID（token 冒号前的部分）；管理员（Telegram 用户 ID）在面板里设置 |
 | `adapters.telegram.state_dir` | `storage.data_dir` | 去重记录 `telegram-dedup.log` 所在目录，相对路径按配置文件目录解析 |
 
 `adapter telegram` 只校验上表的字段和 `observability`，出错时退出码为 78；启动后 Telegram 拒绝 bot token、核心拒绝 `core_token` 或令牌属于别的机器人实例时，同样以 78 退出。示例配置为它用到这些变量：
@@ -418,9 +434,6 @@ panel:
 | `CONLOOM_TG_BOT_TOKEN` | 机器人 token |
 | `CONLOOM_TG_ADAPTER_TOKEN` | Telegram 适配器调用核心 API 的令牌（随机长字符串，与 NapCat 的不同） |
 | `CONLOOM_TG_BOT_ID` | 机器人的数字 ID |
-| `CONLOOM_TG_ADMIN_ID` | 管理员的 Telegram 用户 ID |
-| `CONLOOM_TG_GROUP_ID` | 开启的 Telegram 群 ID（负数），写进 `bot_tg` 的 `enabled_conversations` |
-| `CONLOOM_TG_FRIEND_ID` | `private_chat: allowlist` 下允许私聊的一个用户 ID |
 
 ## observability
 

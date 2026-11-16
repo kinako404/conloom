@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -94,16 +95,18 @@ type App struct {
 }
 
 // New loads the skills, opens the database in the configured data directory
-// (creating the directory if needed), registers the configured bots, migrates
-// the persona templates of an old config file into the database once (see
-// migrateLegacyTemplates), merges the memory older versions kept per panel
-// chat into the bots' shared scopes once (migratePanelMemory), loads the
-// persona templates and wires every component to one bot directory, which
-// also holds the panel bots stored in the database, with the web panel when
-// the config has a panel section. An
-// invalid skill configuration is an error wrapping skills.ErrInvalid, and
-// persona_templates still in the config file after they were migrated one
-// wrapping store.ErrAlreadyMigrated. The caller must Close the App.
+// (creating the directory if needed), migrates the persona templates of an
+// old config file into the database once (see migrateLegacyTemplates),
+// merges the memory older versions kept per panel chat into the bots' shared
+// scopes once (migratePanelMemory), loads the persona templates, migrates the
+// bot settings of an old config file into the database once
+// (migrateBotSettings), wires every component to one bot directory, which
+// holds the config bots with their stored settings and the panel bots stored
+// in the database, registers the config bots and adds the web panel when the
+// config has a panel section. An invalid skill configuration is an error
+// wrapping skills.ErrInvalid, and persona_templates or bot settings still in
+// the config file after they were migrated one wrapping
+// store.ErrAlreadyMigrated. The caller must Close the App.
 func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -131,16 +134,6 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: open database %s: %w", cfg.DBPath(), err)
 	}
-	for _, b := range cfg.Bots {
-		if ids := b.UnusedPrivateConversations(); len(ids) > 0 {
-			logger.Warn("private enabled_conversations take effect only when private_chat is allowlist; ignoring them",
-				"bot", b.ID, "private_chat", b.PrivateChat, "platform_ids", ids)
-		}
-		if err := st.UpsertBotInstance(ctx, b.ID, b.Platform, b.Name); err != nil {
-			_ = st.Close()
-			return nil, fmt.Errorf("app: register bot %s: %w", b.ID, err)
-		}
-	}
 
 	var profiles []*router.Profile
 	limits := map[string]admission.Limits{}
@@ -150,7 +143,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		limits[name] = admission.Limits{MaxConcurrency: p.Runtime.MaxConcurrency, TokenBudget: p.Runtime.GPUKVCacheTokens}
 	}
 
-	bots := botdir.New(cfg.Bots)
+	// Until PanelBots().Load below publishes their stored settings, the config
+	// bots have the defaults.
+	bots := botdir.New(botdir.WithDefaults(cfg.Bots))
 	metrics := obs.NewMetrics(opts.Registry)
 	loc := location(cfg.Server.Timezone)
 	rt := router.New(profiles, router.BreakerConfig{}, now)
@@ -231,6 +226,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	if err != nil {
 		return fail(err)
 	}
+	if err := migrateBotSettings(ctx, st, cfg.Bots, now().UTC(), loc, logger); err != nil {
+		return fail(err)
+	}
 	orch, err := core.New(core.Deps{
 		Store:         st,
 		Router:        rt,
@@ -253,6 +251,10 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		return fail(err)
 	}
 	if err := orch.PanelBots().Load(ctx); err != nil {
+		orch.Close()
+		return fail(err)
+	}
+	if err := registerConfigBots(ctx, st, bots, logger); err != nil {
 		orch.Close()
 		return fail(err)
 	}
@@ -328,14 +330,8 @@ func migrateLegacyTemplates(ctx context.Context, st *sqlite.DB, legacy map[strin
 	}
 	imported, skipped, err := st.MigrateConfigTemplates(ctx, rows, now)
 	if errors.Is(err, store.ErrAlreadyMigrated) {
-		when := "已经"
-		if v, ok, _ := st.GetMeta(ctx, store.MetaConfigTemplatesMigrated); ok {
-			if at, perr := time.Parse(time.RFC3339Nano, v); perr == nil {
-				when = "已在 " + at.In(loc).Format("2006-01-02 15:04:05") + " "
-			}
-		}
 		return fmt.Errorf("配置文件里的 persona_templates %s导入数据库，人设模板现在只在 Web 管理面板里管理；"+
-			"请删除配置文件里整段 persona_templates 后再启动（%w）", when, err)
+			"请删除配置文件里整段 persona_templates 后再启动（%w）", migratedWhen(ctx, st, store.MetaConfigTemplatesMigrated, loc), err)
 	}
 	if err != nil {
 		return fmt.Errorf("migrate persona templates: %w", err)
@@ -360,6 +356,92 @@ func migrateLegacyTemplates(ctx context.Context, st *sqlite.DB, legacy map[strin
 	logger.Warn("the config file's persona templates are now in the database and managed in the web panel; "+
 		"remove persona_templates from the config file, or the next start fails",
 		"imported", len(imported), "skipped", len(skipped))
+	return nil
+}
+
+// migratedWhen says in Chinese when the migration recorded under the
+// app_meta key was done, for a sentence "… <when>导入数据库": "已在 <local
+// time> ", or "已经" when the time cannot be read.
+func migratedWhen(ctx context.Context, st *sqlite.DB, key string, loc *time.Location) string {
+	if v, ok, _ := st.GetMeta(ctx, key); ok {
+		if at, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			return "已在 " + at.In(loc).Format("2006-01-02 15:04:05") + " "
+		}
+	}
+	return "已经"
+}
+
+// migrateBotSettings migrates the settings keys an old config file still
+// has in bots[] (config.BotConfig.Legacy) into the database on the first
+// start with any of them (see sqlite.DB.MigrateConfigBotSettings): every
+// config bot without stored settings gets the ones the old version ran it
+// with (config.BotConfig.WithLegacySettings), and a bot with stored settings
+// keeps them. It logs each bot, audits the migration as bot.settings.migrate
+// and warns that the keys must be removed from the config file. Without such
+// keys it does nothing, and config bots without stored settings take the
+// defaults. Once the settings were migrated, such keys are an error in
+// Chinese naming them and wrapping store.ErrAlreadyMigrated, which the
+// deployer fixes in the config file.
+func migrateBotSettings(ctx context.Context, st *sqlite.DB, bots []config.BotConfig, now time.Time,
+	loc *time.Location, logger *slog.Logger) error {
+	var withKeys []string
+	for i, b := range bots {
+		if keys := b.Legacy.Keys(); len(keys) > 0 {
+			withKeys = append(withKeys, fmt.Sprintf("bots[%d]（%s）的 %s", i, b.ID, strings.Join(keys, "、")))
+		}
+	}
+	if len(withKeys) == 0 {
+		return nil
+	}
+	migrated, err := st.MigrateConfigBotSettings(ctx, botdir.LegacySettings(bots), now)
+	if errors.Is(err, store.ErrAlreadyMigrated) {
+		return fmt.Errorf("配置文件里 bot 的设置%s导入数据库，显示名、管理员、私聊开放范围、启用的群、默认人设模板和技能现在只在 "+
+			"Web 管理面板里改；请删除配置文件里 %s，bots[] 每项只留 id、platform、platform_self_id，然后再启动（%w）",
+			migratedWhen(ctx, st, store.MetaConfigBotSettingsMigrated, loc), strings.Join(withKeys, "，"), err)
+	}
+	if err != nil {
+		return fmt.Errorf("migrate bot settings: %w", err)
+	}
+	skipped := []string{}
+	for _, b := range bots {
+		if slices.Contains(migrated, b.ID) {
+			logger.Info("bot settings imported from the config file", "bot", b.ID)
+		} else {
+			skipped = append(skipped, b.ID)
+			logger.Info("bot settings already in the database; keeping them, not the config file's", "bot", b.ID)
+		}
+	}
+	detail, err := json.Marshal(struct {
+		Migrated []string `json:"migrated"`
+		Skipped  []string `json:"skipped"`
+	}{append([]string{}, migrated...), skipped})
+	if err == nil {
+		err = st.InsertAudit(ctx, store.AuditEvent{ID: ids.New("aud"), Kind: "bot.settings.migrate", Actor: "system",
+			Detail: string(detail), CreatedAt: now})
+	}
+	if err != nil {
+		logger.Error("bot settings migrated but audit failed", "error", err)
+	}
+	logger.Warn("the config file's bot settings are now in the database and edited in the web panel; remove name, admins, "+
+		"private_chat, enabled_conversations, persona_template and skills from bots[] in the config file, or the next start fails",
+		"migrated", len(migrated), "skipped", len(skipped))
+	return nil
+}
+
+// registerConfigBots registers the config bots of bots, as they take effect,
+// as bot instances, warning about private enabled conversations that do not
+// take effect.
+func registerConfigBots(ctx context.Context, st *sqlite.DB, bots *botdir.Directory, logger *slog.Logger) error {
+	for _, configured := range bots.ConfigBots() {
+		b, _ := bots.Bot(configured.ID)
+		if ids := b.UnusedPrivateConversations(); len(ids) > 0 {
+			logger.Warn("the private allowlist takes effect only when private_chat is allowlist; ignoring it",
+				"bot", b.ID, "private_chat", b.PrivateChat, "platform_ids", ids)
+		}
+		if err := st.UpsertBotInstance(ctx, b.ID, b.Platform, b.Name); err != nil {
+			return fmt.Errorf("register bot %s: %w", b.ID, err)
+		}
+	}
 	return nil
 }
 

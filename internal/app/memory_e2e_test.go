@@ -47,8 +47,8 @@ var memoryConfigTemplate = strings.NewReplacer(
 		"    privacy: {data_location: remote, allow_sensitive_content: true}\n",
 ).Replace(configTemplate)
 
-// memoryTestConfig writes memoryConfigTemplate for a fake model at modelURL
-// and loads it.
+// memoryTestConfig writes memoryConfigTemplate for a fake model at modelURL,
+// loads it and stores the settings of its bot, as testConfig does.
 func memoryTestConfig(t *testing.T, modelURL string) *config.Config {
 	t.Helper()
 	dir := t.TempDir()
@@ -76,6 +76,7 @@ func memoryTestConfig(t *testing.T, modelURL string) *config.Config {
 	if err := cfg.ValidateServe(); err != nil {
 		t.Fatalf("ValidateServe: %v", err)
 	}
+	seedBotSettings(t, cfg, nil)
 	return cfg
 }
 

@@ -223,7 +223,7 @@ func searchEnv(t *testing.T, embed *fakeEmbeddings, configure ...func(*config.Co
 	private.Memory.Enabled, private.Memory.Backlog, private.Memory.ConsolidateMin = true, 0, 1000
 	private.Reply.UserRateLimitPerMinute = 60
 	cfg.DefaultPrivatePolicy = &private
-	cfg.Bots[0].Skills = []string{"memory"}
+	seedBotSettings(t, cfg, func(s *store.BotSettings) { s.Skills = []string{"memory"} })
 	if embed != nil {
 		cfg.Embedding = &config.EmbeddingConfig{Endpoint: embed.srv.URL + "/v1", Model: "bge-m3",
 			Timeout: conloomapi.Duration{Duration: 5 * time.Second}, BatchSize: 16, MinScore: 0.48}

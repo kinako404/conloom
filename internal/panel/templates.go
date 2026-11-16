@@ -48,11 +48,15 @@ type templateView struct {
 	Persona conloomapi.PersonaDoc `json:"persona"`
 }
 
-// templateUsers maps each persona template to the bots whose template it is.
+// templateUsers maps each persona template to the bots whose private or
+// group template it is, each bot once per template.
 func (s *Server) templateUsers() map[string][]templateUser {
 	out := map[string][]templateUser{}
 	for _, b := range s.d.Bots.All() {
-		out[b.PersonaTemplate] = append(out[b.PersonaTemplate], s.templateUser(b))
+		out[b.PrivateTemplate] = append(out[b.PrivateTemplate], s.templateUser(b))
+		if b.GroupTemplate != b.PrivateTemplate {
+			out[b.GroupTemplate] = append(out[b.GroupTemplate], s.templateUser(b))
+		}
 	}
 	return out
 }

@@ -165,7 +165,7 @@ func TestPanelBots_CreateValidates(t *testing.T) {
 	if !panelBotIDPattern.MatchString(bot.ID) {
 		t.Errorf("ID = %q, want panel- and 8 lowercase letters or digits", bot.ID)
 	}
-	if bot.Name != "小红" || bot.Platform != store.PlatformPanel || bot.PrivateChat != "admins" || bot.PersonaTemplate != "gentle" ||
+	if bot.Name != "小红" || bot.Platform != store.PlatformPanel || bot.PrivateChat != "admins" || bot.PrivateTemplate != "gentle" ||
 		!slices.Equal(bot.Skills, []string{"time", "status"}) || bot.PlatformSelfID != "" || len(bot.Admins) != 0 ||
 		len(bot.EnabledConversations) != 0 {
 		t.Errorf("created bot = %+v", bot)
@@ -187,7 +187,7 @@ func TestPanelBots_CreateValidates(t *testing.T) {
 	}
 
 	plain := env.createPanelBot(t, PanelBotInput{Name: strings.Repeat("名", 32)})
-	if plain.PersonaTemplate != "default" || len(plain.Skills) != 0 {
+	if plain.PrivateTemplate != "default" || len(plain.Skills) != 0 {
 		t.Errorf("bot without template or skills = %+v, want default template and no skills", plain)
 	}
 	if plain.ID == bot.ID {
@@ -343,7 +343,7 @@ func TestPanelBots_OnlineTemplate(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	want := []string{"人设模板“online_cat”已不存在，暂用 default"}
-	if b, _ := env.o.bots.Bot(bot.ID); b.PersonaTemplate != "default" || !slices.Equal(env.o.bots.Problems(bot.ID), want) {
+	if b, _ := env.o.bots.Bot(bot.ID); b.PrivateTemplate != "default" || !slices.Equal(env.o.bots.Problems(bot.ID), want) {
 		t.Errorf("bot after its template was deleted = %+v, problems %q; want default and %q", b, env.o.bots.Problems(bot.ID), want)
 	}
 
@@ -378,7 +378,7 @@ func TestPanelBots_TemplateDeletedBeforeReloadStillReplies(t *testing.T) {
 	}
 	// The bots are not published again, as while the delete's reload is
 	// pending or after it failed: the directory still names the template.
-	if b, _ := env.o.bots.Bot(bot.ID); b.PersonaTemplate != "online_cat" {
+	if b, _ := env.o.bots.Bot(bot.ID); b.PrivateTemplate != "online_cat" {
 		t.Fatalf("bot before the reload = %+v, want it still on online_cat", b)
 	}
 
@@ -420,7 +420,7 @@ func TestPanelBots_UpdateTakesEffectNextReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if updated.ID != bot.ID || updated.Name != "小蓝" || updated.PersonaTemplate != "gentle" || !slices.Equal(updated.Skills, []string{"time"}) ||
+	if updated.ID != bot.ID || updated.Name != "小蓝" || updated.PrivateTemplate != "gentle" || !slices.Equal(updated.Skills, []string{"time"}) ||
 		updated.Platform != store.PlatformPanel {
 		t.Errorf("updated bot = %+v", updated)
 	}
@@ -752,7 +752,7 @@ func TestPanelBots_LoadMarksProblems(t *testing.T) {
 		t.Errorf("directory = %v, want the config bot, then the panel bots by creation", ids)
 	}
 	broken, _ := env.o.bots.Bot("panel-aaaa0001")
-	if broken.Name != "小红" || broken.Platform != store.PlatformPanel || broken.PersonaTemplate != "default" ||
+	if broken.Name != "小红" || broken.Platform != store.PlatformPanel || broken.PrivateTemplate != "default" ||
 		!slices.Equal(broken.Skills, []string{"time"}) {
 		t.Errorf("bot with stale settings = %+v, want default template and only the time skill", broken)
 	}
@@ -766,7 +766,7 @@ func TestPanelBots_LoadMarksProblems(t *testing.T) {
 		}
 	}
 	fine, _ := env.o.bots.Bot("panel-aaaa0002")
-	if fine.PersonaTemplate != "gentle" || !slices.Equal(fine.Skills, []string{"status"}) || env.o.bots.Problems("panel-aaaa0002") != nil {
+	if fine.PrivateTemplate != "gentle" || !slices.Equal(fine.Skills, []string{"status"}) || env.o.bots.Problems("panel-aaaa0002") != nil {
 		t.Errorf("bot with valid settings = %+v, problems %q", fine, env.o.bots.Problems("panel-aaaa0002"))
 	}
 	logs := env.logs.String()
@@ -793,20 +793,20 @@ func TestPanelBots_LoadMarksProblems(t *testing.T) {
 	if p := env.o.bots.Problems("panel-aaaa0001"); p != nil {
 		t.Errorf("problems after fixing the settings = %q", p)
 	}
-	if b, _ := env.o.bots.Bot("panel-aaaa0002"); b.Name != "小绿" || b.PersonaTemplate != "gentle" {
+	if b, _ := env.o.bots.Bot("panel-aaaa0002"); b.Name != "小绿" || b.PrivateTemplate != "gentle" {
 		t.Errorf("other bot after an update = %+v", b)
 	}
 }
 
 func TestPanelBots_LoadMarksConfigBotProblems(t *testing.T) {
-	env := panelBotEnv(t, testOpts{configure: func(c *config.Config) { c.Bots[0].PersonaTemplate = "night-owl" }})
+	env := panelBotEnv(t, testOpts{configure: func(c *config.Config) { c.Bots[0].PrivateTemplate, c.Bots[0].GroupTemplate = "night-owl", "night-owl" }})
 	ctx := context.Background()
 	if err := env.o.PanelBots().Load(ctx); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	bot, _ := env.o.bots.Bot(testBot)
 	want := []string{"人设模板“night-owl”已不存在，暂用 default"}
-	if bot.PersonaTemplate != "default" || !slices.Equal(env.o.bots.Problems(testBot), want) {
+	if bot.PrivateTemplate != "default" || !slices.Equal(env.o.bots.Problems(testBot), want) {
 		t.Fatalf("config bot with a missing template = %+v, problems %q; want default and %q", bot, env.o.bots.Problems(testBot), want)
 	}
 	if !slices.ContainsFunc(strings.Split(env.logs.String(), "\n"), func(l string) bool {
@@ -826,7 +826,7 @@ func TestPanelBots_LoadMarksConfigBotProblems(t *testing.T) {
 	if err := env.o.PanelBots().Load(ctx); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if bot, _ := env.o.bots.Bot(testBot); bot.PersonaTemplate != "night-owl" || env.o.bots.Problems(testBot) != nil {
+	if bot, _ := env.o.bots.Bot(testBot); bot.PrivateTemplate != "night-owl" || env.o.bots.Problems(testBot) != nil {
 		t.Fatalf("config bot after its template was created = %+v, problems %q; want night-owl without problems", bot, env.o.bots.Problems(testBot))
 	}
 	users, err := env.o.personas.DeleteTemplate(ctx, "night-owl")
@@ -836,13 +836,13 @@ func TestPanelBots_LoadMarksConfigBotProblems(t *testing.T) {
 	if err := env.o.PanelBots().Load(ctx); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if bot, _ := env.o.bots.Bot(testBot); bot.PersonaTemplate != "default" || !slices.Equal(env.o.bots.Problems(testBot), want) {
+	if bot, _ := env.o.bots.Bot(testBot); bot.PrivateTemplate != "default" || !slices.Equal(env.o.bots.Problems(testBot), want) {
 		t.Errorf("config bot after its template was deleted = %+v, problems %q; want default and %q", bot, env.o.bots.Problems(testBot), want)
 	}
 }
 
 func TestPanelBots_ImportClearsTemplateProblems(t *testing.T) {
-	env := panelBotEnv(t, testOpts{configure: func(c *config.Config) { c.Bots[0].PersonaTemplate = "night-owl" }})
+	env := panelBotEnv(t, testOpts{configure: func(c *config.Config) { c.Bots[0].PrivateTemplate, c.Bots[0].GroupTemplate = "night-owl", "night-owl" }})
 	ctx := context.Background()
 	svc := env.o.PanelBots()
 	cat := conloomapi.DefaultPersona()
@@ -863,7 +863,7 @@ func TestPanelBots_ImportClearsTemplateProblems(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	for _, id := range []string{testBot, bot.ID} {
-		if b, _ := env.o.bots.Bot(id); b.PersonaTemplate != "default" || len(env.o.bots.Problems(id)) != 1 {
+		if b, _ := env.o.bots.Bot(id); b.PrivateTemplate != "default" || len(env.o.bots.Problems(id)) != 1 {
 			t.Fatalf("bot %s with a missing template = %+v, problems %q; want default with a problem", id, b, env.o.bots.Problems(id))
 		}
 	}
@@ -876,7 +876,7 @@ func TestPanelBots_ImportClearsTemplateProblems(t *testing.T) {
 		t.Fatalf("Import: %v", err)
 	}
 	for id, want := range map[string]string{testBot: "night-owl", bot.ID: "online_cat"} {
-		if b, _ := env.o.bots.Bot(id); b.PersonaTemplate != want || env.o.bots.Problems(id) != nil {
+		if b, _ := env.o.bots.Bot(id); b.PrivateTemplate != want || env.o.bots.Problems(id) != nil {
 			t.Errorf("bot %s after its template was imported = %+v, problems %q; want %s without problems", id, b, env.o.bots.Problems(id), want)
 		}
 	}

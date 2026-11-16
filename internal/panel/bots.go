@@ -36,15 +36,20 @@ const (
 	sourcePanel  = "panel"
 )
 
-// botSummary is a bot as the bot management lists it. PersonaTemplate and
-// Skills are as they take effect; Problems notes what of a panel bot's stored
-// settings no longer applies. Chats counts the bot's private chats and
-// LastMessageAt is the time of their newest message, null without one.
+// botSummary is a bot as the bot management lists it. The persona templates
+// and Skills are as they take effect: PrivateTemplate and GroupTemplate those
+// the bot's new private chats and new groups start from, and PersonaTemplate
+// the private one, which is a panel bot's only one (it sets both). Problems
+// notes what of the bot's stored settings no longer applies. Chats counts the
+// bot's private chats and LastMessageAt is the time of their newest message,
+// null without one.
 type botSummary struct {
 	ID              string     `json:"id"`
 	Name            string     `json:"name"`
 	Source          string     `json:"source"`
 	PersonaTemplate string     `json:"persona_template"`
+	PrivateTemplate string     `json:"private_template"`
+	GroupTemplate   string     `json:"group_template"`
 	Skills          []string   `json:"skills"`
 	Problems        []string   `json:"problems"`
 	Chats           int        `json:"chats"`
@@ -147,7 +152,8 @@ func chatActivity(st store.ConversationStats) time.Time {
 // describeBot describes b, whose private chats are chats.
 func (s *Server) describeBot(b config.BotConfig, chats []store.ConversationStats) botSummary {
 	v := botSummary{
-		ID: b.ID, Name: b.Name, Source: s.botSource(b.ID), PersonaTemplate: b.PersonaTemplate,
+		ID: b.ID, Name: b.Name, Source: s.botSource(b.ID), PersonaTemplate: b.PrivateTemplate,
+		PrivateTemplate: b.PrivateTemplate, GroupTemplate: b.GroupTemplate,
 		Skills: strs(b.Skills), Problems: strs(s.d.Bots.Problems(b.ID)), Chats: len(chats),
 	}
 	var last time.Time

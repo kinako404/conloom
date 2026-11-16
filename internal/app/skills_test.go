@@ -93,7 +93,7 @@ func TestPersonaSource(t *testing.T) {
 	if err := personas.LoadTemplates(ctx); err != nil {
 		t.Fatal(err)
 	}
-	bots := botdir.New([]config.BotConfig{{ID: "qq-main", PersonaTemplate: "lighthouse"}})
+	bots := botdir.New([]config.BotConfig{{ID: "qq-main", PrivateTemplate: "lighthouse", GroupTemplate: "default"}})
 	src := personaSource{bots: bots, personas: personas}
 	convKey := store.ConversationKey("qq-main", "qq", conloomapi.ConvPrivate, "private_20001")
 	doc, err := src.Persona(ctx, "qq-main", convKey)

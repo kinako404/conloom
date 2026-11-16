@@ -132,9 +132,7 @@ func TestConfigView_NoSecrets(t *testing.T) {
 		{[]any{"adapters", "telegram", "bot_instance_id"}, "tg-main"},
 		{[]any{"server", "listen"}, "127.0.0.1:8787"},
 		{[]any{"storage", "data_dir"}, "/var/lib/conloom"},
-		{[]any{"bots", 0, "id"}, "qq-main"},
-		{[]any{"bots", 0, "admins", 0}, "20001"},
-		{[]any{"bots", 0, "enabled_conversations", 0, "platform_id"}, "10001"},
+		{[]any{"bots", 0}, map[string]any{"id": "qq-main", "platform": "qq", "platform_self_id": ""}},
 		{[]any{"panel", "users", 1, "name"}, "viewer"},
 		{[]any{"panel", "session_ttl"}, "168h0m0s"},
 		{[]any{"panel", "listen"}, "0.0.0.0:8788"},
@@ -218,14 +216,16 @@ func TestConfigView_PanelBotsMarked(t *testing.T) {
 func TestConfigView_ConfigBotsAsWritten(t *testing.T) {
 	h := newOverviewHarness(t, func(d *Deps) {
 		d.Bots = botdir.New([]config.BotConfig{
-			{ID: "qq-main", Platform: "qq", Name: "小织", PersonaTemplate: "lighthouse"},
-			{ID: "tg-main", Platform: "telegram", Name: "织语", PersonaTemplate: "default"},
+			{ID: "qq-main", Platform: "qq", PlatformSelfID: "30001", Name: "小织", Admins: []string{"20001"},
+				PrivateTemplate: "lighthouse", GroupTemplate: "lighthouse"},
+			{ID: "tg-main", Platform: "telegram", PlatformSelfID: "30002", Name: "织语", PrivateTemplate: "default", GroupTemplate: "default"},
 		})
 	})
 	// lighthouse is gone, so qq-main takes effect with default; so does the
 	// panel bot, whose template is gone too.
 	h.srv.d.Bots.SetConfig([]botdir.Entry{{
-		Bot:      config.BotConfig{ID: "qq-main", Platform: "qq", Name: "小织", PersonaTemplate: "default"},
+		Bot: config.BotConfig{ID: "qq-main", Platform: "qq", PlatformSelfID: "30001", Name: "小织", Admins: []string{"20001"},
+			PrivateTemplate: "default", GroupTemplate: "default"},
 		Problems: []string{"人设模板“lighthouse”已不存在，暂用 default"},
 	}})
 	h.srv.d.Bots.SetPanel([]botdir.Entry{{
@@ -239,12 +239,19 @@ func TestConfigView_ConfigBotsAsWritten(t *testing.T) {
 		} `json:"config"`
 	}
 	h.getJSON("/panel/api/config", &resp)
-	var got []string
-	for _, b := range resp.Config.Bots {
-		got = append(got, b["id"].(string)+":"+b["persona_template"].(string))
+	if len(resp.Config.Bots) != 3 {
+		t.Fatalf("bots = %v, want the two config bots and the panel bot", resp.Config.Bots)
 	}
-	if want := []string{"qq-main:lighthouse", "tg-main:default", "panel-a1b2c3d4:default"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("bots = %v, want %v: config bots as in the file, panel bots as they take effect", got, want)
+	for i, want := range []map[string]any{
+		{"id": "qq-main", "platform": "qq", "platform_self_id": "30001"},
+		{"id": "tg-main", "platform": "telegram", "platform_self_id": "30002"},
+	} {
+		if got := resp.Config.Bots[i]; !reflect.DeepEqual(got, want) {
+			t.Errorf("config bot %d = %v, want %v: only the identity the file has, the settings are in the database", i, got, want)
+		}
+	}
+	if got := resp.Config.Bots[2]["persona_template"]; got != "default" {
+		t.Errorf("panel bot's persona_template = %v, want default, as it takes effect", got)
 	}
 }
 

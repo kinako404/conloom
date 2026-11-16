@@ -34,6 +34,20 @@ func TestMemoryScopeKey(t *testing.T) {
 	}
 }
 
+func TestConversationType(t *testing.T) {
+	for key, want := range map[string]string{
+		testConvKey:    conloomapi.ConvGroup,
+		testPrivateKey: conloomapi.ConvPrivate,
+		store.ConversationKey(testBot, store.PlatformPanel, conloomapi.ConvPrivate, "panel_a:b"): conloomapi.ConvPrivate,
+		"bot_test:qq:group": "",
+		"":                  "",
+	} {
+		if got := store.ConversationType(key); got != want {
+			t.Errorf("ConversationType(%q) = %q, want %q", key, got, want)
+		}
+	}
+}
+
 func TestScopeQueries(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()

@@ -41,40 +41,20 @@ api_tokens:
       - policy:write
       - admin:read
 
-# Bot 实例：平台、显示名、平台自身 ID、管理员、启用的会话与私聊策略。
+# Bot 实例：这里只写身份——ID、平台和平台自身 ID（Bot 自己在平台上的账号）。
+# 显示名、管理员、私聊开放范围与白名单、启用的群、私聊和群聊的默认人设模板、技能
+# 存在数据库里，在 Web 管理面板的聊天页编辑（见 docs/panel.md）。新加的 bot 先用默认值：
+# 显示名取 ID，没有管理员，私聊只对管理员开放，没有启用的群，模板都用 default，不开技能。
 bots:
   - id: bot_main
     platform: qq
-    name: 织语
     platform_self_id: ${CONLOOM_BOT_SELF_ID}
-    # 管理员（可使用 /pause 等命令）；每项与群号均不能为空，变量未设置时启动报错。
-    admins: ["${CONLOOM_ADMIN_QQ}"]
-    # 只在这些会话中工作；未列出的群消息会被忽略。type 为 group 或 private。
-    enabled_conversations:
-      - {type: group, platform_id: "${CONLOOM_GROUP_ID}"}
-    # 私聊策略：admins（仅管理员）| allowlist（管理员，以及上面以
-    # {type: private, platform_id: "<用户 ID>"} 列出的人）| all（所有人）| off（关闭）。
-    # private 项只在 allowlist 下生效。
-    private_chat: admins
-    # 新会话的初始人设模板。模板存在数据库里，在 Web 管理面板里管理（见 docs/panel.md）；
-    # 没有保存过 default 时用内置的默认人设。模板不存在时启动照常，改用 default 并在面板上提示。
-    persona_template: default
-    # 启用的技能（模型在私聊和直接对话里可调用的内置工具，见 docs/skills.md）；省略时不带任何工具。
-    # memory 的 remember、recall、get_affinity 只在会话开启了记忆时生效；time 的 now 随时可用；
-    # status（set_status：记下自己在做什么、到点回来说话）和 buff（adjust_buff、add_buff、remove_buff：隐藏的状态条和效果）只在私聊里生效。
-    # skills: [memory, time, status, buff]
-  # Telegram 机器人：platform_self_id 是 Bot 的数字 ID（token 冒号前的部分），admins 填 Telegram 用户 ID；
-  # group 项是开启的群（Telegram 的群 ID 是负数，要加引号），private 项是允许私聊的人（用户 ID），
-  # 只在 private_chat: allowlist 时生效；allowlist 表示管理员和列出的人可以私聊，想对所有人开放改成 all。
+  # Telegram 机器人：platform_self_id 是 Bot 的数字 ID（token 冒号前的部分）。
+  # 管理员、启用的群（Telegram 的群 ID 是负数）和私聊白名单同样在面板里设置。
   # ---- Telegram 示例开始：使用 Telegram 时取消注释下面几行，并在 .env 里设置 CONLOOM_TG_* 变量（见 docs/telegram.md）----
   # - id: bot_tg
   #   platform: telegram
   #   platform_self_id: ${CONLOOM_TG_BOT_ID}
-  #   admins: ["${CONLOOM_TG_ADMIN_ID}"]
-  #   enabled_conversations:
-  #     - {type: group, platform_id: "${CONLOOM_TG_GROUP_ID}"}
-  #     - {type: private, platform_id: "${CONLOOM_TG_FRIEND_ID}"}
-  #   private_chat: allowlist
   # ---- Telegram 示例结束 ----
 
 # 模型 Profile：按角色配置，换模型只需改这里。short_context 为必需项。

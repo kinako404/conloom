@@ -27,7 +27,7 @@ go install github.com/kinako404/conloom/cmd/conloom@latest
 
 ## Linux（systemd）
 
-仓库的 [`deploy/systemd/`](../deploy/systemd) 提供三个单元：`conloom.service`（核心），以及 `conloom-napcat.service` 和 `conloom-telegram.service`（适配器，依赖核心，按需安装）。它们都以 `conloom` 用户运行、异常退出 3 秒后自动重启，停止时最多等待 90 秒（适配器会等正在发送的消息拿到结果再退出）。退出码为 78 时不重启（`RestartPreventExitStatus=78`）：78 是配置错误（sysexits 的 `EX_CONFIG`），比如配置文件读不了、校验失败、Telegram 的 token 或核心令牌被拒绝、已经迁移到数据库的 `persona_templates` 还留在配置里，重启也没用，`systemctl status` 会显示 `status=78`，改好配置后手动 `systemctl restart`。其他异常退出照常重启，包括 Go 程序 panic（退出码 2，日志里有堆栈）。单元启用了 `ProtectSystem=strict`，只有 `/opt/conloom/data` 可写：该目录必须在启动前存在；如果把 `storage.data_dir` 或适配器的 `state_dir` 改到别处，要同步修改单元里的 `ReadWritePaths`。
+仓库的 [`deploy/systemd/`](../deploy/systemd) 提供三个单元：`conloom.service`（核心），以及 `conloom-napcat.service` 和 `conloom-telegram.service`（适配器，依赖核心，按需安装）。它们都以 `conloom` 用户运行、异常退出 3 秒后自动重启，停止时最多等待 90 秒（适配器会等正在发送的消息拿到结果再退出）。退出码为 78 时不重启（`RestartPreventExitStatus=78`）：78 是配置错误（sysexits 的 `EX_CONFIG`），比如配置文件读不了、校验失败、Telegram 的 token 或核心令牌被拒绝、已经迁移到数据库的 `persona_templates` 或 `bots[]` 的设置键还留在配置里，重启也没用，`systemctl status` 会显示 `status=78`，改好配置后手动 `systemctl restart`。其他异常退出照常重启，包括 Go 程序 panic（退出码 2，日志里有堆栈）。单元启用了 `ProtectSystem=strict`，只有 `/opt/conloom/data` 可写：该目录必须在启动前存在；如果把 `storage.data_dir` 或适配器的 `state_dir` 改到别处，要同步修改单元里的 `ReadWritePaths`。
 
 ```sh
 sudo useradd --system --home-dir /opt/conloom --shell /usr/sbin/nologin conloom
@@ -472,7 +472,7 @@ model_profiles:
 3. 确认面板模板页里模板都在，然后从 `conloom.yaml` 删掉整段 `persona_templates`（先备份这个文件），重启。之后配置里还留着这一段时启动失败，退出码 78（systemd 不会反复重启），报错说明模板已经迁到数据库，请删除配置里的 `persona_templates`。
 4. 模板引用的外观参考图 ID 原样写入；图片不存在时回复照常、不带图，并记一条警告，在面板里重新上传同一张图即可（同一张图得到同一个 ID）。
 
-配置 bot 的 `persona_template` 不再在加载配置时检查模板是否存在（只是不能写成空的）：模板不存在时启动照常，日志有一条警告，运行时改用 `default`，面板的 bot 页标出“人设模板“x”已不存在，暂用 default”；在面板里建出这个模板后说明消失。数据库里没有 `default` 时用程序内置的默认人设。
+配置 bot 的默认模板（当时还是 `persona_template`，现在是面板里的私聊、群聊默认模板）不在加载配置时检查是否存在：模板不存在时启动照常，日志有一条警告，运行时改用 `default`，面板的 bot 页标出“人设模板“x”已不存在，暂用 default”；在面板里建出这个模板后说明消失。数据库里没有 `default` 时用程序内置的默认人设。
 
 **升级到面板聊天共用记忆、去掉面板接管的版本**（迁移 `0016_status_origin.sql`）：
 
@@ -506,6 +506,20 @@ model_profiles:
 - **启动校验**：下面这些配置以前能启动，但之后每次回复都会失败，现在 `serve` 启动时直接报错（退出码 78），升级前先检查：`bots[].id` 和 `bots[].platform` 里不能有 `:`（它是会话键的分隔符）；`model_profiles.*.endpoint` 必须是 `http://` 或 `https://` 开头的完整 URL；每个模型的 `context.reserved_output_tokens` 和 `context.safety_margin_tokens` 不能为负，两者之和必须小于 `context.configured_window`；`runtime.gpu_kv_cache_tokens` 必须是 0（不限）或不小于 `configured_window`；默认策略（`default_group_policy`、`default_private_policy`）的 `context.max_context_tokens` 必须是 0 或大于 `short_context` 的 `reserved_output_tokens + safety_margin_tokens`，通过 API 和面板修改策略时也按这条校验。另外 `panel.users[].name` 首尾不能有空白。
 - **迁移 0018** 只给 `outbox_actions` 加两个索引（按会话找最近一次回复、按过期时间找没送达的动作），不改表结构，启动时自动执行；动作很多的库第一次启动要多花一点时间建索引。旧二进制不认识这个迁移，会照常在升级后的库上运行。
 - **熔断指标**：`conloom_breaker_open` 改为每次抓取时按路由器的熔断状态现算，冷却过后就回到 0；以前要等这个角色的下一次模型调用才更新，面板概览会一直显示熔断。按这个指标设的告警会比以前更早恢复。
+
+**升级到 bot 设置存在数据库里的版本**（迁移 `0019_bot_settings.sql`）：QQ、Telegram 机器人的显示名、管理员、私聊开放范围和私聊白名单、启用的群、私聊和群聊的默认人设模板、技能从配置文件挪到数据库，在 Web 管理面板里改（见 [配置参考：bots](configuration.md#bots)）；配置文件的 `bots[]` 只留 `id`、`platform`、`platform_self_id`。迁移只新增表 `bot_settings`，启动时自动执行。
+
+1. 先备份（`conloom backup`）和 `conloom.yaml`，配置文件原样保留，替换二进制后启动核心。
+2. 第一次启动时，只要 `bots[]` 里还写着 `name`、`admins`、`private_chat`、`enabled_conversations`、`persona_template`、`skills` 中的任何一个键，每个配置 bot 的设置就按旧版本的效果导入数据库：没写的键取旧版本的默认值（显示名 `织语`、私聊 `admins`、模板 `default`，其余为空）；`persona_template` 同时成为私聊和群聊的默认模板；`enabled_conversations` 里的群进启用的群，`private` 项进私聊白名单。数据库里已经有设置的 bot 跳过，以数据库为准。整个导入在一个事务里，最后在 `app_meta` 记下 `config_bot_settings_migrated`（迁移时间）。日志里每个导入或跳过的 bot 各有一条，审计里有一条 `bot.settings.migrate`（列出 `migrated` 和 `skipped`），最后一条警告提示删除这些键。导入前这些键照旧校验，`skills` 里的技能必须存在且工具齐全，不通过时启动失败（退出码 78），什么都不导入，改好再启动。
+3. 确认 bot 照常工作（面板的 bot 列表，适配器用的 `GET /api/v1/capabilities` 返回的群和私聊开放范围和以前一样），然后从 `conloom.yaml` 的 `bots[]` 删掉这些键，重启。之后还写着其中任何一个键时启动失败，退出码 78（systemd 不会反复重启），报错列出哪个 bot 还写着哪些键，提示到面板里改。
+4. 示例配置不再用 `CONLOOM_ADMIN_QQ`、`CONLOOM_GROUP_ID`、`CONLOOM_TG_ADMIN_ID`、`CONLOOM_TG_GROUP_ID`、`CONLOOM_TG_FRIEND_ID`，删掉这些键后可以从 `.env` 里删掉它们。
+
+- 旧配置里所有 bot 都一个这样的键也没写（全用默认值）时，第一次启动不导入，配置 bot 用新的默认值：和旧版本相比只有显示名变了，从 `织语` 变成 bot 的 ID；要原来的名字就在面板里改。之后在配置文件里新加的 bot 也用新的默认值，不写入数据库，直到在面板里保存。
+- 面板里保存后核心立即按新设置工作；适配器每 5 分钟从核心拉一次启用的群和私聊开放范围，最多 5 分钟后生效。
+- 存在数据库里的技能不存在或缺少工具时不再让启动失败：这个技能不生效，日志有一条警告，面板的 bot 页标出原因。
+- `conloom mock` 不带 `-user` 时取 bot 的第一个管理员：从配置的数据目录里的数据库读（数据库不存在时不新建），没有存过设置时用配置文件里还写着的 `admins`。
+
+**回退到 bot 设置还在配置文件里的旧版本**（没有迁移 0019）：旧二进制忽略 `bot_settings` 表，只认配置文件里的设置。回退前把面板里的设置抄回 `bots[]`（旧版本一个 bot 只有一个 `persona_template`，私聊和群聊模板不同时只能选一个），否则 bot 用旧版本的默认值（显示名 `织语`，没有管理员和启用的群）。再升级回来时，配置里还写着这些键就会因为已经迁移过而启动失败，先删掉；在旧版本上改过的设置不会再导入，以数据库里的为准。
 
 **升级到按会话区分 QQ 消息 ID 的版本**（没有表结构迁移，不需要额外步骤）：NapCat 的消息号只在一个会话里不重复，不同会话之间会撞号，以前撞号的消息会被核心当成重复消息丢掉。现在 NapCat 适配器把消息 ID 写成 `msg_<会话ID>_<消息号>`（例如 `msg_group_10001_7001`），幂等键和 ACK 的平台消息 ID 也带上会话。已经保存的 QQ 消息保留旧的 `msg_<消息号>`，不做转换，所以升级后群友引用升级前的消息时，核心找不到被引用的那条。判断要不要回复时按没有引用处理：引用机器人的旧消息不再算“回复机器人”（同时 @ 了机器人照常回复），在聊会话里引用别人的旧消息也不再让他离开会话；上下文里也不显示被引用的内容。观望加入挑选回复对象时则相反，引用了找不到的消息算作在回复别人，这条消息不会被选为加入的对象。升级后的消息不受影响。回退到旧版本时反过来，引用升级后消息的情况同样找不到被引用的那条。
 
@@ -576,7 +590,7 @@ sqlite3 <data_dir>/conloom.db 'DELETE FROM memory_chunks; DELETE FROM memory_chu
 ## 隐私
 
 - 日志默认**不记录**消息正文，只记 ID、长度、会话、路由和耗时；本地调试时可以设 `observability.log_message_content: true`。
-- 只有 `enabled_conversations` 中的会话（以及按 `private_chat` 开放的私聊）的消息会被保存。其他会话的消息不转发、正文不落库，只留一条不含正文的幂等记录（幂等键、请求哈希和响应），按 `idempotency_retention` 清理。
+- 只有启用的群（以及按私聊开放范围放行的私聊）的消息会被保存。其他会话的消息不转发、正文不落库，只留一条不含正文的幂等记录（幂等键、请求哈希和响应），按 `idempotency_retention` 清理。
 - 消息保存在本机 `<data_dir>/conloom.db` 中，用作对话上下文；被处理的事件原文（含正文）在幂等记录里保留 `idempotency_retention`。请像对待聊天记录一样保护数据目录和备份文件。
 - 配置了 `embedding` 时，`recall` 的查询句（模型写的 `query`）会原样发给向量服务，不做打码或其他脱敏。
 - 配置了 `embedding` 时，段落文本会发给向量服务：它和 `recall` 能看到的内容一样（命令、被忘记的内容和被审查拦截的消息不收，联系方式打码，不带 ID），但仍然是聊天原文，所以向量服务应当部署在你自己控制的机器上，并像上文那样只通过隧道或内网访问。库里只存向量和文本的哈希，不另存段落文本。

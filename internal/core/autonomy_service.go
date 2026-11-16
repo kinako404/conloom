@@ -377,8 +377,8 @@ func (s *AutonomyService) persona(ctx context.Context, conv store.ConversationRe
 		return conloomapi.PersonaDoc{}, err
 	}
 	name := "default"
-	if bot, ok := s.o.bots.Bot(conv.BotInstanceID); ok && bot.PersonaTemplate != "" {
-		name = bot.PersonaTemplate
+	if bot, ok := s.o.bots.Bot(conv.BotInstanceID); ok && bot.TemplateFor(conv.Type) != "" {
+		name = bot.TemplateFor(conv.Type)
 	}
 	doc, ok := s.o.personas.Template(name)
 	if !ok {

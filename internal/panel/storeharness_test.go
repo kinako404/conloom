@@ -83,7 +83,7 @@ func lighthousePersona() conloomapi.PersonaDoc {
 func newDataHarness(t *testing.T) *storeHarness {
 	t.Helper()
 	return newStoreHarness(t,
-		[]config.BotConfig{{ID: dataBot, Platform: "qq", Name: "织语", PersonaTemplate: "lighthouse"}},
+		[]config.BotConfig{{ID: dataBot, Platform: "qq", Name: "织语", PrivateTemplate: "lighthouse", GroupTemplate: "lighthouse"}},
 		map[string]conloomapi.PersonaDoc{"lighthouse": lighthousePersona()},
 		nil)
 }

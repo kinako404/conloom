@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,7 +18,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kinako404/conloom/internal/adapter/mock"
+	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/panel"
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/internal/store/sqlite"
 )
 
@@ -314,6 +318,111 @@ persona_templates:
 	}
 	if !strings.Contains(stderr, "请删除配置文件里整段 persona_templates") {
 		t.Errorf("stderr = %q, want the Chinese request to remove persona_templates", stderr)
+	}
+}
+
+func TestServe_MigratedBotSettingsExitWithConfigCode(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "conloom.yaml")
+	cfg := `server:
+  listen: 127.0.0.1:0
+api_tokens:
+  - {name: adapter, token: fake-adapter-token, bot_instance_id: qq-main, scopes: [events:write]}
+bots:
+  - {id: qq-main, platform: qq, platform_self_id: "30001", admins: ["29999"], private_chat: all}
+model_profiles:
+  short_context:
+    endpoint: http://127.0.0.1:9/v1
+    model: fake-model
+    context: {native_window: 32768, configured_window: 32768, soft_input_budget: 16000}
+storage:
+  data_dir: ./data
+`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	db, err := sqlite.Open(ctx, filepath.Join(dir, "data", "conloom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.MigrateConfigBotSettings(ctx, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := runCommand(ctx, "serve", "-c", cfgPath)
+	if code != exitConfig || ctx.Err() != nil {
+		t.Fatalf("exit %d, want %d before the deadline; stderr %s", code, exitConfig, stderr)
+	}
+	for _, want := range []string{"Web 管理面板", "请删除配置文件里 bots[0]（qq-main）的 admins、private_chat，", "只留 id、platform、platform_self_id"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr = %q, want the Chinese request to remove the keys (%q)", stderr, want)
+		}
+	}
+}
+
+func TestMockUser_FirstAdminFromSettings(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "conloom.yaml")
+	if err := os.WriteFile(cfgPath, []byte("bots:\n  - {id: qq-main, platform: qq, admins: [\"29999\"]}\n"+
+		"  - {id: tg-main, platform: telegram}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := func(id string) (mock.User, error) {
+		t.Helper()
+		bot, ok := cfg.Bot(id)
+		if !ok {
+			t.Fatalf("no bot %s", id)
+		}
+		return mockUser(ctx, "", cfg, bot)
+	}
+	if u, err := user("qq-main"); err != nil || u.PlatformID != "29999" {
+		t.Fatalf("user of qq-main without a database = %+v, %v; want the config file's first admin", u, err)
+	}
+	if _, err := os.Stat(cfg.DBPath()); !os.IsNotExist(err) {
+		t.Fatalf("mockUser created the database: %v", err)
+	}
+	if _, err := user("tg-main"); err == nil || !strings.Contains(err.Error(), "-user") {
+		t.Fatalf("user of tg-main without admins = %v, want a hint at -user", err)
+	} else if ee := (*exitError)(nil); !errors.As(err, &ee) || ee.code != exitConfig {
+		t.Fatalf("error %v, want exit code %d", err, exitConfig)
+	}
+
+	if err := os.MkdirAll(cfg.Storage.DataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sqlite.Open(ctx, cfg.DBPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutBotSettings(ctx, store.BotSettings{BotInstanceID: "tg-main", Name: "小红", Admins: []string{"20001", "29999"},
+		PrivateChat: "admins", PrivateTemplate: "default", GroupTemplate: "default", UpdatedBy: "panel:admin"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if u, err := user("tg-main"); err != nil || u.PlatformID != "20001" {
+		t.Fatalf("user of tg-main = %+v, %v; want the first admin of its stored settings", u, err)
+	}
+	if u, err := user("qq-main"); err != nil || u.PlatformID != "29999" {
+		t.Fatalf("user of qq-main without stored settings = %+v, %v; want the config file's first admin", u, err)
+	}
+	u, err := mockUser(ctx, "20002:小明", cfg, config.BotConfig{ID: "tg-main"})
+	if err != nil || u != (mock.User{PlatformID: "20002", Name: "小明"}) {
+		t.Fatalf("user of -user = %+v, %v", u, err)
 	}
 }
 

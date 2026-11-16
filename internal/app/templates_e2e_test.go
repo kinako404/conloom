@@ -114,7 +114,7 @@ func logLines(logs *syncBuffer, level string, parts ...string) int {
 func TestMigrate_ImportsLegacy(t *testing.T) {
 	cfg := testConfig(t, configParams{modelURL: "http://127.0.0.1:1"})
 	cfg.LegacyPersonaTemplates = map[string]conloomapi.PersonaDoc{"default": legacyTemplate("默认"), "lighthouse": legacyTemplate("灯塔")}
-	cfg.Bots[0].PersonaTemplate = "lighthouse"
+	seedBotSettings(t, cfg, func(s *store.BotSettings) { s.PrivateTemplate, s.GroupTemplate = "lighthouse", "lighthouse" })
 	before := time.Now()
 	e := newEnv(t, cfg)
 	e.observe(alice, "大家好")
@@ -260,10 +260,7 @@ func TestDirectory_ConfigBotMissingTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := panelTestConfig(t, configParams{modelURL: "http://127.0.0.1:1"}, hash)
-	cfg.Bots[0].PersonaTemplate = "night-owl"
-	if err := cfg.ValidateServe(); err != nil {
-		t.Fatalf("ValidateServe with a template that exists nowhere: %v", err)
-	}
+	seedBotSettings(t, cfg, func(s *store.BotSettings) { s.PrivateTemplate, s.GroupTemplate = "night-owl", "night-owl" })
 	e := newEnv(t, cfg)
 	p := panelLogin(t, e.srv.URL)
 
@@ -318,7 +315,7 @@ func TestTemplates_PanelExportImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := panelTestConfig(t, configParams{modelURL: "http://127.0.0.1:1"}, hash)
-	cfg.Bots[0].PersonaTemplate = "night-owl"
+	seedBotSettings(t, cfg, func(s *store.BotSettings) { s.PrivateTemplate, s.GroupTemplate = "night-owl", "night-owl" })
 	e := newEnv(t, cfg)
 	p := panelLogin(t, e.srv.URL)
 	problems := func() []string {

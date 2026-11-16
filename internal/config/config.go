@@ -140,17 +140,108 @@ func ValidBotID(id string) bool {
 	return id != "" && !strings.Contains(id, KeySeparator)
 }
 
+// BotConfig is a bot as it takes effect: one of the config file or one
+// created in the panel. The config file sets only a bot's identity (ID,
+// Platform, PlatformSelfID); the settings from Name on come from the
+// database (store.BotSettings, or a panel bot's own row) and are filled in by
+// the bot directory (internal/botdir), which every component looks bots up
+// in.
 type BotConfig struct {
-	ID                   string                       `yaml:"id"`
-	Platform             string                       `yaml:"platform"`
-	Name                 string                       `yaml:"name"`
-	PlatformSelfID       string                       `yaml:"platform_self_id"`
-	Admins               []string                     `yaml:"admins"`
-	EnabledConversations []conloomapi.ConversationRef `yaml:"enabled_conversations"`
-	PrivateChat          string                       `yaml:"private_chat"`
-	PersonaTemplate      string                       `yaml:"persona_template"`
+	ID             string `yaml:"id"`
+	Platform       string `yaml:"platform"`
+	PlatformSelfID string `yaml:"platform_self_id"`
+
+	Name                 string                       `yaml:"-"`
+	Admins               []string                     `yaml:"-"`
+	EnabledConversations []conloomapi.ConversationRef `yaml:"-"`
+	PrivateChat          string                       `yaml:"-"`
+	// PrivateTemplate and GroupTemplate are the persona templates the bot's
+	// new private chats and new groups start from (see TemplateFor).
+	PrivateTemplate string `yaml:"-"`
+	GroupTemplate   string `yaml:"-"`
 	// Skills names the skills the bot may use; none when empty.
-	Skills []string `yaml:"skills"`
+	Skills []string `yaml:"-"`
+
+	// Legacy holds the settings keys of a config file from before the
+	// settings moved into the database. They are only checked and migrated
+	// into the database on the first start (see app.New), never used at run
+	// time.
+	Legacy LegacyBotSettings `yaml:",inline"`
+}
+
+// LegacyBotSettings are the keys of a bots[] entry that moved into the
+// database, as a config file from before the move has them; a nil field is a
+// key the file does not have.
+type LegacyBotSettings struct {
+	Name                 *string                       `yaml:"name"`
+	Admins               *[]string                     `yaml:"admins"`
+	EnabledConversations *[]conloomapi.ConversationRef `yaml:"enabled_conversations"`
+	PrivateChat          *string                       `yaml:"private_chat"`
+	PersonaTemplate      *string                       `yaml:"persona_template"`
+	Skills               *[]string                     `yaml:"skills"`
+}
+
+// Keys returns the YAML keys l has, in the order of its fields.
+func (l LegacyBotSettings) Keys() []string {
+	var out []string
+	for _, k := range []struct {
+		key string
+		set bool
+	}{
+		{"name", l.Name != nil}, {"admins", l.Admins != nil}, {"private_chat", l.PrivateChat != nil},
+		{"enabled_conversations", l.EnabledConversations != nil}, {"persona_template", l.PersonaTemplate != nil},
+		{"skills", l.Skills != nil},
+	} {
+		if k.set {
+			out = append(out, k.key)
+		}
+	}
+	return out
+}
+
+// legacyBotName is the name a bot had before the settings moved into the
+// database when its entry did not set one.
+const legacyBotName = "织语"
+
+// WithLegacySettings returns b with the settings its Legacy keys gave it
+// before the settings moved into the database: the value of each key the
+// entry has and, for each it does not, what that version used: the name
+// 织语, private_chat admins, the persona template default and no admins,
+// enabled conversations or skills. persona_template sets both templates.
+func (b BotConfig) WithLegacySettings() BotConfig {
+	l := b.Legacy
+	b.Name, b.PrivateChat, b.PrivateTemplate = legacyBotName, "admins", "default"
+	b.Admins, b.EnabledConversations, b.Skills = nil, nil, nil
+	if l.Name != nil {
+		b.Name = *l.Name
+	}
+	if l.Admins != nil {
+		b.Admins = slices.Clone(*l.Admins)
+	}
+	if l.EnabledConversations != nil {
+		b.EnabledConversations = slices.Clone(*l.EnabledConversations)
+	}
+	if l.PrivateChat != nil {
+		b.PrivateChat = *l.PrivateChat
+	}
+	if l.PersonaTemplate != nil {
+		b.PrivateTemplate = *l.PersonaTemplate
+	}
+	if l.Skills != nil {
+		b.Skills = slices.Clone(*l.Skills)
+	}
+	b.GroupTemplate = b.PrivateTemplate
+	return b
+}
+
+// TemplateFor returns the persona template a new conversation of type
+// convType starts from: GroupTemplate for a group, PrivateTemplate for any
+// other conversation.
+func (b BotConfig) TemplateFor(convType string) string {
+	if convType == conloomapi.ConvGroup {
+		return b.GroupTemplate
+	}
+	return b.PrivateTemplate
 }
 
 // UnusedPrivateConversations returns the platform IDs of the private entries in
@@ -321,10 +412,6 @@ func defaultConfig() *Config {
 	}
 }
 
-func defaultBot() BotConfig {
-	return BotConfig{Name: "织语", PrivateChat: "admins", PersonaTemplate: "default"}
-}
-
 func defaultModelProfile() ModelProfile {
 	return ModelProfile{
 		Runtime:             ProfileRuntime{MaxConcurrency: 2, Timeout: dur(60 * time.Second), MaxRetries: 2},
@@ -416,22 +503,10 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// applyElementDefaults re-decodes each bot and model profile on top of its
-// defaults, so omitted fields get defaults while explicit zero values are kept.
-// The strict decode has already rejected unknown keys.
+// applyElementDefaults re-decodes each model profile on top of its defaults,
+// so omitted fields get defaults while explicit zero values are kept. The
+// strict decode has already rejected unknown keys.
 func applyElementDefaults(root *yaml.Node, cfg *Config) error {
-	if bots := mappingValue(root, "bots"); bots != nil && bots.Kind == yaml.SequenceNode {
-		for i, n := range bots.Content {
-			if i >= len(cfg.Bots) {
-				break
-			}
-			b := defaultBot()
-			if err := n.Decode(&b); err != nil {
-				return err
-			}
-			cfg.Bots[i] = b
-		}
-	}
 	if profiles := mappingValue(root, "model_profiles"); profiles != nil && profiles.Kind == yaml.MappingNode {
 		for i := 0; i+1 < len(profiles.Content); i += 2 {
 			name := profiles.Content[i].Value

@@ -68,7 +68,7 @@ func newBotsHarnessUsing(t *testing.T, template string) *writeHarness {
 	}
 	h := &writeHarness{trigger: &fakeTrigger{}}
 	h.storeHarness = newStoreHarness(t,
-		[]config.BotConfig{{ID: dataBot, Platform: "qq", Name: "织语", PersonaTemplate: template, Skills: []string{"time"}}},
+		[]config.BotConfig{{ID: dataBot, Platform: "qq", Name: "织语", PrivateTemplate: template, GroupTemplate: template, Skills: []string{"time"}}},
 		map[string]conloomapi.PersonaDoc{"cat": catPersona},
 		func(d *Deps) {
 			o, err := core.New(core.Deps{
@@ -92,6 +92,8 @@ type botResp struct {
 	Name            string     `json:"name"`
 	Source          string     `json:"source"`
 	PersonaTemplate string     `json:"persona_template"`
+	PrivateTemplate string     `json:"private_template"`
+	GroupTemplate   string     `json:"group_template"`
 	Skills          []string   `json:"skills"`
 	Problems        []string   `json:"problems"`
 	Chats           int        `json:"chats"`
@@ -168,7 +170,8 @@ func TestBotsAPI_CRUDAndAudit(t *testing.T) {
 	if !slices.Equal(list.Templates, []string{"cat", "default"}) {
 		t.Errorf("templates = %v, want [cat default]", list.Templates)
 	}
-	configBot := botResp{ID: dataBot, Name: "织语", Source: "config", PersonaTemplate: "default", Skills: []string{"time"}, Problems: []string{}}
+	configBot := botResp{ID: dataBot, Name: "织语", Source: "config", PersonaTemplate: "default",
+		PrivateTemplate: "default", GroupTemplate: "default", Skills: []string{"time"}, Problems: []string{}}
 	if len(list.Bots) != 1 || !reflect.DeepEqual(list.Bots[0], configBot) {
 		t.Fatalf("bots = %+v, want only %+v", list.Bots, configBot)
 	}
@@ -196,7 +199,8 @@ func TestBotsAPI_CRUDAndAudit(t *testing.T) {
 	if !panelBotIDPattern.MatchString(created.ID) {
 		t.Fatalf("created ID %q does not match %s", created.ID, panelBotIDPattern)
 	}
-	want := botResp{ID: created.ID, Name: "小红", Source: "panel", PersonaTemplate: "cat", Skills: []string{"time", "memory"}, Problems: []string{}}
+	want := botResp{ID: created.ID, Name: "小红", Source: "panel", PersonaTemplate: "cat",
+		PrivateTemplate: "cat", GroupTemplate: "cat", Skills: []string{"time", "memory"}, Problems: []string{}}
 	if !reflect.DeepEqual(created, want) {
 		t.Fatalf("created = %+v, want %+v", created, want)
 	}
@@ -245,7 +249,8 @@ func TestBotsAPI_CRUDAndAudit(t *testing.T) {
 	path := botPath(created.ID)
 	updated := decodeBot(t, h.write(http.MethodPut, path,
 		map[string]any{"name": "小绿", "persona_template": "default", "skills": []string{}}), http.StatusOK)
-	want = botResp{ID: created.ID, Name: "小绿", Source: "panel", PersonaTemplate: "default", Skills: []string{}, Problems: []string{}, Chats: 1}
+	want = botResp{ID: created.ID, Name: "小绿", Source: "panel", PersonaTemplate: "default",
+		PrivateTemplate: "default", GroupTemplate: "default", Skills: []string{}, Problems: []string{}, Chats: 1}
 	if !reflect.DeepEqual(updated, want) {
 		t.Fatalf("updated = %+v, want %+v", updated, want)
 	}
@@ -309,7 +314,8 @@ func TestBotsAPI_ConfigBot403(t *testing.T) {
 		http.StatusForbidden, conloomapi.CodeForbidden)
 
 	list := h.bots()
-	want := botResp{ID: dataBot, Name: "织语", Source: "config", PersonaTemplate: "default", Skills: []string{"time"},
+	want := botResp{ID: dataBot, Name: "织语", Source: "config", PersonaTemplate: "default",
+		PrivateTemplate: "default", GroupTemplate: "default", Skills: []string{"time"},
 		Problems: []string{}, Chats: 1}
 	if len(list.Bots) != 1 {
 		t.Fatalf("bots = %+v, want the config bot only", list.Bots)

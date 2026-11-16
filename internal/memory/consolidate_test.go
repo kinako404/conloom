@@ -176,7 +176,7 @@ func newConsEnv(t *testing.T, opts consOpts) *consEnv {
 		}
 	}
 	cfg := &config.Config{
-		Bots:          []config.BotConfig{{ID: "bot_test", Platform: "qq", Name: "织语", PersonaTemplate: "default"}},
+		Bots:          []config.BotConfig{{ID: "bot_test", Platform: "qq", Name: "织语", PrivateTemplate: "default", GroupTemplate: "default"}},
 		ModelProfiles: map[string]config.ModelProfile{string(router.RoleShort): profile(8000)},
 	}
 	profiles := []*router.Profile{{Role: router.RoleShort, Config: profile(8000), Client: e.short}}

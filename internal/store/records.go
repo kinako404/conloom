@@ -42,6 +42,28 @@ type PanelBot struct {
 	UpdatedAt       time.Time
 }
 
+// BotSettings are the settings of a bot defined in the config file, which
+// keeps only the bot's identity: its Name, Admins (platform user IDs), who
+// may chat with it privately (PrivateChat: off, admins, allowlist or all,
+// with PrivateAllowlist the platform user IDs allowlist admits besides the
+// admins), the platform IDs of the groups it works in (Groups), the persona
+// templates its new private chats and new groups start from and the skills it
+// may use. Lists are never nil when read.
+type BotSettings struct {
+	BotInstanceID    string
+	Name             string
+	Admins           []string
+	PrivateChat      string
+	PrivateAllowlist []string
+	Groups           []string
+	PrivateTemplate  string
+	GroupTemplate    string
+	Skills           []string
+	UpdatedBy        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 type ConversationRecord struct {
 	BotInstanceID          string
 	ID                     string

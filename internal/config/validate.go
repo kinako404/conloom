@@ -158,28 +158,7 @@ func (c *Config) ValidateServe() error {
 			p.addf(path+".platform", "must not contain %q, which separates the parts of conversation keys, got %q", KeySeparator, b.Platform)
 		}
 		p.required(path+".platform_self_id", b.PlatformSelfID)
-		for j, a := range b.Admins {
-			p.required(fmt.Sprintf("%s.admins[%d]", path, j), a)
-		}
-		for j, conv := range b.EnabledConversations {
-			cpath := fmt.Sprintf("%s.enabled_conversations[%d]", path, j)
-			if conv.Type != conloomapi.ConvGroup && conv.Type != conloomapi.ConvPrivate {
-				p.addf(cpath+".type", "must be one of group|private, got %q", conv.Type)
-			}
-			p.required(cpath+".platform_id", conv.PlatformID)
-		}
-		if !slices.Contains([]string{"admins", "allowlist", "all", "off"}, b.PrivateChat) {
-			p.addf(path+".private_chat", "must be one of admins|allowlist|all|off, got %q", b.PrivateChat)
-		}
-		p.required(path+".persona_template", b.PersonaTemplate)
-		for j, s := range b.Skills {
-			spath := fmt.Sprintf("%s.skills[%d]", path, j)
-			if strings.TrimSpace(s) == "" {
-				p.addf(spath, "must not be empty")
-			} else if slices.Contains(b.Skills[:j], s) {
-				p.addf(spath, "duplicate skill %q", s)
-			}
-		}
+		p.legacyBot(path, b.Legacy)
 	}
 
 	if _, ok := c.ModelProfiles["short_context"]; !ok {
@@ -303,6 +282,43 @@ func (c *Config) ValidateServe() error {
 	}
 
 	return p.err(c, "serve")
+}
+
+// legacyBot checks the settings keys an old config file still has in the bot
+// at path, which are migrated into the database as they are on the first
+// start (see BotConfig.Legacy). None is required.
+func (p *problems) legacyBot(path string, l LegacyBotSettings) {
+	if l.Admins != nil {
+		for j, a := range *l.Admins {
+			p.required(fmt.Sprintf("%s.admins[%d]", path, j), a)
+		}
+	}
+	if l.EnabledConversations != nil {
+		for j, conv := range *l.EnabledConversations {
+			cpath := fmt.Sprintf("%s.enabled_conversations[%d]", path, j)
+			if conv.Type != conloomapi.ConvGroup && conv.Type != conloomapi.ConvPrivate {
+				p.addf(cpath+".type", "must be one of group|private, got %q", conv.Type)
+			}
+			p.required(cpath+".platform_id", conv.PlatformID)
+		}
+	}
+	if l.PrivateChat != nil && !slices.Contains([]string{"admins", "allowlist", "all", "off"}, *l.PrivateChat) {
+		p.addf(path+".private_chat", "must be one of admins|allowlist|all|off, got %q", *l.PrivateChat)
+	}
+	if l.PersonaTemplate != nil {
+		p.required(path+".persona_template", *l.PersonaTemplate)
+	}
+	if l.Skills != nil {
+		skills := *l.Skills
+		for j, s := range skills {
+			spath := fmt.Sprintf("%s.skills[%d]", path, j)
+			if strings.TrimSpace(s) == "" {
+				p.addf(spath, "must not be empty")
+			} else if slices.Contains(skills[:j], s) {
+				p.addf(spath, "duplicate skill %q", s)
+			}
+		}
+	}
 }
 
 // Panel password hashes have the form pbkdf2-sha256:<iterations>:<salt>:<hash>

@@ -305,7 +305,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		o.metrics.Review.WithLabelValues("input", res.Verdict).Inc()
 		current[i].Text = res.Text
 	}
-	system, err := o.personas.SystemPrompt(ctx, task.ConversationKey, bot.PersonaTemplate, bot.Name)
+	system, err := o.personas.SystemPrompt(ctx, task.ConversationKey, bot.TemplateFor(conv.Type), bot.Name)
 	if err != nil {
 		return fail(conloomapi.CodeInternal, CopyUnavailable, err)
 	}
@@ -343,7 +343,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	}
 	// The bars and the appearance image come from the persona version
 	// SystemPrompt rendered.
-	if pv, err := o.personas.Current(ctx, task.ConversationKey, bot.PersonaTemplate); err != nil {
+	if pv, err := o.personas.Current(ctx, task.ConversationKey, bot.TemplateFor(conv.Type)); err != nil {
 		o.log.Warn("load persona failed; replying without hidden state or appearance image",
 			"task_id", task.ID, "conversation", task.ConversationKey, "error", err)
 	} else {

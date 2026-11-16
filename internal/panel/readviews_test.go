@@ -94,7 +94,7 @@ func TestPersona_ReadOnlyWhenMissing(t *testing.T) {
 		t.Errorf("versions = %v, templates = %v; want [] and [default lighthouse]", got.Versions, got.Templates)
 	}
 
-	dh.cfg.Bots[0].PersonaTemplate = ""
+	dh.cfg.Bots[0].PrivateTemplate, dh.cfg.Bots[0].GroupTemplate = "", ""
 	dh.getJSON(convPath(group.Key, "persona"), &got)
 	if got.PendingTemplate == nil || *got.PendingTemplate != "default" ||
 		got.TemplateDoc == nil || !reflect.DeepEqual(*got.TemplateDoc, conloomapi.DefaultPersona()) {

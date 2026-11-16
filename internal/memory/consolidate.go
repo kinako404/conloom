@@ -900,7 +900,7 @@ func (c *Consolidator) chat(ctx context.Context, p *router.Profile, convKey stri
 // currentPersona returns the conversation's current persona and the name of
 // its bot under it.
 func (c *Consolidator) currentPersona(ctx context.Context, convKey string, bot config.BotConfig) (conloomapi.PersonaDoc, string, error) {
-	pv, err := c.d.Personas.Current(ctx, convKey, bot.PersonaTemplate)
+	pv, err := c.d.Personas.Current(ctx, convKey, bot.TemplateFor(convTypeOf(convKey)))
 	if err != nil {
 		return conloomapi.PersonaDoc{}, "", err
 	}

@@ -48,8 +48,6 @@ cp conloom.example.yaml conloom.yaml
 CONLOOM_ADAPTER_TOKEN=<随机长字符串>
 CONLOOM_ADMIN_TOKEN=<另一个随机长字符串>
 CONLOOM_BOT_SELF_ID=<机器人的 QQ 号>
-CONLOOM_ADMIN_QQ=<管理员 QQ 号>
-CONLOOM_GROUP_ID=<启用的群号>
 CONLOOM_SHORT_MODEL_ENDPOINT=https://<你的模型网关>/v1
 CONLOOM_SHORT_MODEL_NAME=<短上下文模型名>
 CONLOOM_SHORT_MODEL_KEY=<API Key>
@@ -69,10 +67,12 @@ CONLOOM_NAPCAT_TOKEN=<NapCat access token>
 curl http://127.0.0.1:8787/healthz   # 返回 ok
 ```
 
+配置文件里的机器人只写身份（ID、平台、自己的 QQ 号）；显示名、管理员、启用的群、私聊开放范围、默认人设模板和技能存在数据库里，在 Web 管理面板的聊天页编辑（启用面板见 [Web 管理面板](docs/panel.md)）。新机器人没有管理员、也没有启用的群，先在面板里把自己的 QQ 号加为管理员、把要用的群加进启用的群。
+
 **4. 在终端里试聊**。另开一个终端，用 Mock 适配器对话；每行一条消息，群聊里以 `@` 开头表示 @ 机器人，Ctrl+D（Windows 为 Ctrl+Z 回车）退出：
 
 ```sh
-./conloom mock -c conloom.yaml                                   # 以第一个管理员的身份私聊
+./conloom mock -c conloom.yaml                                   # 以机器人第一个管理员的身份私聊
 ./conloom mock -c conloom.yaml -conv group:10001 -user 20001:小明   # 模拟群聊
 ```
 

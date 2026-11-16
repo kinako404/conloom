@@ -273,9 +273,12 @@ func TestTemplatesAPI_DeleteInUseFallsBack(t *testing.T) {
 		t.Fatalf("bots after the delete = %+v, want the config bot, 小红 and 小刚", bots.Bots)
 	}
 	for i, want := range []botResp{
-		{ID: dataBot, Name: "织语", Source: "config", PersonaTemplate: "default", Skills: []string{"time"}, Problems: problem},
-		{ID: bot.ID, Name: "小红", Source: "panel", PersonaTemplate: "default", Skills: []string{"time"}, Problems: problem},
-		{ID: other.ID, Name: "小刚", Source: "panel", PersonaTemplate: "default", Skills: []string{}, Problems: []string{}},
+		{ID: dataBot, Name: "织语", Source: "config", PersonaTemplate: "default",
+			PrivateTemplate: "default", GroupTemplate: "default", Skills: []string{"time"}, Problems: problem},
+		{ID: bot.ID, Name: "小红", Source: "panel", PersonaTemplate: "default",
+			PrivateTemplate: "default", GroupTemplate: "default", Skills: []string{"time"}, Problems: problem},
+		{ID: other.ID, Name: "小刚", Source: "panel", PersonaTemplate: "default",
+			PrivateTemplate: "default", GroupTemplate: "default", Skills: []string{}, Problems: []string{}},
 	} {
 		if !reflect.DeepEqual(bots.Bots[i], want) {
 			t.Errorf("bot %d after the delete = %+v, want %+v", i, bots.Bots[i], want)

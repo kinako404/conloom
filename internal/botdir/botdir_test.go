@@ -10,6 +10,7 @@ import (
 
 	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 func ids(bots []config.BotConfig) []string {
@@ -55,7 +56,7 @@ func TestDirectory_LookupAndOrder(t *testing.T) {
 		t.Fatalf("Bot(panel-b2c3d4e5) = %+v, %v; want the first entry with that ID", b, ok)
 	}
 	want := config.BotConfig{ID: "panel-a1b2c3d4", Platform: "panel", Name: "小明", PrivateChat: "admins",
-		PersonaTemplate: "lighthouse", Skills: []string{"memory", "time"}}
+		PrivateTemplate: "lighthouse", GroupTemplate: "lighthouse", Skills: []string{"memory", "time"}}
 	if b, ok := d.Bot("panel-a1b2c3d4"); !ok || !reflect.DeepEqual(b, want) {
 		t.Fatalf("Bot(panel-a1b2c3d4) = %+v, %v; want %+v", b, ok, want)
 	}
@@ -89,12 +90,18 @@ func TestDirectory_LookupAndOrder(t *testing.T) {
 
 func TestDirectory_TemplateUsers(t *testing.T) {
 	d := New([]config.BotConfig{
-		{ID: "qq-main", Platform: "qq", Name: "小明", PersonaTemplate: "lighthouse"},
-		{ID: "tg-main", Platform: "telegram", PersonaTemplate: "lighthouse"},
-		{ID: "qq-alt", Platform: "qq", Name: "小明", PersonaTemplate: "cat"},
+		{ID: "qq-main", Platform: "qq", Name: "小明", PrivateTemplate: "lighthouse", GroupTemplate: "night-owl"},
+		{ID: "tg-main", Platform: "telegram", PrivateTemplate: "default", GroupTemplate: "lighthouse"},
+		{ID: "qq-alt", Platform: "qq", Name: "小明", PrivateTemplate: "cat", GroupTemplate: "cat"},
 	})
 	if got := d.TemplateUsers("lighthouse"); !slices.Equal(got, []string{"qq-main", "tg-main"}) {
-		t.Fatalf("TemplateUsers without panel bots = %v, want the config bots", got)
+		t.Fatalf("TemplateUsers without panel bots = %v, want the config bots using it for private chats or groups", got)
+	}
+	if got := d.TemplateUsers("night-owl"); !slices.Equal(got, []string{"qq-main"}) {
+		t.Fatalf("TemplateUsers(night-owl) = %v, want qq-main, whose groups start from it", got)
+	}
+	if got := d.TemplateUsers("cat"); !slices.Equal(got, []string{"qq-alt"}) {
+		t.Fatalf("TemplateUsers(cat) = %v, want qq-alt once", got)
 	}
 	d.SetPanel([]Entry{
 		{Bot: PanelBotConfig(store.PanelBot{ID: "panel-a1b2c3d4", Name: "小红", PersonaTemplate: "lighthouse"})},
@@ -108,20 +115,21 @@ func TestDirectory_TemplateUsers(t *testing.T) {
 		t.Fatalf("TemplateUsers(nope) = %v, want none", got)
 	}
 
-	d.SetConfig([]Entry{{Bot: config.BotConfig{ID: "qq-alt", Platform: "qq", Name: "小明", PersonaTemplate: "default"},
-		Problems: []string{"模板已不存在"}}})
+	d.SetConfig([]Entry{{Bot: config.BotConfig{ID: "qq-alt", Platform: "qq", Name: "小明", PrivateTemplate: "default",
+		GroupTemplate: "default"}, Problems: []string{"模板已不存在"}}})
 	if got := d.TemplateUsers("cat"); len(got) != 0 {
 		t.Fatalf("TemplateUsers(cat) = %v, want none: qq-alt uses default instead", got)
 	}
-	if got := d.TemplateUsers("default"); !slices.Equal(got, []string{"qq-alt", "panel-b2c3d4e5"}) {
+	if got := d.TemplateUsers("default"); !slices.Equal(got, []string{"tg-main", "qq-alt", "panel-b2c3d4e5"}) {
 		t.Fatalf("TemplateUsers(default) = %v, want the templates as they take effect", got)
 	}
 }
 
 func TestDirectory_SetConfig(t *testing.T) {
 	configured := []config.BotConfig{
-		{ID: "qq-main", Platform: "qq", Name: "小明", PersonaTemplate: "night-owl", Skills: []string{"memory"}},
-		{ID: "tg-main", Platform: "telegram", Name: "小红", PersonaTemplate: "lighthouse"},
+		{ID: "qq-main", Platform: "qq", Name: "小明", PrivateTemplate: "night-owl", GroupTemplate: "night-owl", Skills: []string{"memory"},
+			Admins: []string{"29999"}, EnabledConversations: []conloomapi.ConversationRef{{Type: conloomapi.ConvGroup, PlatformID: "10001"}}},
+		{ID: "tg-main", Platform: "telegram", Name: "小红", PrivateTemplate: "lighthouse", GroupTemplate: "lighthouse"},
 	}
 	d := New(configured)
 	if got := d.ConfigBots(); !reflect.DeepEqual(got, configured) {
@@ -129,7 +137,9 @@ func TestDirectory_SetConfig(t *testing.T) {
 	}
 
 	fallback := configured[0]
-	fallback.PersonaTemplate = "default"
+	fallback.PrivateTemplate, fallback.GroupTemplate = "default", "default"
+	fallback.Admins = slices.Clone(fallback.Admins)
+	fallback.EnabledConversations = slices.Clone(fallback.EnabledConversations)
 	problems := []string{"人设模板“night-owl”已不存在，暂用 default"}
 	d.SetConfig([]Entry{
 		{Bot: fallback, Problems: problems},
@@ -156,18 +166,19 @@ func TestDirectory_SetConfig(t *testing.T) {
 	if _, ok := d.Bot("panel-a1b2c3d4"); ok {
 		t.Fatal("SetConfig added a bot that is not a config bot")
 	}
-	if got := d.ConfigBots(); got[0].PersonaTemplate != "night-owl" {
+	if got := d.ConfigBots(); got[0].PrivateTemplate != "night-owl" {
 		t.Fatalf("ConfigBots after SetConfig = %+v, want the bots as configured", got)
 	}
 
 	problems[0] = "改过"
-	fallback.Skills[0] = "改过"
-	if b, _ := d.Bot("qq-main"); b.Skills[0] != "memory" || d.Problems("qq-main")[0] == "改过" {
+	fallback.Skills[0], fallback.Admins[0], fallback.EnabledConversations[0].PlatformID = "改过", "改过", "改过"
+	if b, _ := d.Bot("qq-main"); b.Skills[0] != "memory" || b.Admins[0] != "29999" || b.EnabledConversations[0].PlatformID != "10001" ||
+		d.Problems("qq-main")[0] == "改过" {
 		t.Fatalf("directory changed through the entries given to SetConfig: %+v, %v", b, d.Problems("qq-main"))
 	}
 
 	d.SetConfig(nil)
-	if b, _ := d.Bot("qq-main"); b.PersonaTemplate != "night-owl" || d.Problems("qq-main") != nil {
+	if b, _ := d.Bot("qq-main"); b.PrivateTemplate != "night-owl" || d.Problems("qq-main") != nil {
 		t.Fatalf("Bot(qq-main) after SetConfig(nil) = %+v, problems %v; want it as configured", b, d.Problems("qq-main"))
 	}
 }
@@ -176,7 +187,7 @@ func TestPanelBotConfig(t *testing.T) {
 	skills := []string{"memory"}
 	b := PanelBotConfig(store.PanelBot{ID: "panel-a1b2c3d4", Name: "小明", PersonaTemplate: "default", Skills: skills})
 	want := config.BotConfig{ID: "panel-a1b2c3d4", Platform: store.PlatformPanel, Name: "小明", PrivateChat: "admins",
-		PersonaTemplate: "default", Skills: []string{"memory"}}
+		PrivateTemplate: "default", GroupTemplate: "default", Skills: []string{"memory"}}
 	if !reflect.DeepEqual(b, want) {
 		t.Fatalf("PanelBotConfig = %+v, want %+v", b, want)
 	}
@@ -245,5 +256,76 @@ func TestDirectory_ConcurrentSetAndRead(t *testing.T) {
 	}
 	if b, _ := d.Bot("panel-b2c3d4e5"); b.Name != fmt.Sprintf("第%d版", writes) {
 		t.Fatalf("after the writes Bot = %+v, want the last generation", b)
+	}
+}
+
+func TestConfigBot_SettingsAndDefaults(t *testing.T) {
+	identity := config.BotConfig{ID: "qq-main", Platform: "qq", PlatformSelfID: "30001"}
+	s := store.BotSettings{BotInstanceID: "qq-main", Name: "小明", Admins: []string{"29999"}, PrivateChat: "allowlist",
+		PrivateAllowlist: []string{"20001"}, Groups: []string{"10001", "10002"}, PrivateTemplate: "lighthouse",
+		GroupTemplate: "night-owl", Skills: []string{"memory"}, UpdatedBy: "panel:admin"}
+	b := ConfigBot(config.BotConfig{ID: "qq-main", Platform: "qq", PlatformSelfID: "30001", Name: "旧名字",
+		Legacy: config.LegacyBotSettings{Admins: &[]string{"20002"}}}, s)
+	want := config.BotConfig{ID: "qq-main", Platform: "qq", PlatformSelfID: "30001", Name: "小明", Admins: []string{"29999"},
+		EnabledConversations: []conloomapi.ConversationRef{{Type: conloomapi.ConvGroup, PlatformID: "10001"},
+			{Type: conloomapi.ConvGroup, PlatformID: "10002"}, {Type: conloomapi.ConvPrivate, PlatformID: "20001"}},
+		PrivateChat: "allowlist", PrivateTemplate: "lighthouse", GroupTemplate: "night-owl", Skills: []string{"memory"}}
+	if !reflect.DeepEqual(b, want) {
+		t.Fatalf("ConfigBot = %+v\nwant %+v: the identity of the bot, the rest from the settings", b, want)
+	}
+	s.Admins[0], s.Skills[0] = "改过", "改过"
+	if b.Admins[0] != "29999" || b.Skills[0] != "memory" {
+		t.Fatal("ConfigBot shares the settings' lists")
+	}
+	s.Admins[0], s.Skills[0], s.UpdatedBy = "29999", "memory", ""
+	if got := Settings(b); !reflect.DeepEqual(got, s) {
+		t.Fatalf("Settings(ConfigBot(s)) = %+v, want %+v", got, s)
+	}
+
+	d := DefaultSettings("tg-main")
+	wantDefault := store.BotSettings{BotInstanceID: "tg-main", Name: "tg-main", Admins: []string{}, PrivateChat: "admins",
+		PrivateAllowlist: []string{}, Groups: []string{}, PrivateTemplate: "default", GroupTemplate: "default", Skills: []string{}}
+	if !reflect.DeepEqual(d, wantDefault) {
+		t.Fatalf("DefaultSettings = %+v, want %+v", d, wantDefault)
+	}
+	tg := ConfigBot(config.BotConfig{ID: "tg-main", Platform: "telegram", PlatformSelfID: "30002"}, d)
+	if tg.Name != "tg-main" || len(tg.Admins) != 0 || tg.PrivateChat != "admins" || len(tg.EnabledConversations) != 0 ||
+		tg.TemplateFor(conloomapi.ConvGroup) != "default" || tg.TemplateFor(conloomapi.ConvPrivate) != "default" || len(tg.Skills) != 0 {
+		t.Fatalf("config bot with the default settings = %+v", tg)
+	}
+	if got := Settings(identity); got.Admins == nil || got.Groups == nil || got.PrivateAllowlist == nil || got.Skills == nil {
+		t.Fatalf("Settings of a bot without lists = %+v, want empty lists, not nil", got)
+	}
+}
+
+func TestLegacySettingsAndWithDefaults(t *testing.T) {
+	name, template := "小明", "lighthouse"
+	bots := []config.BotConfig{
+		{ID: "qq-main", Platform: "qq", PlatformSelfID: "30001", Legacy: config.LegacyBotSettings{Name: &name, PersonaTemplate: &template,
+			EnabledConversations: &[]conloomapi.ConversationRef{{Type: conloomapi.ConvGroup, PlatformID: "10001"},
+				{Type: conloomapi.ConvPrivate, PlatformID: "20001"}}}},
+		{ID: "tg-main", Platform: "telegram", PlatformSelfID: "30002"},
+	}
+	want := []store.BotSettings{
+		{BotInstanceID: "qq-main", Name: "小明", Admins: []string{}, PrivateChat: "admins", PrivateAllowlist: []string{"20001"},
+			Groups: []string{"10001"}, PrivateTemplate: "lighthouse", GroupTemplate: "lighthouse", Skills: []string{}, UpdatedBy: "system"},
+		{BotInstanceID: "tg-main", Name: "织语", Admins: []string{}, PrivateChat: "admins", PrivateAllowlist: []string{},
+			Groups: []string{}, PrivateTemplate: "default", GroupTemplate: "default", Skills: []string{}, UpdatedBy: "system"},
+	}
+	if got := LegacySettings(bots); !reflect.DeepEqual(got, want) {
+		t.Fatalf("LegacySettings = %+v\nwant %+v: the file's keys, the old defaults for the rest", got, want)
+	}
+
+	given := WithDefaults(bots)
+	if len(given) != 2 {
+		t.Fatalf("WithDefaults = %+v", given)
+	}
+	for i, b := range given {
+		if want := ConfigBot(bots[i], DefaultSettings(bots[i].ID)); !reflect.DeepEqual(b, want) {
+			t.Errorf("WithDefaults[%d] = %+v, want %+v: the defaults, not the legacy keys", i, b, want)
+		}
+	}
+	if given[0].Name != "qq-main" || given[0].Legacy.Name != nil {
+		t.Errorf("WithDefaults[0] = %+v, want named after its ID without the legacy keys", given[0])
 	}
 }

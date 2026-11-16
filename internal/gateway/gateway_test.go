@@ -125,11 +125,12 @@ type serverOpts struct {
 }
 
 type testServer struct {
-	URL     string
-	handler http.Handler
-	st      *sqlite.DB
-	logs    *syncBuffer
-	seq     atomic.Int64
+	URL       string
+	handler   http.Handler
+	st        *sqlite.DB
+	panelBots *core.PanelBotService
+	logs      *syncBuffer
+	seq       atomic.Int64
 }
 
 func newTestServer(t *testing.T) *testServer {
@@ -183,7 +184,11 @@ func newTestServerWith(t *testing.T, opts serverOpts) *testServer {
 		t.Fatalf("LoadTemplates: %v", err)
 	}
 	policies := policy.NewService(st, cfg.DefaultGroupPolicy)
-	bots := botdir.New(cfg.Bots)
+	// So are the settings of its bot, published by Load below.
+	if _, err := st.MigrateConfigBotSettings(context.Background(), botdir.LegacySettings(cfg.Bots), time.Now()); err != nil {
+		t.Fatalf("MigrateConfigBotSettings: %v", err)
+	}
+	bots := botdir.New(botdir.WithDefaults(cfg.Bots))
 	o, err := core.New(core.Deps{
 		Store:     st,
 		Router:    router.New(profiles, router.BreakerConfig{}, time.Now),
@@ -201,6 +206,9 @@ func newTestServerWith(t *testing.T, opts serverOpts) *testServer {
 		t.Fatalf("core.New: %v", err)
 	}
 	t.Cleanup(o.Close)
+	if err := o.PanelBots().Load(context.Background()); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 
 	metricsHandler := opts.metrics
 	if metricsHandler == nil {
@@ -216,7 +224,7 @@ func newTestServerWith(t *testing.T, opts serverOpts) *testServer {
 	handler := gateway.New(deps).Handler()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return &testServer{URL: srv.URL, handler: handler, st: st, logs: logs}
+	return &testServer{URL: srv.URL, handler: handler, st: st, panelBots: o.PanelBots(), logs: logs}
 }
 
 type response struct {
@@ -797,6 +805,47 @@ func TestCapabilities(t *testing.T) {
 		!slices.Equal(c.ActionTypes, want.ActionTypes) || !slices.Equal(c.TriggerTypes, want.TriggerTypes) ||
 		!slices.Equal(c.EnabledConversations, want.EnabledConversations) {
 		t.Fatalf("capabilities = %+v, want %+v", c, want)
+	}
+}
+
+// TestCapabilities_FromSettings checks that the capabilities of a config bot
+// come from the bot directory, which has the bot's stored settings once they
+// are published, while its identity stays the config file's.
+func TestCapabilities_FromSettings(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	capabilities := func() conloomapi.Capabilities {
+		t.Helper()
+		r := s.do(t, http.MethodGet, "/api/v1/capabilities", adapterToken, nil, nil)
+		if r.status != http.StatusOK {
+			t.Fatalf("capabilities: status %d, body %s", r.status, r.body)
+		}
+		var c conloomapi.Capabilities
+		decode(t, r.body, &c)
+		return c
+	}
+	if c := capabilities(); c.BotName != "织语" || c.PrivateChat != "admins" ||
+		!slices.Equal(c.EnabledConversations, []conloomapi.ConversationRef{{Type: "group", PlatformID: "10001"}}) {
+		t.Fatalf("capabilities = %+v, want the settings migrated from the config file", c)
+	}
+
+	if err := s.st.PutBotSettings(ctx, store.BotSettings{BotInstanceID: "bot_main", Name: "小明", Admins: []string{"29999"},
+		PrivateChat: "allowlist", PrivateAllowlist: []string{"20001"}, Groups: []string{"10002", "10003"},
+		PrivateTemplate: "default", GroupTemplate: "default", UpdatedBy: "panel:admin"}); err != nil {
+		t.Fatal(err)
+	}
+	if c := capabilities(); c.BotName != "织语" {
+		t.Fatalf("capabilities before the settings are published = %+v, want the old ones", c)
+	}
+	if err := s.panelBots.Load(ctx); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	c := capabilities()
+	want := []conloomapi.ConversationRef{{Type: "group", PlatformID: "10002"}, {Type: "group", PlatformID: "10003"},
+		{Type: "private", PlatformID: "20001"}}
+	if c.BotInstanceID != "bot_main" || c.BotName != "小明" || c.PlatformSelfID != "30001" || c.PrivateChat != "allowlist" ||
+		!slices.Equal(c.EnabledConversations, want) {
+		t.Fatalf("capabilities = %+v, want the stored settings (groups, then the private allowlist) with the config file's identity", c)
 	}
 }
 

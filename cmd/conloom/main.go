@@ -45,9 +45,9 @@ const (
 	exitUsage = 2
 	// exitConfig is EX_CONFIG from sysexits.h: the configuration cannot be
 	// loaded or is invalid, a credential in it was refused, or it still has
-	// persona templates already migrated into the database. Restarting does
-	// not help, so the systemd units do not restart on it. It differs from 2,
-	// the status of a Go panic, which must still be restarted.
+	// persona templates or bot settings already migrated into the database.
+	// Restarting does not help, so the systemd units do not restart on it. It
+	// differs from 2, the status of a Go panic, which must still be restarted.
 	exitConfig = 78
 )
 
@@ -275,7 +275,7 @@ func runMock(ctx context.Context, args []string, sio stdio) error {
 	if !ok {
 		return configErr(fmt.Errorf("adapters.mock.bot_instance_id: unknown bot %q", mc.BotInstanceID))
 	}
-	user, err := mockUser(*userFlag, bot)
+	user, err := mockUser(ctx, *userFlag, cfg, bot)
 	if err != nil {
 		return err
 	}
@@ -294,12 +294,18 @@ func runMock(ctx context.Context, args []string, sio stdio) error {
 	return err
 }
 
-func mockUser(flagValue string, bot config.BotConfig) (mock.User, error) {
+// mockUser is the user flagValue names or, without one, the first admin of
+// bot (see botAdmins).
+func mockUser(ctx context.Context, flagValue string, cfg *config.Config, bot config.BotConfig) (mock.User, error) {
 	if flagValue == "" {
-		if len(bot.Admins) == 0 {
-			return mock.User{}, configErr(fmt.Errorf("bot %q has no admins; pass -user id:name", bot.ID))
+		admins, err := botAdmins(ctx, cfg, bot)
+		if err != nil {
+			return mock.User{}, err
 		}
-		return mock.User{PlatformID: bot.Admins[0], Name: "管理员"}, nil
+		if len(admins) == 0 {
+			return mock.User{}, configErr(fmt.Errorf("bot %q has no admins (they are set in the web panel); pass -user id:name", bot.ID))
+		}
+		return mock.User{PlatformID: admins[0], Name: "管理员"}, nil
 	}
 	id, name, _ := strings.Cut(flagValue, ":")
 	if strings.TrimSpace(id) == "" {
@@ -309,6 +315,32 @@ func mockUser(flagValue string, bot config.BotConfig) (mock.User, error) {
 		name = id
 	}
 	return mock.User{PlatformID: id, Name: name}, nil
+}
+
+// botAdmins returns the admins of the config bot bot: those of its settings
+// stored in the database of cfg's data directory when there is one with
+// them, else those the config file still sets for it from before the
+// settings moved into the database (config.BotConfig.Legacy), if any. It
+// does not create a database.
+func botAdmins(ctx context.Context, cfg *config.Config, bot config.BotConfig) ([]string, error) {
+	if _, err := os.Stat(cfg.DBPath()); err == nil {
+		db, err := sqlite.Open(ctx, cfg.DBPath())
+		if err != nil {
+			return nil, fmt.Errorf("open database %s: %w", cfg.DBPath(), err)
+		}
+		defer db.Close()
+		s, err := db.GetBotSettings(ctx, bot.ID)
+		if err == nil {
+			return s.Admins, nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return nil, fmt.Errorf("read the settings of bot %s: %w", bot.ID, err)
+		}
+	}
+	if bot.Legacy.Admins != nil {
+		return *bot.Legacy.Admins, nil
+	}
+	return nil, nil
 }
 
 func mockConv(flagValue string, user mock.User) (mock.Conv, error) {

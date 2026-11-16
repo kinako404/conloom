@@ -95,7 +95,12 @@ func newGateway(t *testing.T) string {
 	ob := outbox.New(st, outbox.Config{}, metrics, nil)
 	personas := persona.NewService(st)
 	policies := policy.NewService(st, cfg.DefaultGroupPolicy)
-	bots := botdir.New(cfg.Bots)
+	// The bot's settings are migrated into the database and published by
+	// Load below, as on the first start of the app.
+	if _, err := st.MigrateConfigBotSettings(context.Background(), botdir.LegacySettings(cfg.Bots), time.Now()); err != nil {
+		t.Fatalf("MigrateConfigBotSettings: %v", err)
+	}
+	bots := botdir.New(botdir.WithDefaults(cfg.Bots))
 	o, err := core.New(core.Deps{
 		Store:     st,
 		Router:    router.New([]*router.Profile{{Role: router.RoleShort, Config: p, Client: openai.New(p, nil)}}, router.BreakerConfig{}, time.Now),
@@ -112,6 +117,9 @@ func newGateway(t *testing.T) string {
 		t.Fatalf("core.New: %v", err)
 	}
 	t.Cleanup(o.Close)
+	if err := o.PanelBots().Load(context.Background()); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 	srv := httptest.NewServer(gateway.New(gateway.Deps{
 		Orchestrator: o, Outbox: ob, Personas: personas, Policies: policies, Store: st,
 		Config: cfg, Bots: bots, Metrics: promhttp.HandlerFor(reg, promhttp.HandlerOpts{}),

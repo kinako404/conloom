@@ -4,6 +4,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/kinako404/conloom/internal/search"
@@ -41,13 +42,19 @@ var (
 	// conversations, tasks or outbox actions.
 	ErrBotHasData = errors.New("store: bot still has conversations")
 	// ErrAlreadyMigrated refuses a migration of the config file's persona
-	// templates into a database they were already migrated into.
-	ErrAlreadyMigrated = errors.New("store: config persona templates already migrated")
+	// templates or bot settings into a database they were already migrated
+	// into.
+	ErrAlreadyMigrated = errors.New("store: already migrated from the config file")
 )
 
 // MetaConfigTemplatesMigrated is the database fact (app_meta key) holding
 // when the config file's persona templates were migrated into the database.
 const MetaConfigTemplatesMigrated = "config_templates_migrated"
+
+// MetaConfigBotSettingsMigrated is the database fact (app_meta key) holding
+// when the settings of the config file's bots were migrated into the
+// database (see BotSettings).
+const MetaConfigBotSettingsMigrated = "config_bot_settings_migrated"
 
 // MetaPanelMemoryScoped is the database fact (app_meta key) holding when the
 // memory of panel chats, kept per chat by older versions, was merged into
@@ -57,6 +64,16 @@ const MetaPanelMemoryScoped = "panel_memory_scoped"
 // ConversationKey returns the canonical "bot:platform:type:id" key of a conversation.
 func ConversationKey(botID, platform, convType, convID string) string {
 	return botID + ":" + platform + ":" + convType + ":" + convID
+}
+
+// ConversationType returns the type part of the conversation key key, "" when
+// key is not a conversation key.
+func ConversationType(key string) string {
+	parts := strings.SplitN(key, ":", 4)
+	if len(parts) != 4 {
+		return ""
+	}
+	return parts[2]
 }
 
 type Store interface {
@@ -81,6 +98,17 @@ type Store interface {
 	// ErrBotHasData, with nothing deleted, while it still has conversations,
 	// tasks or outbox actions.
 	DeletePanelBot(ctx context.Context, id string) error
+	// GetBotSettings returns the stored settings of the config bot id,
+	// ErrNotFound without any.
+	GetBotSettings(ctx context.Context, id string) (BotSettings, error)
+	// ListBotSettings returns the stored settings of config bots ordered by
+	// bot ID.
+	ListBotSettings(ctx context.Context) ([]BotSettings, error)
+	// PutBotSettings stores s as the settings of the config bot
+	// s.BotInstanceID, replacing its stored ones but keeping their CreatedAt.
+	// Nil lists are stored as empty; a zero UpdatedAt as now and a zero
+	// CreatedAt of new settings as UpdatedAt.
+	PutBotSettings(ctx context.Context, s BotSettings) error
 	// Ingest writes an event and its derived records in one transaction. If the
 	// event's idempotency key already exists nothing is written and the stored
 	// event is returned as existing.

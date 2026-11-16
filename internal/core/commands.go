@@ -59,7 +59,7 @@ func (o *Orchestrator) execCommand(ctx context.Context, task store.TaskRecord, t
 	by := "command:" + task.ActorPlatformUserID
 	switch task.Command {
 	case "help":
-		pv, err := o.personas.Current(ctx, task.ConversationKey, bot.PersonaTemplate)
+		pv, err := o.personas.Current(ctx, task.ConversationKey, bot.TemplateFor(convType(task.ConversationKey)))
 		if err != nil {
 			return "", err
 		}
@@ -108,7 +108,7 @@ func (o *Orchestrator) execCommand(ctx context.Context, task store.TaskRecord, t
 func (o *Orchestrator) personaCommand(ctx context.Context, task store.TaskRecord, bot config.BotConfig, isAdmin bool, by, args string) (string, error) {
 	fields := strings.Fields(args)
 	if len(fields) == 0 {
-		pv, err := o.personas.Current(ctx, task.ConversationKey, bot.PersonaTemplate)
+		pv, err := o.personas.Current(ctx, task.ConversationKey, bot.TemplateFor(convType(task.ConversationKey)))
 		if err != nil {
 			return "", err
 		}
@@ -130,7 +130,7 @@ func (o *Orchestrator) personaCommand(ctx context.Context, task store.TaskRecord
 		if !slices.Contains(names, name) {
 			return CopyPersonaUnknownTemplate(name, names), nil
 		}
-		pv, err := o.personas.Update(ctx, task.ConversationKey, bot.PersonaTemplate,
+		pv, err := o.personas.Update(ctx, task.ConversationKey, bot.TemplateFor(convType(task.ConversationKey)),
 			conloomapi.PersonaPut{Template: name, Reason: "command"}, by)
 		if err != nil && pv.Version == 0 {
 			return "", err

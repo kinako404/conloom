@@ -337,7 +337,7 @@ func TestAdapter_LogsGroupsNotEnabledOnce(t *testing.T) {
 	waitFor(t, 5*time.Second, "offset 103", func() bool { return hasOffset(tg, 103) })
 	var lines []string
 	for _, l := range strings.Split(logs.String(), "\n") {
-		if strings.Contains(l, "enabled_conversations") {
+		if strings.Contains(l, "the bot's groups in the web panel") {
 			lines = append(lines, l)
 		}
 	}

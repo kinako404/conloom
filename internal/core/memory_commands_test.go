@@ -86,7 +86,7 @@ func TestMemoryCommand_AffinityShowsTierAndValue(t *testing.T) {
 	p := conloomapi.DefaultPersona()
 	p.CharacterName = "小织"
 	bot, _ := env.cfg.Bot(testBot)
-	if _, err := env.o.personas.Update(context.Background(), testConvKey, bot.PersonaTemplate,
+	if _, err := env.o.personas.Update(context.Background(), testConvKey, bot.TemplateFor(conloomapi.ConvGroup),
 		conloomapi.PersonaPut{Persona: &p, Reason: "test"}, "test"); err != nil {
 		t.Fatal(err)
 	}

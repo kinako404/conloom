@@ -3,7 +3,6 @@ package panel
 import (
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 
 	"github.com/kinako404/conloom/internal/botdir"
@@ -24,12 +23,10 @@ func (s *Server) configView(w http.ResponseWriter, r *http.Request, _ *Session) 
 }
 
 // redactedConfig is the configuration in effect, keyed as in the YAML file,
-// with the bots of bots: the config file's as written in it, then those
-// created in the panel as they take effect. A config bot whose persona
-// template is gone thus shows the file's template, not the default it falls
-// back to. It is built field by field from an explicit list, so a field
-// added to the configuration is left out until it is listed here; secrets
-// only show whether they are set, and URLs go through redactURL.
+// with the bots of bots (see botsView). It is built field by field from an
+// explicit list, so a field added to the configuration is left out until it
+// is listed here; secrets only show whether they are set, and URLs go
+// through redactURL.
 //
 // The default policies are shown whole: they are behaviour settings shared
 // with the Bearer API's policy endpoints and hold no credentials.
@@ -44,7 +41,7 @@ func redactedConfig(c *config.Config, bots *botdir.Directory) map[string]any {
 		},
 		"storage":                map[string]any{"data_dir": c.Storage.DataDir},
 		"api_tokens":             apiTokensView(c.APITokens),
-		"bots":                   botsView(writtenBots(bots)),
+		"bots":                   botsView(bots),
 		"model_profiles":         modelProfilesView(c.ModelProfiles),
 		"default_group_policy":   c.DefaultGroupPolicy,
 		"default_private_policy": c.DefaultPrivatePolicy,
@@ -115,33 +112,26 @@ func apiTokensView(tokens []config.APIToken) []map[string]any {
 	return out
 }
 
-// writtenBots lists the config bots of bots as configured, then its panel
-// bots as they take effect. All lists one entry per config bot before the
-// panel bots.
-func writtenBots(bots *botdir.Directory) []config.BotConfig {
+// botsView shows the bots of bots keyed as in the YAML file: the config
+// file's as written in it, which is only their identity (their settings are
+// in the database and shown with the bots), then those created in the panel
+// as they take effect, each marked with "source": "panel".
+func botsView(bots *botdir.Directory) []map[string]any {
 	configured, all := bots.ConfigBots(), bots.All()
-	return append(slices.Clone(configured), all[len(configured):]...)
-}
-
-// botsView shows bots as keyed in the YAML file; a bot created in the panel
-// is marked with "source": "panel". Config bots may not be on the panel
-// platform, so it tells them apart within the one listing.
-func botsView(bots []config.BotConfig) []map[string]any {
-	out := make([]map[string]any, 0, len(bots))
-	for _, b := range bots {
+	out := make([]map[string]any, 0, len(all))
+	for _, b := range configured {
+		out = append(out, map[string]any{"id": b.ID, "platform": b.Platform, "platform_self_id": b.PlatformSelfID})
+	}
+	for _, b := range all[len(configured):] {
 		convs := make([]map[string]any, 0, len(b.EnabledConversations))
 		for _, c := range b.EnabledConversations {
 			convs = append(convs, map[string]any{"type": c.Type, "platform_id": c.PlatformID})
 		}
-		v := map[string]any{
+		out = append(out, map[string]any{
 			"id": b.ID, "platform": b.Platform, "name": b.Name, "platform_self_id": b.PlatformSelfID,
 			"admins": strs(b.Admins), "enabled_conversations": convs, "private_chat": b.PrivateChat,
-			"persona_template": b.PersonaTemplate, "skills": strs(b.Skills),
-		}
-		if b.Platform == conloomapi.PlatformPanel {
-			v["source"] = "panel"
-		}
-		out = append(out, v)
+			"persona_template": b.PrivateTemplate, "skills": strs(b.Skills), "source": sourcePanel,
+		})
 	}
 	return out
 }

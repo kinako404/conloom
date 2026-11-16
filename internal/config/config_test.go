@@ -74,8 +74,6 @@ var exampleEnv = map[string]string{
 	"CONLOOM_ADAPTER_TOKEN":        "fake-adapter-token",
 	"CONLOOM_ADMIN_TOKEN":          "fake-admin-token",
 	"CONLOOM_BOT_SELF_ID":          "30001",
-	"CONLOOM_ADMIN_QQ":             "29999",
-	"CONLOOM_GROUP_ID":             "10001",
 	"CONLOOM_NAPCAT_WS_URL":        "ws://127.0.0.1:9",
 	"CONLOOM_NAPCAT_TOKEN":         "fake-napcat-token",
 }
@@ -85,9 +83,6 @@ var telegramEnv = map[string]string{
 	"CONLOOM_TG_BOT_TOKEN":     "30002:fake-telegram-token",
 	"CONLOOM_TG_ADAPTER_TOKEN": "fake-tg-adapter-token",
 	"CONLOOM_TG_BOT_ID":        "30002",
-	"CONLOOM_TG_ADMIN_ID":      "20001",
-	"CONLOOM_TG_GROUP_ID":      "-1001234567890",
-	"CONLOOM_TG_FRIEND_ID":     "20002",
 }
 
 // setExampleEnv sets the variables of envs and unsets every other variable
@@ -181,15 +176,8 @@ func TestLoad_ExampleFileParsesWithEnv(t *testing.T) {
 	if !ok {
 		t.Fatal("bot_main not found")
 	}
-	if bot.Platform != "qq" || bot.Name != "织语" || bot.PlatformSelfID != "30001" {
-		t.Errorf("bot = %+v", bot)
-	}
-	if !slices.Equal(bot.Admins, []string{"29999"}) {
-		t.Errorf("admins = %v", bot.Admins)
-	}
-	wantConv := []conloomapi.ConversationRef{{Type: "group", PlatformID: "10001"}}
-	if !reflect.DeepEqual(bot.EnabledConversations, wantConv) {
-		t.Errorf("enabled_conversations = %+v", bot.EnabledConversations)
+	if want := (BotConfig{ID: "bot_main", Platform: "qq", PlatformSelfID: "30001"}); !reflect.DeepEqual(bot, want) {
+		t.Errorf("bot = %+v, want %+v: the example keeps only the identity, the settings are in the database", bot, want)
 	}
 
 	short := cfg.ModelProfiles["short_context"]
@@ -305,10 +293,8 @@ func TestLoad_ExampleTelegramUncommented(t *testing.T) {
 	if !ok {
 		t.Fatal("bot_tg not found")
 	}
-	wantTGConvs := []conloomapi.ConversationRef{{Type: "group", PlatformID: "-1001234567890"}, {Type: "private", PlatformID: "20002"}}
-	if tgBot.Platform != "telegram" || tgBot.PlatformSelfID != "30002" || !slices.Equal(tgBot.Admins, []string{"20001"}) ||
-		tgBot.PrivateChat != "allowlist" || !reflect.DeepEqual(tgBot.EnabledConversations, wantTGConvs) {
-		t.Errorf("bot_tg = %+v", tgBot)
+	if want := (BotConfig{ID: "bot_tg", Platform: "telegram", PlatformSelfID: "30002"}); !reflect.DeepEqual(tgBot, want) {
+		t.Errorf("bot_tg = %+v, want %+v", tgBot, want)
 	}
 	var tgToken *APIToken
 	for i := range cfg.APITokens {
@@ -358,14 +344,14 @@ func TestLoad_DotEnvDoesNotOverrideProcessEnv(t *testing.T) {
 
 	cfg := mustLoad(t, path)
 	bot := cfg.Bots[0]
-	if bot.Name != "from-process" {
-		t.Errorf("name = %q, want process env to win", bot.Name)
+	if bot.Legacy.Name == nil || *bot.Legacy.Name != "from-process" {
+		t.Errorf("name = %v, want process env to win", bot.Legacy.Name)
 	}
 	if bot.PlatformSelfID != "30001" {
 		t.Errorf("platform_self_id = %q, want value from .env", bot.PlatformSelfID)
 	}
-	if !slices.Equal(bot.Admins, []string{"29999"}) {
-		t.Errorf("admins = %v", bot.Admins)
+	if bot.Legacy.Admins == nil || !slices.Equal(*bot.Legacy.Admins, []string{"29999"}) {
+		t.Errorf("admins = %v", bot.Legacy.Admins)
 	}
 	if len(cfg.MissingEnv) != 0 {
 		t.Errorf("MissingEnv = %v", cfg.MissingEnv)
@@ -404,9 +390,8 @@ func TestLoad_DefaultsApplied(t *testing.T) {
 		t.Errorf("telegram = %+v, want %+v", cfg.Adapters.Telegram, wantTG)
 	}
 
-	bot := cfg.Bots[0]
-	if bot.Name != "织语" || bot.PrivateChat != "admins" || bot.PersonaTemplate != "default" {
-		t.Errorf("bot defaults = %+v", bot)
+	if want := (BotConfig{ID: "bot_main", Platform: "qq"}); !reflect.DeepEqual(cfg.Bots[0], want) {
+		t.Errorf("bot = %+v, want %+v: a bot's settings and their defaults come from the bot directory", cfg.Bots[0], want)
 	}
 
 	wantRuntime := RuntimeConfig{
@@ -471,8 +456,8 @@ func TestLoad_Skills(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := mustLoad(t, writeConfig(t, string(base)))
-	if cfg.Skills.Dir != "" || cfg.Bots[0].Skills != nil {
-		t.Errorf("skills without configuration = %+v / %v, want none", cfg.Skills, cfg.Bots[0].Skills)
+	if cfg.Skills.Dir != "" || cfg.Bots[0].Legacy.Skills != nil {
+		t.Errorf("skills without configuration = %+v / %v, want none", cfg.Skills, cfg.Bots[0].Legacy.Skills)
 	}
 
 	withSkills := strings.Replace(string(base), "  - id: bot_main\n", "  - id: bot_main\n    skills: [memory, time]\n", 1) +
@@ -482,8 +467,8 @@ func TestLoad_Skills(t *testing.T) {
 	if want := filepath.Join(filepath.Dir(path), "my-skills"); cfg.Skills.Dir != want {
 		t.Errorf("skills.dir = %q, want %q", cfg.Skills.Dir, want)
 	}
-	if !slices.Equal(cfg.Bots[0].Skills, []string{"memory", "time"}) {
-		t.Errorf("bots[0].skills = %v", cfg.Bots[0].Skills)
+	if s := cfg.Bots[0].Legacy.Skills; s == nil || !slices.Equal(*s, []string{"memory", "time"}) {
+		t.Errorf("bots[0].skills = %v, want the legacy key parsed", s)
 	}
 	if err := cfg.ValidateServe(); err != nil {
 		t.Errorf("ValidateServe: %v", err)
@@ -868,7 +853,7 @@ func TestValidateServe_Rules(t *testing.T) {
 	}{
 		{"no bots", func(c *Config) { c.Bots = nil }, []string{"bots"}},
 		{"duplicate bot id", func(c *Config) { c.Bots = append(c.Bots, c.Bots[0]) }, []string{"bots[1].id", "duplicate"}},
-		{"bad private_chat", func(c *Config) { c.Bots[0].PrivateChat = "everyone" }, []string{"bots[0].private_chat"}},
+		{"bad legacy private_chat", func(c *Config) { c.Bots[0].Legacy.PrivateChat = ptr("everyone") }, []string{"bots[0].private_chat"}},
 		{"empty platform_self_id", func(c *Config) {
 			c.Bots[0].PlatformSelfID = ""
 			c.MissingEnv = []string{"CONLOOM_BOT_SELF_ID"}
@@ -909,16 +894,19 @@ func TestValidateServe_Rules(t *testing.T) {
 		{"bad reply quote", func(c *Config) { c.DefaultGroupPolicy.Reply.Quote = "sometimes" },
 			[]string{"default_group_policy.reply.quote", `"sometimes"`}},
 		{"empty platform", func(c *Config) { c.Bots[0].Platform = " " }, []string{"bots[0].platform:"}},
-		{"empty group id", func(c *Config) {
-			c.Bots[0].EnabledConversations[0].PlatformID = ""
+		{"empty legacy group id", func(c *Config) {
+			c.Bots[0].Legacy.EnabledConversations = &[]conloomapi.ConversationRef{{Type: conloomapi.ConvGroup}}
 			c.MissingEnv = []string{"CONLOOM_GROUP_ID"}
 		}, []string{"bots[0].enabled_conversations[0].platform_id", "CONLOOM_GROUP_ID"}},
-		{"bad conversation type", func(c *Config) { c.Bots[0].EnabledConversations[0].Type = "grop" },
-			[]string{"bots[0].enabled_conversations[0].type", `"grop"`}},
-		{"empty admin", func(c *Config) {
-			c.Bots[0].Admins = []string{"29999", ""}
+		{"bad legacy conversation type", func(c *Config) {
+			c.Bots[0].Legacy.EnabledConversations = &[]conloomapi.ConversationRef{{Type: "grop", PlatformID: "10001"}}
+		}, []string{"bots[0].enabled_conversations[0].type", `"grop"`}},
+		{"empty legacy admin", func(c *Config) {
+			c.Bots[0].Legacy.Admins = &[]string{"29999", ""}
 			c.MissingEnv = []string{"CONLOOM_ADMIN_QQ"}
 		}, []string{"bots[0].admins[1]", "CONLOOM_ADMIN_QQ"}},
+		{"empty legacy persona_template", func(c *Config) { c.Bots[0].Legacy.PersonaTemplate = ptr(" ") },
+			[]string{"bots[0].persona_template: must not be empty"}},
 		{"zero max_concurrency", func(c *Config) {
 			p := c.ModelProfiles["short_context"]
 			p.Runtime.MaxConcurrency = 0
@@ -1003,8 +991,8 @@ func TestValidateServe_Rules(t *testing.T) {
 		{"duplicate token name", func(c *Config) {
 			c.APITokens = append(c.APITokens, APIToken{Name: c.APITokens[0].Name, Token: "fake-other-token", BotInstanceID: "bot_main"})
 		}, []string{"api_tokens[1].name", "duplicate"}},
-		{"empty skill name", func(c *Config) { c.Bots[0].Skills = []string{"time", " "} }, []string{"bots[0].skills[1]"}},
-		{"duplicate skill", func(c *Config) { c.Bots[0].Skills = []string{"time", "memory", "time"} },
+		{"empty legacy skill name", func(c *Config) { c.Bots[0].Legacy.Skills = &[]string{"time", " "} }, []string{"bots[0].skills[1]"}},
+		{"duplicate legacy skill", func(c *Config) { c.Bots[0].Legacy.Skills = &[]string{"time", "memory", "time"} },
 			[]string{"bots[0].skills[2]", `duplicate skill "time"`}},
 		{"zero ops_retention", func(c *Config) { c.Runtime.OpsRetention.Duration = 0 },
 			[]string{"runtime.ops_retention", "[24h, 8760h]", "0s"}},
@@ -1143,12 +1131,12 @@ func TestValidateTelegram(t *testing.T) {
 func TestValidateServe_PrivateChatValues(t *testing.T) {
 	cfg := mustLoad(t, "testdata/valid.yaml")
 	for _, v := range []string{"admins", "allowlist", "all", "off"} {
-		cfg.Bots[0].PrivateChat = v
+		cfg.Bots[0].Legacy.PrivateChat = ptr(v)
 		if err := cfg.ValidateServe(); err != nil {
 			t.Errorf("private_chat %q: %v", v, err)
 		}
 	}
-	cfg.Bots[0].PrivateChat = "everyone"
+	cfg.Bots[0].Legacy.PrivateChat = ptr("everyone")
 	err := cfg.ValidateServe()
 	if err == nil || !strings.Contains(err.Error(), "admins|allowlist|all|off") {
 		t.Errorf("private_chat everyone: err = %v, want the accepted values listed", err)
@@ -1188,9 +1176,9 @@ func TestValidateServe_AcceptsBoundaryValues(t *testing.T) {
 	p = cfg.ModelProfiles["long_context"]
 	p.Runtime.MaxRetries = 5
 	cfg.ModelProfiles["long_context"] = p
-	cfg.Bots[0].Admins = nil
-	cfg.Bots[0].EnabledConversations = append(cfg.Bots[0].EnabledConversations,
-		conloomapi.ConversationRef{Type: "private", PlatformID: "20001"})
+	cfg.Bots[0].Legacy.Admins = &[]string{}
+	cfg.Bots[0].Legacy.EnabledConversations = &[]conloomapi.ConversationRef{
+		{Type: "group", PlatformID: "10001"}, {Type: "private", PlatformID: "20001"}}
 	cfg.Server.Timezone = "UTC"
 	for _, r := range [][2]time.Duration{{24 * time.Hour, 24 * time.Hour}, {8760 * time.Hour, 87600 * time.Hour}} {
 		cfg.Runtime.OpsRetention.Duration, cfg.Runtime.AuditRetention.Duration = r[0], r[1]
@@ -1319,6 +1307,75 @@ func TestBotConfig_PrivateAllowed(t *testing.T) {
 			if !bot.PrivateAllowed(conloomapi.PlatformPanel, user) {
 				t.Errorf("%s: PrivateAllowed(panel, %s) = false, want true", mode, user)
 			}
+		}
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// TestLoad_LegacyBotSettings loads a bot entry of a config file from before
+// the settings moved into the database: every moved key is kept as written,
+// for the migration, and none sets the bot's settings.
+func TestLoad_LegacyBotSettings(t *testing.T) {
+	cfg := loadWith(t, "")
+	if keys := cfg.Bots[0].Legacy.Keys(); keys != nil {
+		t.Fatalf("legacy keys of an identity-only bot = %v, want none", keys)
+	}
+
+	base, err := os.ReadFile("testdata/valid.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := `    name: 小明
+    admins: ["29999"]
+    enabled_conversations:
+      - {type: group, platform_id: "10001"}
+      - {type: private, platform_id: "20001"}
+    private_chat: allowlist
+    persona_template: lighthouse
+    skills: [memory, time]
+`
+	cfg = mustLoad(t, writeConfig(t, strings.Replace(string(base), "    platform: qq\n", "    platform: qq\n"+legacy, 1)))
+	if err := cfg.ValidateServe(); err != nil {
+		t.Fatalf("ValidateServe of the legacy keys: %v", err)
+	}
+	b := cfg.Bots[0]
+	if !slices.Equal(b.Legacy.Keys(), []string{"name", "admins", "private_chat", "enabled_conversations", "persona_template", "skills"}) {
+		t.Errorf("legacy keys = %v, want all six", b.Legacy.Keys())
+	}
+	if b.Name != "" || b.Admins != nil || b.EnabledConversations != nil || b.PrivateChat != "" || b.PrivateTemplate != "" ||
+		b.GroupTemplate != "" || b.Skills != nil {
+		t.Errorf("bot = %+v, want the legacy keys to set none of its settings", b)
+	}
+	got := b.WithLegacySettings()
+	want := BotConfig{ID: "bot_main", Platform: "qq", PlatformSelfID: "30001", Name: "小明", Admins: []string{"29999"},
+		EnabledConversations: []conloomapi.ConversationRef{{Type: "group", PlatformID: "10001"}, {Type: "private", PlatformID: "20001"}},
+		PrivateChat:          "allowlist", PrivateTemplate: "lighthouse", GroupTemplate: "lighthouse", Skills: []string{"memory", "time"},
+		Legacy: b.Legacy}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("WithLegacySettings = %+v\nwant %+v", got, want)
+	}
+
+	cfg = mustLoad(t, writeConfig(t, strings.Replace(string(base), "    platform: qq\n", "    platform: qq\n    admins: []\n", 1)))
+	b = cfg.Bots[0]
+	if !slices.Equal(b.Legacy.Keys(), []string{"admins"}) {
+		t.Errorf("legacy keys = %v, want admins: an empty list is still a key the file has", b.Legacy.Keys())
+	}
+	got = b.WithLegacySettings()
+	want = BotConfig{ID: "bot_main", Platform: "qq", PlatformSelfID: "30001", Name: "织语", Admins: []string{},
+		PrivateChat: "admins", PrivateTemplate: "default", GroupTemplate: "default", Legacy: b.Legacy}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("WithLegacySettings without the other keys = %+v\nwant %+v: the defaults the old version used", got, want)
+	}
+}
+
+func TestBotConfig_TemplateFor(t *testing.T) {
+	b := BotConfig{PrivateTemplate: "lighthouse", GroupTemplate: "night-owl"}
+	for convType, want := range map[string]string{
+		conloomapi.ConvGroup: "night-owl", conloomapi.ConvPrivate: "lighthouse", "": "lighthouse",
+	} {
+		if got := b.TemplateFor(convType); got != want {
+			t.Errorf("TemplateFor(%q) = %q, want %q", convType, got, want)
 		}
 	}
 }

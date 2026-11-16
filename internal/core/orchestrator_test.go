@@ -374,6 +374,10 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 		cfg.ModelProfiles[string(router.RoleVision)] = p
 	}
 	cfg.LegacyPersonaTemplates = map[string]conloomapi.PersonaDoc{}
+	for i, b := range cfg.Bots {
+		cfg.Bots[i] = b.WithLegacySettings()
+		cfg.Bots[i].Legacy = config.LegacyBotSettings{}
+	}
 	if opts.configure != nil {
 		opts.configure(cfg)
 	}
@@ -400,7 +404,7 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 	}
 	env.policies = policy.NewService(st, cfg.DefaultGroupPolicy)
 	env.reg = prometheus.NewRegistry()
-	bots := botdir.New(cfg.Bots)
+	bots := botdir.New(migratedBots(t, st, cfg.Bots))
 	personas := migratedPersonas(t, st, cfg.LegacyPersonaTemplates)
 	personas.SetTemplateUsers(bots.TemplateUsers)
 	logger := slog.New(slog.NewTextHandler(env.logs, nil))
@@ -447,6 +451,26 @@ func migratedPersonas(t *testing.T, st *sqlite.DB, legacy map[string]conloomapi.
 		t.Fatalf("LoadTemplates: %v", err)
 	}
 	return personas
+}
+
+// migratedBots stores the settings of the config bots bots in st as on the
+// first start with a config file that still sets them (baseTestConfig does;
+// testOpts.configure changes them) and returns the bots as the directory has
+// them after that start.
+func migratedBots(t *testing.T, st *sqlite.DB, bots []config.BotConfig) []config.BotConfig {
+	t.Helper()
+	rows := make([]store.BotSettings, 0, len(bots))
+	out := make([]config.BotConfig, 0, len(bots))
+	for _, b := range bots {
+		s := botdir.Settings(b)
+		s.UpdatedBy = "system"
+		rows = append(rows, s)
+		out = append(out, botdir.ConfigBot(b, s))
+	}
+	if _, err := st.MigrateConfigBotSettings(context.Background(), rows, time.Now()); err != nil {
+		t.Fatalf("MigrateConfigBotSettings: %v", err)
+	}
+	return out
 }
 
 type evOpt func(*conloomapi.Event)
