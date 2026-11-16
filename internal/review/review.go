@@ -199,32 +199,44 @@ type foldedText struct {
 	from, to []int
 }
 
-// foldBlocked folds s for blocked-word matching rune by rune: NFKD, so that
-// full-width and other compatibility forms match their plain letters, then
-// lower case, dropping format characters such as zero-width spaces and
-// combining marks. White space and punctuation are kept, so that words do not
-// join into false matches.
+// foldBlocked folds s for blocked-word matching one normalization segment (a
+// letter with its combining marks) at a time: NFKC, so that full-width and
+// other compatibility forms match their plain letters while kana and Hangul
+// syllables stay whole, then lower case, dropping format characters such as
+// zero-width spaces and variation selectors. Latin, Greek and Cyrillic letters
+// also lose their accents. White space and punctuation are kept, so that words
+// do not join into false matches.
 func foldBlocked(s string) foldedText {
 	var b strings.Builder
 	var f foldedText
-	for i := 0; i < len(s); {
-		c, size := utf8.DecodeRuneInString(s[i:])
-		var r string
-		if c < utf8.RuneSelf {
-			r = string(unicode.ToLower(c))
-		} else {
-			r = strings.Map(func(c rune) rune {
-				if unicode.In(c, unicode.Cf, unicode.Mn, unicode.Me) {
-					return -1
+	var it norm.Iter
+	it.InitString(norm.NFKC, s)
+	accented := false
+	start, n := 0, 0
+	for !it.Done() {
+		seg := strings.ToLower(string(it.Next()))
+		for _, c := range seg {
+			switch {
+			case unicode.Is(unicode.Cf, c) || unicode.Is(unicode.Variation_Selector, c):
+			case unicode.Is(unicode.Mn, c) && accented:
+			case unicode.In(c, unicode.Latin, unicode.Greek, unicode.Cyrillic):
+				accented = true
+				for _, d := range norm.NFKD.String(string(c)) {
+					if !unicode.Is(unicode.Mn, d) {
+						b.WriteRune(d)
+					}
 				}
-				return c
-			}, strings.ToLower(norm.NFKD.String(s[i:i+size])))
+			default:
+				accented = false
+				b.WriteRune(c)
+			}
 		}
-		b.WriteString(r)
-		for range len(r) {
-			f.from, f.to = append(f.from, i), append(f.to, i+size)
+		if end := it.Pos(); end > start {
+			for range b.Len() - n {
+				f.from, f.to = append(f.from, start), append(f.to, end)
+			}
+			start, n = end, b.Len()
 		}
-		i += size
 	}
 	f.text = b.String()
 	return f

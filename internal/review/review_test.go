@@ -150,6 +150,42 @@ func TestOutput_BlockedWordsMatchFolded(t *testing.T) {
 	}
 }
 
+func TestOutput_BlockedWordsKeepKanaAndHangulWhole(t *testing.T) {
+	r := New(nil, Options{})
+	pol := basicPolicy()
+	for _, c := range []struct{ word, in string }{
+		{"ばか", "はかる時間がない"},
+		{"バカ", "ハカセ"},
+		{"가", "각자"},
+		{"바보", "바봉"},
+		{"한", "하나"},
+	} {
+		pol.BlockedWords = []string{c.word}
+		for _, action := range []string{VerdictBlock, VerdictSanitize} {
+			pol.Action = action
+			if got := r.Output(c.in, pol); got.Verdict != VerdictAllow || got.Text != c.in {
+				t.Errorf("%s %q in Output(%q) = %+v, want it allowed", action, c.word, c.in, got)
+			}
+		}
+	}
+
+	pol.Action = VerdictSanitize
+	for _, c := range []struct{ word, in, sanitized string }{
+		{"ばか", "それはばかだ", "それは**だ"},
+		{"ばか", "それは\u306f\u3099かだ", "それは**だ"},
+		{"バカ", "ﾊﾞｶだ", "**だ"},
+		{"바보", "너는 바보야", "너는 **야"},
+		{"바보", "너는 바\u200b보야", "너는 **야"},
+		{"ｂａｄ", "so BAD", "so ***"},
+		{"cafe", "Ca\ufe0ffé au lait", "**** au lait"},
+	} {
+		pol.BlockedWords = []string{c.word}
+		if got := r.Output(c.in, pol); got.Text != c.sanitized || got.Verdict != VerdictSanitize {
+			t.Errorf("sanitize %q in Output(%q) = %+v, want %q", c.word, c.in, got, c.sanitized)
+		}
+	}
+}
+
 func TestOutput_BlockedWordAllow(t *testing.T) {
 	pol := basicPolicy()
 	pol.Action = "allow"
