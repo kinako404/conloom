@@ -136,16 +136,33 @@ func TestAffinityGuidance_IntimacyNoneAtAcquaintance(t *testing.T) {
 }
 
 func TestAffinityGuidance_IntimacyCustomLevels(t *testing.T) {
-	env := newTestOrchestrator(t, testOpts{configure: injectConfig(true)})
 	side := guidanceSide
 	side.Levels = []string{conloomapi.IntimacyNone, conloomapi.IntimacyLight, conloomapi.IntimacyLight,
 		conloomapi.IntimacyMajor, conloomapi.IntimacyMajor}
-	last := lastContent(env.guidancePrivate(t, 50, true, &side))
-	if want := CopyDirectiveAffinity("熟悉", true) + "\n" + CopyIntimacySide(conloomapi.IntimacyLight, side); !strings.Contains(last, want) {
-		t.Errorf("request lacks %q:\n%s", want, last)
-	}
-	if !strings.Contains(last, "现在只偶尔流露一点，大部分时候还是平常的你。") {
-		t.Errorf("request lacks the light mix wording:\n%s", last)
+	for _, c := range []struct {
+		tier     string
+		affinity int
+		level    string
+		mix      string
+		absent   string
+	}{
+		// The default levels give none at 认识 and half at 亲近.
+		{"认识", 30, conloomapi.IntimacyLight, "现在只偶尔流露一点，大部分时候还是平常的你。", ""},
+		{"亲近", 70, conloomapi.IntimacyMajor, "现在以它为主，但你本来的性格、说话习惯和底线不变。", "现在平常的你和它大约各占一半。"},
+	} {
+		t.Run(c.tier, func(t *testing.T) {
+			env := newTestOrchestrator(t, testOpts{configure: injectConfig(true)})
+			last := lastContent(env.guidancePrivate(t, c.affinity, true, &side))
+			if want := CopyDirectiveAffinity(c.tier, true) + "\n" + CopyIntimacySide(c.level, side); !strings.Contains(last, want) {
+				t.Errorf("request lacks %q:\n%s", want, last)
+			}
+			if !strings.Contains(last, c.mix) {
+				t.Errorf("request lacks the %s mix wording %q:\n%s", c.level, c.mix, last)
+			}
+			if c.absent != "" && strings.Contains(last, c.absent) {
+				t.Errorf("request carries the default levels' wording %q:\n%s", c.absent, last)
+			}
+		})
 	}
 }
 
