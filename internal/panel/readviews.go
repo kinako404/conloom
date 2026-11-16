@@ -12,7 +12,8 @@ import (
 
 // getPolicy returns the current policy, the defaults as version 0 when none is
 // stored (policy.Service.Current stores nothing), the stored versions newest
-// first and the memory limits.
+// first and the memory limits in effect, under the policy the conversation's
+// memory follows (see memoryPolicy).
 func (s *Server) getPolicy(w http.ResponseWriter, r *http.Request, _ *Session) {
 	conv, ok := s.conversation(w, r)
 	if !ok {
@@ -32,7 +33,12 @@ func (s *Server) getPolicy(w http.ResponseWriter, r *http.Request, _ *Session) {
 	for _, pv := range versions {
 		out = append(out, newPolicyVersionView(pv))
 	}
-	mp := cur.Policy.Memory
+	pol, err := s.memoryPolicy(r.Context(), conv, cur.Policy)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	mp := pol.Memory
 	s.writeJSON(w, http.StatusOK, struct {
 		Current      policyVersionView   `json:"current"`
 		Versions     []policyVersionView `json:"versions"`
@@ -45,8 +51,8 @@ func (s *Server) getPolicy(w http.ResponseWriter, r *http.Request, _ *Session) {
 }
 
 // memoryLimitsView is a conversation's summary and note limits: those in
-// effect under its policy and its type's defaults, which a policy value of 0
-// stands for.
+// effect under the policy its memory follows and its type's defaults, which a
+// policy value of 0 stands for.
 type memoryLimitsView struct {
 	SummaryMaxChars        int `json:"summary_max_chars"`
 	NoteMaxChars           int `json:"note_max_chars"`

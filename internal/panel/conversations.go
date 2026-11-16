@@ -99,21 +99,36 @@ func (s *Server) getConversation(w http.ResponseWriter, r *http.Request, _ *Sess
 	s.writeJSON(w, http.StatusOK, v)
 }
 
+// memoryPolicy is the policy conv's memory follows (memory.Admin.Policy):
+// own, conv's current policy, unless conv shares its memory scope, as a panel
+// chat does, with other chats.
+func (s *Server) memoryPolicy(ctx context.Context, conv store.ConversationRecord, own conloomapi.GroupPolicy) (conloomapi.GroupPolicy, error) {
+	if memory.ScopeKey(conv) == conv.Key {
+		return own, nil
+	}
+	return s.d.MemoryAdmin.Policy(ctx, conv)
+}
+
 // conversationView adds the conversation's current policy and persona
-// version to st without writing either.
+// version to st without writing either. MemoryEnabled is under the policy
+// its memory follows (see memoryPolicy).
 func (s *Server) conversationView(ctx context.Context, st store.ConversationStats) (conversationView, error) {
 	pv, err := s.d.Policies.Current(ctx, st.Key)
 	if err != nil {
 		return conversationView{}, err
 	}
 	p := pv.Policy
+	mp, err := s.memoryPolicy(ctx, st.ConversationRecord, p)
+	if err != nil {
+		return conversationView{}, err
+	}
 	v := conversationView{
 		Key: st.Key, BotInstanceID: st.BotInstanceID, Platform: st.Platform, Type: st.Type,
 		PlatformConversationID: st.PlatformConversationID, MessageCount: st.MessageCount,
 		LastMessageAt:    nullTime(st.LastMessageAt),
 		Paused:           p.Concurrency.MaxInteractiveRequests == 0,
 		ProactiveEnabled: p.Proactive.Enabled,
-		MemoryEnabled:    p.Memory.Enabled && p.Concurrency.AllowLongRequests,
+		MemoryEnabled:    mp.Memory.Enabled && mp.Concurrency.AllowLongRequests,
 		MemoryScope:      memory.ScopeKey(st.ConversationRecord),
 	}
 	if st.Type == conloomapi.ConvPrivate {

@@ -153,3 +153,70 @@ func TestConversation_PanelChatsReportSharedScope(t *testing.T) {
 		t.Errorf("A after ending the status in B = %+v, want no status and no return", st)
 	}
 }
+
+func TestConversation_PanelChatsReportMemoryInEffect(t *testing.T) {
+	h := newWriteHarness(t, nil)
+	a := h.seedConv(store.PlatformPanel, conloomapi.ConvPrivate, "panel_a")
+	b := h.seedConv(store.PlatformPanel, conloomapi.ConvPrivate, "panel_b")
+	platform := h.seedConv("qq", conloomapi.ConvPrivate, "private_20001")
+	at := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	h.seedMessage(a, "我在学钢琴", at, false)
+	h.seedMessage(b, "我养了一只猫", at.Add(time.Minute), false)
+
+	setMemory := func(conv store.ConversationRecord, enabled bool, noteMax int) {
+		t.Helper()
+		p := policyWith(func(p *conloomapi.GroupPolicy) {
+			p.Memory.Enabled = enabled
+			p.Memory.NoteMaxChars = noteMax
+		})
+		if w := h.write(http.MethodPut, convPath(conv.Key, "policy"), conloomapi.PolicyPut{Policy: p, MemoryPresent: true}); w.Code != http.StatusOK {
+			t.Fatalf("PUT policy of %s: %d %s", conv.Key, w.Code, w.Body)
+		}
+	}
+	listed := func() map[string]bool {
+		t.Helper()
+		var list struct {
+			Conversations []convResp `json:"conversations"`
+		}
+		h.getJSON("/panel/api/conversations", &list)
+		out := map[string]bool{}
+		for _, c := range list.Conversations {
+			out[c.Key] = c.MemoryEnabled
+		}
+		return out
+	}
+	check := func(when string, wantEnabled bool, wantNoteMax int) {
+		t.Helper()
+		got := listed()
+		for _, conv := range []store.ConversationRecord{a, b} {
+			var one convResp
+			h.getJSON(convPath(conv.Key), &one)
+			var state conloomapi.MemoryState
+			h.getJSON(convPath(conv.Key, "memory"), &state)
+			var pol struct {
+				MemoryLimits struct {
+					NoteMaxChars int `json:"note_max_chars"`
+				} `json:"memory_limits"`
+			}
+			h.getJSON(convPath(conv.Key, "policy"), &pol)
+			if got[conv.Key] != wantEnabled || one.MemoryEnabled != wantEnabled || state.Enabled != wantEnabled {
+				t.Errorf("%s: memory_enabled of %s listed %v, detail %v, memory tab %v; want %v",
+					when, conv.Key, got[conv.Key], one.MemoryEnabled, state.Enabled, wantEnabled)
+			}
+			if pol.MemoryLimits.NoteMaxChars != wantNoteMax || state.NoteMaxChars != wantNoteMax {
+				t.Errorf("%s: note_max_chars of %s on the policy page %d, memory tab %d; want %d",
+					when, conv.Key, pol.MemoryLimits.NoteMaxChars, state.NoteMaxChars, wantNoteMax)
+			}
+		}
+		if got[platform.Key] {
+			t.Errorf("%s: platform private chat listed with memory on", when)
+		}
+	}
+
+	// A, whose policy has memory on, is not the newest chat: B's policy is in
+	// effect for the shared memory.
+	setMemory(a, true, 80)
+	check("memory on in A only", false, 1000)
+	setMemory(b, true, 90)
+	check("memory on in B, the newest chat", true, 90)
+}
