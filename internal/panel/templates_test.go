@@ -675,6 +675,10 @@ func TestTemplatesAPI_ExportImageReadFails(t *testing.T) {
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"name": "lighthouse"`) {
 		t.Errorf("aborted export = %d %.300s, want the file up to lighthouse", w.Code, w.Body)
 	}
+	if got := h.counter("conloom_panel_requests_total", map[string]string{
+		"route": "GET /panel/api/persona-templates/export", "code": "200"}); got != 1 {
+		t.Errorf("aborted export counted %v times, want 1", got)
+	}
 	checkTemplateAudits(t, h, "persona.template.export", "")
 }
 

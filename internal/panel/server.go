@@ -157,6 +157,7 @@ func (s *Server) Handler() http.Handler {
 		defer func() {
 			if v := recover(); v != nil {
 				if v == http.ErrAbortHandler {
+					s.countRequest(pattern, rec.status)
 					panic(v)
 				}
 				s.log.Error("panic serving panel request", "trace_id", traceID(r.Context()), "method", r.Method,
