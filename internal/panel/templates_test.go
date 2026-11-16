@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/internal/store/sqlite"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -550,6 +552,125 @@ func TestTemplatesAPI_ExportAll(t *testing.T) {
 	if def := other.template("default"); def.Source != "db" {
 		t.Errorf("imported default = %+v, want it stored", def)
 	}
+}
+
+// imageReadSpy is a store whose persona image reads first call onRead, which
+// may fail them.
+type imageReadSpy struct {
+	*sqlite.DB
+	onRead func(id string) error
+}
+
+func (s *imageReadSpy) GetPersonaImage(ctx context.Context, id string, original bool) (store.PersonaImage, error) {
+	if s.onRead != nil {
+		if err := s.onRead(id); err != nil {
+			return store.PersonaImage{}, err
+		}
+	}
+	return s.DB.GetPersonaImage(ctx, id, original)
+}
+
+// newExportHarness is a writeHarness whose persona templates read their
+// images through the returned spy, with the templates lighthouse and moon,
+// each with an image of its own, returned in that order.
+func newExportHarness(t *testing.T) (*writeHarness, *imageReadSpy, [2][]byte) {
+	t.Helper()
+	var spy *imageReadSpy
+	h := newWriteHarness(t, func(d *Deps) {
+		spy = &imageReadSpy{DB: d.Store.(*sqlite.DB)}
+		d.Personas = persona.NewService(spy)
+		if err := d.Personas.LoadTemplates(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	images := [2][]byte{pngData(t, testImage(64, 32, true)), pngData(t, testImage(48, 32, false))}
+	for i, name := range []string{"lighthouse", "moon"} {
+		doc := lighthousePersona()
+		doc.AppearanceImage = decodeUpload(t, h.upload(images[i], "image/png")).ID
+		decodeTemplate(t, h.putTemplate(name, doc, ""), http.StatusCreated)
+	}
+	return h, spy, images
+}
+
+// serveExport GETs path as the logged-in user into w and returns what the
+// handler panicked with, nil when it did not.
+func serveExport(h *writeHarness, w http.ResponseWriter, path string) (panicked any) {
+	r := httptest.NewRequest(http.MethodGet, "http://"+testHost+path, nil)
+	r.RemoteAddr = testIP + ":40000"
+	withCookie(h.cookie)(r)
+	defer func() { panicked = recover() }()
+	h.h.ServeHTTP(w, r)
+	return nil
+}
+
+func TestTemplatesAPI_ExportStreamsTemplates(t *testing.T) {
+	h, spy, images := newExportHarness(t)
+	w := httptest.NewRecorder()
+	var bodies []string
+	spy.onRead = func(string) error {
+		bodies = append(bodies, w.Body.String())
+		return nil
+	}
+	if v := serveExport(h, w, templatesExportPath); v != nil {
+		t.Fatalf("export panicked: %v", v)
+	}
+	f := decodeExport(t, w, "persona-templates-20261113.json")
+	if len(f.Templates) != 4 || f.Templates[2].Name != "lighthouse" || f.Templates[3].Name != "moon" {
+		t.Fatalf("exported templates = %+v, want cat, default, lighthouse and moon", f.Templates)
+	}
+	// The file is written one template at a time, so that at most one image
+	// is in memory: lighthouse's image is sent before moon's is read.
+	if len(bodies) != 2 {
+		t.Fatalf("image reads = %d, want 2", len(bodies))
+	}
+	if !strings.Contains(bodies[1], base64.StdEncoding.EncodeToString(images[0])) {
+		t.Errorf("moon's image was read before lighthouse's was written (%d bytes written)", len(bodies[1]))
+	}
+	want, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := w.Body.String(); got != string(want)+"\n" {
+		t.Errorf("export is not the exchange file indented by two spaces:\n%.600s\nwant\n%.600s", got, want)
+	}
+}
+
+func TestTemplatesAPI_ExportImageReadFails(t *testing.T) {
+	h, spy, _ := newExportHarness(t)
+	ids := map[string]string{}
+	for _, name := range []string{"lighthouse", "moon"} {
+		ids[name] = h.template(name).AppearanceImage
+	}
+
+	// Before anything is written, a failure is an error response.
+	spy.onRead = func(id string) error {
+		if id == ids["lighthouse"] {
+			return errors.New("disk I/O error")
+		}
+		return nil
+	}
+	w := httptest.NewRecorder()
+	if v := serveExport(h, w, templatePath("lighthouse", "export")); v != nil {
+		t.Fatalf("export of lighthouse panicked: %v", v)
+	}
+	errorBody(t, w, http.StatusInternalServerError, conloomapi.CodeInternal)
+
+	// Once the file has started, a failure aborts the response, so that the
+	// download fails rather than leaving a cut-off file.
+	spy.onRead = func(id string) error {
+		if id == ids["moon"] {
+			return errors.New("disk I/O error")
+		}
+		return nil
+	}
+	w = httptest.NewRecorder()
+	if v := serveExport(h, w, templatesExportPath); v != http.ErrAbortHandler {
+		t.Fatalf("export failing at moon's image panicked with %v, want http.ErrAbortHandler (status %d)", v, w.Code)
+	}
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"name": "lighthouse"`) {
+		t.Errorf("aborted export = %d %.300s, want the file up to lighthouse", w.Code, w.Body)
+	}
+	checkTemplateAudits(t, h, "persona.template.export", "")
 }
 
 func TestTemplatesAPI_ImportModes(t *testing.T) {

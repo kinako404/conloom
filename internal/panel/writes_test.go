@@ -249,6 +249,43 @@ func TestRestorePolicy(t *testing.T) {
 	}
 }
 
+func TestRestorePolicy_VersionWithoutSections(t *testing.T) {
+	h := newWriteHarness(t, nil)
+	// A version stored before the proactive and memory sections existed has
+	// them zero.
+	old := policyWith(func(p *conloomapi.GroupPolicy) {
+		p.Context.MaxRecentMessages = 30
+		p.Proactive, p.Memory = conloomapi.ProactivePolicy{}, conloomapi.MemoryPolicy{}
+	})
+	if _, err := h.db.AppendPolicyVersion(context.Background(), store.PolicyVersion{
+		ConversationKey: writeGroup.Key, Policy: old, UpdatedBy: "system",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	v2 := policyWith(func(p *conloomapi.GroupPolicy) {
+		p.Context.MaxRecentMessages = 40
+		p.Proactive.Enabled = false
+		p.Memory.Enabled = true
+		p.Memory.ConsolidateEvery = 120
+	})
+	if w := h.write(http.MethodPut, convPath(writeGroup.Key, "policy"),
+		conloomapi.PolicyPut{Policy: v2, ProactivePresent: true, MemoryPresent: true}); w.Code != http.StatusOK {
+		t.Fatalf("PUT policy: %d %s", w.Code, w.Body)
+	}
+	kept := h.currentPolicy().Policy
+
+	got := decodeCurrent[policyVersionResp](t, h.write(http.MethodPost, convPath(writeGroup.Key, "policy", "restore"),
+		map[string]any{"version": 1}), http.StatusOK)
+	if got.Version != 3 || got.Policy.Context.MaxRecentMessages != 30 {
+		t.Errorf("restore v1 = %+v, want v3 with max_recent_messages 30", got)
+	}
+	cur := h.currentPolicy()
+	if cur.Version != 3 || cur.Policy.Proactive != kept.Proactive || cur.Policy.Memory != kept.Memory {
+		t.Errorf("Current after restoring v1 = v%d proactive %+v memory %+v; want v3 keeping proactive %+v memory %+v",
+			cur.Version, cur.Policy.Proactive, cur.Policy.Memory, kept.Proactive, kept.Memory)
+	}
+}
+
 func TestPauseResume(t *testing.T) {
 	h := newWriteHarness(t, nil)
 	got := decodeCurrent[policyVersionResp](t, h.write(http.MethodPost, convPath(writeGroup.Key, "pause"), nil), http.StatusOK)

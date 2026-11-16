@@ -17,29 +17,37 @@ import (
 )
 
 // fakeChat is a ChatService over the harness's store: SubmitPanel records
-// the call and answers submitErr, CreatePanelChat stores a panel
-// conversation of a configured bot, DeletePanelChat answers deleteErr or
-// deletes panel conversations only, and Busy answers busy.
+// the call and answers submitErr, or suppressed as the reason the message is
+// not answered, CreatePanelChat stores a panel conversation of a configured
+// bot, DeletePanelChat answers deleteErr or deletes panel conversations only,
+// and Busy answers busy.
 type fakeChat struct {
 	h *storeHarness
 
-	mu        sync.Mutex
-	submitErr error
-	deleteErr error
-	submitted []string // convKey|panelUser|text
-	created   []string // botID|panelUser|displayName
-	deleted   []string
-	busy      map[string]bool
+	mu         sync.Mutex
+	submitErr  error
+	suppressed string
+	deleteErr  error
+	submitted  []string // convKey|panelUser|text
+	created    []string // botID|panelUser|displayName
+	deleted    []string
+	busy       map[string]bool
 }
 
-func (f *fakeChat) SubmitPanel(_ context.Context, convKey, panelUser, text string) (string, error) {
+func (f *fakeChat) SubmitPanel(_ context.Context, convKey, panelUser, text string) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.submitErr != nil {
-		return "", f.submitErr
+		return "", "", f.submitErr
 	}
 	f.submitted = append(f.submitted, convKey+"|"+panelUser+"|"+text)
-	return fmt.Sprintf("msg_panel_%d", len(f.submitted)), nil
+	return fmt.Sprintf("msg_panel_%d", len(f.submitted)), f.suppressed, nil
+}
+
+func (f *fakeChat) setSuppressed(reason string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.suppressed = reason
 }
 
 func (f *fakeChat) CreatePanelChat(_ context.Context, botID, panelUser, displayName string) (string, error) {
@@ -195,6 +203,9 @@ func TestChat_PostMessage(t *testing.T) {
 	if !strings.Contains(h.audits("panel.message")[0].Detail, "msg_panel_1") {
 		t.Errorf("audit detail %s lacks the message ID", h.audits("panel.message")[0].Detail)
 	}
+	if strings.Contains(w.Body.String(), "suppressed_reason") {
+		t.Errorf("body %s of an answered message has a suppressed_reason", w.Body)
+	}
 
 	errorBody(t, h.do(http.MethodPost, path, `{"text":"x"}`, withCookie(h.cookie)), http.StatusForbidden, conloomapi.CodeForbidden)
 	errorBody(t, h.write(http.MethodPost, convPath("qq-main:qq:private:missing", "messages"), map[string]string{"text": "x"}),
@@ -224,6 +235,24 @@ func TestChat_PostMessage(t *testing.T) {
 	if n := len(h.audits("panel.message")); n != 1 {
 		t.Fatalf("panel.message audits = %d, want only the accepted message's", n)
 	}
+}
+
+func TestChat_PostMessageNotAnswered(t *testing.T) {
+	h, chat := newChatHarness(t)
+	private := h.seedConv(store.PlatformPanel, conloomapi.ConvPrivate, "panel_1")
+	chat.setSuppressed(conloomapi.SuppressedPaused)
+
+	w := h.write(http.MethodPost, convPath(private.Key, "messages"), map[string]string{"text": "还在吗"})
+	var resp struct {
+		MessageID        string `json:"message_id"`
+		SuppressedReason string `json:"suppressed_reason"`
+	}
+	if w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &resp) != nil ||
+		resp.MessageID != "msg_panel_1" || resp.SuppressedReason != conloomapi.SuppressedPaused {
+		t.Fatalf("message the bot will not answer = %d %s, want 202 with message_id msg_panel_1 and suppressed_reason paused",
+			w.Code, w.Body)
+	}
+	checkChatAudit(t, h.audits("panel.message"), private.Key, "还在吗")
 }
 
 func TestChat_PlatformConversationRejected(t *testing.T) {

@@ -73,7 +73,7 @@ panel:
   - 组标题是 bot 的名字。配置文件里的 bot 标“配置”，注明“在配置文件里修改”；面板 bot 的组标题旁有“编辑”“删除”，引用的模板或技能已经不在时在标题下面标出（见 [面板 bot](#面板-bot)）。每组下面有“新建聊天”，左栏最上面有“新建 Bot”。
   - 左栏在打开聊天页时读取一次，新建 bot、编辑、删除和新建聊天之后重新读取；切换聊天只换右栏，左栏不重新读取，也不定时刷新。要重新读取（比如别的面板用户新建了聊天）时，点左栏上方的“刷新”。
   - 右栏是选中的聊天：标题是对方的名字和 bot，“会话详情”链接到这个会话的页面。还没选聊天时显示提示。地址里是平台上的会话时，只提示“聊天页只能打开面板里新建的聊天”，并给出会话详情的链接。
-- **会话**：所有 bot 的全部群聊和私聊，带消息数、最后一条消息的时间、是否暂停、主动发言和记忆开关、人设模板和版本。私聊的主动发言徽章显示主动找人的档位，如“主动：中”；总开关或档位关闭时显示“主动关”。右上角的“新建聊天”在面板里和 bot 开一个私聊，建好后在聊天页打开，见下文 [在面板里聊天](#在面板里聊天)。点进一个会话默认打开“消息”标签；面板里新建的聊天的详情里有“在聊天页打开”和“删除这个聊天”。有以下标签页：
+- **会话**：所有 bot 的全部群聊和私聊，带消息数、最后一条消息的时间、是否暂停、主动发言和记忆开关（面板里新建的聊天的记忆开关按最近有消息的那个面板聊天的策略，同记忆页）、人设模板和版本。私聊的主动发言徽章显示主动找人的档位，如“主动：中”；总开关或档位关闭时显示“主动关”。右上角的“新建聊天”在面板里和 bot 开一个私聊，建好后在聊天页打开，见下文 [在面板里聊天](#在面板里聊天)。点进一个会话默认打开“消息”标签；面板里新建的聊天的详情里有“在聊天页打开”和“删除这个聊天”。有以下标签页：
   - **消息**：按时间倒序浏览，从面板发出或送到面板的消息带“面板”标记（以前的版本能从面板接管平台私聊，那时发的消息留在平台私聊的记录里，同样带这个标记）；也可以输入关键词检索，规则和 `recall` 的关键词检索相同（任一词命中，按相关度排序，同分时新的在前），可以限定日期。
   - **策略**：常用字段做成了表单（主动发言、记忆、历史条数、分条上限 `reply.max_parts`，记忆的摘要和笔记字数上限 `memory.summary_max_chars`、`note_max_chars`（0 表示按会话类型的默认值，提示里写出本会话的默认值和当前生效的值）；私聊会话还有“私聊等待” `reply.private_wait` 和“私聊最长等待” `reply.private_max_wait`，写成 `6s`、`500ms`、`1m` 这样的时长，两项都填 0 表示用默认值；以及“主动找人档位” `proactive.private.level`（留空按“中”）和“免打扰开始”“免打扰结束” `proactive.private.quiet_start`、`quiet_end`，写成 `23:00` 这样的两位数时间，按 `server.timezone`，两项要么都填、要么都留空，都留空时按对方的作息推算，见 [配置：私聊主动找人](configuration.md#群策略)），另有“高级：JSON 编辑”可以整份替换；保存时服务端校验，不合法的值会在表单下方显示服务端给出的错误；暂停、恢复；历史版本列表，可以把任一版本恢复为新版本。字段含义见 [使用指南：私聊的节奏](usage.md#私聊的节奏)。
   - **人设**：编辑人设的各个字段、套用模板（人设模板目录里的，见 [人设模板和外观参考图](#人设模板和外观参考图)）、回滚到历史版本。会话还没有人设时只显示“尚未生成”和将要使用的模板，查看不会生成第 1 版。
@@ -259,7 +259,7 @@ panel:
 | `GET conversations/{key}/messages?before=&limit=` | 浏览消息，按 `seq` 游标翻页。每条消息带 `channel`：`panel` 表示从面板发出或送到面板，平台上的消息为空字符串 |
 | `GET conversations/{key}/messages?q=&from=&to=&offset=&limit=` | 检索消息，按 `offset` 翻页，响应里的 `next_offset` 是下一页 |
 | `GET conversations/{key}/chat?after=` | 面板聊天的增量拉取：`seq` 大于 `after`（默认 0）的消息，从旧到新，每次最多 200 条，格式同消息浏览；`typing` 为 true 表示会话有排队中或运行中的任务，或面板通道还有没送达、也没过期的分条；`next_after` 是下一次的 `after`（没有新消息时等于本次的 `after`） |
-| `GET conversations/{key}/policy` | 当前策略、历史版本和 `memory_limits`（`summary_max_chars`、`note_max_chars` 是当前生效的记忆字数上限，`default_summary_max_chars`、`default_note_max_chars` 是本会话类型的默认值，策略里写 0 时用它们） |
+| `GET conversations/{key}/policy` | 当前策略、历史版本和 `memory_limits`（`summary_max_chars`、`note_max_chars` 是当前生效的记忆字数上限，面板里新建的聊天按最近有消息的那个面板聊天的策略，同记忆页；`default_summary_max_chars`、`default_note_max_chars` 是本会话类型的默认值，策略里写 0 时用它们） |
 | `GET conversations/{key}/persona` | 当前人设、历史版本、可用模板；还没有人设时给出将要使用的模板，不写库。`minor` 是当前人设（没有时是该模板）的 `minor`，`content_mode` 是它在私聊里的内容模式（`open` 或 `protected`），与会话本身是群聊还是私聊无关 |
 | `GET conversations/{key}/memory` | 与 `GET /api/v1/conversations/{id}/memory` 相同；面板里新建的聊天返回 bot 共享范围的数据 |
 | `GET conversations/{key}/memory/revisions?user_id=` | 某成员的修订记录，不传 `user_id` 时是摘要的；按会话的记忆范围 |
@@ -267,7 +267,7 @@ panel:
 | `GET persona-templates` | 人设模板目录 `templates`，按名字排序。每项 `name`、`source`（`db` 或 `builtin`）、`persona_name`、`character_name`、`appearance_image`（没有参考图时为空字符串）、`users`（运行时用它作默认模板的 bot，每项 `id`、`name`、`source`，没有时为空列表）、`updated_by` 和 `updated_at`（最后写入的人和时间，内置的 `default` 为空字符串和 `null`） |
 | `GET persona-templates/{name}` | 单个模板：列表里的字段，加上整份人设 `persona`；不存在返回 404 |
 | `GET persona-templates/{name}/export` | 下载这个模板的导出文件 `persona-<模板名>.json`，不存在返回 404；写审计 `persona.template.export`（`HEAD` 只返回响应头，不写审计）。见 [人设模板和外观参考图](#人设模板和外观参考图) |
-| `GET persona-templates/export` | 下载全部模板的导出文件 `persona-templates-<YYYYMMDD>.json`（`server.timezone` 的当地日期）；写审计 `persona.template.export`（`HEAD` 只返回响应头，不写审计） |
+| `GET persona-templates/export` | 下载全部模板的导出文件 `persona-templates-<YYYYMMDD>.json`（`server.timezone` 的当地日期）；写审计 `persona.template.export`（`HEAD` 只返回响应头，不写审计）。文件一个模板一个模板地写出，同一时间只有一张参考图在内存里；已经开始写之后读取某个模板失败时，连接直接断开，下载失败，不会留下半截文件 |
 | `GET persona-images/{id}?size=` | 图片本身：`size` 为 `reply`（默认，缩小图，`image/jpeg`）或 `original`（原图，`image/png` 或 `image/jpeg`）；其他值返回 400，图片不存在返回 404 |
 | `GET tasks?status=&bot=&conversation=&before=&limit=` | 任务列表 |
 | `GET tasks/{id}` | 任务详情：任务、meta、动作、模型调用 |
@@ -282,7 +282,7 @@ panel:
 | `PUT bots/{id}` | 编辑面板 bot，请求同上，三个字段都必填，返回改后的 bot；配置 bot 返回 403 `FORBIDDEN`，不存在返回 404，正在删除返回 409 `CHAT_BUSY` |
 | `DELETE bots/{id}` | 删除面板 bot 和它的全部聊天，请求 `{"confirm_name"}`，返回 204；名字不一致返回 400，配置 bot 返回 403，不存在返回 404，正在删除或有聊天的任务没停下返回 409 `CHAT_BUSY`，可以重试。见 [面板 bot](#面板-bot) |
 | `PUT conversations/{key}/policy` | 请求体同 API 的 `PolicyPut`，返回新的当前版本 |
-| `POST conversations/{key}/policy/restore` | 请求 `{"version","reason"}`，把该历史版本的策略写成新版本 |
+| `POST conversations/{key}/policy/restore` | 请求 `{"version","reason"}`，把该历史版本的策略写成新版本；该版本在主动发言（`proactive`）或记忆（`memory`）一段出现之前保存、没有这一段时，保留当前的这一段 |
 | `POST conversations/{key}/pause`、`POST conversations/{key}/resume` | 暂停、恢复 |
 | `PUT conversations/{key}/persona` | 请求体同 API 的 `PersonaPut`（整份替换、回滚到版本、套用模板） |
 | `PUT conversations/{key}/memory/members/{user_id}` | 改备注或好感度，规则同 API |
@@ -292,7 +292,7 @@ panel:
 | `DELETE conversations/{key}/autonomy/bars/{name}` | 删除 bot 自建的这条状态条，规则同 API（人设后来加了同名条时只删自建的那条，人设的保留数值），变化记录的来源为 `panel`，审计 `autonomy.bar.remove`，返回 204；不是私聊、删人设的状态条时返回 400，没有这条自建的状态条时返回 404 |
 | `DELETE conversations/{key}/autonomy/effects/{name}` | 提前去掉 bot 的这个效果，变化记录的来源为 `panel`，审计 `autonomy.effect.remove`，返回 204；不是私聊返回 400，没有这个还在生效的效果时返回 404 |
 | `DELETE conversations/{key}/autonomy/status` | 结束私聊的当前状态并取消回来说话的定时，返回 204；不是私聊返回 400 |
-| `POST conversations/{key}/messages` | 面板聊天发消息，请求 `{"text"}`，返回 202 `{"message_id"}`。只限 `panel` 平台的会话；平台上的会话（私聊和群聊）、文本为空或超过 2000 字时返回 400，什么都不存；bot 正在删除时返回 409 `CHAT_BUSY` |
+| `POST conversations/{key}/messages` | 面板聊天发消息，请求 `{"text"}`，返回 202 `{"message_id"}`；消息存下了但 bot 不会回复时（如聊天暂停、限流、队列满）另带 `suppressed_reason`，取值同 API 的 `POST /events`（`paused`、`rate_limited`、`queue_full` 等）。只限 `panel` 平台的会话；平台上的会话（私聊和群聊）、文本为空或超过 2000 字时返回 400，什么都不存；bot 正在删除时返回 409 `CHAT_BUSY` |
 | `POST chats` | 新建面板聊天，请求 `{"bot_instance_id","display_name"}`，返回 201 `{"key"}`；bot 不存在时返回 404，正在删除时返回 409 `CHAT_BUSY` |
 | `DELETE conversations/{key}` | 删除面板聊天，返回 204；不是 `panel` 平台的会话返回 400；聊天里被取消的任务 5 秒内没停下时返回 409 `CHAT_BUSY`，可以重试 |
 | `PUT persona-templates/{name}` | 请求 `{"persona","reason"}`（`persona` 必填，是整份人设，`reason` 只进审计），覆盖同名模板或新建模板；返回模板，格式同 `GET persona-templates/{name}`，新建时 201，否则 200。名字或内容不合规则、图片不存在返回 400 |

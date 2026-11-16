@@ -13,7 +13,7 @@ import (
 
 // ChatService lets panel users chat with a bot; *core.Orchestrator is one.
 type ChatService interface {
-	SubmitPanel(ctx context.Context, convKey, panelUser, text string) (string, error)
+	SubmitPanel(ctx context.Context, convKey, panelUser, text string) (messageID, suppressed string, err error)
 	CreatePanelChat(ctx context.Context, botID, panelUser, displayName string) (string, error)
 	DeletePanelChat(ctx context.Context, convKey string) error
 	Busy(convKey string) bool
@@ -46,7 +46,9 @@ func (s *Server) chatFail(w http.ResponseWriter, r *http.Request, err error) {
 
 // postChatMessage sends text to the bot in a panel chat as the session's
 // user, through the panel channel; the chat service refuses other
-// conversations. The audit records the message ID, not the text.
+// conversations. It answers the message ID and, when the message is stored
+// but will not be answered, suppressed_reason as in the API's 202 to POST
+// /events. The audit records the message ID, not the text.
 func (s *Server) postChatMessage(w http.ResponseWriter, r *http.Request, sess *Session) {
 	chat, ok := s.chatService(w, r)
 	if !ok {
@@ -62,7 +64,7 @@ func (s *Server) postChatMessage(w http.ResponseWriter, r *http.Request, sess *S
 	if !s.decode(w, r, &req) {
 		return
 	}
-	id, err := chat.SubmitPanel(r.Context(), conv.Key, sess.User, req.Text)
+	id, suppressed, err := chat.SubmitPanel(r.Context(), conv.Key, sess.User, req.Text)
 	if err != nil {
 		s.chatFail(w, r, err)
 		return
@@ -71,8 +73,9 @@ func (s *Server) postChatMessage(w http.ResponseWriter, r *http.Request, sess *S
 		MessageID string `json:"message_id"`
 	}{id})
 	s.writeJSON(w, http.StatusAccepted, struct {
-		MessageID string `json:"message_id"`
-	}{id})
+		MessageID        string `json:"message_id"`
+		SuppressedReason string `json:"suppressed_reason,omitempty"`
+	}{id, suppressed})
 }
 
 // getChat lists the conversation's messages after the seq cursor after,

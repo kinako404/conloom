@@ -67,7 +67,9 @@ func (s *Server) putPolicy(w http.ResponseWriter, r *http.Request, sess *Session
 	s.writePolicy(w, pv)
 }
 
-// restorePolicy stores a stored policy version again as the newest version.
+// restorePolicy stores a stored policy version again as the newest version. A
+// version stored before the proactive or memory section existed has it zero;
+// such a section is left out, so the current one is kept.
 func (s *Server) restorePolicy(w http.ResponseWriter, r *http.Request, sess *Session) {
 	conv, ok := s.conversation(w, r)
 	if !ok {
@@ -104,8 +106,11 @@ func (s *Server) restorePolicy(w http.ResponseWriter, r *http.Request, sess *Ses
 	if reason == "" {
 		reason = fmt.Sprintf("restore v%d", req.Version)
 	}
-	pv, err := s.d.Policies.Update(r.Context(), conv.Key,
-		conloomapi.PolicyPut{Policy: old.Policy, Reason: reason, ProactivePresent: true, MemoryPresent: true}, panelActor(sess))
+	pv, err := s.d.Policies.Update(r.Context(), conv.Key, conloomapi.PolicyPut{
+		Policy: old.Policy, Reason: reason,
+		ProactivePresent: old.Policy.Proactive != (conloomapi.ProactivePolicy{}),
+		MemoryPresent:    old.Policy.Memory != (conloomapi.MemoryPolicy{}),
+	}, panelActor(sess))
 	if !s.versionStored(w, r, pv.Version, err) {
 		return
 	}
