@@ -307,6 +307,33 @@ func TestAssets_FormControlsAre16pxOnNarrowScreens(t *testing.T) {
 	}
 }
 
+// Every dialog is also a card, and .card sets margin-bottom, which overrides
+// the margin: auto that centers a modal dialog; dialog.dialog puts it back.
+func TestAssets_DialogsCentered(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	dialogs := 0
+	for name, text := range files {
+		for _, m := range regexp.MustCompile(`h\('dialog', \{ class: '([^']*)'`).FindAllStringSubmatch(text, -1) {
+			dialogs++
+			if classes := strings.Fields(m[1]); !slices.Contains(classes, "dialog") {
+				t.Errorf("%s: dialog with classes %q lacks the dialog class", name, m[1])
+			}
+		}
+	}
+	if dialogs == 0 {
+		t.Fatal("no dialogs found")
+	}
+	centered := false
+	for _, m := range cssRule.FindAllStringSubmatch(files["style.css"], -1) {
+		if strings.TrimSpace(m[1]) == "dialog.dialog" && regexp.MustCompile(`(?:^|[;\s])margin:\s*auto;`).MatchString(m[2]) {
+			centered = true
+		}
+	}
+	if !centered {
+		t.Error("style.css: dialog.dialog does not set margin: auto")
+	}
+}
+
 func TestAssets_InitialAffinityMatchesMemory(t *testing.T) {
 	js := assets(t, ".js")["views/conversation.js"]
 	m := regexp.MustCompile(`const INITIAL_AFFINITY = (\d+);`).FindStringSubmatch(js)
