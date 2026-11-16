@@ -170,10 +170,16 @@ func breaksBarName(r rune) bool {
 
 // ValidBarName reports whether name may name a bar: 1 to MaxBarNameRunes
 // runes, none of them whitespace, a control or zero-width character, 【, 】
-// or a colon.
+// or a colon, and not dots only (see dotsOnly).
 func ValidBarName(name string) bool {
 	n := utf8.RuneCountInString(name)
-	return n > 0 && n <= MaxBarNameRunes && !strings.ContainsFunc(name, breaksBarName)
+	return n > 0 && n <= MaxBarNameRunes && !strings.ContainsFunc(name, breaksBarName) && !dotsOnly(name)
+}
+
+// dotsOnly reports whether name is made of dots only, a path segment that the
+// panel's and the API's …/autonomy/buffs/{name} would never receive.
+func dotsOnly(name string) bool {
+	return name != "" && strings.Trim(name, ".") == ""
 }
 
 // isImageID reports whether s has the form of an image ID: 64 lowercase
@@ -269,6 +275,9 @@ func (p PersonaDoc) Validate() error {
 		}
 		if strings.ContainsFunc(bar.Name, breaksBarName) {
 			fail("%s.name must not contain whitespace, control or zero-width characters, 【, 】 or colons", path)
+		}
+		if dotsOnly(bar.Name) {
+			fail("%s.name must not be made of dots only", path)
 		}
 		if j, dup := seen[bar.Name]; dup {
 			fail("%s.name duplicates bars[%d].name %q", path, j, bar.Name)
