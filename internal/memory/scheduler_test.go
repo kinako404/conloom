@@ -96,7 +96,7 @@ func (r *schedRunner) Run(ctx context.Context, convKey string, manual bool) (Res
 			g.CursorSeq = recent[0].Seq
 		}
 		g.LastRunAt = time.Now()
-		if err := r.st.PutGroupMemory(context.Background(), g); err != nil {
+		if _, err := r.st.ApplyMemoryWrite(context.Background(), store.MemoryWrite{ConversationKey: convKey, Group: &g}); err != nil {
 			return Result{}, err
 		}
 	}
@@ -319,6 +319,9 @@ func TestScheduler_BacklogJumpOnlyOnEnableTransition(t *testing.T) {
 	wantCalls(t, e.runner.takeCalls(), schedCall{convKey: testConvKey, manual: true, pending: 100})
 	if got, want := e.cursor(t, testConvKey), e.latestSeq(t, testConvKey); got != want {
 		t.Fatalf("cursor after first run = %d, want %d", got, want)
+	}
+	if g, err := e.st.GetGroupMemory(ctx, testConvKey); err != nil || g.LastRunAt.IsZero() {
+		t.Fatalf("memory row after first run = %+v, %v; want its run time recorded", g, err)
 	}
 
 	e.setMemory(t, testConvKey, false, 1000)
