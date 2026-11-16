@@ -34,6 +34,9 @@ const (
 	// defaultPersonaTemplate is the persona template of a panel bot that names
 	// none, and the one a bot whose template does not exist uses instead.
 	defaultPersonaTemplate = "default"
+	// maxConfigBotIDs is the most different platform IDs each of a config
+	// bot's admins, private allowlist and groups may have.
+	maxConfigBotIDs = 500
 )
 
 // Errors of PanelBotService. The panel API answers ErrInvalidBot, which is
@@ -489,7 +492,8 @@ func (s *PanelBotService) validate(in PanelBotInput) (PanelBotInput, error) {
 // validateConfig returns in as it is stored: the name trimmed, the platform
 // IDs and skills without repeats and the persona templates "default" when
 // empty. Each platform ID must be non-empty, without whitespace, ':' or other
-// invisible characters, the private range one of config.PrivateChatModes,
+// invisible characters, each list at most maxConfigBotIDs different IDs long,
+// the private range one of config.PrivateChatModes,
 // the persona templates must exist and the skills be registered with all
 // their tools; a skill only for groups is fine, the core leaves it out of
 // private chats. Invalid input is ErrInvalidBot with the reason in Chinese.
@@ -512,6 +516,7 @@ func (s *PanelBotService) validateConfig(in ConfigBotInput) (ConfigBotInput, err
 		{"启用的群", in.Groups, &out.Groups},
 	} {
 		*l.out = []string{}
+		seen := make(map[string]bool, min(len(l.ids), maxConfigBotIDs))
 		for _, id := range l.ids {
 			switch {
 			case id == "":
@@ -520,9 +525,13 @@ func (s *PanelBotService) validateConfig(in ConfigBotInput) (ConfigBotInput, err
 				return unicode.IsSpace(r) || !unicode.IsGraphic(r) || strings.ContainsRune(config.KeySeparator, r)
 			}):
 				return invalid("%s：ID“%s”不能包含空白、冒号或不可见字符", l.label, id)
-			case !slices.Contains(*l.out, id):
-				*l.out = append(*l.out, id)
+			case seen[id]:
+				continue
+			case len(*l.out) == maxConfigBotIDs:
+				return invalid("%s：最多 %d 个 ID", l.label, maxConfigBotIDs)
 			}
+			seen[id] = true
+			*l.out = append(*l.out, id)
 		}
 	}
 	if modes := config.PrivateChatModes(); !slices.Contains(modes, in.PrivateChat) {

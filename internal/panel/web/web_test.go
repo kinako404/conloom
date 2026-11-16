@@ -392,7 +392,7 @@ func TestAssets_ConfigBotForm(t *testing.T) {
 		t.Errorf("PRIVATE_CHAT keys = %v, want config.PrivateChatModes %v", got, want)
 	}
 	for _, want := range []string{
-		"name: name.value.trim()", "admins: ids(admins)", "private_chat: privateChat.value",
+		"name: name.input.value.trim(),\n          admins: ids(admins)", "private_chat: privateChat.value",
 		"private_allowlist: ids(allowlist)", "groups: ids(groups)", "private_template: privateTemplate.value",
 		"group_template: groupTemplate.value", "skills: checkedSkills(boxes)",
 		".value.split('\\n').map((s) => s.trim()).filter(Boolean)", "(list || []).join('\\n')",

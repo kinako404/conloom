@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -181,5 +182,53 @@ func TestPanelBots_UpdateConfig(t *testing.T) {
 	}
 	if audits := env.botAudits(t, "panel.bot.update", testBot); len(audits) != 1 {
 		t.Errorf("panel.bot.update audits after refused updates = %d, want 1", len(audits))
+	}
+}
+
+// TestPanelBots_UpdateConfigCapsIDLists checks that each of a config bot's
+// admins, private allowlist and groups takes at most maxConfigBotIDs
+// different IDs, repeats not counting, and that a longer list is refused
+// with nothing stored.
+func TestPanelBots_UpdateConfigCapsIDLists(t *testing.T) {
+	env := panelBotEnv(t, testOpts{})
+	ctx := context.Background()
+	ids := func(n int) []string {
+		out := make([]string, 0, n)
+		for i := range n {
+			out = append(out, strconv.Itoa(20001+i))
+		}
+		return out
+	}
+	full := ids(maxConfigBotIDs)
+	in := ConfigBotInput{Name: "小明", Admins: append(slices.Clone(full), full...), PrivateChat: "allowlist",
+		PrivateAllowlist: full, Groups: full, PrivateTemplate: "default", GroupTemplate: "default"}
+	got, err := env.o.PanelBots().UpdateConfig(ctx, testBot, in, panelBotActor)
+	if err != nil {
+		t.Fatalf("UpdateConfig with %d IDs a list (admins repeated): %v", maxConfigBotIDs, err)
+	}
+	if !slices.Equal(got.Admins, full) || len(got.EnabledConversations) != 2*maxConfigBotIDs {
+		t.Fatalf("UpdateConfig = %d admins, %d enabled conversations; want %d admins once each and %d conversations",
+			len(got.Admins), len(got.EnabledConversations), maxConfigBotIDs, 2*maxConfigBotIDs)
+	}
+
+	over := ids(maxConfigBotIDs + 1)
+	for _, c := range []struct {
+		label string
+		edit  func(*ConfigBotInput)
+	}{
+		{"管理员", func(in *ConfigBotInput) { in.Admins = over }},
+		{"私聊白名单", func(in *ConfigBotInput) { in.PrivateAllowlist = over }},
+		{"启用的群", func(in *ConfigBotInput) { in.Groups = over }},
+	} {
+		bad := ConfigBotInput{Name: "小红", Admins: []string{}, PrivateChat: "admins", PrivateAllowlist: []string{},
+			Groups: []string{}, PrivateTemplate: "default", GroupTemplate: "default"}
+		c.edit(&bad)
+		_, err := env.o.PanelBots().UpdateConfig(ctx, testBot, bad, panelBotActor)
+		if want := c.label + "：最多 500 个 ID"; !errors.Is(err, ErrInvalidBot) || !strings.HasSuffix(err.Error(), want) {
+			t.Errorf("UpdateConfig with %d %s = %v, want ErrInvalidBot %q", len(over), c.label, err, want)
+		}
+	}
+	if stored, err := env.st.GetBotSettings(ctx, testBot); err != nil || stored.Name != "小明" || len(stored.Groups) != maxConfigBotIDs {
+		t.Errorf("stored settings after refused updates = %s with %d groups, %v; want the saved ones", stored.Name, len(stored.Groups), err)
 	}
 }

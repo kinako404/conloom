@@ -176,8 +176,10 @@ func (s *Service) SetOnImport(f func(ctx context.Context) error) {
 	s.onImport = f
 }
 
-// SetLogger sets the logger LoadTemplates, Export and Import report to; by
-// default it logs nothing. Call it before the Service is shared.
+// SetLogger sets the logger LoadTemplates, Export and Import report to, and
+// Current, which warns when a new conversation's template does not exist and
+// it starts from default; by default it logs nothing. Call it before the
+// Service is shared.
 func (s *Service) SetLogger(l *slog.Logger) {
 	s.log = l
 }
