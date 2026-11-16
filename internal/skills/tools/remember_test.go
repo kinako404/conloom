@@ -185,6 +185,29 @@ func TestRemember_NegationsAndRecallQuestionsDoNotAsk(t *testing.T) {
 	}
 }
 
+func TestRemember_PoliteRequestsAsk(t *testing.T) {
+	st := newStore(t)
+	tool := newRemember(st, true)
+	// A 记着 asked for is no recall question, nor is a request ending in 了
+	// and a question; English negators count only as whole words.
+	for _, text := range []string{
+		"帮我记着这个好吗", "帮我记着我生日是5月1日好吗",
+		"你能帮我记住我搬家了吗", "能记一下我结婚了吗", "可以记住我换工作了吗？", "请记住我养猫了吗", "你能不能记住我搬家了？",
+		"whenever remember that i like cats",
+	} {
+		if got := call(t, tool, asked(t, st, groupKey, "20001", "小明", text), `{"content":"我喜欢猫"}`); got != "已记住。" {
+			t.Errorf("remember after %q = %q", text, got)
+		}
+	}
+	for _, text := range []string{
+		"你还记着我让你帮我记住的事吗", "你记住我搬家了吗", "你可能记住我搬家了吗", "i never remember that",
+	} {
+		if got := call(t, tool, asked(t, st, groupKey, "20001", "小明", text), `{"content":"我喜欢猫"}`); got != notAsked {
+			t.Errorf("remember after %q = %q, want %q", text, got, notAsked)
+		}
+	}
+}
+
 func TestRemember_BlockedByReview(t *testing.T) {
 	st := newStore(t)
 	policies := newPolicies(st, true, true)
