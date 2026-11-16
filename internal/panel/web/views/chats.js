@@ -1,15 +1,19 @@
-import { h, mount, errorBox, loading, field, kv } from '../lib/dom.js';
-import { get, post, put, request, convPath, isAbort } from '../lib/api.js';
-import { go, href } from '../lib/router.js';
+import { h, s, mount, errorBox, loading, field, kv } from '../lib/dom.js';
+import { get, post, put, request, convPath, isAbort, currentUser, logout } from '../lib/api.js';
+import { go, href, withQuery } from '../lib/router.js';
 import { fmtTime, fmtClock } from '../lib/format.js';
-import { chatPane } from './chat.js';
+import { SECTIONS } from '../app.js';
+import { chatPane, deleteChatConfirmed } from './chat.js';
+import { avatarEl } from './avatar.js';
 
 // PANEL is the source of a bot created in the panel and the platform of the
 // chats held in the panel.
 const PANEL = 'panel';
 
-// NARROW is the media query under which style.css puts the chat list above
-// the chat.
+// NARROW is the media query under which style.css shows the chat page in one
+// column, like Telegram on a phone: the folders, in a row, and the chat list
+// while no chat is open, then the chat alone, with ← back to the list. The
+// page marks its layout open while a chat is.
 const NARROW = '(max-width: 699px)';
 
 // MAX_DISPLAY_NAME is the longest name a panel chat calls its user by.
@@ -323,32 +327,108 @@ function deleteBotDialog(done) {
   return { dialog, open };
 }
 
-// chatHead names the chat in the pane: who the bot talks with, the bot and a
-// link to the conversation's page.
-function chatHead(key, title, botName) {
-  return h('div', { class: 'chat-head' },
-    h('h2', null, title),
-    h('span', { class: 'muted' }, botName),
-    h('span', { class: 'spacer' }),
-    h('a', { href: href('conversations', key) }, '会话详情'));
+// SEEN_KEY is where the browser keeps, as JSON { [key]: count }, how many
+// messages each chat had when it was last seen; the rest are unread.
+const SEEN_KEY = 'conloom.chat.seen';
+
+// REFRESH_MS is how often the chat page reads the chat list again.
+const REFRESH_MS = 5000;
+
+function readSeen() {
+  try {
+    const v = JSON.parse(localStorage.getItem(SEEN_KEY) || '{}');
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  } catch {
+    return {};
+  }
 }
 
-// chatPage lays out the chat page: the bots with their panel chats on the
-// left, the chat chosen on the right; on a narrow screen the list is above
-// the chat. load reads the list; select(key, signal) shows the chat key,
-// scrolled into view on a narrow screen, or a hint when key is empty, and
-// keeps the list.
+function saveSeen(seen) {
+  try {
+    localStorage.setItem(SEEN_KEY, JSON.stringify(seen));
+  } catch {
+    // Without storage every chat counts as read.
+  }
+}
+
+// noteSeen updates the counts of seen messages for chats, the chats listed,
+// and returns them. The chat open, current, is seen up to its latest message,
+// and so is a chat seen for the first time, so that a new browser does not
+// start with every chat unread, or one with fewer messages than counted, some
+// of them deleted. Chats no longer listed are forgotten.
+function noteSeen(chats, current) {
+  const old = readSeen();
+  const seen = {};
+  for (const c of chats) {
+    const n = c.message_count || 0;
+    const s = Number(old[c.key]);
+    seen[c.key] = c.key === current || !Number.isFinite(s) || s > n ? n : s;
+  }
+  saveSeen(seen);
+  return seen;
+}
+
+// unreadBadge is the round count of unread messages, none when there are
+// none.
+function unreadBadge(n, cls) {
+  if (n <= 0) return null;
+  return h('span', { class: cls }, n > 99 ? '99+' : String(n));
+}
+
+// recency orders chats by their last message, newest first; a chat without
+// messages, as one just started, comes first.
+function recency(c) {
+  if (!c.last_message_at) return Infinity;
+  const t = Date.parse(c.last_message_at);
+  return Number.isNaN(t) ? 0 : t;
+}
+
+// allIcon is the icon of the 全部 folder: two speech bubbles.
+function allIcon() {
+  return s('svg', { class: 'tg-folder-icon', viewBox: '0 0 24 24', 'aria-hidden': 'true' },
+    s('path', { d: 'M4 4h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H9l-4 3v-3H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z' }),
+    s('path', { d: 'M20 8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-1v3l-4-3h-4' }));
+}
+
+// chatHead tops the chat pane: ← back to the list, shown on a narrow screen,
+// the bot and who it talks with, a link to the conversation's page and
+// 删除这个聊天. bot is null when the chat is not known.
+function chatHead({ key, title, bot, onBack, onDelete }) {
+  return h('div', { class: 'tg-head' },
+    h('button', { type: 'button', class: 'tg-back', title: '返回', 'aria-label': '返回', onclick: onBack }, '←'),
+    bot ? avatarEl(bot, 40) : null,
+    h('div', { class: 'tg-head-name' },
+      h('strong', null, bot ? bot.name || bot.id : key),
+      title ? h('span', { class: 'muted small' }, title) : null),
+    h('span', { class: 'spacer' }),
+    h('a', { href: href('conversations', key) }, '会话详情'),
+    onDelete ? h('button', { type: 'button', class: 'link danger', onclick: onDelete }, '删除这个聊天') : null);
+}
+
+// chatPage lays out the chat page like Telegram Desktop: a rail of folders
+// (≡, 全部 and a folder per bot), the chat list of the folder chosen, and the
+// chat open. load reads the list; select(key, signal) shows the chat key, or
+// a pill when key is empty; setFolder(id) chooses the folder of bot id, all
+// chats when empty; watch(signal) reads the list again every REFRESH_MS until
+// signal fires. Reading the list again replaces the folders and the list but
+// leaves the chat as it is.
 function chatPage() {
   let groups = [];
   let bots = [];
   let templates = [];
   let skills = null;
   let current = '';
+  let folder = '';
+  let seen = {};
   let loads = 0;
-  const links = new Map();
   const listMsg = h('div');
-  const list = h('div', { class: 'chat-groups' });
-  const pane = h('section', { class: 'chat-main' });
+  const pollMsg = h('div');
+  const paneMsg = h('div');
+  const folders = h('div', { class: 'tg-folders' });
+  const botBar = h('div');
+  const list = h('ul', { class: 'tg-chats' });
+  const pane = h('section', { class: 'tg-pane' });
+  const search = h('input', { type: 'search', placeholder: '搜索', 'aria-label': '搜索', oninput: () => renderList() });
 
   const note = (text) => mount(listMsg, h('div', { class: 'notice' }, text));
 
@@ -360,13 +440,24 @@ function chatPage() {
     return null;
   };
 
-  const mark = () => {
-    for (const [key, a] of links) a.classList.toggle('active', key === current);
-  };
+  // shownFolder is the folder chosen, all chats when its bot is gone.
+  const shownFolder = () => (groups.some((g) => g.id === folder) ? folder : '');
 
-  // reveal scrolls the chat into view when the list is above it.
-  const reveal = () => {
-    if (matchMedia(NARROW).matches) pane.scrollIntoView();
+  const chatHref = (key) => withQuery(href('chat', key), { bot: folder });
+  const folderHref = (id) => withQuery(current ? href('chat', current) : '#/chat', { bot: id });
+
+  const onBack = () => go(withQuery('#/chat', { bot: folder }));
+
+  const unreadOf = (c) => Math.max(0, (c.message_count || 0) - (seen[c.key] === undefined ? c.message_count || 0 : seen[c.key]));
+
+  const allChats = () => groups.flatMap((g) => g.chats || []);
+
+  // choose shows the folder of bot id, all chats when empty, keeping the
+  // chat open: the address changes without a new render.
+  const choose = (id) => {
+    folder = id;
+    history.replaceState(null, '', folderHref(id));
+    renderLists();
   };
 
   const refresh = async () => {
@@ -378,7 +469,10 @@ function chatPage() {
   };
 
   const chatDialog = newChatDialog((key) => {
-    refresh().then(() => go(href('chat', key)));
+    refresh().then(() => {
+      const f = find(key);
+      go(withQuery(href('chat', key), { bot: folder && f ? f.group.id : folder }));
+    });
   });
 
   const botForm = botDialog((bot, isNew) => {
@@ -397,10 +491,26 @@ function chatPage() {
     if (ok) note(`已删除 Bot：${bot.name}`);
     const shown = find(current);
     const onBot = shown && shown.group.id === bot.id;
-    if (ok && onBot) go('#/chat');
+    if (ok && folder === bot.id) choose('');
+    if (ok && onBot) onBack();
     await refresh();
-    if (!ok && onBot && current === shown.chat.key && !find(current)) go('#/chat');
+    if (!ok && onBot && current === shown.chat.key && !find(current)) onBack();
   });
+
+  // removeChat deletes the chat key once confirmed, then reads the list
+  // again and returns to it; it reports whether the chat was deleted.
+  const removeChat = async (key) => {
+    mount(paneMsg);
+    try {
+      if (!(await deleteChatConfirmed(key))) return false;
+    } catch (err) {
+      if (!isAbort(err)) mount(paneMsg, errorBox(err));
+      return false;
+    }
+    await refresh();
+    if (current === key) onBack();
+    return true;
+  };
 
   // loadSkills reads the skills a panel bot and those a config bot may
   // enable, once.
@@ -439,118 +549,253 @@ function chatPage() {
     },
   }, '删除');
 
-  const chatItem = (c) => {
-    const a = h('a', { href: href('chat', c.key), title: c.last_message_at ? `最后消息 ${fmtTime(c.last_message_at)}` : '还没有消息' },
-      h('span', { class: 'chat-title' }, c.title || c.key),
-      h('span', { class: 'chat-time muted' }, fmtClock(c.last_message_at)));
-    links.set(c.key, a);
-    return h('li', null, a);
+  const signOut = async () => {
+    try {
+      await logout();
+    } catch {
+      // the session ends either way
+    }
+    go('#/login');
   };
 
-  const group = (g) => {
-    const bot = bots.find((b) => b.id === g.id);
-    const panelBot = g.source === PANEL;
-    const chats = g.chats || [];
-    return h('section', { class: 'chat-group' },
-      h('div', { class: 'chat-group-head' },
+  const menuButton = h('button', { type: 'button', class: 'tg-menu-button', title: '菜单', 'aria-label': '菜单' }, '≡');
+  const menu = h('div', { class: 'tg-menu', hidden: true },
+    h('nav', null, SECTIONS.filter(([section]) => section !== 'chat').map(([section, title]) =>
+      h('a', { href: '#/' + section }, title))),
+    h('button', {
+      type: 'button',
+      class: 'tg-menu-item',
+      onclick: () => {
+        menu.hidden = true;
+        editBot(null);
+      },
+    }, '新建 Bot'),
+    h('div', { class: 'tg-menu-user' },
+      h('span', { class: 'muted' }, currentUser()),
+      h('button', { type: 'button', class: 'link', onclick: signOut }, '退出')));
+  menuButton.addEventListener('click', () => {
+    menu.hidden = !menu.hidden;
+  });
+
+  const folderItem = (id, name, icon, unread) => h('a', {
+    class: id === shownFolder() ? 'tg-folder active' : 'tg-folder',
+    href: folderHref(id),
+    title: name,
+    onclick: (e) => {
+      e.preventDefault();
+      choose(id);
+    },
+  }, h('span', { class: 'tg-folder-pic' }, icon, unreadBadge(unread, 'tg-unread tg-folder-unread')),
+  h('span', { class: 'tg-folder-name' }, name));
+
+  const renderFolders = () => {
+    const unread = (chats) => (chats || []).reduce((n, c) => n + unreadOf(c), 0);
+    mount(folders,
+      folderItem('', '全部', allIcon(), unread(allChats())),
+      groups.map((g) => folderItem(g.id, g.name || g.id, avatarEl(g, 36), unread(g.chats))));
+  };
+
+  // renderBotBar names the bot of the folder chosen, with 编辑 and, for a
+  // panel bot, 删除, and what is wrong with its settings.
+  const renderBotBar = () => {
+    const g = groups.find((x) => x.id === shownFolder());
+    const bot = g ? bots.find((b) => b.id === g.id) : null;
+    mount(botBar, g ? h('div', { class: 'tg-botbar' },
+      h('div', { class: 'tg-botbar-head' },
         h('strong', null, g.name || g.id),
-        panelBot ? null : h('span', { class: 'badge' }, '配置'),
+        g.source === PANEL ? null : h('span', { class: 'badge' }, '配置'),
         h('span', { class: 'spacer' }),
         bot ? [
           h('button', { type: 'button', class: 'link', onclick: () => editBot(bot) }, '编辑'),
           bot.source === PANEL ? deleteButton(bot) : null,
         ] : null),
-      ((bot && bot.problems) || []).map((p) => h('p', { class: 'hint warn' }, p)),
-      chats.length ? h('ul', { class: 'chat-items' }, chats.map(chatItem)) : h('p', { class: 'muted small' }, '还没有聊天'),
-      h('button', { type: 'button', onclick: () => chatDialog.open(groups, g.id) }, '新建聊天'));
+      ((bot && bot.problems) || []).map((p) => h('p', { class: 'hint warn' }, p))) : null);
   };
 
-  // load reads the bots and their chats and shows them, unless a later load
-  // started meanwhile.
-  async function load(signal) {
+  // preview is the last message of chat c on one line, after 你： when you
+  // sent it.
+  const preview = (c) => {
+    if (!c.last) return h('span', { class: 'tg-chat-preview muted' }, '还没有消息');
+    return h('span', { class: 'tg-chat-preview' },
+      c.last.from_bot ? null : h('span', { class: 'tg-you' }, '你：'), c.last.text);
+  };
+
+  // chatRow is chat c of bot g; with several chats of g it also names who
+  // the bot talks with.
+  const chatRow = (g, c, several) => h('li', null, h('a', {
+    class: c.key === current ? 'tg-chat active' : 'tg-chat',
+    href: chatHref(c.key),
+    title: c.last_message_at ? `最后消息 ${fmtTime(c.last_message_at)}` : '还没有消息',
+  },
+  avatarEl(g, 48),
+  h('span', { class: 'tg-chat-body' },
+    h('span', { class: 'tg-chat-line' },
+      h('strong', { class: 'tg-chat-name' }, g.name || g.id),
+      several ? h('span', { class: 'tg-chat-title' }, c.title || c.key) : null,
+      h('span', { class: 'tg-chat-time' }, fmtClock(c.last_message_at))),
+    h('span', { class: 'tg-chat-line' },
+      preview(c),
+      unreadBadge(unreadOf(c), 'tg-unread')))));
+
+  // renderList lists the chats of the folder chosen that match the search,
+  // by bot name, who the bot talks with or the last message.
+  const renderList = () => {
+    const id = shownFolder();
+    const q = search.value.trim().toLowerCase();
+    const rows = [];
+    for (const g of groups) {
+      if (id && g.id !== id) continue;
+      const chats = g.chats || [];
+      for (const c of chats) rows.push({ g, c, several: chats.length > 1 });
+    }
+    const shown = rows.filter(({ g, c }) => !q ||
+      [g.name || g.id, c.title, c.last ? c.last.text : ''].some((t) => (t || '').toLowerCase().includes(q)));
+    shown.sort((a, b) => recency(b.c) - recency(a.c));
+    if (!rows.length) {
+      mount(list, h('li', { class: 'tg-list-empty muted' }, '还没有聊天，点右下角的 ✎ 开始'));
+    } else if (!shown.length) {
+      mount(list, h('li', { class: 'tg-list-empty muted' }, `没有符合“${search.value.trim()}”的聊天`));
+    } else {
+      mount(list, shown.map(({ g, c, several }) => chatRow(g, c, several)));
+    }
+  };
+
+  function renderLists() {
+    renderFolders();
+    renderBotBar();
+    renderList();
+  }
+
+  // load reads the chats, and the bots too when withBots or when a bot is
+  // new to the page, and shows them, unless a later load started meanwhile.
+  async function load(signal, withBots = true) {
     const n = ++loads;
-    const [chats, all] = await Promise.all([get('chats', null, signal), get('bots', null, signal)]);
+    let chats;
+    let all = null;
+    if (withBots) {
+      [chats, all] = await Promise.all([get('chats', null, signal), get('bots', null, signal)]);
+    } else {
+      chats = await get('chats', null, signal);
+      if ((chats.bots || []).some((g) => !bots.some((b) => b.id === g.id))) all = await get('bots', null, signal);
+    }
     if (n !== loads) return;
     groups = chats.bots || [];
-    bots = all.bots || [];
-    templates = all.templates || [];
-    links.clear();
-    mount(list, groups.map(group));
-    mark();
+    if (all) {
+      bots = all.bots || [];
+      templates = all.templates || [];
+    }
+    seen = noteSeen(allChats(), current);
+    renderLists();
+  }
+
+  function watch(signal) {
+    let timer = 0;
+    const tick = async () => {
+      try {
+        await load(signal, false);
+        mount(pollMsg);
+      } catch (err) {
+        if (isAbort(err) || signal.aborted) return;
+        mount(pollMsg, errorBox(err));
+      }
+      if (!signal.aborted) timer = setTimeout(tick, REFRESH_MS);
+    };
+    timer = setTimeout(tick, REFRESH_MS);
+    signal.addEventListener('abort', () => clearTimeout(timer));
+  }
+
+  function setFolder(id) {
+    folder = id;
   }
 
   async function select(key, signal) {
     current = key;
-    mark();
+    layout.classList.toggle('open', !!key);
+    if (key) seen = noteSeen(allChats(), key);
+    renderLists();
+    mount(paneMsg);
     if (!key) {
-      mount(pane, h('div', { class: 'chat-empty' },
-        h('p', null, '从聊天列表里选一个聊天，或者在某个 bot 下点“新建聊天”。')));
+      mount(pane, h('div', { class: 'tg-empty' }, h('span', { class: 'tg-pill' }, '选择一个对话开始聊天')));
       return;
     }
     const shown = find(key);
-    let head = shown ? chatHead(key, shown.chat.title || key, shown.group.name || shown.group.id) : null;
-    mount(pane, head, loading());
-    reveal();
+    let bot = shown ? { id: shown.group.id, name: shown.group.name || shown.group.id, avatar: shown.group.avatar || '' } : null;
+    let title = shown ? shown.chat.title || key : '';
+    const onDelete = () => removeChat(key);
+    mount(pane, chatHead({ key, title, bot, onBack }), loading());
     try {
       if (!shown) {
         const conv = await get(convPath(key), null, signal);
         if (conv.platform !== PANEL) {
-          mount(pane, errorBox({ message: '聊天页只能打开面板里新建的聊天。' }),
+          mount(pane, chatHead({ key, title: conv.platform_conversation_id, bot: null, onBack }),
+            errorBox({ message: '聊天页只能打开面板里新建的聊天。' }),
             h('p', null, h('a', { href: href('conversations', key) }, '打开会话详情')));
           return;
         }
-        head = chatHead(key, conv.platform_conversation_id, conv.bot_name || conv.bot_instance_id);
+        const g = groups.find((x) => x.id === conv.bot_instance_id);
+        bot = { id: conv.bot_instance_id, name: conv.bot_name || conv.bot_instance_id, avatar: g ? g.avatar || '' : '' };
+        title = conv.platform_conversation_id;
       }
-      const nodes = await chatPane({ key, signal, hint: PANEL_HINT });
-      if (!signal.aborted) {
-        mount(pane, head, nodes);
-        reveal();
-      }
+      const nodes = await chatPane({ key, signal, hint: PANEL_HINT, bot, onBack, onDelete });
+      if (!signal.aborted) mount(pane, chatHead({ key, title, bot, onBack, onDelete }), paneMsg, nodes);
     } catch (err) {
-      if (!isAbort(err) && !signal.aborted) mount(pane, errorBox(err));
+      if (!isAbort(err) && !signal.aborted) mount(pane, chatHead({ key, title, bot, onBack }), errorBox(err));
     }
   }
 
-  const layout = h('div', null,
-    h('h1', null, '聊天'),
-    h('div', { class: 'chat-page' },
-      h('aside', { class: 'chat-side' },
-        h('div', { class: 'toolbar' },
-          h('button', {
-            type: 'button',
-            class: 'primary',
-            onclick: () => editBot(null),
-          }, '新建 Bot'),
-          h('span', { class: 'spacer' }),
-          h('button', {
-            type: 'button',
-            class: 'link',
-            title: '左栏不会自动更新，点这里重新读取',
-            onclick: () => {
-              mount(listMsg);
-              refresh();
-            },
-          }, '刷新')),
-        listMsg,
-        list),
-      pane),
+  const layout = h('div', { class: 'tg' },
+    h('nav', { class: 'tg-rail' }, menuButton, folders),
+    menu,
+    h('section', { class: 'tg-list' },
+      h('div', { class: 'tg-search' }, search),
+      botBar,
+      listMsg,
+      pollMsg,
+      list,
+      h('button', {
+        type: 'button',
+        class: 'tg-fab',
+        title: '新建聊天',
+        'aria-label': '新建聊天',
+        onclick: () => {
+          mount(listMsg);
+          chatDialog.open(groups, shownFolder());
+        },
+      }, '✎')),
+    pane,
     chatDialog.dialog, botForm.dialog, configForm.dialog, deleteForm.dialog);
 
-  return { layout, load, select };
+  // A click outside the ≡ menu, or Escape, closes it.
+  layout.addEventListener('click', (e) => {
+    if (!menu.hidden && !menu.contains(e.target) && !menuButton.contains(e.target)) menu.hidden = true;
+  });
+  layout.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !menu.hidden) {
+      menu.hidden = true;
+      menuButton.focus();
+    }
+  });
+
+  return { layout, load, select, setFolder, watch };
 }
 
 // page is the chat page on screen. Switching chats reuses it, rebuilding only
-// the right pane; leaving the page detaches its layout, so the next visit
+// the chat pane; leaving the page detaches its layout, so the next visit
 // reads the list afresh.
 let page = null;
 
 export async function chatsView(ctx) {
+  const folder = ctx.query.get('bot') || '';
   if (!page || page.layout.parentNode !== ctx.el) {
     const next = chatPage();
+    next.setFolder(folder);
     await next.load(ctx.signal);
     if (ctx.signal.aborted) return;
     page = next;
     ctx.show(page.layout);
+  } else {
+    page.setFolder(folder);
   }
   page.select(ctx.params.key || '', ctx.signal);
+  page.watch(ctx.signal);
 }

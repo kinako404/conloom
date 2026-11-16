@@ -1,5 +1,5 @@
 import { h, mount, errorBox } from '../lib/dom.js';
-import { get, post, convPath, isAbort } from '../lib/api.js';
+import { get, post, del, convPath, isAbort } from '../lib/api.js';
 import { fmtTime } from '../lib/format.js';
 
 // POLL_MS is how often the chat asks for new messages.
@@ -63,12 +63,23 @@ function suppressedNote(reason) {
   return h('p', { class: 'hint warn', role: 'status' }, text);
 }
 
+// deleteChatConfirmed deletes the panel chat key once the user confirms, and
+// reports whether it did; a failed delete throws.
+export async function deleteChatConfirmed(key) {
+  if (!confirm('删除这个聊天？聊天记录、人设和策略都会删除，不能恢复；在这个聊天里设的状态会结束。这个 bot 所有面板聊天共用的记忆保留，用量统计和审计记录也保留。')) return false;
+  await del(convPath(key));
+  return true;
+}
+
 // chatPane talks to the bot in the panel chat key, as the panel user. It
 // opens with the latest messages, then polls GET chat with the newest seq it
 // has seen until signal fires or the chat is gone (404), which stops the
 // polling and the sending. With the 建议回复 switch on, once the bot's turn is
 // done it offers reply suggestions under the newest message, which send
-// themselves when clicked. hint, when given, is shown above the chat.
+// themselves when clicked. hint, when given, is shown above the chat. bot
+// ({id, name, avatar}) is who the chat is with, onBack() returns to the chat
+// list and onDelete() deletes the chat after confirmation, for the pane's top
+// bar.
 export async function chatPane({ key, signal, hint }) {
   const log = h('ul', { class: 'chat-log' });
   const typing = h('div', { class: 'chat-typing', hidden: true }, '对方正在输入…');

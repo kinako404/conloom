@@ -27,7 +27,10 @@ route('/tasks/:id', taskDetailView);
 route('/audit', auditView);
 route('/config', configView);
 
-const SECTIONS = [
+// SECTIONS are the panel's pages as [route segment, title], as the top bar
+// lists them; the chat page's ≡ menu lists them too. A view that imports them
+// reads them only once the page runs, after this module has.
+export const SECTIONS = [
   ['', '概览'],
   ['usage', '用量'],
   ['chat', '聊天'],
@@ -59,9 +62,14 @@ document.getElementById('logout').addEventListener('click', async () => {
   go('#/login');
 });
 
+// beforeRender marks the section on show in the top bar. The chat page fills
+// the window, with the top bar's links in its ≡ menu, so the top bar is hidden
+// there and the body has the class chat-app, which its styles hang on.
 function beforeRender(loc) {
   const section = loc.segments[0] || '';
-  topbar.hidden = section === 'login';
+  const chat = section === 'chat';
+  topbar.hidden = section === 'login' || chat;
+  document.body.classList.toggle('chat-app', chat);
   for (const a of links) a.classList.toggle('active', a.dataset.section === section);
   userEl.textContent = currentUser();
   document.title = 'ConLoom 管理面板';

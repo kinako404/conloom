@@ -46,7 +46,7 @@ func TestAssets_PlannedFilesPresent(t *testing.T) {
 		"index.html", "style.css", "app.js",
 		"lib/api.js", "lib/router.js", "lib/dom.js", "lib/chart.js", "lib/format.js",
 		"views/login.js", "views/overview.js", "views/usage.js", "views/conversations.js",
-		"views/conversation.js", "views/chat.js", "views/chats.js", "views/autonomy.js", "views/tasks.js", "views/audit.js", "views/config.js",
+		"views/conversation.js", "views/chat.js", "views/chats.js", "views/avatar.js", "views/autonomy.js", "views/tasks.js", "views/audit.js", "views/config.js",
 		"views/personaform.js", "views/templates.js",
 	} {
 		if _, err := fs.Stat(FS, name); err != nil {
@@ -224,9 +224,10 @@ func mediaBlock(t *testing.T, css, query string) string {
 	return ""
 }
 
-// On a narrow screen style.css puts the chat list above the chat, so opening
-// a chat scrolls it into view, and the empty pane does not point left.
-func TestAssets_ChatScrollsIntoViewOnNarrowScreens(t *testing.T) {
+// On a narrow screen the chat page shows one column, like Telegram on a
+// phone: the folders, in a row, and the list without a chat, the chat alone
+// with one, which has a way back; nothing points to a list on the left.
+func TestAssets_ChatPageOneColumnOnNarrowScreens(t *testing.T) {
 	files := assets(t, ".js", ".css")
 	js := files["views/chats.js"]
 	m := regexp.MustCompile(`const NARROW = '([^']+)';`).FindStringSubmatch(js)
@@ -234,14 +235,80 @@ func TestAssets_ChatScrollsIntoViewOnNarrowScreens(t *testing.T) {
 		t.Fatal("views/chats.js has no NARROW media query")
 	}
 	block := mediaBlock(t, files["style.css"], m[1])
-	if !regexp.MustCompile(`\.chat-page\s*\{\s*grid-template-columns:\s*1fr;`).MatchString(block) {
-		t.Errorf("style.css @media %s does not stack the chat page", m[1])
+	for _, c := range []struct{ name, re string }{
+		{"one column", `\.chat-app \.tg\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);`},
+		{"folders in a row", `\.chat-app \.tg-folders\s*\{[^}]*flex-direction:\s*row;`},
+		{"no chat pane without a chat", `\.chat-app \.tg:not\(\.open\) \.tg-pane\s*\{\s*display:\s*none;`},
+		{"only the chat with one", `\.chat-app \.tg\.open \.tg-rail,\s*\.chat-app \.tg\.open \.tg-list\s*\{\s*display:\s*none;`},
+	} {
+		if !regexp.MustCompile(c.re).MatchString(block) {
+			t.Errorf("style.css @media %s lacks %s (%s)", m[1], c.name, c.re)
+		}
 	}
-	if !regexp.MustCompile(`if \(matchMedia\(NARROW\)\.matches\) pane\.scrollIntoView\(\);`).MatchString(js) {
-		t.Error("views/chats.js does not scroll the chat into view on a narrow screen")
+	if !strings.Contains(js, "layout.classList.toggle('open', !!key);") {
+		t.Error("views/chats.js does not mark the layout open with a chat")
+	}
+	if !regexp.MustCompile(`onBack[^\n]*go\(withQuery\('#/chat', \{ bot: folder \}\)\)`).MatchString(js) {
+		t.Error("views/chats.js has no onBack to the list that keeps ?bot=")
 	}
 	if strings.Contains(js, "从左边") {
-		t.Error("views/chats.js points to the list on the left, which is above the chat on a narrow screen")
+		t.Error("views/chats.js points to the list on the left, which is not beside the chat on a narrow screen")
+	}
+}
+
+// The chat page looks like Telegram Desktop: it fills the window without the
+// top bar, has a folder rail, a chat list with unread counts the browser
+// keeps and a ✎ button, and an empty pane with a pill; a bot's avatar is its
+// persona image cropped round, or its first letter.
+func TestChatsView_TelegramShell(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js := files["views/chats.js"]
+	for _, want := range []string{
+		"'选择一个对话开始聊天'", "'还没有聊天，点右下角的 ✎ 开始'", "const SEEN_KEY = 'conloom.chat.seen';",
+		"'你：'", "'99+'", "title: '新建聊天'", "placeholder: '搜索'", "const REFRESH_MS = 5000;",
+		"SECTIONS.filter(", "'新建 Bot'", "currentUser()", "'退出'",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chats.js lacks %q", want)
+		}
+	}
+	avatar, ok := files["views/avatar.js"]
+	if !ok {
+		t.Fatal("views/avatar.js is not embedded")
+	}
+	for _, want := range []string{"api/persona-images/", "?size=reply&v=", "export function avatarEl(bot, size)", "[...name][0]"} {
+		if !strings.Contains(avatar, want) {
+			t.Errorf("views/avatar.js lacks %q", want)
+		}
+	}
+	css := files["style.css"]
+	if !regexp.MustCompile(`\.chat-app \.avatar\s*\{[^}]*object-fit:\s*cover;`).MatchString(css) {
+		t.Error("style.css: .chat-app .avatar does not set object-fit: cover")
+	}
+	for i := 0; i < 8; i++ {
+		if !strings.Contains(css, ".chat-app .avatar-c"+strconv.Itoa(i)+" ") {
+			t.Errorf("style.css has no avatar color %d", i)
+		}
+	}
+	app := files["app.js"]
+	for _, want := range []string{"document.body.classList.toggle('chat-app', chat);", "topbar.hidden = section === 'login' || chat;", "export const SECTIONS = ["} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	// The ≡ menu lists the top bar's sections, not a copy of them.
+	if !strings.Contains(js, "import { SECTIONS } from '../app.js';") || strings.Contains(js, "['usage', '用量']") {
+		t.Error("views/chats.js does not take its menu links from app.js's SECTIONS")
+	}
+	// Every chat page rule is scoped to .chat-app, so other pages keep their
+	// look.
+	for _, m := range cssRule.FindAllStringSubmatch(regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(css, ""), -1) {
+		for _, sel := range strings.Split(m[1], ",") {
+			sel = strings.TrimSpace(sel)
+			if regexp.MustCompile(`\.(tg|avatar)\b|\.tg-`).MatchString(sel) && !strings.HasPrefix(sel, ".chat-app ") && !strings.HasPrefix(sel, "body.chat-app ") {
+				t.Errorf("style.css: %q is not scoped to .chat-app", sel)
+			}
+		}
 	}
 }
 

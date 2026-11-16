@@ -6,6 +6,7 @@ import { statusBadges, personaLabel } from './conversations.js';
 import { taskList } from './tasks.js';
 import { autonomyTab } from './autonomy.js';
 import { personaForm } from './personaform.js';
+import { deleteChatConfirmed } from './chat.js';
 
 const TABS = [
   ['messages', '消息'],
@@ -543,12 +544,10 @@ function deleteChat(c) {
     type: 'button',
     class: 'danger',
     onclick: async () => {
-      if (!confirm('删除这个聊天？聊天记录、人设和策略都会删除，不能恢复；在这个聊天里设的状态会结束。这个 bot 所有面板聊天共用的记忆保留，用量统计和审计记录也保留。')) return;
       button.disabled = true;
       mount(msg);
       try {
-        await del(convPath(c.key));
-        go('#/conversations');
+        if (await deleteChatConfirmed(c.key)) go('#/conversations');
       } catch (err) {
         if (!isAbort(err)) mount(msg, errorBox(err));
       } finally {

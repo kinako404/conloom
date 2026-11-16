@@ -3,6 +3,7 @@
 
 import { h, mount, errorBox, field, select } from '../lib/dom.js';
 import { get, post, upload, isAbort } from '../lib/api.js';
+import { imageURL } from './avatar.js';
 
 const REPLY_LENGTH = { short: '短（short）', medium: '中（medium）', long: '长（long）' };
 const FOLLOWUP = { never: '从不（never）', occasionally: '偶尔（occasionally）', often: '经常（often）' };
@@ -100,14 +101,6 @@ function barsEditor(bars) {
     return { bars: out };
   };
   return { el: [list, h('div', { class: 'toolbar' }, add)], read };
-}
-
-// imageURL is the address of the reply copy of the persona image id, the copy
-// the reply model sees. v gives every image its own address, so the browser
-// never shows an earlier image in its place.
-function imageURL(id) {
-  const v = encodeURIComponent(id);
-  return `api/persona-images/${v}?size=reply&v=${v}`;
 }
 
 // appearanceEditor edits a persona's appearance: its text, its reference
