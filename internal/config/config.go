@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -127,6 +128,17 @@ type APIToken struct {
 // PanelBotIDPrefix starts the ID of every bot created in the panel; config bot
 // IDs may not start with it.
 const PanelBotIDPrefix = "panel-"
+
+// KeySeparator separates the bot ID, platform, conversation type and
+// conversation ID of a conversation key, which is read back by splitting at
+// it, so a bot ID or platform must not contain it.
+const KeySeparator = ":"
+
+// ValidBotID reports whether id can name a bot: it is not empty and has no
+// KeySeparator.
+func ValidBotID(id string) bool {
+	return id != "" && !strings.Contains(id, KeySeparator)
+}
 
 type BotConfig struct {
 	ID                   string                       `yaml:"id"`

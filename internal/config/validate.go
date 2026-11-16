@@ -138,9 +138,15 @@ func (c *Config) ValidateServe() error {
 		if strings.HasPrefix(b.ID, PanelBotIDPrefix) {
 			p.addf(path+".id", "%q is reserved for bots created in the panel", PanelBotIDPrefix)
 		}
+		if b.ID != "" && !ValidBotID(b.ID) {
+			p.addf(path+".id", "must not contain %q, which separates the parts of conversation keys, got %q", KeySeparator, b.ID)
+		}
 		p.required(path+".platform", b.Platform)
 		if b.Platform == conloomapi.PlatformPanel {
 			p.addf(path+".platform", "%q is reserved for chats held in the panel", b.Platform)
+		}
+		if strings.Contains(b.Platform, KeySeparator) {
+			p.addf(path+".platform", "must not contain %q, which separates the parts of conversation keys, got %q", KeySeparator, b.Platform)
 		}
 		p.required(path+".platform_self_id", b.PlatformSelfID)
 		for j, a := range b.Admins {

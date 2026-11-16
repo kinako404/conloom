@@ -275,6 +275,21 @@ func TestPanelBots_CreateSkipsTakenIDs(t *testing.T) {
 	}
 }
 
+func TestPanelBots_CreateSkipsInvalidIDs(t *testing.T) {
+	env := panelBotEnv(t, testOpts{})
+	svc := env.o.PanelBots()
+	candidates := []string{"panel-k3x9:2ma", "panel-k3x9q2ma"}
+	svc.newID = func() string {
+		id := candidates[0]
+		candidates = candidates[1:]
+		return id
+	}
+	bot := env.createPanelBot(t, PanelBotInput{Name: "小红"})
+	if bot.ID != "panel-k3x9q2ma" {
+		t.Errorf("ID = %q, want the first candidate without a colon", bot.ID)
+	}
+}
+
 func TestPanelBots_CreateThenChat(t *testing.T) {
 	env := panelBotEnv(t, testOpts{})
 	ctx := context.Background()
