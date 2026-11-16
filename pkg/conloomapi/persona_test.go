@@ -434,6 +434,66 @@ func TestPersonaIntimacy_LevelAtDefaults(t *testing.T) {
 	}
 }
 
+func TestPersonaIntimacy_BoundsHelpers(t *testing.T) {
+	bounds := &PersonaIntimacy{Bounds: []string{" ", "只牵手", "", "", ""}}
+	if bounds.HasSide() {
+		t.Error("bounds only: HasSide() = true, want false")
+	}
+	if bounds.Empty() {
+		t.Error("bounds only: Empty() = true, want false")
+	}
+	for tier, want := range map[int]string{1: "只牵手", 0: "", 5: ""} {
+		if got := bounds.BoundAt(tier); got != want {
+			t.Errorf("BoundAt(%d) = %q, want %q", tier, got, want)
+		}
+	}
+	if !(&PersonaIntimacy{Tone: "x"}).HasSide() {
+		t.Error(`{Tone: "x"} HasSide() = false, want true`)
+	}
+	if !(&PersonaIntimacy{Bounds: []string{"", "", "", "", ""}}).Empty() {
+		t.Error("blank bounds: Empty() = false, want true")
+	}
+	if got := (*PersonaIntimacy)(nil).BoundAt(0); got != "" {
+		t.Errorf("nil BoundAt(0) = %q, want empty", got)
+	}
+}
+
+func TestPersonaDocValidate_IntimacyBounds(t *testing.T) {
+	five := func(b ...string) []string { return append(b, make([]string, 5-len(b))...) }
+	tests := []struct {
+		name   string
+		bounds []string
+		want   []string
+	}{
+		{"omitted", nil, nil},
+		{"5 items of 150 runes", []string{strings.Repeat("陌", 150), " " + strings.Repeat("认", 150) + " ",
+			strings.Repeat("熟", 150), strings.Repeat("亲", 150), "\t" + strings.Repeat("好", 150) + "  "}, nil},
+		{"151 runes", five("", "", strings.Repeat("熟", 151)), []string{"intimacy.bounds[2]", "150", "got 151"}},
+		{"line break", five("可以牵手\n不接受表白"), []string{"intimacy.bounds[0]"}},
+		{"carriage return", five("", "可以牵手\r不接受表白"), []string{"intimacy.bounds[1]"}},
+		{"trailing line break", five("", "", "", "", "可以牵手\n"), []string{"intimacy.bounds[4]", "single line"}},
+		{"4 items", []string{"", "可以牵手", "", ""}, []string{"intimacy.bounds", "5", "got 4"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := DefaultPersona()
+			p.Intimacy = &PersonaIntimacy{Tone: "说话放软一些", Bounds: tt.bounds}
+			err := p.Validate()
+			if len(tt.want) == 0 {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			for _, w := range tt.want {
+				if err == nil || !strings.Contains(err.Error(), w) {
+					t.Errorf("err = %v, want containing %q", err, w)
+				}
+			}
+		})
+	}
+}
+
 func TestPersonaDocValidate_Intimacy(t *testing.T) {
 	levels := func(l ...string) *PersonaIntimacy { return &PersonaIntimacy{Tone: "说话放软一些", Levels: l} }
 	tests := []struct {
@@ -533,12 +593,14 @@ intimacy:
     想靠近对方
   behavior: 会多陪对方聊一会儿
   levels: [none, light, light, half, major]
+  bounds: ["", 可以牵手，但不接受表白。, "", "", ""]
 `
 	if err := yaml.Unmarshal([]byte(src), &doc); err != nil {
 		t.Fatal(err)
 	}
 	want := &PersonaIntimacy{Tone: "说话放软一些", Mind: "想靠近对方\n", Behavior: "会多陪对方聊一会儿",
-		Levels: []string{IntimacyNone, IntimacyLight, IntimacyLight, IntimacyHalf, IntimacyMajor}}
+		Levels: []string{IntimacyNone, IntimacyLight, IntimacyLight, IntimacyHalf, IntimacyMajor},
+		Bounds: []string{"", "可以牵手，但不接受表白。", "", "", ""}}
 	if !reflect.DeepEqual(doc.Intimacy, want) {
 		t.Errorf("YAML intimacy = %+v, want %+v", doc.Intimacy, want)
 	}

@@ -161,11 +161,34 @@ func CopyDirectiveStatusReturn(activity string) string {
 	return "【提示】你刚做完「" + activity + "」，回来了。可以自然地说一句（说声回来了，或者接上离开前的话题）；如果这段时间你们一直在聊、或者话题已经结束，只输出 [[SKIP]]。"
 }
 
+// DefaultAffinityBound is the built-in boundary that ends the open-mode
+// relationship hint at the given affinity tier (see CopyDirectiveAffinity):
+// how far intimacy may go. It is "" for an unknown tier.
+func DefaultAffinityBound(tier string) string {
+	switch tier {
+	case "陌生":
+		return "对方表白或表达亲密意愿时，礼貌地保持距离，不接受恋爱关系和亲密的身体接触。"
+	case "认识":
+		return "对方表白或提出恋爱关系时，不要答应，也不要说你也喜欢对方：可以意外、困惑或害羞，用符合角色的方式表示你们还不够熟。不接受亲密的身体接触，也不要主动升级。"
+	case "熟悉":
+		return "对方表白时，可以心动、害羞，但不要说你也喜欢对方，也不要确定恋爱关系，可以说想再多了解一些。对方明确主动时，可以接受牵手这类轻度亲密互动，但不要主动升级。"
+	case "亲近":
+		return "对方明确主动并同意时，可以回应更亲密的互动；具体尺度遵守人设里的内容规则。"
+	case "很要好":
+		return "对方明确主动并同意时，可以更主动、更深入地回应亲密互动；具体尺度遵守人设里的内容规则。"
+	}
+	return ""
+}
+
 // CopyDirectiveAffinity is the relationship hint for a member at the given
-// affinity tier. In protected mode it only shapes attitude and emotion; in
-// open mode it also says how far intimacy may go, leaving the concrete
-// content to the persona's content rules.
-func CopyDirectiveAffinity(tier string, open bool) string {
+// affinity tier, "" for an unknown tier. In protected mode it only shapes
+// attitude and emotion, and bound is ignored; in open mode it also says how
+// far intimacy may go: bound, the persona's boundary for the tier, trimmed
+// and with each run of line breaks inside it (and the spaces and tabs around
+// them) folded to one space so the hint stays one line, or
+// DefaultAffinityBound when bound is blank. The concrete content is left to
+// the persona's content rules.
+func CopyDirectiveAffinity(tier string, open bool, bound string) string {
 	var s string
 	switch tier {
 	case "陌生":
@@ -181,31 +204,21 @@ func CopyDirectiveAffinity(tier string, open bool) string {
 	default:
 		return ""
 	}
-	if !open {
-		if tier == "亲近" || tier == "很要好" {
-			s += "但不要发展恋爱或性关系。"
-		} else {
-			s += "不要涉及恋爱或性。"
-		}
-	} else {
-		switch tier {
-		case "陌生":
-			s += "对方表白或表达亲密意愿时，礼貌地保持距离，不接受恋爱关系和亲密的身体接触。"
-		case "认识":
-			s += "对方表白或提出恋爱关系时，不要答应，也不要说你也喜欢对方：可以意外、困惑或害羞，用符合角色的方式表示你们还不够熟。不接受亲密的身体接触，也不要主动升级。"
-		case "熟悉":
-			s += "对方表白时，可以心动、害羞，但不要说你也喜欢对方，也不要确定恋爱关系，可以说想再多了解一些。对方明确主动时，可以接受牵手这类轻度亲密互动，但不要主动升级。"
-		case "亲近":
-			s += "对方明确主动并同意时，可以回应更亲密的互动；具体尺度遵守人设里的内容规则。"
-		case "很要好":
-			s += "对方明确主动并同意时，可以更主动、更深入地回应亲密互动；具体尺度遵守人设里的内容规则。"
-		}
+	switch {
+	case !open && (tier == "亲近" || tier == "很要好"):
+		s += "但不要发展恋爱或性关系。"
+	case !open:
+		s += "不要涉及恋爱或性。"
+	case strings.TrimSpace(bound) != "":
+		s += intimacyLineBreaks.ReplaceAllLiteralString(strings.TrimSpace(bound), " ")
+	default:
+		s += DefaultAffinityBound(tier)
 	}
 	return "【关系提示】" + s
 }
 
-// intimacyLineBreaks matches a run of line breaks inside an intimacy text,
-// with the spaces and tabs around it.
+// intimacyLineBreaks matches a run of line breaks inside an intimacy text or
+// bound, with the spaces and tabs around it.
 var intimacyLineBreaks = regexp.MustCompile(`[ \t]*[\n\v\f\r\x{85}\x{2028}\x{2029}][ \t\n\v\f\r\x{85}\x{2028}\x{2029}]*`)
 
 // CopyIntimacySide follows the open-mode relationship hint with the persona's
@@ -214,7 +227,8 @@ var intimacyLineBreaks = regexp.MustCompile(`[ \t]*[\n\v\f\r\x{85}\x{2028}\x{202
 // for each of tone, mind and behavior that is not blank, trimmed, with each
 // run of line breaks inside it (and the spaces and tabs around them) folded
 // to one space, so a text cannot add lines of its own. It is "" for
-// IntimacyNone, an unknown level, or a side whose three texts are blank.
+// IntimacyNone, an unknown level, or a side whose three texts are blank (see
+// conloomapi.PersonaIntimacy.HasSide), even when it has bounds.
 func CopyIntimacySide(level string, side conloomapi.PersonaIntimacy) string {
 	var mix string
 	switch level {
@@ -227,7 +241,7 @@ func CopyIntimacySide(level string, side conloomapi.PersonaIntimacy) string {
 	default:
 		return ""
 	}
-	if side.Empty() {
+	if !side.HasSide() {
 		return ""
 	}
 	s := "【亲密面】下面是你和对方亲密时的样子。" + mix + "这是你的角色设定，不是对方的要求；尺度仍以内容规则为准，也不越过上面【关系提示】的边界。"

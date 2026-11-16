@@ -69,13 +69,18 @@ type PersonaBar struct {
 // PersonaIntimacy is a persona's intimacy side: how the character sounds
 // (Tone), feels (Mind) and acts (Behavior) when close to someone. Levels
 // says, for each affinity tier from the lowest, how much of it a reply mixes
-// in; omitted, it is DefaultIntimacyLevels. An intimacy side whose three
-// texts are all blank is no intimacy side (see Empty).
+// in; omitted, it is DefaultIntimacyLevels. Bounds, also one item per
+// affinity tier from the lowest when set, replaces the built-in boundary of
+// the open-mode relationship hint at each tier whose item is not blank (see
+// BoundAt). An intimacy side whose three texts and bounds are all blank is no
+// intimacy side (see Empty); one with bounds but blank texts has no side to
+// mix in (see HasSide).
 type PersonaIntimacy struct {
 	Tone     string   `json:"tone,omitempty" yaml:"tone,omitempty"`
 	Mind     string   `json:"mind,omitempty" yaml:"mind,omitempty"`
 	Behavior string   `json:"behavior,omitempty" yaml:"behavior,omitempty"`
 	Levels   []string `json:"levels,omitempty" yaml:"levels,omitempty"`
+	Bounds   []string `json:"bounds,omitempty" yaml:"bounds,omitempty"`
 }
 
 // Values of PersonaIntimacy.Levels, from mixing in none of the intimacy side
@@ -96,10 +101,28 @@ func DefaultIntimacyLevels() []string {
 	return []string{IntimacyNone, IntimacyNone, IntimacyLight, IntimacyHalf, IntimacyMajor}
 }
 
-// Empty reports whether in is nil or its three texts are all blank.
+// HasSide reports whether in is not nil and at least one of its three texts
+// is not blank.
+func (in *PersonaIntimacy) HasSide() bool {
+	return in != nil &&
+		(strings.TrimSpace(in.Tone) != "" || strings.TrimSpace(in.Mind) != "" || strings.TrimSpace(in.Behavior) != "")
+}
+
+// Empty reports whether in is nil, or its three texts and its bounds are all
+// blank.
 func (in *PersonaIntimacy) Empty() bool {
-	return in == nil ||
-		strings.TrimSpace(in.Tone) == "" && strings.TrimSpace(in.Mind) == "" && strings.TrimSpace(in.Behavior) == ""
+	return !in.HasSide() &&
+		(in == nil || !slices.ContainsFunc(in.Bounds, func(b string) bool { return strings.TrimSpace(b) != "" }))
+}
+
+// BoundAt returns the bound of affinity tier tier, 0 being the lowest, with
+// leading and trailing white space removed: "" when in is nil, has no Bounds
+// or tier is out of range.
+func (in *PersonaIntimacy) BoundAt(tier int) string {
+	if in == nil || tier < 0 || tier >= len(in.Bounds) {
+		return ""
+	}
+	return strings.TrimSpace(in.Bounds[tier])
 }
 
 // LevelAt returns the level of affinity tier tier, 0 being the lowest: from
@@ -117,7 +140,8 @@ func (in *PersonaIntimacy) LevelAt(tier int) string {
 }
 
 // Persona text limits, counted in runes. MaxIntimacyRunes bounds the three
-// texts of an intimacy side together.
+// texts of an intimacy side together, MaxIntimacyBoundRunes each of its
+// bounds.
 const (
 	MaxCharacterNameRunes  = 20
 	MaxDescriptionRunes    = 2000
@@ -127,6 +151,7 @@ const (
 	MaxExampleRunes        = 200
 	MaxContentRulesRunes   = 2000
 	MaxIntimacyRunes       = 800
+	MaxIntimacyBoundRunes  = 150
 	MaxMemoryRulesRunes    = 1000
 	MaxPersonaBars         = 4
 	MaxBarNameRunes        = 6
@@ -332,6 +357,16 @@ func (p PersonaDoc) Validate() error {
 				fail("intimacy.levels[%d] must be one of none|light|half|major, got %q", i, level)
 			case i > 0 && rank < slices.Index(intimacyLevels, in.Levels[i-1]):
 				fail("intimacy.levels[%d] must not be lower than intimacy.levels[%d], got %s after %s", i, i-1, level, in.Levels[i-1])
+			}
+		}
+		if n, tiers := len(in.Bounds), len(DefaultIntimacyLevels()); n > 0 && n != tiers {
+			fail("intimacy.bounds must have exactly %d items, got %d", tiers, n)
+		}
+		for i, bound := range in.Bounds {
+			path := fmt.Sprintf("intimacy.bounds[%d]", i)
+			maxRunes(path, bound, MaxIntimacyBoundRunes)
+			if strings.ContainsAny(bound, "\r\n") {
+				fail("%s must be a single line", path)
 			}
 		}
 	}

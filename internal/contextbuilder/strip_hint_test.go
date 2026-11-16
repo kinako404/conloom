@@ -44,7 +44,7 @@ var echoHints = []echoHint{
 // relationship is the hint as the runner sends it: the tier's sentence, then
 // the intimacy side on its own line when the level mixes it in.
 func (h echoHint) relationship() string {
-	s := core.CopyDirectiveAffinity(h.tier, h.open)
+	s := core.CopyDirectiveAffinity(h.tier, h.open, "")
 	if side := core.CopyIntimacySide(h.level, echoSide); side != "" {
 		s += "\n" + side
 	}

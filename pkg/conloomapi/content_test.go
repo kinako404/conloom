@@ -97,6 +97,13 @@ func TestValidateContent_MinorIntimacy(t *testing.T) {
 		t.Errorf("minor with levels only: %v", err)
 	}
 
+	boundsOnly := DefaultPersona()
+	boundsOnly.Minor = true
+	boundsOnly.Intimacy = &PersonaIntimacy{Bounds: []string{"", "可以牵手", "", "", ""}}
+	if err := ValidateContent(boundsOnly); err == nil || err.Error() != minorIntimacy {
+		t.Errorf("minor with a bound only: err = %v, want exactly %q", err, minorIntimacy)
+	}
+
 	neither := DefaultPersona()
 	neither.Intimacy = side
 	if err := ValidateContent(neither); err != nil {

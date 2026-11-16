@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/gateway"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -69,6 +70,28 @@ func TestPersona_MinorAndContentMode(t *testing.T) {
 	if !got.Minor || got.ContentMode != conloomapi.ContentProtected {
 		t.Errorf("minor persona: minor %v content_mode %q, want true protected", got.Minor, got.ContentMode)
 	}
+}
+
+func TestAffinityBounds_ListsDefaults(t *testing.T) {
+	dh := newDataHarness(t)
+	const path = "/panel/api/affinity-bounds"
+	var got struct {
+		Tiers    []string `json:"tiers"`
+		Defaults []string `json:"defaults"`
+	}
+	dh.getJSON(path, &got)
+	if want := []string{"陌生", "认识", "熟悉", "亲近", "很要好"}; !reflect.DeepEqual(got.Tiers, want) {
+		t.Errorf("tiers = %v, want %v", got.Tiers, want)
+	}
+	if len(got.Defaults) != len(got.Tiers) {
+		t.Fatalf("defaults = %v, want one for each of the tiers %v", got.Defaults, got.Tiers)
+	}
+	for i, tier := range got.Tiers {
+		if want := core.DefaultAffinityBound(tier); want == "" || got.Defaults[i] != want {
+			t.Errorf("defaults[%d] = %q, want the built-in bound of %s %q", i, got.Defaults[i], tier, want)
+		}
+	}
+	errorBody(t, dh.do(http.MethodGet, path, ""), http.StatusUnauthorized, conloomapi.CodeUnauthorized)
 }
 
 func TestPersona_ReadOnlyWhenMissing(t *testing.T) {

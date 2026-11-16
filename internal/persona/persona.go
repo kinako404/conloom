@@ -498,8 +498,8 @@ func (s *Service) Update(ctx context.Context, convKey, templateName string, put 
 // Prompt is a conversation's system prompt: Text built from persona version
 // Version under content mode Mode, in which the bot is called BotName.
 // Intimacy, which never enters Text, is a copy of the persona's intimacy side
-// when Mode is ContentOpen and the side is not empty (see
-// conloomapi.PersonaIntimacy.Empty), and nil otherwise.
+// when Mode is ContentOpen and the side is not empty, which a side with only
+// bounds is not (see conloomapi.PersonaIntimacy.Empty), and nil otherwise.
 type Prompt struct {
 	Text     string
 	Version  int
@@ -572,6 +572,7 @@ func (p Prompt) clone() Prompt {
 	if p.Intimacy != nil {
 		in := *p.Intimacy
 		in.Levels = slices.Clone(in.Levels)
+		in.Bounds = slices.Clone(in.Bounds)
 		p.Intimacy = &in
 	}
 	return p

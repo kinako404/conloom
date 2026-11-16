@@ -56,9 +56,20 @@ func TestCopyIntimacySide(t *testing.T) {
 	if got := CopyIntimacySide(conloomapi.IntimacyMajor, blank); got != "" {
 		t.Errorf("major with blank texts = %q, want empty", got)
 	}
+	boundsOnly := conloomapi.PersonaIntimacy{Bounds: []string{"", "可以牵手", "", "", ""}}
+	if got := CopyIntimacySide(conloomapi.IntimacyMajor, boundsOnly); got != "" {
+		t.Errorf("major with bounds only = %q, want empty", got)
+	}
 }
 
 func TestCopyDirectiveAffinity(t *testing.T) {
+	base := map[string]string{
+		"陌生":  "你们还不太熟。保持礼貌和距离，不要主动拉近关系或表现亲昵。",
+		"认识":  "你们已经认识。语气可以友好、放松，但不要主动发展更亲密的关系。",
+		"熟悉":  "你们比较熟悉。可以自然开玩笑、表达关心，但不要主动发展更亲密的关系。",
+		"亲近":  "你们很亲近。可以明显表现出信任、关心和偏爱。",
+		"很要好": "你们关系很好。可以自然表现出依赖、偏爱和亲近。",
+	}
 	protected := map[string]string{
 		"陌生":  "【关系提示】你们还不太熟。保持礼貌和距离，不要主动拉近关系或表现亲昵。不要涉及恋爱或性。",
 		"认识":  "【关系提示】你们已经认识。语气可以友好、放松，但不要主动发展更亲密的关系。不要涉及恋爱或性。",
@@ -67,9 +78,42 @@ func TestCopyDirectiveAffinity(t *testing.T) {
 		"很要好": "【关系提示】你们关系很好。可以自然表现出依赖、偏爱和亲近。但不要发展恋爱或性关系。",
 	}
 	for tier, want := range protected {
-		if got := CopyDirectiveAffinity(tier, false); got != want {
+		if got := CopyDirectiveAffinity(tier, false, ""); got != want {
 			t.Errorf("protected %s = %q, want %q", tier, got, want)
 		}
+		if got := CopyDirectiveAffinity(tier, false, "可以牵手"); got != want {
+			t.Errorf("protected %s with a bound = %q, want it ignored: %q", tier, got, want)
+		}
+	}
+	for tier, b := range base {
+		bound := DefaultAffinityBound(tier)
+		if bound == "" {
+			t.Errorf("DefaultAffinityBound(%s) is empty", tier)
+		}
+		if got, want := CopyDirectiveAffinity(tier, true, ""), "【关系提示】"+b+bound; got != want {
+			t.Errorf("open %s = %q, want the base sentence and the built-in bound %q", tier, got, want)
+		}
+	}
+	if got := DefaultAffinityBound("unknown"); got != "" {
+		t.Errorf("DefaultAffinityBound(unknown) = %q, want empty", got)
+	}
+
+	if got, want := CopyDirectiveAffinity("认识", true, "可以牵手，但不接受表白。"),
+		"【关系提示】你们已经认识。语气可以友好、放松，但不要主动发展更亲密的关系。可以牵手，但不接受表白。"; got != want {
+		t.Errorf("open 认识 with a custom bound = %q, want %q", got, want)
+	}
+	if got, want := CopyDirectiveAffinity("认识", true, "  "), CopyDirectiveAffinity("认识", true, ""); got != want {
+		t.Errorf("open 认识 with a blank bound = %q, want the built-in %q", got, want)
+	}
+	if got, want := CopyDirectiveAffinity("认识", false, "可以牵手"), CopyDirectiveAffinity("认识", false, ""); got != want {
+		t.Errorf("protected 认识 with a bound = %q, want %q", got, want)
+	}
+	if got, want := CopyDirectiveAffinity("熟悉", true, " 可以牵手，\n\t不接受表白。\r\n"),
+		"【关系提示】"+base["熟悉"]+"可以牵手， 不接受表白。"; got != want {
+		t.Errorf("open 熟悉 with a multi-line bound = %q, want it on one line: %q", got, want)
+	}
+	if got := CopyDirectiveAffinity("unknown", true, "可以牵手"); got != "" {
+		t.Errorf("unknown tier with a bound = %q, want empty", got)
 	}
 
 	open := []struct {
@@ -84,7 +128,7 @@ func TestCopyDirectiveAffinity(t *testing.T) {
 		{"很要好", []string{"更主动、更深入地回应"}, nil},
 	}
 	for _, c := range open {
-		got := CopyDirectiveAffinity(c.tier, true)
+		got := CopyDirectiveAffinity(c.tier, true, "")
 		if !strings.HasPrefix(got, "【关系提示】") {
 			t.Errorf("open %s = %q, want the 【关系提示】 prefix", c.tier, got)
 		}
@@ -100,11 +144,11 @@ func TestCopyDirectiveAffinity(t *testing.T) {
 		}
 	}
 	for _, tier := range []string{"亲近", "很要好"} {
-		if got := CopyDirectiveAffinity(tier, true); !strings.Contains(got, "内容规则") {
+		if got := CopyDirectiveAffinity(tier, true, ""); !strings.Contains(got, "内容规则") {
 			t.Errorf("open %s = %q, want it to defer to the persona's content rules", tier, got)
 		}
 	}
-	if got := CopyDirectiveAffinity("unknown", true); got != "" {
+	if got := CopyDirectiveAffinity("unknown", true, ""); got != "" {
 		t.Errorf("unknown tier = %q, want empty", got)
 	}
 }

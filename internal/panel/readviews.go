@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -120,6 +121,23 @@ func (s *Server) getPersona(w http.ResponseWriter, r *http.Request, _ *Session) 
 	resp.Minor = doc.Minor
 	resp.ContentMode = conloomapi.ModeFor(doc, conloomapi.ConvPrivate)
 	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// getAffinityBounds lists the affinity tiers from the lowest (tier i starts
+// at affinity i*20, see memory.TierIndex) and, for each, the built-in
+// boundary of the open-mode relationship hint (core.DefaultAffinityBound),
+// which a persona's intimacy bound for the tier replaces.
+func (s *Server) getAffinityBounds(w http.ResponseWriter, _ *http.Request, _ *Session) {
+	n := len(conloomapi.DefaultIntimacyLevels())
+	tiers, defaults := make([]string, n), make([]string, n)
+	for i := range n {
+		tiers[i] = memory.TierName(i * 20)
+		defaults[i] = core.DefaultAffinityBound(tiers[i])
+	}
+	s.writeJSON(w, http.StatusOK, struct {
+		Tiers    []string `json:"tiers"`
+		Defaults []string `json:"defaults"`
+	}{tiers, defaults})
 }
 
 // getMemory returns the same JSON as the Bot Interaction API's GET

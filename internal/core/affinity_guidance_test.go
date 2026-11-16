@@ -112,7 +112,7 @@ func TestAffinityGuidance_IntimacyMajorAtTop(t *testing.T) {
 			t.Errorf("request lacks %q:\n%s", want, last)
 		}
 	}
-	if want := CopyDirectiveAffinity("很要好", true) + "\n" + CopyIntimacySide(conloomapi.IntimacyMajor, side) + "\n\n"; !strings.Contains(last, want) {
+	if want := CopyDirectiveAffinity("很要好", true, "") + "\n" + CopyIntimacySide(conloomapi.IntimacyMajor, side) + "\n\n"; !strings.Contains(last, want) {
 		t.Errorf("request lacks the relationship hint followed by the intimacy side %q:\n%s", want, last)
 	}
 	system := systemContent(t, req)
@@ -130,7 +130,7 @@ func TestAffinityGuidance_IntimacyNoneAtAcquaintance(t *testing.T) {
 	if strings.Contains(last, "【亲密面】") {
 		t.Errorf("request at 认识 carries the intimacy side:\n%s", last)
 	}
-	if want := CopyDirectiveAffinity("认识", true) + "\n\n"; !strings.Contains(last, want) {
+	if want := CopyDirectiveAffinity("认识", true, "") + "\n\n"; !strings.Contains(last, want) {
 		t.Errorf("request lacks the relationship hint %q:\n%s", want, last)
 	}
 }
@@ -153,7 +153,7 @@ func TestAffinityGuidance_IntimacyCustomLevels(t *testing.T) {
 		t.Run(c.tier, func(t *testing.T) {
 			env := newTestOrchestrator(t, testOpts{configure: injectConfig(true)})
 			last := lastContent(env.guidancePrivate(t, c.affinity, true, &side))
-			if want := CopyDirectiveAffinity(c.tier, true) + "\n" + CopyIntimacySide(c.level, side); !strings.Contains(last, want) {
+			if want := CopyDirectiveAffinity(c.tier, true, "") + "\n" + CopyIntimacySide(c.level, side); !strings.Contains(last, want) {
 				t.Errorf("request lacks %q:\n%s", want, last)
 			}
 			if !strings.Contains(last, c.mix) {
@@ -176,7 +176,7 @@ func TestAffinityGuidance_IntimacyNeverProtected(t *testing.T) {
 				t.Errorf("protected request contains %q:\n%s", text, all)
 			}
 		}
-		if want := CopyDirectiveAffinity("很要好", false) + "\n\n"; !strings.Contains(lastContent(req), want) {
+		if want := CopyDirectiveAffinity("很要好", false, "") + "\n\n"; !strings.Contains(lastContent(req), want) {
 			t.Errorf("protected request lacks the relationship hint %q:\n%s", want, lastContent(req))
 		}
 	}
@@ -205,9 +205,54 @@ func TestAffinityGuidance_NoIntimacyUnchanged(t *testing.T) {
 		t.Fatalf("request lacks the relationship hint:\n%s", last)
 	}
 	hint, _, ok := strings.Cut(last[start:], "\n\n")
-	if want := CopyDirectiveAffinity("很要好", true); !ok || hint != want {
+	if want := CopyDirectiveAffinity("很要好", true, ""); !ok || hint != want {
 		t.Errorf("relationship hint = %q (followed by a blank line: %v), want %q", hint, ok, want)
 	}
+}
+
+// guidanceBounds is an intimacy side with only a bound for 认识.
+func guidanceBounds() *conloomapi.PersonaIntimacy {
+	return &conloomapi.PersonaIntimacy{Bounds: []string{"", "认识档自定义边界。", "", "", ""}}
+}
+
+func TestAffinityGuidance_CustomBoundReplacesDefault(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: injectConfig(true)})
+	last := lastContent(env.guidancePrivate(t, 30, true, guidanceBounds()))
+	if want := CopyDirectiveAffinity("认识", true, "认识档自定义边界。") + "\n\n"; !strings.Contains(last, want) {
+		t.Errorf("request lacks the relationship hint with the custom bound %q:\n%s", want, last)
+	}
+	for _, unwanted := range []string{DefaultAffinityBound("认识"), "【亲密面】"} {
+		if strings.Contains(last, unwanted) {
+			t.Errorf("request carries %q:\n%s", unwanted, last)
+		}
+	}
+}
+
+func TestAffinityGuidance_CustomBoundNeverProtected(t *testing.T) {
+	check := func(t *testing.T, req map[string]any) {
+		t.Helper()
+		if all := requestText(t, req); strings.Contains(all, "认识档自定义边界") {
+			t.Errorf("protected request contains the custom bound:\n%s", all)
+		}
+		if want := CopyDirectiveAffinity("认识", false, "") + "\n\n"; !strings.Contains(lastContent(req), want) {
+			t.Errorf("protected request lacks the relationship hint %q:\n%s", want, lastContent(req))
+		}
+	}
+	t.Run("group", func(t *testing.T) {
+		env := newTestOrchestrator(t, testOpts{configure: injectConfig(true)})
+		env.guidancePersona(t, testConvKey, true, guidanceBounds())
+		env.injectSeed(t, testConvKey, "",
+			store.MemberMemory{PlatformUserID: "20001", Note: "喜欢猫", Affinity: injectAffinity(30)})
+		task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "你好", mentionBot)).TaskID)
+		if task.Status != conloomapi.TaskSucceeded {
+			t.Fatalf("task = %+v", task)
+		}
+		check(t, env.short.Requests()[0])
+	})
+	t.Run("private not adult", func(t *testing.T) {
+		env := newTestOrchestrator(t, testOpts{configure: injectConfig(true)})
+		check(t, env.guidancePrivate(t, 30, false, guidanceBounds()))
+	})
 }
 
 func TestAffinityDirective_ReadsMemoryScope(t *testing.T) {
@@ -232,7 +277,7 @@ func TestAffinityDirective_ReadsMemoryScope(t *testing.T) {
 	}
 	task := store.TaskRecord{ID: "task_scope", BotInstanceID: testBot, ConversationKey: key, ActorPlatformUserID: user}
 	got := env.o.affinityDirective(ctx, task, pv.Policy, nil, conloomapi.ContentProtected, nil)
-	if want := CopyDirectiveAffinity(memory.TierName(50), false); want == "" || got != want {
+	if want := CopyDirectiveAffinity(memory.TierName(50), false, ""); want == "" || got != want {
 		t.Errorf("affinityDirective = %q, want %q", got, want)
 	}
 }

@@ -130,7 +130,7 @@ func TestMemoryInject_BlockBeforeRecentMessages(t *testing.T) {
 		{Name: "小明", Tier: "熟悉", Note: "喜欢猫"},
 		{Name: "小红", Note: "养了狗"},
 	}, 0)
-	rel := CopyDirectiveAffinity("熟悉", false)
+	rel := CopyDirectiveAffinity("熟悉", false, "")
 	last := lastContent(on)
 	if !strings.HasPrefix(last, block+"\n\n"+rel+"\n\n【近期消息") {
 		t.Fatalf("last user message = %q, want the block, then the relationship hint, then the recent messages", last)

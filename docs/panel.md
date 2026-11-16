@@ -300,6 +300,7 @@ panel:
 | `GET persona-templates/{name}/export` | 下载这个模板的导出文件 `persona-<模板名>.json`，不存在返回 404；写审计 `persona.template.export`（`HEAD` 只返回响应头，不写审计）。见 [人设模板和外观参考图](#人设模板和外观参考图) |
 | `GET persona-templates/export` | 下载全部模板的导出文件 `persona-templates-<YYYYMMDD>.json`（`server.timezone` 的当地日期）；写审计 `persona.template.export`（`HEAD` 只返回响应头，不写审计）。文件一个模板一个模板地写出，同一时间只有一张参考图在内存里；已经开始写之后读取某个模板失败时，连接直接断开，下载失败，不会留下半截文件 |
 | `GET persona-images/{id}?size=` | 图片本身：`size` 为 `reply`（默认，缩小图，`image/jpeg`）或 `original`（原图，`image/png` 或 `image/jpeg`）；其他值返回 400，图片不存在返回 404 |
+| `GET affinity-bounds` | 好感度档位和开放模式下每档内置的边界句：`{"tiers":["陌生","认识","熟悉","亲近","很要好"],"defaults":[…]}`，`defaults[i]` 是 `tiers[i]` 的内置边界，也就是人设的 `intimacy.bounds[i]` 为空时【关系提示】用的那句（见 [配置：亲密面](configuration.md#亲密面)） |
 | `GET tasks?status=&bot=&conversation=&before=&limit=` | 任务列表 |
 | `GET tasks/{id}` | 任务详情：任务、meta、动作、模型调用 |
 | `GET audit?kind=&bot=&before=&limit=` | 审计记录 |

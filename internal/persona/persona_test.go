@@ -845,6 +845,7 @@ func TestRender_IgnoresIntimacy(t *testing.T) {
 	intimacy := &conloomapi.PersonaIntimacy{
 		Tone: "说话放软一些", Mind: "想靠近对方", Behavior: "会多陪对方聊一会儿",
 		Levels: []string{conloomapi.IntimacyNone, conloomapi.IntimacyLight, conloomapi.IntimacyHalf, conloomapi.IntimacyMajor, conloomapi.IntimacyMajor},
+		Bounds: []string{"", "可以牵手，但不接受表白。", "", "", ""},
 	}
 	adult := conloomapi.DefaultPersona()
 	adult.Description = "设定"
@@ -874,7 +875,7 @@ func TestRender_IgnoresIntimacy(t *testing.T) {
 			if sans != want {
 				t.Errorf("adult=%v in %s: prompt with an intimacy side =\n%+v\nwant\n%+v", base.Adult, key, got, want)
 			}
-			for _, text := range []string{intimacy.Tone, intimacy.Mind, intimacy.Behavior} {
+			for _, text := range []string{intimacy.Tone, intimacy.Mind, intimacy.Behavior, intimacy.Bounds[1]} {
 				if strings.Contains(got.Text, text) {
 					t.Errorf("adult=%v in %s: prompt contains %q", base.Adult, key, text)
 				}
@@ -935,6 +936,28 @@ func TestSystemPrompt_IntimacyOnlyOpen(t *testing.T) {
 	blank.Intimacy = &conloomapi.PersonaIntimacy{Tone: " ", Mind: "\n\t", Levels: conloomapi.DefaultIntimacyLevels()}
 	if p := get(newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": blank}), privateKey); p.Mode != conloomapi.ContentOpen || p.Intimacy != nil {
 		t.Errorf("adult in private with blank texts: mode %q, intimacy %+v; want open without one", p.Mode, p.Intimacy)
+	}
+
+	boundsOnly := adult
+	bounds := conloomapi.PersonaIntimacy{Bounds: []string{"", "可以牵手，但不接受表白。", "", "", ""}}
+	boundsOnly.Intimacy = &bounds
+	bsvc := newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": boundsOnly})
+	p = get(bsvc, privateKey)
+	if p.Mode != conloomapi.ContentOpen || p.Intimacy == nil || !reflect.DeepEqual(*p.Intimacy, bounds) {
+		t.Fatalf("adult in private with bounds only: mode %q, intimacy %+v; want open with %+v", p.Mode, p.Intimacy, bounds)
+	}
+	if want := get(plain, privateKey).Text; p.Text != want {
+		t.Errorf("adult in private: prompt text with bounds only =\n%s\nwant\n%s", p.Text, want)
+	}
+	p.Intimacy.Bounds[1] = "改过的边界"
+	if again := get(bsvc, privateKey); again.Intimacy == nil || !reflect.DeepEqual(*again.Intimacy, bounds) {
+		t.Errorf("after changing returned bounds, SystemPrompt returns %+v, want %+v", again.Intimacy, bounds)
+	}
+	if g := get(bsvc, testConvKey); g.Mode != conloomapi.ContentProtected || g.Intimacy != nil {
+		t.Errorf("adult in a group with bounds only: mode %q, intimacy %+v; want protected without one", g.Mode, g.Intimacy)
+	}
+	if want := get(plain, testConvKey).Text; get(bsvc, testConvKey).Text != want {
+		t.Errorf("adult in a group: prompt text with bounds only differs from the one without")
 	}
 
 	st := newTestStore(t)
