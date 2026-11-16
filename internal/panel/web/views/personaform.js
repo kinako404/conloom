@@ -222,9 +222,11 @@ function appearanceEditor(base) {
 
 // intimacyEditor edits a persona's intimacy side: its three texts, counted
 // together after trimming, and a level per affinity tier. minor and adult are
-// the form's checkboxes: a minor persona gets the section disabled, one that
-// is not adult a note that the section takes no effect. read returns {value},
-// the intimacy side or undefined when the three texts are blank, or {error}.
+// the form's checkboxes: a minor persona gets the section disabled, and while
+// it still has text a button, outside the section, that empties the three
+// texts; one that is not adult a note that the section takes no effect. read
+// returns {value}, the intimacy side or undefined when the three texts are
+// blank, or {error}.
 function intimacyEditor(base, { minor, adult }) {
   const doc = base.intimacy || {};
   const tone = h('textarea', { value: doc.tone || '' });
@@ -244,6 +246,8 @@ function intimacyEditor(base, { minor, adult }) {
   showCount();
 
   const minorNote = h('p', { class: 'hint warn' }, '未成年人设不能设置亲密面');
+  const clear = h('button', { type: 'button', class: 'danger' }, '清空亲密面');
+  const clearBar = h('div', { class: 'toolbar' }, clear);
   const notAdultNote = h('p', { class: 'hint warn' }, '当前不是成年人设，亲密面不会生效');
   const section = h('fieldset', { class: 'intimacy' },
     field('语气', tone),
@@ -255,9 +259,16 @@ function intimacyEditor(base, { minor, adult }) {
     section.disabled = minor.checked;
     minorNote.hidden = !minor.checked;
     notAdultNote.hidden = minor.checked || adult.checked;
+    clearBar.hidden = !minor.checked || total() === 0;
   };
   minor.addEventListener('change', sync);
   adult.addEventListener('change', sync);
+  for (const t of texts) t.addEventListener('input', sync);
+  clear.addEventListener('click', () => {
+    for (const t of texts) t.value = '';
+    showCount();
+    sync();
+  });
   sync();
 
   const read = () => {
@@ -276,6 +287,7 @@ function intimacyEditor(base, { minor, adult }) {
     el: [
       h('p', { class: 'hint' }, '只在成年人设的私聊里生效；群聊和保护模式下不使用。改模板不影响已有会话，要到会话的人设页套用模板。'),
       minorNote,
+      clearBar,
       notAdultNote,
       section,
     ],

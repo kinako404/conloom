@@ -438,6 +438,7 @@ func TestPersonaForm_IntimacySection(t *testing.T) {
 		"'未成年人设不能设置亲密面，请先清空'", "`亲密面合计最多 800 字`", "'亲密面的档位要从低到高不递减'",
 		"section.disabled = minor.checked;", "minorNote.hidden = !minor.checked;",
 		"notAdultNote.hidden = minor.checked || adult.checked;",
+		"'清空亲密面'", "clearBar.hidden = !minor.checked || total() === 0;", "for (const t of texts) t.value = '';",
 		"minor.addEventListener('change', sync);", "adult.addEventListener('change', sync);",
 		"intimacyEditor(base, { minor, adult })", "persona.intimacy = side.value;", "delete persona.intimacy;",
 	} {
