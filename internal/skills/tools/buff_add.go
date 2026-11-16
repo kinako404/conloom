@@ -74,8 +74,10 @@ type addBuffTool struct {
 // baseline), kept and adjusted like the persona's, or an effect (kind
 // effect) that runs out after EffectMinMinutes to EffectMaxMinutes minutes.
 // The name follows the persona's bar name rules (validBuffName) and must be
-// neither one of the persona's bars nor held by a bar the bot added or an
-// effect still active; the description, CleanActivity'd, has at most
+// neither one of the persona's bars, nor in a shared panel scope one of the
+// bars of another chat's persona (scopePersonaBar), whose value the scope
+// keeps under that name, nor held by a bar the bot added or an effect still
+// active; the description, CleanActivity'd, has at most
 // conloomapi.MaxBarDescriptionRunes runes. Both go through OutputProtected
 // unless the persona's content mode is open, then Output: a blocked name or
 // description, or a name review would change, is refused, a sanitized
@@ -142,7 +144,10 @@ func (t *addBuffTool) Call(ctx context.Context, inv skills.Invocation, args json
 	if err != nil {
 		return "", err
 	}
-	if isPersonaBar(doc, name) {
+	scope := memory.ScopeKeyOf(inv.ConversationKey)
+	if fixed, err := scopePersonaBar(ctx, t.st, doc, inv.ConversationKey, scope, name); err != nil {
+		return "", err
+	} else if fixed {
 		return "“" + name + "”是固定的状态条，换个名字。", nil
 	}
 	pv, err := t.policies.Current(ctx, inv.ConversationKey)
@@ -165,7 +170,6 @@ func (t *addBuffTool) Call(ctx context.Context, inv skills.Invocation, args json
 	}
 
 	now, _ := clock(inv)
-	scope := memory.ScopeKeyOf(inv.ConversationKey)
 	var until time.Time
 	if kind == buffKindBar {
 		bar.ConversationKey, bar.Name, bar.Description, bar.TaskID, bar.CreatedAt = scope, name, description, inv.TaskID, now

@@ -28,9 +28,10 @@ type removeBuffTool struct {
 
 // NewRemoveBuff returns the remove_buff tool. In a private chat it removes,
 // from the chat's memory scope (memory.ScopeKey, shared by a bot's panel
-// chats), the bar the bot added under the name, with its value, or else the
-// effect of that name still active; one that has run out counts as gone. The
-// persona's bars are refused. A task removes each name at most once, so a
+// chats), the bar the bot added under the name, with its value unless another
+// chat's persona of the scope has a bar of that name (scopePersonaBar), which
+// shows the value, or else the effect of that name still active; one that has
+// run out counts as gone. The persona's bars are refused. A task removes each name at most once, so a
 // re-run task does not remove what another task added back. An unknown name
 // is answered with the bot's bars and active effects.
 func NewRemoveBuff(st BuffStore, personas PersonaSource) skills.Tool {
@@ -67,7 +68,11 @@ func (t *removeBuffTool) Call(ctx context.Context, inv skills.Invocation, args j
 	}
 	now, _ := clock(inv)
 	scope := memory.ScopeKeyOf(inv.ConversationKey)
-	removed, err := t.st.RemoveCustomBar(ctx, scope, name, store.BuffSourceModel, inv.TaskID, false, now)
+	keepValue, err := scopePersonaBar(ctx, t.st, doc, inv.ConversationKey, scope, name)
+	if err != nil {
+		return "", err
+	}
+	removed, err := t.st.RemoveCustomBar(ctx, scope, name, store.BuffSourceModel, inv.TaskID, keepValue, now)
 	switch {
 	case errors.Is(err, store.ErrBuffDuplicate):
 		return removeBuffTwice, nil

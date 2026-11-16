@@ -37,6 +37,8 @@ type StatusStore interface {
 // BuffStore is the part of store.Store that adjust_buff, add_buff and
 // remove_buff use.
 type BuffStore interface {
+	PanelChatKeys(ctx context.Context, botID string) ([]string, error)
+	LatestPersona(ctx context.Context, convKey string) (store.PersonaVersion, error)
 	UpdateBuff(ctx context.Context, convKey, name string, ev store.BuffEvent,
 		apply func(cur store.BuffValue, found bool) (next store.BuffValue, before float64, err error)) (store.BuffValue, error)
 	GetBuffs(ctx context.Context, convKey string) ([]store.BuffValue, error)

@@ -162,6 +162,37 @@ func isPersonaBar(doc conloomapi.PersonaDoc, name string) bool {
 	return slices.ContainsFunc(doc.EffectiveBars(), func(b conloomapi.PersonaBar) bool { return b.Name == name })
 }
 
+// scopePersonaBar reports whether name is a bar of doc, the persona of the
+// chat convKey, or of the latest persona version of another chat of the
+// memory scope scope (memory.ScopeChats): the panel chats of a bot keep their
+// bars' values in their shared scope by name, whatever persona each has. A
+// chat without a persona version is left out.
+func scopePersonaBar(ctx context.Context, st BuffStore, doc conloomapi.PersonaDoc, convKey, scope, name string) (bool, error) {
+	if isPersonaBar(doc, name) {
+		return true, nil
+	}
+	chats, err := memory.ScopeChats(ctx, st, scope)
+	if err != nil {
+		return false, err
+	}
+	for _, chat := range chats {
+		if chat == convKey {
+			continue
+		}
+		pv, err := st.LatestPersona(ctx, chat)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			continue
+		case err != nil:
+			return false, err
+		}
+		if isPersonaBar(pv.Persona, name) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // joinBarNames lists the names of bars as "心情、精力".
 func joinBarNames(bars []conloomapi.PersonaBar) string {
 	names := make([]string, len(bars))
