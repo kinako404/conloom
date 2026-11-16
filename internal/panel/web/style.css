@@ -279,6 +279,8 @@ dialog::backdrop { background: rgba(0, 0, 0, .4); }
 dialog ul.names { max-height: 30vh; overflow-y: auto; margin: 4px 0 8px; padding-left: 20px; }
 fieldset.skills { border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin: 0 0 10px; max-height: 40vh; overflow-y: auto; }
 fieldset.skills legend { color: var(--muted); font-size: 12px; padding: 0 4px; }
+fieldset.intimacy { border: none; margin: 0; padding: 0; min-width: 0; }
+fieldset.intimacy:disabled { opacity: .6; }
 .skill { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 6px; }
 .skill input[type=checkbox] { margin-top: 2px; }
 .skill > span { display: flex; flex-direction: column; }

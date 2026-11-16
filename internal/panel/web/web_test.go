@@ -375,6 +375,78 @@ func TestAssets_GenderOptionsMatchPersona(t *testing.T) {
 	}
 }
 
+// listItems returns the quoted items of personaform.js's array constant name.
+func listItems(t *testing.T, js, name string) []string {
+	t.Helper()
+	m := regexp.MustCompile(`const ` + name + ` = \[(.*?)\];`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatalf("views/personaform.js has no %s", name)
+	}
+	var items []string
+	for _, v := range regexp.MustCompile(`'([^']*)'`).FindAllStringSubmatch(m[1], -1) {
+		items = append(items, v[1])
+	}
+	return items
+}
+
+// The persona form edits the intimacy side: three texts counted together, in
+// characters after trimming, against conloomapi.MaxIntimacyRunes, and a level
+// per affinity tier from the lowest, the default levels when the persona has
+// none. A minor persona gets the section disabled, a persona that is not
+// adult a note; saving refuses what the server would, and three blank texts
+// save no intimacy side.
+func TestPersonaForm_IntimacySection(t *testing.T) {
+	js := assets(t, ".js")["views/personaform.js"]
+	m := regexp.MustCompile(`const INTIMACY_LEVELS = \{(.*?)\};`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("views/personaform.js has no INTIMACY_LEVELS")
+	}
+	var keys, labels []string
+	for _, k := range regexp.MustCompile(`(\w+): '([^']*)'`).FindAllStringSubmatch(m[1], -1) {
+		keys, labels = append(keys, k[1]), append(labels, k[2])
+	}
+	if want := []string{conloomapi.IntimacyNone, conloomapi.IntimacyLight, conloomapi.IntimacyHalf, conloomapi.IntimacyMajor}; !slices.Equal(keys, want) {
+		t.Errorf("INTIMACY_LEVELS keys = %q, want %q", keys, want)
+	}
+	if want := []string{"不混", "少量", "一半", "为主"}; !slices.Equal(labels, want) {
+		t.Errorf("INTIMACY_LEVELS labels = %q, want %q", labels, want)
+	}
+	if got, want := listItems(t, js, "DEFAULT_INTIMACY_LEVELS"), conloomapi.DefaultIntimacyLevels(); !slices.Equal(got, want) {
+		t.Errorf("DEFAULT_INTIMACY_LEVELS = %q, want conloomapi.DefaultIntimacyLevels %q", got, want)
+	}
+	var tiers []string
+	for i := range conloomapi.DefaultIntimacyLevels() {
+		tiers = append(tiers, memory.TierName(i*20))
+	}
+	if got := listItems(t, js, "INTIMACY_TIERS"); !slices.Equal(got, tiers) {
+		t.Errorf("INTIMACY_TIERS = %q, want the affinity tiers %q", got, tiers)
+	}
+	limit := regexp.MustCompile(`const MAX_INTIMACY = (\d+);`).FindStringSubmatch(js)
+	if limit == nil {
+		t.Fatal("views/personaform.js has no MAX_INTIMACY")
+	}
+	if want := strconv.Itoa(conloomapi.MaxIntimacyRunes); limit[1] != want {
+		t.Errorf("MAX_INTIMACY = %s, want conloomapi.MaxIntimacyRunes %s", limit[1], want)
+	}
+
+	shown := strings.ReplaceAll(js, "${MAX_INTIMACY}", limit[1])
+	for _, want := range []string{
+		"h('h3', null, '亲密面')", "field('语气', tone)", "field('心理', mind)", "field('表现', behavior)",
+		"`合计 ${n} / 800 字`", "[...t.value.trim()].length",
+		"'只在成年人设的私聊里生效；群聊和保护模式下不使用。改模板不影响已有会话，要到会话的人设页套用模板。'",
+		"'未成年人设不能设置亲密面'", "'当前不是成年人设，亲密面不会生效'",
+		"'未成年人设不能设置亲密面，请先清空'", "`亲密面合计最多 800 字`", "'亲密面的档位要从低到高不递减'",
+		"section.disabled = minor.checked;", "minorNote.hidden = !minor.checked;",
+		"notAdultNote.hidden = minor.checked || adult.checked;",
+		"minor.addEventListener('change', sync);", "adult.addEventListener('change', sync);",
+		"intimacyEditor(base, { minor, adult })", "persona.intimacy = side.value;", "delete persona.intimacy;",
+	} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("views/personaform.js lacks %q", want)
+		}
+	}
+}
+
 // A config bot's form offers exactly the private ranges the core knows, sends
 // every setting PUT bots/{id} requires of a config bot, one platform ID a
 // line, and only shows the identity, which is changed in the config file.

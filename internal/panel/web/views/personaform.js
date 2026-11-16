@@ -24,6 +24,17 @@ const MAX_BARS = 4;
 const MAX_APPEARANCE = 800;
 // MAX_IMAGE_MIB is imaging.MaxBytes in MiB, the largest image upload.
 const MAX_IMAGE_MIB = 8;
+// INTIMACY_LEVELS is the values of conloomapi.PersonaIntimacy.Levels, from
+// mixing in none of the intimacy side to mixing in the most.
+const INTIMACY_LEVELS = { none: '不混', light: '少量', half: '一半', major: '为主' };
+// INTIMACY_TIERS names the affinity tiers from the lowest, a level each.
+const INTIMACY_TIERS = ['陌生', '认识', '熟悉', '亲近', '很要好'];
+// DEFAULT_INTIMACY_LEVELS is conloomapi.DefaultIntimacyLevels, the levels of
+// an intimacy side without levels.
+const DEFAULT_INTIMACY_LEVELS = ['none', 'none', 'light', 'half', 'major'];
+// MAX_INTIMACY is conloomapi.MaxIntimacyRunes, the most characters the three
+// texts of an intimacy side have together.
+const MAX_INTIMACY = 800;
 
 function fail(box, message) {
   mount(box, errorBox({ message }));
@@ -209,6 +220,69 @@ function appearanceEditor(base) {
   };
 }
 
+// intimacyEditor edits a persona's intimacy side: its three texts, counted
+// together after trimming, and a level per affinity tier. minor and adult are
+// the form's checkboxes: a minor persona gets the section disabled, one that
+// is not adult a note that the section takes no effect. read returns {value},
+// the intimacy side or undefined when the three texts are blank, or {error}.
+function intimacyEditor(base, { minor, adult }) {
+  const doc = base.intimacy || {};
+  const tone = h('textarea', { value: doc.tone || '' });
+  const mind = h('textarea', { value: doc.mind || '' });
+  const behavior = h('textarea', { value: doc.behavior || '' });
+  const texts = [tone, mind, behavior];
+  const saved = doc.levels && doc.levels.length ? doc.levels : DEFAULT_INTIMACY_LEVELS;
+  const levels = INTIMACY_TIERS.map((_, i) => select(INTIMACY_LEVELS, saved[i]));
+  const total = () => texts.reduce((n, t) => n + [...t.value.trim()].length, 0);
+  const count = h('p', { class: 'hint' });
+  const showCount = () => {
+    const n = total();
+    count.textContent = `合计 ${n} / ${MAX_INTIMACY} 字`;
+    count.classList.toggle('warn', n > MAX_INTIMACY);
+  };
+  for (const t of texts) t.addEventListener('input', showCount);
+  showCount();
+
+  const minorNote = h('p', { class: 'hint warn' }, '未成年人设不能设置亲密面');
+  const notAdultNote = h('p', { class: 'hint warn' }, '当前不是成年人设，亲密面不会生效');
+  const section = h('fieldset', { class: 'intimacy' },
+    field('语气', tone),
+    field('心理', mind),
+    field('表现', behavior),
+    count,
+    h('div', { class: 'form-grid' }, INTIMACY_TIERS.map((tier, i) => field(tier, levels[i]))));
+  const sync = () => {
+    section.disabled = minor.checked;
+    minorNote.hidden = !minor.checked;
+    notAdultNote.hidden = minor.checked || adult.checked;
+  };
+  minor.addEventListener('change', sync);
+  adult.addEventListener('change', sync);
+  sync();
+
+  const read = () => {
+    const n = total();
+    if (n === 0) return { value: undefined };
+    if (minor.checked) return { error: '未成年人设不能设置亲密面，请先清空' };
+    if (n > MAX_INTIMACY) return { error: `亲密面合计最多 ${MAX_INTIMACY} 字` };
+    const order = Object.keys(INTIMACY_LEVELS);
+    const chosen = levels.map((l) => l.value);
+    if (chosen.some((v, i) => i > 0 && order.indexOf(v) < order.indexOf(chosen[i - 1]))) {
+      return { error: '亲密面的档位要从低到高不递减' };
+    }
+    return { value: { tone: tone.value, mind: mind.value, behavior: behavior.value, levels: chosen } };
+  };
+  return {
+    el: [
+      h('p', { class: 'hint' }, '只在成年人设的私聊里生效；群聊和保护模式下不使用。改模板不影响已有会话，要到会话的人设页套用模板。'),
+      minorNote,
+      notAdultNote,
+      section,
+    ],
+    read,
+  };
+}
+
 // personaForm edits doc, a persona, keeping the fields the form does not
 // show. Submitting (the button saveText) reads the persona and calls
 // save(persona, reason, msg, button), which stores it and shows the outcome
@@ -241,6 +315,7 @@ export function personaForm(doc, { save, saveText = '保存人设' }) {
   };
   minor.addEventListener('change', syncAdult);
   syncAdult();
+  const intimacy = intimacyEditor(base, { minor, adult });
   const contentRules = h('textarea', { value: base.content_rules || '' });
   const memoryRules = h('textarea', { value: base.memory_rules || '' });
 
@@ -278,6 +353,8 @@ export function personaForm(doc, { save, saveText = '保存人设' }) {
     if (barRows.error) return { error: barRows.error };
     const look = appearance.read();
     if (look.error) return { error: look.error };
+    const side = intimacy.read();
+    if (side.error) return { error: side.error };
     const persona = JSON.parse(JSON.stringify(base));
     persona.persona_name = name.value;
     persona.template_version = tv;
@@ -307,6 +384,8 @@ export function personaForm(doc, { save, saveText = '保存人设' }) {
       const ex = exampleInputs.get(row);
       return { user: ex.user.value, reply: ex.reply.value };
     });
+    if (side.value) persona.intimacy = side.value;
+    else delete persona.intimacy;
     if (barRows.bars.length) persona.bars = barRows.bars;
     else delete persona.bars;
     return { persona };
@@ -347,6 +426,8 @@ export function personaForm(doc, { save, saveText = '保存人设' }) {
     h('label', { class: 'field inline' }, adult, '成年人设', adultNote)),
   field('内容规则（仅成年人设、私聊生效）', contentRules, '可选，最多 2000 字；开放模式下加入回复提示词，为空则不加'),
   field('记忆规则（仅成年人设、私聊生效）', memoryRules, '可选，最多 1000 字；开放模式下替换记忆整理的第 6 条，为空则省略该条'),
+  h('h3', null, '亲密面'),
+  intimacy.el,
   h('h3', null, `示例对话（最多 ${MAX_EXAMPLES} 条，每条最多 200 字）`),
   examples,
   h('div', { class: 'toolbar' }, addButton),
