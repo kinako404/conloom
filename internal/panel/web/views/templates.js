@@ -117,9 +117,10 @@ async function createTemplate(to, persona, reason) {
 }
 
 // deletedNote is the message after template name was deleted: res, the
-// response, names the bots that used it, which use default from now on.
+// response, lists the bots that used it, as the list's users, which use
+// default from now on.
 function deletedNote(name, res) {
-  const bots = (res && res.affected_bots) || [];
+  const bots = ((res && res.affected_bots) || []).map(botLabel);
   if (!bots.length) return `已删除模板 ${name}`;
   return `已删除模板 ${name}。这些 bot 把它当默认模板，现在改用 default：${bots.join('、')}`;
 }

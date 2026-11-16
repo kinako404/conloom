@@ -160,9 +160,9 @@ func (s *Service) SetImageChecker(f func(ctx context.Context, id string) (bool, 
 }
 
 // SetTemplateUsers sets how DeleteTemplate finds the bots a deleted template
-// leaves without their persona template: f returns the bots, config and
-// panel bots alike, whose persona template is name. Without it DeleteTemplate
-// reports none. Call it before the Service is shared.
+// leaves without their persona template: f returns the IDs of the bots,
+// config and panel bots alike, whose persona template is name. Without it
+// DeleteTemplate reports none. Call it before the Service is shared.
 func (s *Service) SetTemplateUsers(f func(name string) []string) {
 	s.templateUsers = f
 }
@@ -282,9 +282,10 @@ func (s *Service) ResetTemplate(ctx context.Context, name string) error {
 }
 
 // DeleteTemplate deletes the stored template name, also a row LoadTemplates
-// left out, even while bots use it, and returns those bots (see
+// left out, even while bots use it, and returns those bots' IDs (see
 // SetTemplateUsers). It does not change them: publishing the bots again
-// (core.PanelBotService.Load) makes them use "default", noting the problem.
+// (core.PanelBotService.Load) makes them use "default", noting the problem,
+// and until then Current starts their new conversations from "default".
 // "default" is ErrDefaultTemplate (see ResetTemplate); an unknown name is
 // store.ErrNotFound.
 func (s *Service) DeleteTemplate(ctx context.Context, name string) ([]string, error) {
@@ -380,7 +381,10 @@ func (s *Service) imageUploaded(ctx context.Context, id string) (bool, error) {
 }
 
 // Current returns the latest persona version, creating version 1 from the
-// catalog's template templateName when none exists.
+// catalog's template templateName when none exists. Without such a template,
+// as for a bot whose template was deleted before the bots were published
+// again, version 1 is made from "default", which the catalog always has, and
+// records it as its template; this is logged as a warning.
 func (s *Service) Current(ctx context.Context, convKey, templateName string) (store.PersonaVersion, error) {
 	pv, err := s.st.LatestPersona(ctx, convKey)
 	if !errors.Is(err, store.ErrNotFound) {
@@ -394,7 +398,10 @@ func (s *Service) Current(ctx context.Context, convKey, templateName string) (st
 	}
 	doc, ok := s.Template(templateName)
 	if !ok {
-		return store.PersonaVersion{}, fmt.Errorf("persona: unknown template %q", templateName)
+		s.log.Warn("persona template does not exist; the new conversation starts from default",
+			"conversation", convKey, "template", templateName)
+		templateName = defaultTemplate
+		doc, _ = s.Template(defaultTemplate)
 	}
 	return s.st.AppendPersonaVersion(ctx, store.PersonaVersion{
 		ConversationKey: convKey, TemplateName: templateName, Persona: doc,

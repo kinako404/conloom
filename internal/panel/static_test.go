@@ -301,8 +301,9 @@ func TestStatic_TemplatesCreateAndDelete(t *testing.T) {
 		"if (await exists(to)) throw new Error(", "await createTemplate(to, persona,", "go(href('templates', to))",
 		// 复制为新模板 stays, under the same name rules.
 		"'复制为新模板')", "const problem = nameProblem(to);",
-		// Deleting names the bots that use the template, before and after.
-		"(t.users || []).map(botLabel)", "删除后改用 default", "res.affected_bots", "改用 default：",
+		// Deleting names the bots that use the template, before and after,
+		// the same way.
+		"(t.users || []).map(botLabel)", "删除后改用 default", "((res && res.affected_bots) || []).map(botLabel)", "改用 default：",
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("/panel/views/templates.js lacks %q", want)

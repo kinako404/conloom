@@ -154,7 +154,7 @@ func TestPanelE2E_TemplateWithAppearanceImage(t *testing.T) {
 	// its chat keeps the persona it copied, and a new chat starts from
 	// default.
 	status, raw = p.do(http.MethodDelete, path, nil)
-	if status != http.StatusOK || !strings.Contains(string(raw), `"affected_bots":["小红"]`) {
+	if status != http.StatusOK || !strings.Contains(string(raw), `"affected_bots":[{"id":"`+bot.ID+`","name":"小红","source":"panel"}]`) {
 		t.Fatalf("delete template in use: status %d, body %s; want 200 naming 小红", status, raw)
 	}
 	var bots struct {

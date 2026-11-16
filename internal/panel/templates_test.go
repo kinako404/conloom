@@ -204,7 +204,7 @@ func TestTemplatesAPI_CRUDResetDelete(t *testing.T) {
 	h.getErr(templatePath("nope"), http.StatusNotFound, conloomapi.CodeNotFound)
 
 	decodeBot(t, h.write(http.MethodPut, botPath(bot.ID), map[string]any{"name": "小红", "persona_template": "cat", "skills": []string{}}), http.StatusOK)
-	if got := h.deleteTemplate("night-owl"); !reflect.DeepEqual(got, deletedResp{Name: "night-owl", AffectedBots: []string{}}) {
+	if got := h.deleteTemplate("night-owl"); !reflect.DeepEqual(got, deletedResp{Name: "night-owl", AffectedBots: []templateUserResp{}}) {
 		t.Errorf("delete of a template no bot uses = %+v, want no affected bots", got)
 	}
 	h.getErr(templatePath("night-owl"), http.StatusNotFound, conloomapi.CodeNotFound)
@@ -230,8 +230,8 @@ func TestTemplatesAPI_CRUDResetDelete(t *testing.T) {
 
 // deletedResp is the response to a persona template's DELETE.
 type deletedResp struct {
-	Name         string   `json:"name"`
-	AffectedBots []string `json:"affected_bots"`
+	Name         string             `json:"name"`
+	AffectedBots []templateUserResp `json:"affected_bots"`
 }
 
 // deleteTemplate deletes the persona template name through the API, which
@@ -259,7 +259,7 @@ func TestTemplatesAPI_DeleteInUseFallsBack(t *testing.T) {
 	}
 
 	got := h.deleteTemplate("cat")
-	if want := (deletedResp{Name: "cat", AffectedBots: []string{"织语（" + dataBot + "）", "小红"}}); !reflect.DeepEqual(got, want) {
+	if want := (deletedResp{Name: "cat", AffectedBots: []templateUserResp{{dataBot, "织语", "config"}, {bot.ID, "小红", "panel"}}}); !reflect.DeepEqual(got, want) {
 		t.Errorf("delete of a template in use = %+v, want %+v", got, want)
 	}
 	h.getErr(templatePath("cat"), http.StatusNotFound, conloomapi.CodeNotFound)
@@ -290,7 +290,7 @@ func TestTemplatesAPI_DeleteInUseFallsBack(t *testing.T) {
 		t.Errorf("default users after the delete = %+v, want every bot", got)
 	}
 	if deletes := checkTemplateAudits(t, h, "persona.template.delete", "cat"); !someContains(deletes,
-		`"affected_bots":["织语（`+dataBot+`）","小红"]`) {
+		`"affected_bots":[{"id":"`+dataBot+`","name":"织语","source":"config"},{"id":"`+bot.ID+`","name":"小红","source":"panel"}]`) {
 		t.Errorf("delete audit details = %v, want the affected bots", deletes)
 	}
 
@@ -357,7 +357,7 @@ func TestTemplatesAPI_ClearsPanelBotProblem(t *testing.T) {
 	if b := h.bots().Bots[1]; b.PersonaTemplate != "night-owl" || len(b.Problems) != 0 {
 		t.Errorf("bot after its template was created = %+v, want night-owl without problems", b)
 	}
-	if got := h.deleteTemplate("night-owl"); !slices.Equal(got.AffectedBots, []string{"小红"}) {
+	if got := h.deleteTemplate("night-owl"); !slices.Equal(got.AffectedBots, []templateUserResp{{"panel-abcd1234", "小红", "panel"}}) {
 		t.Errorf("delete of night-owl = %+v, want 小红 affected", got)
 	}
 	if b := h.bots().Bots[1]; b.PersonaTemplate != "default" || len(b.Problems) != 1 {

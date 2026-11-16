@@ -403,6 +403,8 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 	bots := botdir.New(cfg.Bots)
 	personas := migratedPersonas(t, st, cfg.LegacyPersonaTemplates)
 	personas.SetTemplateUsers(bots.TemplateUsers)
+	logger := slog.New(slog.NewTextHandler(env.logs, nil))
+	personas.SetLogger(logger)
 	o, err := New(Deps{
 		Store:     env.hooks,
 		Router:    router.New(profiles, router.BreakerConfig{}, time.Now),
@@ -412,7 +414,7 @@ func newTestOrchestrator(t *testing.T, opts testOpts) *testEnv {
 		Reviewer:  review.New(cfg.Secrets(), review.Options{}),
 		Notifier:  env.notifier,
 		Metrics:   obs.NewMetrics(env.reg),
-		Logger:    slog.New(slog.NewTextHandler(env.logs, nil)),
+		Logger:    logger,
 		Config:    cfg,
 		Bots:      bots,
 		Now:       opts.now,

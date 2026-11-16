@@ -93,15 +93,15 @@ func TestDirectory_TemplateUsers(t *testing.T) {
 		{ID: "tg-main", Platform: "telegram", PersonaTemplate: "lighthouse"},
 		{ID: "qq-alt", Platform: "qq", Name: "小明", PersonaTemplate: "cat"},
 	})
-	if got := d.TemplateUsers("lighthouse"); !slices.Equal(got, []string{"小明（qq-main）", "tg-main"}) {
-		t.Fatalf("TemplateUsers without panel bots = %v, want the config bots by name and ID", got)
+	if got := d.TemplateUsers("lighthouse"); !slices.Equal(got, []string{"qq-main", "tg-main"}) {
+		t.Fatalf("TemplateUsers without panel bots = %v, want the config bots", got)
 	}
 	d.SetPanel([]Entry{
 		{Bot: PanelBotConfig(store.PanelBot{ID: "panel-a1b2c3d4", Name: "小红", PersonaTemplate: "lighthouse"})},
 		{Bot: PanelBotConfig(store.PanelBot{ID: "panel-b2c3d4e5", Name: "小刚", PersonaTemplate: "default"})},
 		{Bot: PanelBotConfig(store.PanelBot{ID: "panel-c3d4e5f6", Name: "小绿", PersonaTemplate: "lighthouse"})},
 	})
-	if got, want := d.TemplateUsers("lighthouse"), []string{"小明（qq-main）", "tg-main", "小红", "小绿"}; !slices.Equal(got, want) {
+	if got, want := d.TemplateUsers("lighthouse"), []string{"qq-main", "tg-main", "panel-a1b2c3d4", "panel-c3d4e5f6"}; !slices.Equal(got, want) {
 		t.Fatalf("TemplateUsers(lighthouse) = %v, want %v: config bots, then panel bots", got, want)
 	}
 	if got := d.TemplateUsers("nope"); len(got) != 0 {
@@ -113,7 +113,7 @@ func TestDirectory_TemplateUsers(t *testing.T) {
 	if got := d.TemplateUsers("cat"); len(got) != 0 {
 		t.Fatalf("TemplateUsers(cat) = %v, want none: qq-alt uses default instead", got)
 	}
-	if got := d.TemplateUsers("default"); !slices.Equal(got, []string{"小明（qq-alt）", "小刚"}) {
+	if got := d.TemplateUsers("default"); !slices.Equal(got, []string{"qq-alt", "panel-b2c3d4e5"}) {
 		t.Fatalf("TemplateUsers(default) = %v, want the templates as they take effect", got)
 	}
 }

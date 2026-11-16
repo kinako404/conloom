@@ -132,24 +132,19 @@ func (d *Directory) Problems(id string) []string {
 	return e.Problems
 }
 
-// TemplateUsers returns the bots whose persona template, as it takes effect,
-// is name: the config bots in config order, each as its name and ID (just the
-// ID without a name), then the panel bots by name in snapshot order.
+// TemplateUsers returns the IDs of the bots whose persona template, as it
+// takes effect, is name: the config bots in config order, then the panel bots
+// in snapshot order.
 func (d *Directory) TemplateUsers(name string) []string {
 	var out []string
 	for _, e := range d.configEntries() {
-		if e.Bot.PersonaTemplate != name {
-			continue
-		}
-		if e.Bot.Name == "" {
+		if e.Bot.PersonaTemplate == name {
 			out = append(out, e.Bot.ID)
-		} else {
-			out = append(out, e.Bot.Name+"（"+e.Bot.ID+"）")
 		}
 	}
 	for _, e := range d.panel.Load().entries {
 		if e.Bot.PersonaTemplate == name {
-			out = append(out, e.Bot.Name)
+			out = append(out, e.Bot.ID)
 		}
 	}
 	return out

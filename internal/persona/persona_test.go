@@ -412,8 +412,24 @@ func TestService_CurrentCreatesV1FromTemplate(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(def.Persona, conloomapi.DefaultPersona()) {
 		t.Fatalf("default template Current = %+v, %v", def, err)
 	}
-	if _, err := svc.Current(ctx, store.ConversationKey(testBot, "qq", conloomapi.ConvGroup, "10003"), "nope"); err == nil {
-		t.Fatal("unknown template: want error")
+
+	// A bot whose template was deleted before the bots were published again
+	// starts its new conversations from default.
+	var logs bytes.Buffer
+	svc.SetLogger(slog.New(slog.NewTextHandler(&logs, nil)))
+	key3 := store.ConversationKey(testBot, "qq", conloomapi.ConvGroup, "10003")
+	gone, err := svc.Current(ctx, key3, "nope")
+	if err != nil || gone.Version != 1 || gone.TemplateName != "default" || gone.Reason != "init" ||
+		!reflect.DeepEqual(gone.Persona, conloomapi.DefaultPersona()) {
+		t.Fatalf("Current with a missing template = %+v, %v; want version 1 from default, recorded as default", gone, err)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "template=nope") ||
+		!strings.Contains(logs.String(), key3) {
+		t.Errorf("no warning about the missing template nope:\n%s", logs.String())
+	}
+	if _, err := svc.Update(ctx, key3, "nope", conloomapi.PersonaPut{Template: "nope"}, "admin"); !errors.Is(err, ErrInvalid) ||
+		!strings.Contains(err.Error(), `unknown template "nope"`) {
+		t.Errorf("applying a missing template err = %v, want ErrInvalid: only a new conversation falls back", err)
 	}
 }
 
@@ -1246,8 +1262,8 @@ func TestCatalog_DeleteInUseAllowed(t *testing.T) {
 		name  string
 		users []string
 	}{
-		{"lighthouse", []string{"小明（qq-main）"}},
-		{"cat", []string{"小红"}},
+		{"lighthouse", []string{"qq-main"}},
+		{"cat", []string{"panel-a1b2c3d4"}},
 		{"free", nil},
 	} {
 		users, err := svc.DeleteTemplate(ctx, c.name)
@@ -1291,10 +1307,10 @@ func TestCatalog_PutAndDelete(t *testing.T) {
 	if got := info(t, svc, name); got.Source != SourceDB || !reflect.DeepEqual(got.Doc, cat) {
 		t.Errorf("new template = %+v", got)
 	}
-	usersOf[name] = []string{"小红", "小明（qq-main）"}
+	usersOf[name] = []string{"panel-a1b2c3d4", "qq-main"}
 	users, err := svc.DeleteTemplate(ctx, name)
 	if err != nil || !slices.Equal(users, usersOf[name]) {
-		t.Fatalf("DeleteTemplate of a template in use = %q, %v; want it deleted, used by 小红 and 小明", users, err)
+		t.Fatalf("DeleteTemplate of a template in use = %q, %v; want it deleted, used by %q", users, err, usersOf[name])
 	}
 	if _, ok := svc.Template(name); ok {
 		t.Error("deleted template still in the catalog")

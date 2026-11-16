@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -51,7 +52,24 @@ type templateView struct {
 func (s *Server) templateUsers() map[string][]templateUser {
 	out := map[string][]templateUser{}
 	for _, b := range s.d.Bots.All() {
-		out[b.PersonaTemplate] = append(out[b.PersonaTemplate], templateUser{ID: b.ID, Name: b.Name, Source: s.botSource(b.ID)})
+		out[b.PersonaTemplate] = append(out[b.PersonaTemplate], s.templateUser(b))
+	}
+	return out
+}
+
+// templateUser is b as a bot whose new chats start from its persona template.
+func (s *Server) templateUser(b config.BotConfig) templateUser {
+	return templateUser{ID: b.ID, Name: b.Name, Source: s.botSource(b.ID)}
+}
+
+// botsByID returns the bots of the directory with the IDs ids, in their
+// order, leaving out an ID no bot has any more.
+func (s *Server) botsByID(ids []string) []templateUser {
+	out := make([]templateUser, 0, len(ids))
+	for _, id := range ids {
+		if b, ok := s.d.Bots.Bot(id); ok {
+			out = append(out, s.templateUser(b))
+		}
 	}
 	return out
 }
@@ -154,25 +172,24 @@ func (s *Server) resetTemplate(w http.ResponseWriter, r *http.Request, sess *Ses
 }
 
 // deleteTemplate deletes the template {name}, also while bots use it, and
-// answers the bots that did (see persona.Service.DeleteTemplate), which use
-// "default" from now on, each noting the problem; "default" is 403.
+// answers the bots that did (see persona.Service.DeleteTemplate), as the
+// list's users, which use "default" from now on, each noting the problem;
+// "default" is 403.
 func (s *Server) deleteTemplate(w http.ResponseWriter, r *http.Request, sess *Session) {
 	name := r.PathValue("name")
-	affected, err := s.d.Personas.DeleteTemplate(r.Context(), name)
+	ids, err := s.d.Personas.DeleteTemplate(r.Context(), name)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	if affected == nil {
-		affected = []string{}
-	}
+	affected := s.botsByID(ids)
 	s.templatesChanged(r)
 	s.audit(r, sess, "", "persona.template.delete", name, struct {
-		AffectedBots []string `json:"affected_bots"`
+		AffectedBots []templateUser `json:"affected_bots"`
 	}{affected})
 	s.writeJSON(w, http.StatusOK, struct {
-		Name         string   `json:"name"`
-		AffectedBots []string `json:"affected_bots"`
+		Name         string         `json:"name"`
+		AffectedBots []templateUser `json:"affected_bots"`
 	}{name, affected})
 }
 
