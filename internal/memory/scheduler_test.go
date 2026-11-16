@@ -535,11 +535,13 @@ func TestScheduler_SkipsConversationsOfUnknownBots(t *testing.T) {
 	}
 }
 
-func TestScheduler_BackoffSkipLogsAtDebug(t *testing.T) {
+func TestScheduler_RecurringSkipsLogAtDebug(t *testing.T) {
+	// A backoff, or a long model that is unavailable (the consolidator logs
+	// why itself, or the startup warning does), recurs on every tick.
 	for _, c := range []struct {
 		skipped   string
 		infoLines int
-	}{{"backoff", 0}, {"busy", 1}, {"", 1}} {
+	}{{"backoff", 0}, {"long_unavailable", 0}, {"busy", 1}, {"", 1}} {
 		e := newSchedEnv(t)
 		e.seed(t, 200, testConvKey)
 		e.setMemory(t, testConvKey, true, 1000)
@@ -554,8 +556,8 @@ func TestScheduler_BackoffSkipLogsAtDebug(t *testing.T) {
 		e.sched = NewScheduler(SchedulerDeps{Store: e.st, Policies: e.policies, Runner: e.runner,
 			Logger: slog.New(slog.NewTextHandler(&debug, &slog.HandlerOptions{Level: slog.LevelDebug}))})
 		e.sched.tick(context.Background())
-		if c.skipped == "backoff" && !strings.Contains(debug.String(), "skipped=backoff") {
-			t.Errorf("backoff skip not logged at Debug:\n%s", debug.String())
+		if c.infoLines == 0 && !strings.Contains(debug.String(), "skipped="+c.skipped) {
+			t.Errorf("%s skip not logged at Debug:\n%s", c.skipped, debug.String())
 		}
 	}
 }

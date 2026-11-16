@@ -241,8 +241,10 @@ func (s *Scheduler) consolidate(ctx context.Context, convKey string, manual bool
 		s.logError(ctx, "memory: consolidation failed", "conversation", convKey, "manual", manual, "error", err)
 		return
 	}
+	// These skips recur on every tick; why the long model is unavailable is
+	// logged by the consolidator or, for private memory, at startup.
 	level := slog.LevelInfo
-	if res.Skipped == "backoff" {
+	if res.Skipped == "backoff" || res.Skipped == "long_unavailable" {
 		level = slog.LevelDebug
 	}
 	s.d.Logger.Log(ctx, level, "memory: consolidation finished", "conversation", convKey, "manual", manual,
