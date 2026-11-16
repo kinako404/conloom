@@ -30,6 +30,9 @@ type Service struct {
 	st       store.Store
 	defaults conloomapi.GroupPolicy
 	private  *conloomapi.GroupPolicy
+	// reserved is what a set context.max_context_tokens must exceed (see
+	// WithReservedContextTokens).
+	reserved int
 
 	// mu guards cache and serialises version creation, so a cache fill never stores a stale version.
 	mu       sync.Mutex
@@ -46,6 +49,15 @@ func NewService(st store.Store, defaults conloomapi.GroupPolicy) *Service {
 // group defaults, and returns s. Call it before the service is used.
 func (s *Service) WithPrivateDefaults(p conloomapi.GroupPolicy) *Service {
 	s.private = &p
+	return s
+}
+
+// WithReservedContextTokens makes Update refuse a context.max_context_tokens
+// that is set but not more than n, the part of the window the short model
+// keeps for its output and safety margin (config.Config.ReservedContextTokens),
+// and returns s. Call it before the service is used.
+func (s *Service) WithReservedContextTokens(n int) *Service {
+	s.reserved = n
 	return s
 }
 
@@ -105,6 +117,8 @@ func (s *Service) current(ctx context.Context, convKey string) (store.PolicyVers
 // which is the defaults for a group that never configured one; a section that is present is
 // validated as given, except that zero turn-taking, quote, max_parts and join settings, and
 // private_wait and private_max_wait when both are zero, are filled from the defaults as in Current.
+// A context.max_context_tokens that leaves no room for a prompt (see WithReservedContextTokens) is
+// ErrInvalid.
 func (s *Service) Update(ctx context.Context, convKey string, put conloomapi.PolicyPut, by string) (store.PolicyVersion, error) {
 	return s.change(ctx, convKey, by, "update", func(cur store.PolicyVersion) (conloomapi.GroupPolicy, string, bool, error) {
 		p := put.Policy
@@ -125,6 +139,10 @@ func (s *Service) Update(ctx context.Context, convKey string, put conloomapi.Pol
 		}
 		if err := Validate(p); err != nil {
 			return conloomapi.GroupPolicy{}, "", false, err
+		}
+		if n := p.Context.MaxContextTokens; n > 0 && n <= s.reserved {
+			return conloomapi.GroupPolicy{}, "", false, fmt.Errorf("%w: context.max_context_tokens must be 0 (no limit) or > %d "+
+				"(the short model's reserved output and safety margin), got %d", ErrInvalid, s.reserved, n)
 		}
 		return p, put.Reason, true, nil
 	})

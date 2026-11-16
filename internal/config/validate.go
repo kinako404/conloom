@@ -87,6 +87,15 @@ func (p *problems) observability(o ObservabilityConfig) {
 	}
 }
 
+// contextCap requires pol's context.max_context_tokens, when set, to be more
+// than reserved (Config.ReservedContextTokens), so a prompt still fits.
+func (p *problems) contextCap(path string, pol conloomapi.GroupPolicy, reserved int) {
+	if n := pol.Context.MaxContextTokens; n > 0 && n <= reserved {
+		p.addf(path+".context.max_context_tokens",
+			"must be 0 (no limit) or > %d (short_context reserved_output_tokens + safety_margin_tokens), got %d", reserved, n)
+	}
+}
+
 // retention requires d to be within [lo, hi].
 func (p *problems) retention(path string, d, lo, hi time.Duration) {
 	if d < lo || d > hi {
@@ -186,6 +195,7 @@ func (c *Config) ValidateServe() error {
 			p.addf(path+".provider", "must be %s, got %q", ProviderOpenAICompatible, mp.Provider)
 		}
 		p.required(path+".endpoint", mp.Endpoint)
+		p.absURL(path+".endpoint", mp.Endpoint, "http", "https")
 		p.required(path+".model", mp.Model)
 		ctx := mp.Context
 		for _, w := range []struct {
@@ -200,15 +210,33 @@ func (c *Config) ValidateServe() error {
 				p.addf(path+".context."+w.key, "must be > 0, got %d", w.v)
 			}
 		}
+		for _, r := range []struct {
+			key string
+			v   int
+		}{
+			{"reserved_output_tokens", ctx.ReservedOutputTokens},
+			{"safety_margin_tokens", ctx.SafetyMarginTokens},
+		} {
+			if r.v < 0 {
+				p.addf(path+".context."+r.key, "must be >= 0, got %d", r.v)
+			}
+		}
 		if ctx.SoftInputBudget > ctx.ConfiguredWindow {
 			p.addf(path+".context", "soft_input_budget (%d) must be <= configured_window (%d)", ctx.SoftInputBudget, ctx.ConfiguredWindow)
 		}
 		if ctx.ConfiguredWindow > ctx.NativeWindow {
 			p.addf(path+".context", "configured_window (%d) must be <= native_window (%d)", ctx.ConfiguredWindow, ctx.NativeWindow)
 		}
+		if ctx.ConfiguredWindow > 0 && ctx.ReservedOutputTokens+ctx.SafetyMarginTokens >= ctx.ConfiguredWindow {
+			p.addf(path+".context", "reserved_output_tokens (%d) + safety_margin_tokens (%d) must be < configured_window (%d), or no prompt fits",
+				ctx.ReservedOutputTokens, ctx.SafetyMarginTokens, ctx.ConfiguredWindow)
+		}
 		rt := mp.Runtime
 		if rt.MaxConcurrency < 1 {
 			p.addf(path+".runtime.max_concurrency", "must be >= 1, got %d", rt.MaxConcurrency)
+		}
+		if kv := rt.GPUKVCacheTokens; kv < 0 || kv > 0 && kv < ctx.ConfiguredWindow {
+			p.addf(path+".runtime.gpu_kv_cache_tokens", "must be 0 (no limit) or >= configured_window (%d), got %d", ctx.ConfiguredWindow, kv)
 		}
 		if rt.Timeout.Duration <= 0 {
 			p.addf(path+".runtime.timeout", "must be > 0, got %s", rt.Timeout.Duration)
@@ -251,8 +279,10 @@ func (c *Config) ValidateServe() error {
 		}
 	}
 	p.nested("default_group_policy", c.DefaultGroupPolicy.Validate())
+	p.contextCap("default_group_policy", c.DefaultGroupPolicy, c.ReservedContextTokens())
 	if c.DefaultPrivatePolicy != nil {
 		p.nested("default_private_policy", c.DefaultPrivatePolicy.Validate())
+		p.contextCap("default_private_policy", *c.DefaultPrivatePolicy, c.ReservedContextTokens())
 	}
 	if e := c.Embedding; e != nil {
 		p.required("embedding.endpoint", e.Endpoint)

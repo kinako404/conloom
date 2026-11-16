@@ -88,7 +88,8 @@ model_profiles:
     # 模型支持的输入模态。含 image 时，回复请求会附带人设的外观参考图（appearance_image）的缩小图；
     # 确认模型确实接受图片后再改成 [text, image]，否则带图的回复会失败。
     modalities: [text]
-    # 上下文窗口：须满足 soft_input_budget <= configured_window <= native_window。
+    # 上下文窗口：须满足 soft_input_budget <= configured_window <= native_window，
+    # 且 reserved_output_tokens + safety_margin_tokens < configured_window。
     context:
       native_window: 32768
       configured_window: 32768
@@ -205,7 +206,7 @@ default_group_policy:
     private_max_wait: 20s
   context:
     max_recent_messages: 50
-    max_context_tokens: 0         # 0 表示不额外限制
+    max_context_tokens: 0         # 0 表示不额外限制；设了须大于 short_context 的输出预留 + 安全余量
   review:
     level: basic                  # basic | standard | strict
     review_input: true

@@ -949,6 +949,51 @@ func TestValidateServe_Rules(t *testing.T) {
 			p.TokenEstimateFactor = -0.5
 			c.ModelProfiles["long_context"] = p
 		}, []string{"model_profiles.long_context.token_estimate_factor"}},
+		{"endpoint without scheme", func(c *Config) {
+			p := c.ModelProfiles["short_context"]
+			p.Endpoint = "api.example.invalid/v1"
+			c.ModelProfiles["short_context"] = p
+		}, []string{"model_profiles.short_context.endpoint", "must be a http|https URL", `"api.example.invalid/v1"`}},
+		{"endpoint with another scheme", func(c *Config) {
+			p := c.ModelProfiles["long_context"]
+			p.Endpoint = "ftp://api.example.invalid/v1"
+			c.ModelProfiles["long_context"] = p
+		}, []string{"model_profiles.long_context.endpoint", "must be a http|https URL"}},
+		{"negative reserved output", func(c *Config) {
+			p := c.ModelProfiles["short_context"]
+			p.Context.ReservedOutputTokens = -1
+			c.ModelProfiles["short_context"] = p
+		}, []string{"model_profiles.short_context.context.reserved_output_tokens", "must be >= 0, got -1"}},
+		{"negative safety margin", func(c *Config) {
+			p := c.ModelProfiles["short_context"]
+			p.Context.SafetyMarginTokens = -1
+			c.ModelProfiles["short_context"] = p
+		}, []string{"model_profiles.short_context.context.safety_margin_tokens", "must be >= 0, got -1"}},
+		{"reservation fills the window", func(c *Config) {
+			p := c.ModelProfiles["short_context"]
+			p.Context.ReservedOutputTokens, p.Context.SafetyMarginTokens = 16384, 16384
+			c.ModelProfiles["short_context"] = p
+		}, []string{"model_profiles.short_context.context",
+			"reserved_output_tokens (16384) + safety_margin_tokens (16384) must be < configured_window (32768)"}},
+		{"kv budget below the window", func(c *Config) {
+			p := c.ModelProfiles["short_context"]
+			p.Runtime.GPUKVCacheTokens = 16384
+			c.ModelProfiles["short_context"] = p
+		}, []string{"model_profiles.short_context.runtime.gpu_kv_cache_tokens",
+			"must be 0 (no limit) or >= configured_window (32768), got 16384"}},
+		{"negative kv budget", func(c *Config) {
+			p := c.ModelProfiles["long_context"]
+			p.Runtime.GPUKVCacheTokens = -1
+			c.ModelProfiles["long_context"] = p
+		}, []string{"model_profiles.long_context.runtime.gpu_kv_cache_tokens"}},
+		{"group context cap within the short reservation", func(c *Config) { c.DefaultGroupPolicy.Context.MaxContextTokens = 2000 },
+			[]string{"default_group_policy.context.max_context_tokens",
+				"must be 0 (no limit) or > 2048 (short_context reserved_output_tokens + safety_margin_tokens), got 2000"}},
+		{"private context cap within the short reservation", func(c *Config) {
+			p := conloomapi.DefaultGroupPolicy()
+			p.Context.MaxContextTokens = 2048
+			c.DefaultPrivatePolicy = &p
+		}, []string{"default_private_policy.context.max_context_tokens", "got 2048"}},
 		{"unknown log level", func(c *Config) { c.Observability.LogLevel = "verbose" }, []string{"observability.log_level", `"verbose"`}},
 		{"unknown log format", func(c *Config) { c.Observability.LogFormat = "xml" }, []string{"observability.log_format", `"xml"`}},
 		{"unknown timezone", func(c *Config) { c.Server.Timezone = "Asia/Shanghia" }, []string{"server.timezone", "Asia/Shanghia"}},

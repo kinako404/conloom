@@ -170,7 +170,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("app: %w", err)
 	}
-	policies := policy.NewService(st, cfg.DefaultGroupPolicy).WithPrivateDefaults(cfg.PrivatePolicy())
+	policies := policy.NewService(st, cfg.DefaultGroupPolicy).WithPrivateDefaults(cfg.PrivatePolicy()).
+		WithReservedContextTokens(cfg.ReservedContextTokens())
 	ob := outbox.New(st, outbox.Config{Lease: cfg.Runtime.OutboxLease.Duration}, metrics, now)
 	panelOut := outbox.NewPanelDeliverer(ob, st, opts.PanelDeliveryInterval, now, logger)
 	rec := usage.NewRecorder(st, usage.RecorderOptions{Metrics: metrics, Logger: logger})

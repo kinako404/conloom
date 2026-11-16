@@ -487,6 +487,18 @@ func (c *Config) PrivatePolicy() conloomapi.GroupPolicy {
 	return p
 }
 
+// ReservedContextTokens is the part of every context window that
+// short_context keeps for the output and the safety margin, 0 without
+// short_context. A conversation's context.max_context_tokens must be 0 or
+// more than this, or no prompt fits the short model.
+func (c *Config) ReservedContextTokens() int {
+	p, ok := c.ModelProfiles["short_context"]
+	if !ok {
+		return 0
+	}
+	return p.Context.ReservedOutputTokens + p.Context.SafetyMarginTokens
+}
+
 // Bot returns the bot with the given ID.
 func (c *Config) Bot(id string) (BotConfig, bool) {
 	for _, b := range c.Bots {

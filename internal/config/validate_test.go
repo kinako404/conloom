@@ -269,6 +269,25 @@ func TestValidate_BotIDAndPlatformWithoutColon(t *testing.T) {
 	}
 }
 
+func TestValidate_ModelLimitsAtTheirBounds(t *testing.T) {
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	p := cfg.ModelProfiles["short_context"]
+	p.Context.ReservedOutputTokens, p.Context.SafetyMarginTokens = 16384, 16383
+	p.Runtime.GPUKVCacheTokens = p.Context.ConfiguredWindow
+	cfg.ModelProfiles["short_context"] = p
+	cfg.DefaultGroupPolicy.Context.MaxContextTokens = 32768
+	if err := cfg.ValidateServe(); err != nil {
+		t.Fatalf("limits at their bounds: %v", err)
+	}
+	if got := cfg.ReservedContextTokens(); got != 32767 {
+		t.Errorf("ReservedContextTokens() = %d, want short_context's reserved output plus safety margin 32767", got)
+	}
+	delete(cfg.ModelProfiles, "short_context")
+	if got := cfg.ReservedContextTokens(); got != 0 {
+		t.Errorf("ReservedContextTokens() without short_context = %d, want 0", got)
+	}
+}
+
 func TestValidate_VisionNeedsImageModality(t *testing.T) {
 	withVision := func(modalities ...string) *Config {
 		cfg := mustLoad(t, "testdata/valid.yaml")

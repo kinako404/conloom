@@ -97,14 +97,14 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `provider` | `openai_compatible` | 目前唯一支持的值 |
-| `endpoint`、`model`、`api_key` | `endpoint`、`model` 必填 | 接口地址、模型名、密钥 |
+| `endpoint`、`model`、`api_key` | `endpoint`、`model` 必填 | 接口地址（`http://` 或 `https://` 开头的完整 URL）、模型名、密钥 |
 | `modalities` | 空 | 模型支持的模态，如 `[text]`。含 `image` 时，发给这个模型的回复请求会附带人设的外观参考图（见 `appearance_image`）；不含时不带图 |
 | `context.native_window` / `configured_window` / `soft_input_budget` | 必填，均 > 0 | 必须满足 `soft_input_budget <= configured_window <= native_window`；软预算决定历史最多装多少 |
-| `context.reserved_output_tokens` / `safety_margin_tokens` | 0 | 输出预留（大于 0 时也作为请求的 `max_tokens`，推理 token 也算在内）和安全余量。记忆整理也用 `long_context` 的输出预留：摘要和笔记的默认上限（私聊 3000 / 1000 字，群聊 1500 / 300 字）建议 `long_context` 至少设 8192，否则整理容易被截断（`output_truncated`），每批的人数也会被压到 1 人 |
+| `context.reserved_output_tokens` / `safety_margin_tokens` | 0 | 输出预留（大于 0 时也作为请求的 `max_tokens`，推理 token 也算在内）和安全余量，均 ≥ 0，两者之和必须小于 `configured_window`，否则放不下任何提示词。记忆整理也用 `long_context` 的输出预留：摘要和笔记的默认上限（私聊 3000 / 1000 字，群聊 1500 / 300 字）建议 `long_context` 至少设 8192，否则整理容易被截断（`output_truncated`），每批的人数也会被压到 1 人 |
 | `runtime.max_concurrency` | 2 | 该模型的全局并发上限，≥ 1 |
 | `runtime.timeout` | 60s | 单次请求超时，> 0 |
 | `runtime.max_retries` | 2 | 网络错误、429、5xx 的重试次数，0~5 |
-| `runtime.gpu_kv_cache_tokens` | 0 | 准入控制的 token 预算，0 表示不限 |
+| `runtime.gpu_kv_cache_tokens` | 0 | 准入控制的 token 预算，0 表示不限；设了就必须 ≥ `configured_window`，否则路由放行的大请求会被准入拒绝 |
 | `runtime.cpu_offloaded_kv_tokens`、`runtime.prefix_caching` | — | 可以写，目前不生效 |
 | `privacy.allow_sensitive_content` | false | 私聊只会路由到为 `true` 的模型 |
 | `privacy.data_location` | — | 说明性标签（如 `remote` 表示数据会离开本机），代码不读取 |
@@ -227,7 +227,7 @@ default_group_policy:
     private_max_wait: 20s         # 私聊从任务创建起最多等多久，private_wait~2m；只对私聊生效
   context:
     max_recent_messages: 50       # 上下文最多带多少条历史消息，0~500
-    max_context_tokens: 0         # 本群的上下文窗口上限，0 表示不额外限制
+    max_context_tokens: 0         # 本群的上下文窗口上限，0 表示不额外限制；设了就必须大于 short_context 的 reserved_output_tokens + safety_margin_tokens
   review:
     level: basic                  # basic | standard | strict；目前三者行为相同
     review_input: true            # 目前不生效，基础审查始终开启
