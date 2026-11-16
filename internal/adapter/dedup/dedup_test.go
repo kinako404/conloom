@@ -184,6 +184,88 @@ func TestDedup_FailedAppendLeavesNoPartialLine(t *testing.T) {
 	}
 }
 
+func TestDedup_CompactsWhileOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sent.log")
+	clock := &fakeClock{t: time.Date(2026, 11, 12, 8, 0, 0, 0, time.UTC)}
+	d, err := Open(path, time.Hour, clock.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.minCompact, d.compactAt = 4, 4
+	for _, id := range []string{"act_1", "act_2", "act_3"} {
+		if err := d.Mark(id, "70"+id[len(id)-1:]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clock.t = clock.t.Add(2 * time.Hour)
+	if err := d.Mark("act_4", "7004"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"act_1", "act_2", "act_3"} {
+		if _, ok := d.Seen(id); ok {
+			t.Errorf("%s still remembered after compaction, want it expired", id)
+		}
+	}
+	if id, ok := d.Seen("act_4"); !ok || id != "7004" {
+		t.Errorf("act_4 = %q/%v, want 7004", id, ok)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "act_4\t1794477600\t7004\n"; string(data) != want {
+		t.Errorf("file after compaction = %q, want %q", data, want)
+	}
+
+	if err := d.Mark("act_5", "7005"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "act_4\t1794477600\t7004\nact_5\t1794477600\t7005\n"; string(data) != want {
+		t.Errorf("file after a later Mark = %q, want %q", data, want)
+	}
+	d, err = Open(path, time.Hour, clock.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if id, ok := d.Seen("act_5"); !ok || id != "7005" {
+		t.Errorf("act_5 after reopen = %q/%v, want 7005", id, ok)
+	}
+}
+
+func TestDedup_CompactionThresholdGrowsWithLiveEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sent.log")
+	clock := &fakeClock{t: time.Date(2026, 11, 12, 8, 0, 0, 0, time.UTC)}
+	d, err := Open(path, time.Hour, clock.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	d.minCompact, d.compactAt = 2, 2
+	var synced int
+	orig := syncDir
+	syncDir = func(dir string) error {
+		synced++
+		return orig(dir)
+	}
+	t.Cleanup(func() { syncDir = orig })
+	for i := range 8 {
+		if err := d.Mark("act_"+string(rune('a'+i)), "1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if synced != 3 {
+		t.Errorf("compactions for 8 live entries = %d, want 3 (at 2, 4 and 8 entries)", synced)
+	}
+}
+
 func TestDedup_CompactionSyncsDirectory(t *testing.T) {
 	var synced []string
 	orig := syncDir
