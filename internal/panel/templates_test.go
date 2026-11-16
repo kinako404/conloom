@@ -11,14 +11,19 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/kinako404/conloom/internal/imaging"
 	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -911,4 +916,28 @@ func TestTemplatesAPI_ResetOnlyDefault(t *testing.T) {
 		t.Errorf("stored templates = %+v, %v; want only cat, unchanged", rows, err)
 	}
 	checkTemplateAudits(t, h, "persona.template.reset", "default", "default")
+}
+
+// The nginx example in docs/deployment.md lets through every body the panel
+// accepts, the largest being a template import; otherwise re-importing an
+// export with a large reference image gets nginx's 413.
+func TestDocs_NginxBodyLimitFitsPanelUploads(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "docs", "deployment.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	limits := regexp.MustCompile(`client_max_body_size (\d+)m;`).FindAllStringSubmatch(string(b), -1)
+	if len(limits) == 0 {
+		t.Fatal("docs/deployment.md sets no client_max_body_size")
+	}
+	for _, m := range limits {
+		mib, err := strconv.Atoi(m[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := int64(mib) << 20; got < maxImportBytes || got < imaging.MaxBytes {
+			t.Errorf("docs/deployment.md: client_max_body_size %sm is under the import limit %d MiB or the image limit %d MiB",
+				m[1], maxImportBytes>>20, imaging.MaxBytes>>20)
+		}
+	}
 }
