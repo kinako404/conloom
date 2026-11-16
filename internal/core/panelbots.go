@@ -347,8 +347,9 @@ func (s *PanelBotService) panelOnly(id string) error {
 	return nil
 }
 
-// freeID returns a candidate ID (newID) that no bot instance, also of a
-// deleted panel bot, and no bot in the directory has.
+// freeID returns a candidate ID (newID) that is a valid bot ID
+// (config.ValidBotID) and that no bot instance, also of a deleted panel bot,
+// and no bot in the directory has.
 func (s *PanelBotService) freeID(ctx context.Context) (string, error) {
 	insts, err := s.o.st.ListBotInstances(ctx)
 	if err != nil {
@@ -356,6 +357,9 @@ func (s *PanelBotService) freeID(ctx context.Context) (string, error) {
 	}
 	for range panelBotIDAttempts {
 		id := s.newID()
+		if !config.ValidBotID(id) {
+			continue
+		}
 		_, inDirectory := s.o.bots.Bot(id)
 		if !inDirectory && !slices.ContainsFunc(insts, func(b store.BotInstance) bool { return b.ID == id }) {
 			return id, nil

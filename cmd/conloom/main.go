@@ -353,10 +353,6 @@ func runBackup(ctx context.Context, args []string, sio stdio) error {
 	if err := db.Close(); err != nil {
 		return err
 	}
-	// The backup holds chat history; VACUUM INTO creates it with the umask's mode.
-	if err := os.Chmod(*out, 0o600); err != nil {
-		return err
-	}
 	fmt.Fprintf(sio.out, "backup of %s written to %s\n", cfg.DBPath(), *out)
 	return nil
 }

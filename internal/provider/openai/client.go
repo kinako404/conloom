@@ -72,6 +72,35 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("openai: unexpected status %d: %s", e.Code, e.Body)
 }
 
+// transientError marks an error of a failed attempt that may pass by itself
+// (see IsTransient) without changing its text.
+type transientError struct{ err error }
+
+func (e *transientError) Error() string { return e.err.Error() }
+func (e *transientError) Unwrap() error { return e.err }
+
+// IsTransient reports whether err, from Chat, is a failure of the model
+// service that may pass by itself: a network error, an attempt that timed
+// out, or a 429 or 5xx response. A request the service refuses (any other
+// status), an answer that cannot be decoded or is empty, and a cancelled call
+// are not.
+func IsTransient(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if se := (*StatusError)(nil); errors.As(err, &se) {
+		return retryableStatus(se.Code)
+	}
+	var te *transientError
+	return errors.As(err, &te)
+}
+
+// retryableStatus reports whether a response with status code is worth
+// retrying: 429 and 5xx.
+func retryableStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code >= 500
+}
+
 // Base64 data in an error body: the payload of a data URL, and any other run
 // of at least 200 base64 characters. A backslash counts as one, so a payload
 // echoed with JSON-escaped slashes is matched whole.
@@ -134,6 +163,15 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 		case <-t.C:
 		}
 	}
+}
+
+// MaxChatDuration is the longest Chat takes with runtime rt when none of its
+// attempts is cut short: each of the 1+MaxRetries attempts up to
+// Runtime.Timeout, and the backoff before every retry (500ms, doubling). An
+// admission lease held for a call must last this long.
+func MaxChatDuration(rt config.ProfileRuntime) time.Duration {
+	retries := max(rt.MaxRetries, 0)
+	return rt.Timeout.Duration*time.Duration(retries+1) + defaultBackoff*(1<<retries-1)
 }
 
 func (c *Client) requestBody(req ChatRequest) ([]byte, error) {
@@ -199,7 +237,7 @@ func (c *Client) attempt(ctx context.Context, body []byte) (ChatResponse, bool, 
 
 	resp, err := c.hc.Do(httpReq)
 	if err != nil {
-		return ChatResponse{}, !timedOut(), fmt.Errorf("openai: %w", err)
+		return ChatResponse{}, !timedOut(), &transientError{fmt.Errorf("openai: %w", err)}
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
@@ -208,17 +246,16 @@ func (c *Client) attempt(ctx context.Context, body []byte) (ChatResponse, bool, 
 			if !errors.Is(err, context.DeadlineExceeded) {
 				err = fmt.Errorf("%w (%w)", context.DeadlineExceeded, err)
 			}
-			return ChatResponse{}, false, fmt.Errorf("openai: read response: %w", err)
+			return ChatResponse{}, false, &transientError{fmt.Errorf("openai: read response: %w", err)}
 		}
-		return ChatResponse{}, true, fmt.Errorf("openai: read response: %w", err)
+		return ChatResponse{}, true, &transientError{fmt.Errorf("openai: read response: %w", err)}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		raw = omitBase64(raw)
 		if len(raw) > maxErrorBody {
 			raw = raw[:maxErrorBody]
 		}
-		retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
-		return ChatResponse{}, retryable, &StatusError{Code: resp.StatusCode, Body: string(raw)}
+		return ChatResponse{}, retryableStatus(resp.StatusCode), &StatusError{Code: resp.StatusCode, Body: string(raw)}
 	}
 
 	var cr completionResponse

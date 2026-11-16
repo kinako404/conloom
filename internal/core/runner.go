@@ -686,7 +686,8 @@ func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router
 }
 
 // chat waits for admission for a request estimated at estimate prompt tokens
-// and calls the model. Model errors (not admission errors) count against the
+// and calls the model. Transient model errors (openai.IsTransient; not
+// admission errors, nor a request the service refuses) count against the
 // role's circuit breaker. Every model call, failed or not, is recorded (see
 // recordCall). logAttrs are added to the model call log.
 func (o *Orchestrator) chat(ctx context.Context, task store.TaskRecord, d router.Decision, req openai.ChatRequest,
@@ -704,14 +705,12 @@ func (o *Orchestrator) chat(ctx context.Context, task store.TaskRecord, d router
 	latency := time.Since(start)
 	o.recordCall(task, p, start, latency, estimate, resp, err)
 	if err != nil {
-		if ctx.Err() == nil {
+		if ctx.Err() == nil && openai.IsTransient(err) {
 			o.router.ReportFailure(p.Role)
-			o.setBreakerGauge(p.Role)
 		}
 		return openai.ChatResponse{}, fmt.Errorf("model %s: %w", role, err)
 	}
 	o.router.ReportSuccess(p.Role)
-	o.setBreakerGauge(p.Role)
 
 	o.metrics.ModelLatency.WithLabelValues(role, resp.Model).Observe(latency.Seconds())
 	o.metrics.ModelTokens.WithLabelValues(role, resp.Model, "prompt").Add(float64(resp.PromptTokens))
@@ -748,7 +747,6 @@ func (o *Orchestrator) recordCall(task store.TaskRecord, p *router.Profile, star
 
 // acquire waits for an admission lease at the task's stored priority.
 func (o *Orchestrator) acquire(ctx context.Context, task store.TaskRecord, p *router.Profile, tokens int) (*admission.Lease, error) {
-	rt := p.Config.Runtime
 	wctx, cancel := context.WithTimeout(ctx, admissionWait)
 	defer cancel()
 	o.metrics.QueueDepth.Inc()
@@ -758,7 +756,7 @@ func (o *Orchestrator) acquire(ctx context.Context, task store.TaskRecord, p *ro
 		Profile:  string(p.Role),
 		Tokens:   tokens,
 		Priority: admission.Priority(task.Priority),
-		TTL:      rt.Timeout.Duration*time.Duration(rt.MaxRetries+1) + leaseSlack,
+		TTL:      openai.MaxChatDuration(p.Config.Runtime) + leaseSlack,
 	})
 	o.metrics.QueueDepth.Dec()
 	o.metrics.QueueWait.Observe(time.Since(start).Seconds())
@@ -781,14 +779,6 @@ func rejectReason(err error) string {
 		return "timeout"
 	}
 	return "error"
-}
-
-func (o *Orchestrator) setBreakerGauge(role router.Role) {
-	v := 0.0
-	if o.router.BreakerOpen(role) {
-		v = 1
-	}
-	o.metrics.BreakerOpen.WithLabelValues(string(role)).Set(v)
 }
 
 // auditBlocked records that review blocked a reply. The detail holds only the

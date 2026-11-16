@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/router"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -77,6 +78,34 @@ func TestRunner_ShortFailsFallsBackToLong(t *testing.T) {
 	}
 	if s, l := env.short.Calls(), env.long.Calls(); s != 1 || l != 1 {
 		t.Errorf("calls short=%d long=%d, want 1 and 1", s, l)
+	}
+}
+
+func TestRunner_BreakerCountsOnlyTransientFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   int
+		wantOpen bool
+	}{
+		{"rejected request", 400, false},
+		{"bad api key", 401, false},
+		{"rate limited", 429, true},
+		{"service unavailable", 503, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newTestOrchestrator(t, testOpts{short: func(map[string]any) (int, string) { return tc.status, "fake failure" }})
+			for _, text := range []string{"在吗", "还在吗", "人呢"} {
+				if task := env.waitTask(t, env.submit(t, env.groupEvent("20001", text, mentionBot)).TaskID); task.Status != conloomapi.TaskSucceeded {
+					t.Fatalf("task = %+v, want the long model's answer", task)
+				}
+			}
+			if s := env.short.Calls(); s != 3 {
+				t.Fatalf("short calls = %d, want 3", s)
+			}
+			if open := env.o.router.BreakerOpen(router.RoleShort); open != tc.wantOpen {
+				t.Errorf("short breaker open = %v after 3 answers with status %d, want %v", open, tc.status, tc.wantOpen)
+			}
+		})
 	}
 }
 

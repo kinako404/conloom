@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -69,6 +70,44 @@ func TestNewMetrics_RegistersOnFreshRegistry(t *testing.T) {
 	}
 	if len(mfs) != 23 {
 		t.Errorf("gathered %d metric families, want 23: %v", len(mfs), names)
+	}
+}
+
+func TestMetrics_WatchBreakersReadsAtGather(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+	var mu sync.Mutex
+	open := map[string]bool{"short_context": true}
+	m.WatchBreakers([]string{"long_context", "short_context"}, func(role string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return open[role]
+	})
+	gauges := func() map[string]float64 {
+		t.Helper()
+		mfs, err := reg.Gather()
+		if err != nil {
+			t.Fatalf("gather: %v", err)
+		}
+		got := map[string]float64{}
+		for _, mf := range mfs {
+			if mf.GetName() != "conloom_breaker_open" {
+				continue
+			}
+			for _, mt := range mf.GetMetric() {
+				got[mt.GetLabel()[0].GetValue()] = mt.GetGauge().GetValue()
+			}
+		}
+		return got
+	}
+	if got := gauges(); len(got) != 2 || got["short_context"] != 1 || got["long_context"] != 0 {
+		t.Fatalf("breaker gauges = %v, want short_context 1 and long_context 0", got)
+	}
+	mu.Lock()
+	open["short_context"] = false
+	mu.Unlock()
+	if got := gauges(); got["short_context"] != 0 {
+		t.Fatalf("breaker gauges after the breaker closed = %v, want short_context 0", got)
 	}
 }
 

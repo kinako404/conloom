@@ -246,6 +246,48 @@ func TestValidate_PanelPrefixReserved(t *testing.T) {
 	}
 }
 
+func TestValidate_BotIDAndPlatformWithoutColon(t *testing.T) {
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	cfg.Bots[0].ID = "qq:main"
+	for i := range cfg.APITokens {
+		cfg.APITokens[i].BotInstanceID = "qq:main"
+	}
+	cfg.Bots[0].Platform = "qq:napcat"
+	err := cfg.ValidateServe()
+	for _, want := range []string{`bots[0].id: must not contain ":"`, `bots[0].platform: must not contain ":"`} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want containing %q", err, want)
+		}
+	}
+	if !ValidBotID("qq-main") || !ValidBotID("panel-k3x9q2ma") {
+		t.Error("ValidBotID refused an ID without a colon")
+	}
+	for _, id := range []string{"", "qq:main", ":", "panel-a:b"} {
+		if ValidBotID(id) {
+			t.Errorf("ValidBotID(%q) = true, want false", id)
+		}
+	}
+}
+
+func TestValidate_ModelLimitsAtTheirBounds(t *testing.T) {
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	p := cfg.ModelProfiles["short_context"]
+	p.Context.ReservedOutputTokens, p.Context.SafetyMarginTokens = 16384, 16383
+	p.Runtime.GPUKVCacheTokens = p.Context.ConfiguredWindow
+	cfg.ModelProfiles["short_context"] = p
+	cfg.DefaultGroupPolicy.Context.MaxContextTokens = 32768
+	if err := cfg.ValidateServe(); err != nil {
+		t.Fatalf("limits at their bounds: %v", err)
+	}
+	if got := cfg.ReservedContextTokens(); got != 32767 {
+		t.Errorf("ReservedContextTokens() = %d, want short_context's reserved output plus safety margin 32767", got)
+	}
+	delete(cfg.ModelProfiles, "short_context")
+	if got := cfg.ReservedContextTokens(); got != 0 {
+		t.Errorf("ReservedContextTokens() without short_context = %d, want 0", got)
+	}
+}
+
 func TestValidate_VisionNeedsImageModality(t *testing.T) {
 	withVision := func(modalities ...string) *Config {
 		cfg := mustLoad(t, "testdata/valid.yaml")

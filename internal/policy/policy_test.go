@@ -179,6 +179,31 @@ func TestPolicy_ValidateRejectsConcurrency3(t *testing.T) {
 	}
 }
 
+func TestPolicy_UpdateRejectsContextCapWithinReservation(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := NewService(st, conloomapi.DefaultGroupPolicy()).WithReservedContextTokens(2048)
+	withCap := func(n int) conloomapi.GroupPolicy {
+		p := conloomapi.DefaultGroupPolicy()
+		p.Context.MaxContextTokens = n
+		return p
+	}
+	for _, n := range []int{1, 2000, 2048} {
+		_, err := svc.Update(ctx, testConvKey, conloomapi.PolicyPut{Policy: withCap(n)}, "29999")
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "context.max_context_tokens must be 0 (no limit) or > 2048") {
+			t.Errorf("cap %d: err = %v, want ErrInvalid naming context.max_context_tokens", n, err)
+		}
+	}
+	if list, _ := st.ListPolicyVersions(ctx, testConvKey); len(list) != 0 {
+		t.Fatalf("rejected updates stored %d versions", len(list))
+	}
+	for _, n := range []int{0, 2049} {
+		if _, err := svc.Update(ctx, testConvKey, conloomapi.PolicyPut{Policy: withCap(n)}, "29999"); err != nil {
+			t.Errorf("cap %d: %v", n, err)
+		}
+	}
+}
+
 func TestPolicy_CurrentFillsMissingProactiveDefaults(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "conloom.db")
