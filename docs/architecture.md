@@ -705,7 +705,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 | `queue_wait_seconds`、`queue_depth`、`admission_rejects_total` | 准入队列 |
 | `outbox_delivered_total`、`outbox_redelivered_total`、`outbox_expired_total` | — |
 | `review_total` | stage、verdict |
-| `breaker_open` | role |
+| `breaker_open` | role（每个配置的模型角色一条；每次抓取时按路由器的熔断状态现算，冷却过后即回到 0） |
 | `continuation_exits_total` | reason：rule / model / limit / idle |
 | `proactive_total` | result：evaluated / sent / skipped |
 | `wake_total` | kind：status_return / initiate / follow_up，result：sent / skipped / dropped / postponed / missed / cancelled（私聊里机器人自己发起的一轮） |

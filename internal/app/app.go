@@ -154,6 +154,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	metrics := obs.NewMetrics(opts.Registry)
 	loc := location(cfg.Server.Timezone)
 	rt := router.New(profiles, router.BreakerConfig{}, now)
+	metrics.WatchBreakers(slices.Sorted(maps.Keys(cfg.ModelProfiles)), func(role string) bool {
+		return rt.BreakerOpen(router.Role(role))
+	})
 	adm := admission.New(limits)
 	personas := persona.NewService(st)
 	personas.SetLogger(logger)

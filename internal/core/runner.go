@@ -706,12 +706,10 @@ func (o *Orchestrator) chat(ctx context.Context, task store.TaskRecord, d router
 	if err != nil {
 		if ctx.Err() == nil {
 			o.router.ReportFailure(p.Role)
-			o.setBreakerGauge(p.Role)
 		}
 		return openai.ChatResponse{}, fmt.Errorf("model %s: %w", role, err)
 	}
 	o.router.ReportSuccess(p.Role)
-	o.setBreakerGauge(p.Role)
 
 	o.metrics.ModelLatency.WithLabelValues(role, resp.Model).Observe(latency.Seconds())
 	o.metrics.ModelTokens.WithLabelValues(role, resp.Model, "prompt").Add(float64(resp.PromptTokens))
@@ -781,14 +779,6 @@ func rejectReason(err error) string {
 		return "timeout"
 	}
 	return "error"
-}
-
-func (o *Orchestrator) setBreakerGauge(role router.Role) {
-	v := 0.0
-	if o.router.BreakerOpen(role) {
-		v = 1
-	}
-	o.metrics.BreakerOpen.WithLabelValues(string(role)).Set(v)
 }
 
 // auditBlocked records that review blocked a reply. The detail holds only the

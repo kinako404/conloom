@@ -1,6 +1,10 @@
 package obs
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"sync"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
 
 type Metrics struct {
 	Events            *prometheus.CounterVec   // disposition
@@ -15,6 +19,8 @@ type Metrics struct {
 	OutboxRedelivered prometheus.Counter
 	OutboxExpired     prometheus.Counter
 	Review            *prometheus.CounterVec // stage, verdict
+	// BreakerOpen is set from the source WatchBreakers gives it each time it
+	// is collected.
 	BreakerOpen       *prometheus.GaugeVec   // role
 	ContinuationExits *prometheus.CounterVec // reason: rule|model|limit|idle
 	Proactive         *prometheus.CounterVec // result: evaluated|sent|skipped
@@ -36,6 +42,41 @@ type Metrics struct {
 	UsageWriteErrors   prometheus.Counter
 	PanelLoginFailures prometheus.Counter
 	PanelRequests      *prometheus.CounterVec // route, code
+
+	breakers *breakerGauge
+}
+
+// breakerGauge collects BreakerOpen after setting it, for each watched role,
+// to whether the role's breaker is open at that moment, so the gauge never
+// shows a breaker open after its cooldown.
+type breakerGauge struct {
+	*prometheus.GaugeVec
+
+	mu    sync.Mutex
+	roles []string
+	open  func(role string) bool
+}
+
+func (g *breakerGauge) Collect(ch chan<- prometheus.Metric) {
+	g.mu.Lock()
+	roles, open := g.roles, g.open
+	g.mu.Unlock()
+	for _, role := range roles {
+		v := 0.0
+		if open(role) {
+			v = 1
+		}
+		g.GaugeVec.WithLabelValues(role).Set(v)
+	}
+	g.GaugeVec.Collect(ch)
+}
+
+// WatchBreakers makes conloom_breaker_open report, for each of roles,
+// whether open(role) holds whenever the metrics are gathered.
+func (m *Metrics) WatchBreakers(roles []string, open func(role string) bool) {
+	m.breakers.mu.Lock()
+	defer m.breakers.mu.Unlock()
+	m.breakers.roles, m.breakers.open = append([]string(nil), roles...), open
 }
 
 // NewMetrics creates all ConLoom metrics and registers them on reg; it panics
@@ -137,11 +178,12 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name: "conloom_panel_requests_total", Help: "Web panel requests by route and status code.",
 		}, []string{"route", "code"}),
 	}
+	m.breakers = &breakerGauge{GaugeVec: m.BreakerOpen}
 	reg.MustRegister(
 		m.Events, m.Tasks, m.ModelLatency, m.ModelTokens, m.EstimateRatio,
 		m.QueueWait, m.QueueDepth, m.AdmissionRejects,
 		m.OutboxDelivered, m.OutboxRedelivered, m.OutboxExpired,
-		m.Review, m.BreakerOpen, m.ContinuationExits, m.Proactive, m.Wake,
+		m.Review, m.breakers, m.ContinuationExits, m.Proactive, m.Wake,
 		m.MemoryConsolidations, m.MemoryConsolidationSeconds, m.MemoryAffinityChanges,
 		m.SkillCalls,
 		m.SearchSeconds, m.FTSBackfillRemaining, m.EmbeddingRequests, m.EmbeddingBacklog,
