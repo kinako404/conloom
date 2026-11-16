@@ -7,11 +7,12 @@ const consMaxParenName = 40
 
 // consResolveRefs replaces the batch codes in the summary, notes and reasons
 // of out with the members' names (see consReplaceRefs) and cuts them to
-// summaryMax, noteMax and consReasonMaxRunes runes.
+// summaryMax, noteMax and consReasonMaxRunes runes, keeping each note's
+// remembered items (consTruncateNote).
 func consResolveRefs(out modelOutput, names map[string]string, literal map[string]bool, summaryMax, noteMax int) modelOutput {
 	resolved := modelOutput{Summary: consTruncate(consReplaceRefs(out.Summary, names, literal), summaryMax)}
 	for _, m := range out.Members {
-		m.Note = consTruncate(consReplaceRefs(m.Note, names, literal), noteMax)
+		m.Note = consTruncateNote(consReplaceRefs(m.Note, names, literal), noteMax)
 		m.Reason = consTruncate(consReplaceRefs(m.Reason, names, literal), consReasonMaxRunes)
 		resolved.Members = append(resolved.Members, m)
 	}

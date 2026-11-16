@@ -988,3 +988,22 @@ func TestConsolidate_LongCodeAtTheLimitIsNotCutIntoAnother(t *testing.T) {
 			utf8.RuneCountInString(m.Note))
 	}
 }
+
+func TestConsolidate_OverlongNoteKeepsRememberedItems(t *testing.T) {
+	e := newConsEnv(t, consOpts{})
+	note := AppendRemembered(strings.Repeat("猫", NoteMaxRunes), "我生日5月1日", NoteMaxRunes)
+	if utf8.RuneCountInString(note) != NoteMaxRunes {
+		t.Fatalf("seed note has %d runes, want the limit %d", utf8.RuneCountInString(note), NoteMaxRunes)
+	}
+	putMember(t, e.st, store.MemberMemory{ConversationKey: testConvKey, PlatformUserID: "20001", DisplayName: "小明", Note: note})
+	consSeedThree(t, e)
+	e.long.answer(`{"group_summary":"S","members":[{"ref":"P1","note":"今天去看猫了，还拍了照片。` + note + `"}]}`)
+	e.run(t, false)
+	got := getMember(t, e.st, testConvKey, "20001").Note
+	if n := utf8.RuneCountInString(got); n > NoteMaxRunes {
+		t.Errorf("note = %d runes, over the limit %d", n, NoteMaxRunes)
+	}
+	if !strings.HasSuffix(got, RememberMarker+"我生日5月1日") || !strings.HasPrefix(got, "今天去看猫了") {
+		t.Errorf("note = %q, want the new fact kept at the start and the remembered item at the end", got)
+	}
+}
