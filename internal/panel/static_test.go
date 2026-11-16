@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -22,6 +23,7 @@ import (
 	"github.com/kinako404/conloom/internal/panel/web"
 	"github.com/kinako404/conloom/internal/persona"
 	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 // staticHandler is a panel serving assets, with no data behind its API.
@@ -216,11 +218,17 @@ func TestHandler_CaseVariantsOfThePrefixRedirect(t *testing.T) {
 		{"/PaNeL/api/session", "/panel/api/session"},
 		{"/Panel/%23/login?next=%23%2F", "/panel/%23/login?next=%23%2F"},
 		{"/PANEL//evil.example", "/panel//evil.example"},
+		{"/PANEL/%5C%5Cevil", "/panel/%5C%5Cevil"},
+		{"/PANEL/a%2Fb", "/panel/a%2Fb"},
 	} {
 		for _, method := range []string{http.MethodGet, http.MethodHead} {
 			w := serve(h, httptest.NewRequest(method, c.target, nil))
-			if w.Code != http.StatusMovedPermanently || w.Header().Get("Location") != c.location {
-				t.Errorf("%s %s: %d Location %q, want 301 to %q", method, c.target, w.Code, w.Header().Get("Location"), c.location)
+			loc := w.Header().Get("Location")
+			if w.Code != http.StatusMovedPermanently || loc != c.location {
+				t.Errorf("%s %s: %d Location %q, want 301 to %q", method, c.target, w.Code, loc, c.location)
+			}
+			if !sameSite(loc) {
+				t.Errorf("%s %s: Location %q leaves the site", method, c.target, loc)
 			}
 			if w.Header().Get("Content-Security-Policy") == "" {
 				t.Errorf("%s %s: no Content-Security-Policy", method, c.target)
@@ -245,6 +253,44 @@ func TestHandler_CaseVariantsOfThePrefixRedirect(t *testing.T) {
 	}
 }
 
+// sameSite reports whether a browser on panel.test that follows location
+// stays on panel.test under /panel.
+func sameSite(location string) bool {
+	if !strings.HasPrefix(location, "/panel") || strings.Contains(location, `\`) {
+		return false
+	}
+	u, err := url.Parse(location)
+	if err != nil {
+		return false
+	}
+	base := &url.URL{Scheme: "http", Host: "panel.test", Path: "/panel/"}
+	got := base.ResolveReference(u)
+	return got.Host == "panel.test" && strings.HasPrefix(got.Path, "/panel")
+}
+
+func TestHandler_APIPathsWithHashAreNotRedirected(t *testing.T) {
+	h := staticHandler(t, redirectAssets)
+	for _, target := range []string{"/panel/api/%23/x", "/panel/api%2F%23"} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			w := serve(h, httptest.NewRequest(method, target, nil))
+			if loc := w.Header().Get("Location"); loc != "" {
+				t.Errorf("%s %s: Location %q, want none", method, target, loc)
+			}
+			if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+				t.Errorf("%s %s: Content-Type %q, want JSON", method, target, ct)
+			}
+			if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
+				t.Errorf("%s %s: Cache-Control %q, want no-store", method, target, cc)
+			}
+			if method == http.MethodGet {
+				errorBody(t, w, http.StatusNotFound, conloomapi.CodeNotFound)
+			} else if w.Code != http.StatusNotFound {
+				t.Errorf("%s %s: %d, want 404", method, target, w.Code)
+			}
+		}
+	}
+}
+
 func TestHandler_LogsNotFound(t *testing.T) {
 	var logs bytes.Buffer
 	h := loggingStaticHandler(t, redirectAssets, slog.New(slog.NewJSONHandler(&logs, nil)))
@@ -259,6 +305,7 @@ func TestHandler_LogsNotFound(t *testing.T) {
 		{http.MethodGet, "/panel/%23/login"},
 		{http.MethodGet, "/PANEL/"},
 		{http.MethodGet, "/panel/app.js"},
+		{http.MethodGet, "/panel/" + strings.Repeat("%E7%95%8C", 600) + ".js"},
 	} {
 		r := httptest.NewRequest(c.method, c.target, nil)
 		r.Header.Set("User-Agent", ua)
@@ -290,7 +337,10 @@ func TestHandler_LogsNotFound(t *testing.T) {
 			t.Errorf("%v: remote %v", m["path"], m["remote"])
 		}
 	}
-	want := []string{"GET /panel/missing.js", "HEAD /panel/favicon.ico", "GET /panel/api/nope", "GET /nope"}
+	want := []string{
+		"GET /panel/missing.js", "HEAD /panel/favicon.ico", "GET /panel/api/nope", "GET /nope",
+		"GET /panel/" + strings.Repeat("界", 512-len("/panel/")),
+	}
 	if !slices.Equal(got, want) {
 		t.Errorf("logged %q, want %q", got, want)
 	}

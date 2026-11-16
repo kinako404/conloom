@@ -10,16 +10,25 @@ import (
 	"strings"
 )
 
-// maxLoggedUserAgent is how many characters of the User-Agent header a
-// "panel not found" log line keeps.
-const maxLoggedUserAgent = 200
+// maxLoggedUserAgent and maxLoggedPath are how many characters of the
+// User-Agent header and of the path a "panel not found" log line keeps.
+const (
+	maxLoggedUserAgent = 200
+	maxLoggedPath      = 512
+)
 
 // static serves a file from Assets: index.html for /panel/. A path that is
 // not a file of Assets (a directory, a missing file or not a valid fs path)
 // is redirected to /panel/ when its last segment has no extension, so it
 // looks like a page of the app, and is not found otherwise. The URLs are not
 // versioned, so browsers must revalidate every response after an upgrade.
+// A path under /panel/api/ that reaches static, because its slash after api
+// was escaped (/panel/api%2F...), is an unknown API.
 func (s *Server) static(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/panel/api/") {
+		s.noSuchAPI(w, r)
+		return
+	}
 	w.Header().Set("Cache-Control", "no-cache")
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
@@ -120,7 +129,8 @@ func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {
 
 // logNotFound logs a 404 answer to r. The query is left out.
 func (s *Server) logNotFound(r *http.Request) {
-	s.log.Info("panel not found", "trace_id", traceID(r.Context()), "path", r.URL.Path, "method", r.Method,
+	s.log.Info("panel not found", "trace_id", traceID(r.Context()),
+		"path", truncateRunes(r.URL.Path, maxLoggedPath), "method", r.Method,
 		"user_agent", truncateRunes(r.UserAgent(), maxLoggedUserAgent), "remote", r.RemoteAddr)
 }
 

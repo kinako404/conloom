@@ -185,10 +185,7 @@ func (s *Server) routes() {
 	s.overviewRoutes()
 	s.dataRoutes()
 	s.writeRoutes()
-	s.mux.HandleFunc("/panel/api/", func(w http.ResponseWriter, r *http.Request) {
-		s.logNotFound(r)
-		s.writeError(w, r, http.StatusNotFound, conloomapi.CodeNotFound, "no such API")
-	})
+	s.mux.HandleFunc("/panel/api/", s.noSuchAPI)
 	s.mux.HandleFunc("GET /panel", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/panel/", http.StatusMovedPermanently)
 	})
@@ -196,6 +193,12 @@ func (s *Server) routes() {
 		http.Redirect(w, r, "/panel/", http.StatusFound)
 	})
 	s.mux.HandleFunc("/panel/", s.static)
+}
+
+// noSuchAPI answers 404 NOT_FOUND for an unknown API and logs it.
+func (s *Server) noSuchAPI(w http.ResponseWriter, r *http.Request) {
+	s.logNotFound(r)
+	s.writeError(w, r, http.StatusNotFound, conloomapi.CodeNotFound, "no such API")
 }
 
 // api registers h for pattern behind session authentication; requests with
