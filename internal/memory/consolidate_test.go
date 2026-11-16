@@ -130,8 +130,11 @@ type consOpts struct {
 	reservedOutput int
 	private        bool
 	noLong         bool
-	memory         func(*conloomapi.MemoryPolicy)
-	persona        func(*conloomapi.PersonaDoc)
+	// longNotSensitive sets the long model's privacy.allow_sensitive_content
+	// to false; every profile allows sensitive content otherwise.
+	longNotSensitive bool
+	memory           func(*conloomapi.MemoryPolicy)
+	persona          func(*conloomapi.PersonaDoc)
 }
 
 type consEnv struct {
@@ -168,6 +171,7 @@ func newConsEnv(t *testing.T, opts consOpts) *consEnv {
 			Context: config.ContextLimits{NativeWindow: 128000, ConfiguredWindow: 128000, SoftInputBudget: soft,
 				ReservedOutputTokens: opts.reservedOutput, SafetyMarginTokens: 500},
 			Runtime:             config.ProfileRuntime{MaxConcurrency: 1, Timeout: conloomapi.Duration{Duration: time.Minute}},
+			Privacy:             config.Privacy{DataLocation: "remote", AllowSensitiveContent: true},
 			TokenEstimateFactor: 1,
 		}
 	}
@@ -178,8 +182,10 @@ func newConsEnv(t *testing.T, opts consOpts) *consEnv {
 	profiles := []*router.Profile{{Role: router.RoleShort, Config: profile(8000), Client: e.short}}
 	limits := map[string]admission.Limits{string(router.RoleShort): {MaxConcurrency: 1}}
 	if !opts.noLong {
-		cfg.ModelProfiles[string(router.RoleLong)] = profile(opts.softBudget)
-		profiles = append(profiles, &router.Profile{Role: router.RoleLong, Config: profile(opts.softBudget), Client: e.long})
+		long := profile(opts.softBudget)
+		long.Privacy.AllowSensitiveContent = !opts.longNotSensitive
+		cfg.ModelProfiles[string(router.RoleLong)] = long
+		profiles = append(profiles, &router.Profile{Role: router.RoleLong, Config: long, Client: e.long})
 		limits[string(router.RoleLong)] = admission.Limits{MaxConcurrency: 1}
 	}
 	defaults := conloomapi.DefaultGroupPolicy()

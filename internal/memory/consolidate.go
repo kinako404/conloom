@@ -185,12 +185,13 @@ func NewConsolidator(d ConsolidatorDeps) *Consolidator {
 // so a chat created during the run is not skipped. It skips the run when the
 // conversation's bot is not in the directory (a deleted panel bot), when
 // memory is off, during a failure backoff (unless manual), when there is
-// nothing new, when no long-context model is available or when admission
-// stays busy. Batches are limited by the long model's input budget and,
-// through consMemberCap, by its reserved output. A failed model call or
-// truncated or unreadable output keeps the cursor, records the failure
-// category and returns an error; a cancelled ctx keeps the cursor and is not
-// a failure.
+// nothing new, when no long-context model is available (for a private
+// conversation or the shared panel scope, one whose privacy allows sensitive
+// content) or when admission stays busy. Batches are limited by the long
+// model's input budget and, through consMemberCap, by its reserved output. A
+// failed model call or truncated or unreadable output keeps the cursor,
+// records the failure category and returns an error; a cancelled ctx keeps
+// the cursor and is not a failure.
 func (c *Consolidator) Run(ctx context.Context, convKey string, manual bool) (Result, error) {
 	start := time.Now()
 	convKey = ScopeKeyOf(convKey)
@@ -325,7 +326,8 @@ func (c *Consolidator) batch(ctx context.Context, g *store.GroupMemory, sc scope
 		return consOutcome{}, err
 	}
 	base := consPromptTokens(buildPrompt(style, g.Summary, nil, nil), c.d.Config.ModelProfiles[string(router.RoleLong)].TokenEstimateFactor)
-	d, err := c.d.Router.Route(router.Request{AllowLong: true, Exclude: []router.Role{router.RoleShort}, BaseTokens: base})
+	d, err := c.d.Router.Route(router.Request{AllowLong: true, Exclude: []router.Role{router.RoleShort}, BaseTokens: base,
+		Sensitive: private})
 	if err != nil {
 		c.d.Logger.Info("memory consolidation skipped: long-context model unavailable", "conversation", convKey, "error", err)
 		return consOutcome{skipped: "long_unavailable"}, nil

@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -482,6 +483,59 @@ func TestConsolidate_PrivateSummaryWrittenNormally(t *testing.T) {
 	e.run(t, false)
 	if g := e.group(t); g.Summary != "小明在学钢琴。" || len(revisionsOf(t, e.st, testPrivateKey, "")) != 1 {
 		t.Fatalf("group = %+v, want the summary and its revision", g)
+	}
+}
+
+func TestConsolidate_PrivateNeedsALongModelAllowingSensitiveContent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		private bool
+		chat    func(e *consEnv) string
+	}{
+		{"platform private chat", true, func(e *consEnv) string {
+			e.add(t, e.msg("20001", "小明", "我最近在学钢琴", consAt(0)), e.botMsg("加油", consAt(1)))
+			return testPrivateKey
+		}},
+		{"panel chat", false, func(e *consEnv) string {
+			a := panelChat("bot_test", "panel_a")
+			seedChat(t, e.st, a, "panel_admin", "我最近在学钢琴", consAt(0))
+			seedChat(t, e.st, a, "", "加油", consAt(1))
+			return a.Key
+		}},
+		{"group chat", false, func(e *consEnv) string {
+			consSeedThree(t, e)
+			return testConvKey
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newConsEnv(t, consOpts{private: tc.private, longNotSensitive: true})
+			convKey := tc.chat(e)
+			e.long.answer(`{"group_summary":"S","members":[]}`)
+			for _, manual := range []bool{false, true} {
+				res, err := e.c.Run(context.Background(), convKey, manual)
+				if err != nil {
+					t.Fatalf("Run(manual %v): %v", manual, err)
+				}
+				if convTypeOf(convKey) == conloomapi.ConvGroup {
+					if !manual && res.Batches != 1 {
+						t.Fatalf("group Run = %+v, want a batch: group chats are not sensitive", res)
+					}
+					continue
+				}
+				if res.Skipped != "long_unavailable" {
+					t.Fatalf("Run(manual %v) = %+v, want long_unavailable: the long model may not see private chats", manual, res)
+				}
+			}
+			if convTypeOf(convKey) == conloomapi.ConvGroup {
+				return
+			}
+			if e.long.calls() != 0 || e.short.calls() != 0 {
+				t.Fatalf("model calls long=%d short=%d, want none", e.long.calls(), e.short.calls())
+			}
+			if _, err := e.st.GetGroupMemory(context.Background(), ScopeKeyOf(convKey)); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("GetGroupMemory err = %v, want no row (nothing recorded)", err)
+			}
+		})
 	}
 }
 
