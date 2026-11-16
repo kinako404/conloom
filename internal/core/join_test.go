@@ -764,8 +764,28 @@ func TestJoin_NotCreatedReasons(t *testing.T) {
 			t.Errorf("joinNotCreated(%v) = %q, %v; want %q", err, reason, ok, joinNoBusy)
 		}
 	}
+	if reason, ok := joinNotCreated(errPaused); !ok || reason != joinNoPaused {
+		t.Errorf("joinNotCreated(%v) = %q, %v; want %q", errPaused, reason, ok, joinNoPaused)
+	}
 	if _, ok := joinNotCreated(context.Canceled); ok {
 		t.Error("an unexpected error counted as a plain no-join")
+	}
+}
+
+func TestJoin_PausedAfterCheckCreatesNoTask(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: joinConfig(time.Hour, nil)})
+	env.seedMember(t, "20001", conloomapi.ProactiveLow, time.Now().Add(-time.Hour))
+	target := env.storeMessage(t, "20001", matchText, "")
+	// The group is paused after considerJoin read its policy.
+	if got := env.command(t, "29999", "/pause"); got != CopyPaused {
+		t.Fatalf("/pause = %q", got)
+	}
+	id, reason, err := env.o.startJoin(context.Background(), testConvKey, target, joinPlan{}, time.Now(), 3)
+	if err != nil || id != "" || reason != joinNoPaused {
+		t.Fatalf("startJoin = %q, %q, %v; want no task and %q", id, reason, err, joinNoPaused)
+	}
+	if n, evals := len(env.joinTasks(t)), env.proactiveCount(t, "", store.ProactiveEvaluated); n != 0 || evals != 0 {
+		t.Fatalf("join tasks %d, evaluations %d in a paused group; want none", n, evals)
 	}
 }
 

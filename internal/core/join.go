@@ -320,7 +320,8 @@ func (o *Orchestrator) considerJoin(convKey string) (taskID, reason string) {
 }
 
 // startJoin creates the join task of plan replying to target and logs the
-// evaluation; a group that became busy meanwhile gives a reason instead.
+// evaluation; a group that became busy or was paused meanwhile gives a reason
+// instead.
 func (o *Orchestrator) startJoin(ctx context.Context, convKey string, target store.MessageRecord, plan joinPlan, now time.Time,
 	windowSize int) (taskID, reason string, err error) {
 	taskID, err = o.createJoinTask(ctx, convKey, target, plan, now)
@@ -484,13 +485,21 @@ var errJoinMerged = errors.New("core: a task of the join target appeared")
 // The evaluation is recorded first, so no model call escapes the hourly
 // budget (a task that then fails to be stored leaves an extra record, which
 // only tightens the budget). The merge window closes at once, so no later
-// message joins the task.
+// message joins the task. A group paused by then gets no task and errPaused:
+// like in admitWith, the policy is read again under the scheduler's lock.
 func (o *Orchestrator) createJoinTask(ctx context.Context, convKey string, target store.MessageRecord, plan joinPlan, now time.Time) (string, error) {
 	var taskID string
 	closed := MergeOptions{Debounce: time.Nanosecond, MaxMergeWindow: time.Nanosecond}
 	_, err := o.sched.AdmitWith(convKey, target.PlatformUserID, target.ID, AdmitNew, closed, func(ap AdmitPlan) error {
 		if ap.NewTaskID == "" {
 			return errJoinMerged
+		}
+		pv, err := o.policies.Current(ctx, convKey)
+		if err != nil {
+			return err
+		}
+		if pv.Policy.Concurrency.MaxInteractiveRequests == 0 {
+			return errPaused
 		}
 		id := ap.NewTaskID
 		task := store.TaskRecord{
@@ -595,10 +604,13 @@ func isClearQuestion(text string) bool {
 }
 
 // joinNotCreated maps an error of createJoinTask that only means the group
-// became busy meanwhile to the reason for not joining.
+// became busy or was paused meanwhile to the reason for not joining.
 func joinNotCreated(err error) (string, bool) {
-	if errors.Is(err, errJoinMerged) || errors.Is(err, ErrQueueFull) {
+	switch {
+	case errors.Is(err, errJoinMerged) || errors.Is(err, ErrQueueFull):
 		return joinNoBusy, true
+	case errors.Is(err, errPaused):
+		return joinNoPaused, true
 	}
 	return "", false
 }
