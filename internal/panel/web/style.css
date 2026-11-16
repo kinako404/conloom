@@ -308,6 +308,16 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   line-height: 18px;
   box-shadow: 0 0 0 2px var(--bg);
 }
+.chat-app .tg-folder-warn {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 0 2px var(--bg);
+}
 
 .chat-app .tg-menu {
   position: absolute;
@@ -715,6 +725,7 @@ details > summary { cursor: pointer; color: var(--accent); white-space: nowrap; 
   .chat-app .tg-folder .avatar { display: none; }
   .chat-app .tg-folder-pic { order: 1; }
   .chat-app .tg-folder .tg-folder-unread { position: static; box-shadow: none; }
+  .chat-app .tg-folder-warn { position: static; display: inline-block; margin: auto 0 auto 4px; box-shadow: none; }
   .chat-app .tg-folder-name { max-width: 10em; }
   .chat-app .tg-menu { top: 40px; }
   .chat-app .tg-list { border-right: none; }

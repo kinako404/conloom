@@ -398,6 +398,12 @@ function lastOf(m) {
   };
 }
 
+// panelActorID is the sender ID of the panel user user's messages in panel
+// chats, as core.PanelActorID.
+function panelActorID(user) {
+  return 'panel_' + String(user || '').replace(/:/g, '_');
+}
+
 // recency orders chats by their last message, newest first; a chat without
 // messages, as one just started, comes first.
 function recency(c) {
@@ -636,7 +642,12 @@ function chatPage() {
     menu.hidden = !menu.hidden;
   });
 
-  const folderItem = (id, name, icon, unread) => h('a', {
+  // warnDot marks a folder whose bot has problems, named in its tooltip.
+  const warnDot = (problems) => (problems && problems.length
+    ? h('span', { class: 'tg-folder-warn', role: 'img', 'aria-label': '设置有问题', title: problems.join('\n') })
+    : null);
+
+  const folderItem = (id, name, icon, unread, problems) => h('a', {
     class: id === shownFolder() ? 'tg-folder active' : 'tg-folder',
     href: folderHref(id),
     title: name,
@@ -644,14 +655,18 @@ function chatPage() {
       e.preventDefault();
       choose(id);
     },
-  }, h('span', { class: 'tg-folder-pic' }, icon, unreadBadge(unread, 'tg-unread tg-folder-unread')),
+  }, h('span', { class: 'tg-folder-pic' }, icon, unreadBadge(unread, 'tg-unread tg-folder-unread'), warnDot(problems)),
   h('span', { class: 'tg-folder-name' }, name));
 
   const renderFolders = () => {
     const unread = (chats) => (chats || []).reduce((n, c) => n + unreadOf(c), 0);
+    const problems = (id) => {
+      const bot = bots.find((b) => b.id === id);
+      return bot ? bot.problems : null;
+    };
     mount(folders,
       folderItem('', '全部', allIcon(), unread(allChats())),
-      groups.map((g) => folderItem(g.id, g.name || g.id, avatarEl(g, 36), unread(g.chats))));
+      groups.map((g) => folderItem(g.id, g.name || g.id, avatarEl(g, 36), unread(g.chats), problems(g.id))));
   };
 
   // renderBotBar names the bot of the folder chosen, with 编辑 and, for a
@@ -671,12 +686,13 @@ function chatPage() {
       ((bot && bot.problems) || []).map((p) => h('p', { class: 'hint warn' }, p))) : null);
   };
 
-  // preview is the last message of chat c on one line, after 你： when you
-  // sent it.
+  // preview is the last message of chat c on one line, after 你： when you,
+  // the panel user signed in, sent it.
   const preview = (c) => {
     if (!c.last) return h('span', { class: 'tg-chat-preview muted' }, '还没有消息');
+    const mine = !c.last.from_bot && c.last.sender_id === panelActorID(currentUser());
     return h('span', { class: 'tg-chat-preview' },
-      c.last.from_bot ? null : h('span', { class: 'tg-you' }, '你：'), c.last.text);
+      mine ? h('span', { class: 'tg-you' }, '你：') : null, c.last.text);
   };
 
   // chatRow is chat c of bot g; with several chats of g it also names who

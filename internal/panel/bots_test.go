@@ -687,10 +687,11 @@ type chatsResp struct {
 			LastMessageAt *time.Time `json:"last_message_at"`
 			MessageCount  int        `json:"message_count"`
 			Last          *struct {
-				Seq     int64     `json:"seq"`
-				FromBot bool      `json:"from_bot"`
-				At      time.Time `json:"at"`
-				Text    string    `json:"text"`
+				Seq      int64     `json:"seq"`
+				FromBot  bool      `json:"from_bot"`
+				SenderID string    `json:"sender_id"`
+				At       time.Time `json:"at"`
+				Text     string    `json:"text"`
 			} `json:"last"`
 		} `json:"chats"`
 	} `json:"bots"`
@@ -933,8 +934,8 @@ func TestChatsAPI_LastMessageAndAvatar(t *testing.T) {
 	if c.MessageCount != 2 || c.Last == nil {
 		t.Fatalf("chat with messages = %+v, want 2 messages and the last one", c)
 	}
-	if !c.Last.FromBot || c.Last.Seq != reply.Seq || !c.Last.At.Equal(base.Add(time.Minute)) {
-		t.Errorf("last = %+v, want the bot's reply %d at %s", *c.Last, reply.Seq, base.Add(time.Minute))
+	if !c.Last.FromBot || c.Last.Seq != reply.Seq || c.Last.SenderID != reply.PlatformUserID || !c.Last.At.Equal(base.Add(time.Minute)) {
+		t.Errorf("last = %+v, want the bot's reply %d from %s at %s", *c.Last, reply.Seq, reply.PlatformUserID, base.Add(time.Minute))
 	}
 	if text := c.Last.Text; strings.Contains(text, "\n") || !strings.HasPrefix(text, "第一行 第二行") ||
 		utf8.RuneCountInString(text) != 61 || !strings.HasSuffix(text, "…") {

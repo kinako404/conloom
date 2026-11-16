@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/imaging"
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/store"
@@ -874,5 +875,46 @@ func TestChatsView_ListPollQuiet(t *testing.T) {
 		if !strings.Contains(watch, want) {
 			t.Errorf("watch lacks %q", want)
 		}
+	}
+}
+
+// A bubble names its sender on hover, and bubbles group by sender as well as
+// side; the list prefixes 你： only to the panel user's own messages, whose
+// sender ID is built as core.PanelActorID builds it. A folder whose bot has
+// problems shows a warn dot listing them. Escape anywhere closes the ⋮ menu,
+// and a resized window refits the message box. Listeners end with the
+// signal by hand: addEventListener's signal option is newer than Chrome 89.
+func TestChatPane_SenderWarnAndKeys(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	chat, chats := files["views/chat.js"], files["views/chats.js"]
+	for _, want := range []string{
+		"title: m.sender_name ? `${m.sender_name} · ${when}` : when",
+		"last.from_bot === m.from_bot && last.sender_id === m.sender_id",
+		"listen(document, 'keydown', (e) => {", "listen(window, 'resize', grow, signal);",
+		"signal.addEventListener('abort', () => target.removeEventListener(type, fn));",
+	} {
+		if !strings.Contains(chat, want) {
+			t.Errorf("views/chat.js lacks %q", want)
+		}
+	}
+	for name, text := range map[string]string{"views/chat.js": chat, "views/chats.js": chats} {
+		if strings.Contains(text, "{ signal })") {
+			t.Errorf("%s passes a signal to addEventListener", name)
+		}
+	}
+	for _, want := range []string{
+		"const mine = !c.last.from_bot && c.last.sender_id === panelActorID(currentUser());",
+		"return 'panel_' + String(user || '').replace(/:/g, '_');",
+		"h('span', { class: 'tg-folder-warn', role: 'img', 'aria-label': '设置有问题', title: problems.join('\\n') })",
+	} {
+		if !strings.Contains(chats, want) {
+			t.Errorf("views/chats.js lacks %q", want)
+		}
+	}
+	if got := core.PanelActorID("a:b"); got != "panel_a_b" {
+		t.Errorf("core.PanelActorID(a:b) = %q, which views/chats.js panelActorID does not build", got)
+	}
+	if !regexp.MustCompile(`\.chat-app \.tg-folder-warn\s*\{[^}]*background:\s*var\(--warn\);`).MatchString(files["style.css"]) {
+		t.Error("style.css has no warn dot for a folder")
 	}
 }

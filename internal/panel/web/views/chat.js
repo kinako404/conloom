@@ -63,13 +63,21 @@ function clock(v) {
 }
 
 // bubble shows message m: the bot's on the left, the user's on the right,
-// with its time in the corner and its channel only when it is not the panel.
+// with its time in the corner, its sender and full time on hover, and its
+// channel only when it is not the panel.
 function bubble(m) {
+  const when = fmtTime(m.at);
   return h('li', { class: m.from_bot ? 'tg-msg in' : 'tg-msg out' },
     h('div', { class: 'tg-bubble' },
       m.channel && m.channel !== 'panel' ? h('div', null, h('span', { class: 'badge' }, m.channel)) : null,
       h('span', { class: 'tg-text' }, m.text),
-      h('span', { class: 'tg-time', title: fmtTime(m.at) }, clock(m.at))));
+      h('span', { class: 'tg-time', title: m.sender_name ? `${m.sender_name} · ${when}` : when }, clock(m.at))));
+}
+
+// listen adds fn as a listener of type on target until signal fires.
+function listen(target, type, fn, signal) {
+  target.addEventListener(type, fn);
+  signal.addEventListener('abort', () => target.removeEventListener(type, fn));
 }
 
 // GONE is shown, once, when the chat no longer exists.
@@ -103,7 +111,8 @@ export async function deleteChatConfirmed(key) {
 // the chat is not known, with title, who the bot talks with, on hover and
 // status, when given, under the name; and a ⋮ menu with 会话详情, items and,
 // when onDelete is given, 删除这个聊天. Choosing an item, a click elsewhere or
-// Escape closes the menu; signal ends the listening for clicks elsewhere.
+// Escape anywhere on the page closes the menu; signal ends the listening for
+// those.
 export function chatBar({ key, bot, title, status, items, onBack, onDelete, signal }) {
   const more = h('button', {
     type: 'button', class: 'tg-bar-more', title: '更多', 'aria-label': '更多', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
@@ -120,23 +129,22 @@ export function chatBar({ key, bot, title, status, items, onBack, onDelete, sign
   menu.addEventListener('click', (e) => {
     if (e.target.closest('.tg-bar-item')) show(false);
   });
-  document.addEventListener('click', (e) => {
+  listen(document, 'click', (e) => {
     if (!menu.hidden && !menu.contains(e.target) && !more.contains(e.target)) show(false);
-  }, { signal });
-  const bar = h('header', { class: 'tg-bar' },
+  }, signal);
+  listen(document, 'keydown', (e) => {
+    if (e.key === 'Escape' && !menu.hidden) {
+      show(false);
+      more.focus();
+    }
+  }, signal);
+  return h('header', { class: 'tg-bar' },
     h('button', { type: 'button', class: 'tg-bar-back', title: '返回', 'aria-label': '返回', onclick: onBack }, '←'),
     bot ? avatarEl(bot, 40) : null,
     h('div', { class: 'tg-bar-name', title: title || null },
       h('strong', null, bot ? bot.name || bot.id : key),
       status || h('span', { class: 'tg-bar-status' })),
     h('div', { class: 'tg-bar-actions' }, more, menu));
-  bar.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !menu.hidden) {
-      show(false);
-      more.focus();
-    }
-  });
-  return bar;
 }
 
 // chatPane talks to the bot in the panel chat key, as the panel user, and
@@ -189,8 +197,9 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
   };
 
   // place appends message m after the newest: under a date pill when its day
-  // differs from the newest message's, otherwise, from the same sender, in
-  // the newest message's group, which only its last message has a tail of.
+  // differs from the newest message's, otherwise, from the same sender, on
+  // the same side, in the newest message's group, which only its last
+  // message has a tail of.
   const place = (m) => {
     const day = dayOf(m.at);
     const newDay = day !== '' && day !== lastDay;
@@ -199,7 +208,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
       lastDay = day;
     }
     const el = bubble(m);
-    if (lastEl && !newDay && last.from_bot === m.from_bot) {
+    if (lastEl && !newDay && last.from_bot === m.from_bot && last.sender_id === m.sender_id) {
       lastEl.classList.remove('tail');
       el.classList.add('cont');
     }
@@ -312,7 +321,8 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
   signal.addEventListener('abort', () => clearTimeout(timer));
 
   // grow fits the box to its text, up to MAX_LINES lines, then scrolls it;
-  // messages scrolled to the bottom stay there.
+  // messages scrolled to the bottom stay there. A resized window, which may
+  // wrap the text anew, fits it again.
   const grow = () => {
     if (!input.isConnected) return;
     const atBottom = nearBottom();
@@ -368,6 +378,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
   }
   input.addEventListener('input', clearSuggestions);
   input.addEventListener('input', grow);
+  listen(window, 'resize', grow, signal);
   suggestItem.addEventListener('click', () => {
     suggestOn = !suggestOn;
     saveSuggestionsOn(suggestOn);
