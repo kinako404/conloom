@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kinako404/conloom/internal/admission"
 	"github.com/kinako404/conloom/internal/config"
@@ -678,11 +679,19 @@ type chatsResp struct {
 		ID     string `json:"id"`
 		Name   string `json:"name"`
 		Source string `json:"source"`
+		Avatar string `json:"avatar"`
 		Chats  []struct {
 			Key           string     `json:"key"`
 			Title         string     `json:"title"`
 			Platform      string     `json:"platform"`
 			LastMessageAt *time.Time `json:"last_message_at"`
+			MessageCount  int        `json:"message_count"`
+			Last          *struct {
+				Seq     int64     `json:"seq"`
+				FromBot bool      `json:"from_bot"`
+				At      time.Time `json:"at"`
+				Text    string    `json:"text"`
+			} `json:"last"`
 		} `json:"chats"`
 	} `json:"bots"`
 }
@@ -888,6 +897,63 @@ func TestChatsAPI_NewChatFirst(t *testing.T) {
 	list := h.bots()
 	if b := list.Bots[1]; b.ID != bot.ID || b.Chats != 3 || !sameTime(b.LastMessageAt, new(past.Add(30*time.Minute))) {
 		t.Errorf("panel bot = %+v, want 3 chats, the last message at %s", b, past.Add(30*time.Minute))
+	}
+}
+
+func TestChatsAPI_LastMessageAndAvatar(t *testing.T) {
+	h := newBotsHarness(t)
+	up := decodeUpload(t, h.upload(pngData(t, testImage(64, 64, false)), "image/png"))
+	doc := lighthousePersona()
+	doc.AppearanceImage = up.ID
+	decodeTemplate(t, h.putTemplate("with-image", doc, ""), http.StatusCreated)
+	pictured := h.createBot("小红", "with-image")
+	plain := h.createBot("小绿", "cat")
+
+	base := time.Now().UTC().Truncate(time.Second).Add(time.Hour)
+	talked := h.panelChat(dataBot, "小明")
+	h.seedMessage(talked, "在吗", base, false)
+	reply := h.seedMessage(talked, "第一行\n第二行"+strings.Repeat("好", 70), base.Add(time.Minute), true)
+	fresh := h.panelChat(dataBot, "小白")
+
+	var resp chatsResp
+	body := h.getJSON("/panel/api/chats", &resp)
+	avatars := map[string]string{}
+	for _, b := range resp.Bots {
+		avatars[b.ID] = b.Avatar
+	}
+	if want := map[string]string{dataBot: "", pictured.ID: up.ID, plain.ID: ""}; !reflect.DeepEqual(avatars, want) {
+		t.Errorf("avatars = %v, want %v", avatars, want)
+	}
+
+	chats := resp.Bots[0].Chats
+	if len(chats) != 2 || chats[0].Key != talked.Key || chats[1].Key != fresh.Key {
+		t.Fatalf("config bot chats = %+v, want %s then %s", chats, talked.Key, fresh.Key)
+	}
+	c := chats[0]
+	if c.MessageCount != 2 || c.Last == nil {
+		t.Fatalf("chat with messages = %+v, want 2 messages and the last one", c)
+	}
+	if !c.Last.FromBot || c.Last.Seq != reply.Seq || !c.Last.At.Equal(base.Add(time.Minute)) {
+		t.Errorf("last = %+v, want the bot's reply %d at %s", *c.Last, reply.Seq, base.Add(time.Minute))
+	}
+	if text := c.Last.Text; strings.Contains(text, "\n") || !strings.HasPrefix(text, "第一行 第二行") ||
+		utf8.RuneCountInString(text) != 61 || !strings.HasSuffix(text, "…") {
+		t.Errorf("last text = %q, want one line of 60 characters and …", text)
+	}
+	if c := chats[1]; c.MessageCount != 0 || c.Last != nil {
+		t.Errorf("new chat = %+v, want no messages and no last", c)
+	}
+
+	var raw struct {
+		Bots []struct {
+			Chats []map[string]json.RawMessage `json:"chats"`
+		} `json:"bots"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if got := raw.Bots[0].Chats[1]; string(got["last"]) != "null" || string(got["message_count"]) != "0" {
+		t.Errorf("new chat JSON = last %s, message_count %s; want null and 0", got["last"], got["message_count"])
 	}
 }
 

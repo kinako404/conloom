@@ -145,7 +145,7 @@ NapCat      Adapter                 Core                          SQLite        
   4. 在写锁下 `DeletePanelBot`：一个事务里删掉 `panel_bots` 的行和这个 bot ID 下残留的 `users`、`events`，保留 `bot_instances`、`model_calls`、`audit_events`。还有会话、任务或发件箱动作时什么都不删（`ErrBotHasData`，按 `ErrChatBusy` 处理）。成功后发布不含它的快照，记审计。
   5. 不论成败，最后都撤掉“删除中”标记，失败后可以重试。
 - **后台任务**：记忆整理和语义索引按会话的 bot ID 从目录取 bot，不在目录里的（删除的面板 bot、从配置文件去掉的 bot）安静跳过；自主唤醒照旧丢弃这些 bot 的定时。
-- **面板接口**：`/panel/api/bots` 的增删改直接调用 `PanelBotService`，审计由它写（`actor` 为 `panel:<用户名>`），面板不再写第二条。`/panel/api/chats` 按目录顺序分组列出每个 bot 在面板里新建的聊天（平台上的私聊不列出）：聊天数、最后一条消息的时间和会话建立的时间（`conversations.created_at`，首次写入时的系统时间）复用会话列表的 GROUP BY 查询（`ConversationStats`）；每组按两个时间中较晚的一个从新到旧排序，去掉平台上的私聊后截到 200 个，所以刚新建的空聊天在最前。每个聊天的显示名另查一次（`LatestDisplayNames`，还没人发言时读它的创建事件）。用量页的 bot 名字来自目录和 `bot_instances`。
+- **面板接口**：`/panel/api/bots` 的增删改直接调用 `PanelBotService`，审计由它写（`actor` 为 `panel:<用户名>`），面板不再写第二条。`/panel/api/chats` 按目录顺序分组列出每个 bot 在面板里新建的聊天（平台上的私聊不列出）：聊天数、最后一条消息的时间和会话建立的时间（`conversations.created_at`，首次写入时的系统时间）复用会话列表的 GROUP BY 查询（`ConversationStats`）；每组按两个时间中较晚的一个从新到旧排序，去掉平台上的私聊后截到 200 个，所以刚新建的空聊天在最前。每个聊天的显示名另查一次（`LatestDisplayNames`，还没人发言时读它的创建事件）；列出的所有聊天的最后一条消息用一次查询取出（`LastMessages`：按会话分组取 `MAX(seq)`），bot 的头像是它私聊默认模板在模板目录（内存）里的参考图。用量页的 bot 名字来自目录和 `bot_instances`。
 
 ### 2.4 人设模板目录
 

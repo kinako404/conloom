@@ -391,6 +391,23 @@ func (db *DB) MessagesAfterIn(ctx context.Context, convKeys []string, afterSeq i
 		WHERE conversation_key IN (`+in+`) AND seq > ? ORDER BY seq LIMIT ?`, append(args, afterSeq, limit)...)
 }
 
+func (db *DB) LastMessages(ctx context.Context, convKeys []string) (map[string]store.MessageRecord, error) {
+	out := map[string]store.MessageRecord{}
+	if len(convKeys) == 0 {
+		return out, nil
+	}
+	in, args := inList(convKeys)
+	msgs, err := db.queryMessages(ctx, `SELECT `+messageCols+` FROM messages WHERE seq IN
+		(SELECT MAX(seq) FROM messages WHERE conversation_key IN (`+in+`) GROUP BY conversation_key)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range msgs {
+		out[m.ConversationKey] = m
+	}
+	return out, nil
+}
+
 func (db *DB) CountMessagesAfter(ctx context.Context, convKey string, afterSeq int64) (int, error) {
 	return db.CountMessagesAfterIn(ctx, []string{convKey}, afterSeq)
 }

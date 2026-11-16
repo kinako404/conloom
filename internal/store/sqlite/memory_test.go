@@ -563,6 +563,42 @@ func TestMessagesAfterAndCount(t *testing.T) {
 	}
 }
 
+func TestLastMessages(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	for i := range 3 {
+		for _, key := range []string{testConvKey, testConvKeyB} {
+			m := memMessage(key, "user_20001", "20001", i == 2 && key == testConvKeyB)
+			m.Text = fmt.Sprintf("%s %d", key, i)
+			memInsertMessages(t, db, m)
+		}
+	}
+	got, err := db.LastMessages(ctx, []string{testConvKey, testConvKeyB, testPrivateKey})
+	if err != nil {
+		t.Fatalf("LastMessages: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("LastMessages = %+v, want the two chats with messages", got)
+	}
+	for _, key := range []string{testConvKey, testConvKeyB} {
+		m, ok := got[key]
+		if !ok || m.Seq != latestSeq(t, db, key) || m.Text != key+" 2" || m.ConversationKey != key {
+			t.Errorf("LastMessages[%s] = %+v, %v; want its message with the largest seq", key, m, ok)
+		}
+	}
+	if !got[testConvKeyB].FromBot || got[testConvKey].FromBot {
+		t.Errorf("LastMessages from_bot = %v, %v; want false, true", got[testConvKey].FromBot, got[testConvKeyB].FromBot)
+	}
+	if _, ok := got[testPrivateKey]; ok {
+		t.Errorf("LastMessages has %s, which has no message", testPrivateKey)
+	}
+	for _, keys := range [][]string{nil, {}} {
+		if got, err := db.LastMessages(ctx, keys); err != nil || got == nil || len(got) != 0 {
+			t.Errorf("LastMessages(%v) = %v, %v; want an empty map", keys, got, err)
+		}
+	}
+}
+
 func TestUserIDsForActors(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()

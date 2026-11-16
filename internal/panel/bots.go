@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/kinako404/conloom/internal/botdir"
@@ -73,21 +74,46 @@ type configBotSummary struct {
 	Groups           []string `json:"groups"`
 }
 
-// chatGroup is a bot with its panel chats as the chat page lists them.
+// maxChatLastRunes bounds the text of a chat's last message on the chat page.
+const maxChatLastRunes = 60
+
+// chatGroup is a bot with its panel chats as the chat page lists them. Avatar
+// is the appearance image of the bot's private persona template, "" without
+// one.
 type chatGroup struct {
 	ID     string      `json:"id"`
 	Name   string      `json:"name"`
 	Source string      `json:"source"`
+	Avatar string      `json:"avatar"`
 	Chats  []chatEntry `json:"chats"`
 }
 
 // chatEntry is a panel chat on the chat page. Title is who the bot talks with
-// there (see chatTitle).
+// there (see chatTitle); Last is its newest message, null without one.
 type chatEntry struct {
 	Key           string     `json:"key"`
 	Title         string     `json:"title"`
 	Platform      string     `json:"platform"`
 	LastMessageAt *time.Time `json:"last_message_at"`
+	MessageCount  int        `json:"message_count"`
+	Last          *chatLast  `json:"last"`
+}
+
+// chatLast is a chat's newest message as the chat page previews it: Text is
+// on one line and cut to maxChatLastRunes characters, with … when cut.
+type chatLast struct {
+	Seq     int64     `json:"seq"`
+	FromBot bool      `json:"from_bot"`
+	At      time.Time `json:"at"`
+	Text    string    `json:"text"`
+}
+
+func newChatLast(m store.MessageRecord) *chatLast {
+	text := strings.Join(strings.Fields(m.Text), " ")
+	if runes := []rune(text); len(runes) > maxChatLastRunes {
+		text = string(runes[:maxChatLastRunes]) + "…"
+	}
+	return &chatLast{Seq: m.Seq, FromBot: m.FromBot, At: m.OccurredAt.UTC(), Text: text}
 }
 
 // botRequest is the body that creates or updates a panel bot: its name, the
@@ -366,7 +392,8 @@ func (s *Server) deleteBot(w http.ResponseWriter, r *http.Request, sess *Session
 // listChats lists the panel chats (store.PlatformPanel) of every bot for the
 // chat page, grouped by bot in directory order: each bot's most recently
 // active first (its newest message or, if later, its creation; see
-// privateChats), cut to maxBotChats after sorting. Private chats on the
+// privateChats), cut to maxBotChats after sorting, each with its message count
+// and newest message, and each bot with its avatar. Private chats on the
 // platforms are not listed.
 func (s *Server) listChats(w http.ResponseWriter, r *http.Request, _ *Session) {
 	chats, err := s.privateChats(r.Context())
@@ -375,26 +402,57 @@ func (s *Server) listChats(w http.ResponseWriter, r *http.Request, _ *Session) {
 		return
 	}
 	all := s.d.Bots.All()
-	out := make([]chatGroup, 0, len(all))
-	for _, b := range all {
+	lists := make([][]store.ConversationStats, len(all))
+	var keys []string
+	for i, b := range all {
 		list := slices.DeleteFunc(chats[b.ID], func(st store.ConversationStats) bool { return st.Platform != store.PlatformPanel })
-		list = list[:min(len(list), maxBotChats)]
-		g := chatGroup{ID: b.ID, Name: b.Name, Source: s.botSource(b.ID), Chats: make([]chatEntry, 0, len(list))}
-		for _, st := range list {
+		lists[i] = list[:min(len(list), maxBotChats)]
+		for _, st := range lists[i] {
+			keys = append(keys, st.Key)
+		}
+	}
+	last, err := s.d.Store.LastMessages(r.Context(), keys)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	out := make([]chatGroup, 0, len(all))
+	for i, b := range all {
+		g := chatGroup{ID: b.ID, Name: b.Name, Source: s.botSource(b.ID), Avatar: s.botAvatar(b),
+			Chats: make([]chatEntry, 0, len(lists[i]))}
+		for _, st := range lists[i] {
 			title, err := s.chatTitle(r.Context(), st)
 			if err != nil {
 				s.fail(w, r, err)
 				return
 			}
-			g.Chats = append(g.Chats, chatEntry{
+			e := chatEntry{
 				Key: st.Key, Title: title, Platform: st.Platform, LastMessageAt: nullTime(st.LastMessageAt),
-			})
+				MessageCount: st.MessageCount,
+			}
+			if m, ok := last[st.Key]; ok {
+				e.Last = newChatLast(m)
+			}
+			g.Chats = append(g.Chats, e)
 		}
 		out = append(out, g)
 	}
 	s.writeJSON(w, http.StatusOK, struct {
 		Bots []chatGroup `json:"bots"`
 	}{out})
+}
+
+// botAvatar is the appearance image of the persona template b's private chats
+// start from (the default one when b names none), or "" when the template has
+// none or is not in the catalog (the bot's problems note that). The catalog
+// is read from memory, so this cannot fail.
+func (s *Server) botAvatar(b config.BotConfig) string {
+	name := b.TemplateFor(conloomapi.ConvPrivate)
+	if name == "" {
+		name = "default"
+	}
+	doc, _ := s.d.Personas.Template(name)
+	return doc.AppearanceImage
 }
 
 // chatTitle names the panel chat st after the panel user the bot talks with

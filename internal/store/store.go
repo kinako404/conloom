@@ -281,6 +281,9 @@ type Store interface {
 	CountMessagesAfter(ctx context.Context, convKey string, afterSeq int64) (int, error)
 	// CountMessagesAfterIn is CountMessagesAfter over all of convKeys.
 	CountMessagesAfterIn(ctx context.Context, convKeys []string, afterSeq int64) (int, error)
+	// LastMessages maps each of convKeys to its message with the largest Seq;
+	// a conversation without messages is absent. Without convKeys it is empty.
+	LastMessages(ctx context.Context, convKeys []string) (map[string]MessageRecord, error)
 	// BacklogCursor returns the seq after which exactly backlog of the
 	// conversation's messages remain, or 0 when it has no more than backlog.
 	BacklogCursor(ctx context.Context, convKey string, backlog int) (int64, error)
