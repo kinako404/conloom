@@ -556,3 +556,84 @@ func TestScheduler_BackoffSkipLogsAtDebug(t *testing.T) {
 		}
 	}
 }
+
+// forgetAfterRead is a store whose next GetGroupMemory runs forget right after
+// reading, as a /忘记我 landing between ensureCursor's read and its write.
+type forgetAfterRead struct {
+	store.Store
+	forget func()
+}
+
+func (s *forgetAfterRead) GetGroupMemory(ctx context.Context, convKey string) (store.GroupMemory, error) {
+	g, err := s.Store.GetGroupMemory(ctx, convKey)
+	if f := s.forget; f != nil {
+		s.forget = nil
+		f()
+	}
+	return g, err
+}
+
+func TestScheduler_ForgetDuringEnsureCursorIsKept(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		jump bool
+	}{{"new row", false}, {"memory turned back on", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := newTestStore(t)
+			var newest int64
+			for i := range 4 {
+				pmid := fmt.Sprintf("%d", 920000+i)
+				msg := store.MessageRecord{ID: "msg_" + pmid, BotInstanceID: "bot_test", ConversationKey: testPrivateKey,
+					Platform: "qq", PlatformMessageID: pmid, ActorID: "user_20001", PlatformUserID: "20001",
+					DisplayName: "小明", Text: "我偷偷喜欢甜食", OccurredAt: time.Now()}
+				if i%2 == 1 {
+					msg.ActorID, msg.PlatformUserID, msg.DisplayName, msg.Text, msg.FromBot = "bot_30001", "", "织语", "原来你喜欢甜食呀", true
+				}
+				if _, err := st.Ingest(ctx, store.Ingest{
+					Event: store.EventRecord{BotInstanceID: "bot_test", IdempotencyKey: "seed:" + pmid, EventID: "evt_" + pmid},
+					Conversation: &store.ConversationRecord{BotInstanceID: "bot_test", ID: "private_20001", Key: testPrivateKey,
+						Type: conloomapi.ConvPrivate, Platform: "qq", PlatformConversationID: "20001"},
+					Message: &msg,
+				}); err != nil {
+					t.Fatal(err)
+				}
+				got, err := st.GetMessage(ctx, "bot_test", msg.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				newest = got.Seq
+			}
+			if tc.jump {
+				if _, err := st.ApplyMemoryWrite(ctx, store.MemoryWrite{ConversationKey: testPrivateKey,
+					Group: &store.GroupMemory{ConversationKey: testPrivateKey, Summary: "小明偷偷喜欢甜食。", CursorSeq: 1}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wrapped := &forgetAfterRead{Store: st, forget: func() {
+				if err := Forget(ctx, st, testPrivateKey, "20001", time.Now()); err != nil {
+					t.Errorf("Forget: %v", err)
+				}
+			}}
+			s := NewScheduler(SchedulerDeps{Store: wrapped, Policies: policy.NewService(st, conloomapi.DefaultGroupPolicy()),
+				Runner: &schedRunner{st: st}})
+			if tc.jump {
+				s.jump[testPrivateKey] = true
+			}
+			sc, err := resolveScope(ctx, wrapped, testPrivateKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.ensureCursor(ctx, sc, 200); err != nil {
+				t.Fatalf("ensureCursor: %v", err)
+			}
+			g, err := st.GetGroupMemory(ctx, testPrivateKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if g.CursorSeq != newest || g.Summary != "" {
+				t.Fatalf("group = %+v, want the forget kept: cursor at %d and no summary", g, newest)
+			}
+		})
+	}
+}

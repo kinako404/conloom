@@ -252,7 +252,9 @@ func (s *Scheduler) consolidate(ctx context.Context, convKey string, manual bool
 // ensureCursor returns the memory row of sc. A scope without one gets a new
 // row whose cursor leaves backlog messages of its chats to consolidate; a
 // scope whose memory was just turned back on has its cursor moved up to that
-// point.
+// point. The write only moves the cursor forward and keeps the stored summary
+// (store.MemoryWrite's KeepSummary), so a forget that lands between the read
+// and the write is not undone.
 func (s *Scheduler) ensureCursor(ctx context.Context, sc scope, backlog int) (store.GroupMemory, error) {
 	g, err := s.d.Store.GetGroupMemory(ctx, sc.key)
 	fresh := errors.Is(err, store.ErrNotFound)
@@ -274,7 +276,7 @@ func (s *Scheduler) ensureCursor(ctx context.Context, sc scope, backlog int) (st
 	} else {
 		g.CursorSeq = max(g.CursorSeq, cursor)
 	}
-	if err := s.d.Store.PutGroupMemory(ctx, g); err != nil {
+	if _, err := s.d.Store.ApplyMemoryWrite(ctx, store.MemoryWrite{ConversationKey: sc.key, Group: &g, KeepSummary: true}); err != nil {
 		return store.GroupMemory{}, err
 	}
 	s.mu.Lock()
