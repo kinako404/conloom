@@ -78,7 +78,7 @@ NapCat      Adapter                 Core                          SQLite        
   |           |-- POST /ack ---------->|-- acked + 记录机器人消息 ---->|             |
 ```
 
-1. **入站**：适配器从 WebSocket 读到事件，过滤掉自己发的消息和未启用的群（`internal/adapter/napcat/adapter.go:260`），转成标准 Event（`convert.go:143`）。ID 都由平台 ID 确定性生成：会话 `group_10001`、发送者 `user_20001`、消息 `msg_<消息号>`，幂等键 `napcat:<self_id>:<消息号>`。@ 机器人被转成 `mentions` 里的 `{type:"bot"}`，@ 群友转成 `{type:"user", id:"user_<QQ号>"}`（at 段带名字时填进可选的 `name`），图片只传元数据。
+1. **入站**：适配器从 WebSocket 读到事件，过滤掉自己发的消息和未启用的群（`internal/adapter/napcat/adapter.go:264`），转成标准 Event（`convert.go:179`）。ID 都由平台 ID 确定性生成：会话 `group_10001`、发送者 `user_20001`、消息 `msg_<会话ID>_<消息号>`（如 `msg_group_10001_7001`），幂等键 `napcat:<self_id>:<会话ID>:<消息号>`。NapCat 的消息号是消息和所在会话的 31 位哈希，不同会话之间会撞号，所以按会话区分（`convert.go:164`）；引用的消息也按这个格式，适配器 ACK 的平台消息 ID 同样是 `<会话ID>_<消息号>`，发送引用时再去掉前缀。改成这个格式之前保存的消息仍是 `msg_<消息号>`：升级后群友引用这些旧消息时，核心找不到被引用的那条，按没有引用处理（同时 @ 了机器人等其他触发不受影响）。@ 机器人被转成 `mentions` 里的 `{type:"bot"}`，@ 群友转成 `{type:"user", id:"user_<QQ号>"}`（at 段带名字时填进可选的 `name`），图片只传元数据。
 2. **提交**：`POST /api/v1/events` 必须带 `Idempotency-Key`。可重试的错误按 0.5s/1s/2s 重试 3 次，仍失败就放进内存缓冲（最多 256 条），每 5 秒按顺序重提交一次。缓冲里还有事件时，新事件不直接提交，而是排到缓冲末尾并立刻触发一次重提交，所以核心短暂不可用之后，事件仍按到达顺序进入核心。
 3. **幂等**（`Submit`，`internal/core/orchestrator.go:366`）：核心对原始请求体算 SHA-256。同一个键、同样的请求体，原样返回当时的 202 响应；请求体不同返回 409。同一条平台消息换个键再交，会被消息表的唯一索引拒绝。
 4. **判定**（`Decide`，`internal/core/decide.go:75`，纯函数）：按顺序命中即停——自己的消息或未启用的群 → `ignore`；命令 → `reply/command`；私聊 → `private`；@ 机器人 → `mention`；回复机器人的消息 → `reply`；在聊会话的参与者 → 一轮或规则退出（第 4 节）；其他 → `observe`（只记录，会进入以后的上下文）。核心不读适配器预填的 `trigger`，一律自己重新判定。
@@ -87,7 +87,7 @@ NapCat      Adapter                 Core                          SQLite        
 7. **执行**（`internal/core/runner.go:160`）：取历史、审查输入、拼 prompt、路由选模型、申请准入、调用模型，再处理 `[[SKIP]]`、清洗、审查输出（第 5 节）。
 8. **写 Outbox**：`complete` 在一个事务里写任务终态和 `outbox_actions` 行（`orchestrator.go:1066`），然后唤醒正在长轮询的适配器。是否引用触发消息由 `reply.quote` 决定（`shouldQuote`，`orchestrator.go:1182`）。`reply.max_parts` 大于 1 时一次回复可以写成几行动作，后面的带最早发送时间（3.7）。
 9. **投递**：适配器 `GET /outbox` 长轮询（最长 30 秒），只拿原平台通道的动作（面板通道见 2.2）。每个会话每次只发放最老的一条动作，并加 60 秒租约（`internal/store/sqlite/outbox.go:39`）；最老的一条还没到最早发送时间时，这个会话这次什么也不发，别的会话不受影响。
-10. **发送与 ACK**（`adapter.go:424`）：先查去重日志；发送成功后把 `action_id` 和平台消息 ID 写入去重日志并 fsync，再 `POST /outbox/{action_id}/ack`。
+10. **发送与 ACK**（`adapter.go:458`）：先查去重日志；发送成功后把 `action_id` 和平台消息 ID 写入去重日志并 fsync，再 `POST /outbox/{action_id}/ack`。
 11. **记录机器人自己的消息**：ACK 为 `sent` 时，核心在同一事务里把这条回复作为 `from_bot` 消息写进消息表和关键词索引（`internal/store/sqlite/outbox.go:102`）。之后群友回复这条消息，就会被识别为“回复机器人”；下一次调用模型时，它会作为 assistant 历史出现。
 
 ### 2.1 Telegram 的往返

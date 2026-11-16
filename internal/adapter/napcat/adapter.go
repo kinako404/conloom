@@ -463,6 +463,7 @@ func (a *Adapter) deliver(ctx context.Context, conn *Conn, act conloomapi.Action
 			a.ack(ctx, log, act.ActionID, conloomapi.AckRequest{Status: conloomapi.AckFailed, Error: outcomeUnknown})
 			return nil
 		}
+		pmid = sentMessageID(act, pmid)
 		log.Info("action already sent; acknowledging again", "platform_message_id", pmid)
 		a.ack(ctx, log, act.ActionID, conloomapi.AckRequest{Status: conloomapi.AckSent, PlatformMessageID: pmid})
 		return nil
@@ -517,7 +518,7 @@ func (a *Adapter) deliver(ctx context.Context, conn *Conn, act conloomapi.Action
 	if err := decodeNumbers(data, &sent); err != nil || sent.MessageID == "" {
 		log.Warn("send response has no message_id", "data", string(data))
 	}
-	pmid := sent.MessageID.String()
+	pmid := sentMessageID(act, sent.MessageID.String())
 	if err := a.dedup.Mark(act.ActionID, pmid); err != nil {
 		log.Error("recording the sent action failed", "error", err)
 	}

@@ -39,13 +39,13 @@ func standard(t *testing.T, name string) (conloomapi.Event, string) {
 func TestToStandard_GroupAtBot(t *testing.T) {
 	got, key := standard(t, "group_at_bot.json")
 
-	if key != "napcat:30001:7001" {
+	if key != "napcat:30001:group_10001:7001" {
 		t.Errorf("idempotency key = %q", key)
 	}
 	if got.SchemaVersion != conloomapi.SchemaVersion || got.EventType != conloomapi.EventTypeMessageCreated {
 		t.Errorf("schema/event type = %q/%q", got.SchemaVersion, got.EventType)
 	}
-	if got.EventID != "evt_30001_7001" || got.BotInstanceID != testBotID || got.Platform != "qq" {
+	if got.EventID != "evt_30001_group_10001_7001" || got.BotInstanceID != testBotID || got.Platform != "qq" {
 		t.Errorf("event id/bot/platform = %q/%q/%q", got.EventID, got.BotInstanceID, got.Platform)
 	}
 	if !got.OccurredAt.Equal(time.Unix(1762905600, 0)) {
@@ -59,7 +59,7 @@ func TestToStandard_GroupAtBot(t *testing.T) {
 	if !reflect.DeepEqual(got.Actor, wantActor) {
 		t.Errorf("actor = %+v", got.Actor)
 	}
-	if got.Message.ID != "msg_7001" || got.Message.PlatformMessageID != "7001" {
+	if got.Message.ID != "msg_group_10001_7001" || got.Message.PlatformMessageID != "group_10001_7001" {
 		t.Errorf("message id = %q/%q", got.Message.ID, got.Message.PlatformMessageID)
 	}
 	if got.Message.Text != "你好" {
@@ -98,7 +98,7 @@ func TestToStandard_AtAllIsNotBotMention(t *testing.T) {
 func TestToStandard_ReplyAndImage(t *testing.T) {
 	got, _ := standard(t, "group_reply_image.json")
 
-	if got.Message.ReplyTo == nil || *got.Message.ReplyTo != "msg_555" {
+	if got.Message.ReplyTo == nil || *got.Message.ReplyTo != "msg_group_10001_555" {
 		t.Fatalf("reply_to = %v", got.Message.ReplyTo)
 	}
 	wantAtt := []conloomapi.Attachment{{Type: "image", URL: "https://example.com/abc.jpg", Name: "abc.jpg"}}
@@ -180,7 +180,7 @@ func TestToStandard_PrivateMessage(t *testing.T) {
 	if got.Actor.DisplayName != "小明" || got.Message.Text != "在吗" {
 		t.Errorf("display name/text = %q/%q", got.Actor.DisplayName, got.Message.Text)
 	}
-	if key != "napcat:30001:7005" {
+	if key != "napcat:30001:private_20001:7005" {
 		t.Errorf("key = %q", key)
 	}
 }
@@ -188,17 +188,49 @@ func TestToStandard_PrivateMessage(t *testing.T) {
 func TestToStandard_LargeIDsPreserved(t *testing.T) {
 	got, key := standard(t, "large_ids.json")
 
-	if got.Message.PlatformMessageID != "9007199254740993" || got.Message.ID != "msg_9007199254740993" {
+	if got.Message.PlatformMessageID != "group_10001_9007199254740993" || got.Message.ID != "msg_group_10001_9007199254740993" {
 		t.Errorf("message id = %q/%q", got.Message.ID, got.Message.PlatformMessageID)
 	}
-	if got.EventID != "evt_30001_9007199254740993" || key != "napcat:30001:9007199254740993" {
+	if got.EventID != "evt_30001_group_10001_9007199254740993" || key != "napcat:30001:group_10001:9007199254740993" {
 		t.Errorf("event id/key = %q/%q", got.EventID, key)
 	}
-	if got.Message.ReplyTo == nil || *got.Message.ReplyTo != "msg_9007199254740995" {
+	if got.Message.ReplyTo == nil || *got.Message.ReplyTo != "msg_group_10001_9007199254740995" {
 		t.Errorf("reply_to = %v", got.Message.ReplyTo)
 	}
 	if got.Trigger.Type != conloomapi.TriggerReply {
 		t.Errorf("trigger = %+v", got.Trigger)
+	}
+}
+
+// TestToStandard_MessageIDsAreScopedByConversation covers NapCat's
+// message_id, a 31-bit hash that is not unique across chats: the same
+// number in two chats must give two messages, events and idempotency keys.
+func TestToStandard_MessageIDsAreScopedByConversation(t *testing.T) {
+	group := loadEvent(t, "group_at_bot.json")
+	other := group
+	other.GroupID = "10002"
+	private := loadEvent(t, "private.json")
+	private.MessageID = group.MessageID
+
+	seen := map[string]string{}
+	for _, tc := range []struct {
+		name   string
+		ev     OBEvent
+		convID string
+	}{{"group 10001", group, "group_10001"}, {"group 10002", other, "group_10002"}, {"private", private, "private_20001"}} {
+		got, key, err := ToStandard(tc.ev, testBotID)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if want := tc.convID + "_7001"; got.Message.PlatformMessageID != want || got.Message.ID != "msg_"+want {
+			t.Errorf("%s: message id = %q/%q, want msg_%s/%s", tc.name, got.Message.ID, got.Message.PlatformMessageID, want, want)
+		}
+		for _, id := range []string{got.Message.ID, got.EventID, key} {
+			if prev, dup := seen[id]; dup {
+				t.Errorf("%s and %s share the ID %q", prev, tc.name, id)
+			}
+			seen[id] = tc.name
+		}
 	}
 }
 
@@ -251,7 +283,7 @@ func TestParseSegments_CQStringEqualsArray(t *testing.T) {
 	if !reflect.DeepEqual(fromArray.Message.Attachments, wantAtt) {
 		t.Errorf("attachments = %+v", fromArray.Message.Attachments)
 	}
-	if fromArray.Message.ReplyTo == nil || *fromArray.Message.ReplyTo != "msg_556" {
+	if fromArray.Message.ReplyTo == nil || *fromArray.Message.ReplyTo != "msg_group_10001_556" {
 		t.Errorf("reply_to = %v", fromArray.Message.ReplyTo)
 	}
 	if fromArray.Trigger.Type != conloomapi.TriggerMention || fromArray.Actor.DisplayName != "阿明" {
@@ -301,7 +333,7 @@ func TestSendRequest_GroupWithReply(t *testing.T) {
 		Type:                     conloomapi.ActionMessageSend,
 		ConversationType:         conloomapi.ConvGroup,
 		PlatformConversationID:   "10001",
-		ReplyToPlatformMessageID: "7001",
+		ReplyToPlatformMessageID: "group_10001_7001",
 		Content:                  conloomapi.ActionContent{Text: text},
 	})
 	if err != nil {
@@ -322,6 +354,38 @@ func TestSendRequest_GroupWithReply(t *testing.T) {
 	}
 	if msg[1]["type"] != "text" || !reflect.DeepEqual(msg[1]["data"], map[string]any{"text": text}) {
 		t.Errorf("message[1] = %#v", msg[1])
+	}
+}
+
+func TestSendRequest_ReplyTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name, convType, platformID, replyTo, want string
+	}{
+		{"scoped group message", conloomapi.ConvGroup, "10001", "group_10001_7001", "7001"},
+		{"scoped private message", conloomapi.ConvPrivate, "20001", "private_20001_7005", "7005"},
+		{"message stored before IDs were scoped", conloomapi.ConvGroup, "10001", "7001", "7001"},
+		{"message of another group", conloomapi.ConvGroup, "10001", "group_10002_7001", ""},
+		{"group message in a private chat", conloomapi.ConvPrivate, "10001", "group_10001_7001", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, params, err := SendRequest(conloomapi.Action{
+				Type: conloomapi.ActionMessageSend, ConversationType: tc.convType, PlatformConversationID: tc.platformID,
+				ReplyToPlatformMessageID: tc.replyTo, Content: conloomapi.ActionContent{Text: "收到"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			msg := messageSegments(t, params)
+			if tc.want == "" {
+				if len(msg) != 1 || msg[0]["type"] != "text" {
+					t.Errorf("message = %#v, want only the text without a quote", msg)
+				}
+				return
+			}
+			if len(msg) != 2 || msg[0]["type"] != "reply" || !reflect.DeepEqual(msg[0]["data"], map[string]any{"id": tc.want}) {
+				t.Errorf("message = %#v, want a reply segment quoting %s", msg, tc.want)
+			}
+		})
 	}
 }
 
