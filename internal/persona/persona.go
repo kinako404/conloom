@@ -3,6 +3,7 @@ package persona
 
 import (
 	"cmp"
+	"container/list"
 	"context"
 	"encoding/json"
 	"errors"
@@ -100,7 +101,12 @@ func newCatalog(stored map[string]store.PersonaTemplateRecord) *catalog {
 	return c
 }
 
+// maxCachedPrompts bounds the system prompts a Service caches, one per
+// conversation; the least recently used goes first.
+const maxCachedPrompts = 1024
+
 type cachedPrompt struct {
+	convKey string
 	version int
 	botName string
 	mode    conloomapi.ContentMode
@@ -129,15 +135,20 @@ type Service struct {
 	// writeMu serialises version creation so concurrent callers never append duplicates.
 	writeMu sync.Mutex
 
-	promptMu sync.Mutex
-	prompts  map[string]cachedPrompt
+	// promptMu guards prompts, the cached prompts by conversation, and
+	// promptOrder, their elements from most to least recently used; at most
+	// promptLimit are cached.
+	promptMu    sync.Mutex
+	prompts     map[string]*list.Element
+	promptOrder *list.List
+	promptLimit int
 }
 
 // NewService returns a Service whose catalog holds only the built-in
 // "default" until LoadTemplates loads the stored templates.
 func NewService(st store.Store) *Service {
-	s := &Service{st: st, stored: map[string]store.PersonaTemplateRecord{},
-		log: slog.New(slog.DiscardHandler), prompts: map[string]cachedPrompt{}}
+	s := &Service{st: st, stored: map[string]store.PersonaTemplateRecord{}, log: slog.New(slog.DiscardHandler),
+		prompts: map[string]*list.Element{}, promptOrder: list.New(), promptLimit: maxCachedPrompts}
 	s.catalog.Store(newCatalog(s.stored))
 	return s
 }
@@ -505,9 +516,10 @@ func PlatformNameNote(name, botName string) string {
 // SystemPrompt returns CorePrompt of the bot's name under the current persona
 // (see BotName), the content rules of the conversation's content mode (see
 // contentRules), the PlatformNameNote when that name is not the configured
-// botName, and the rendered persona, separated by blank lines. The prompt is
-// cached per conversation, version, content mode and configured bot name,
-// which determine it, so one version always yields byte-identical output.
+// botName, and the rendered persona, separated by blank lines. Version,
+// content mode and configured bot name determine the prompt, so one version
+// always yields byte-identical output; it is cached per conversation for the
+// maxCachedPrompts conversations most recently asked for.
 func (s *Service) SystemPrompt(ctx context.Context, convKey, templateName, botName string) (Prompt, error) {
 	pv, err := s.Current(ctx, convKey, templateName)
 	if err != nil {
@@ -516,8 +528,11 @@ func (s *Service) SystemPrompt(ctx context.Context, convKey, templateName, botNa
 	mode := conloomapi.ModeFor(pv.Persona, convType(convKey))
 	s.promptMu.Lock()
 	defer s.promptMu.Unlock()
-	if c, ok := s.prompts[convKey]; ok && c.version == pv.Version && c.botName == botName && c.mode == mode {
-		return c.prompt, nil
+	if e, ok := s.prompts[convKey]; ok {
+		if c := e.Value.(cachedPrompt); c.version == pv.Version && c.botName == botName && c.mode == mode {
+			s.promptOrder.MoveToFront(e)
+			return c.prompt, nil
+		}
 	}
 	name := BotName(pv.Persona, botName)
 	text := CorePrompt(name) + "\n\n"
@@ -528,15 +543,35 @@ func (s *Service) SystemPrompt(ctx context.Context, convKey, templateName, botNa
 		text += note + "\n\n"
 	}
 	p := Prompt{Text: text + Render(pv.Persona), Version: pv.Version, BotName: name, Mode: mode}
-	s.prompts[convKey] = cachedPrompt{version: pv.Version, botName: botName, mode: mode, prompt: p}
+	s.cachePrompt(cachedPrompt{convKey: convKey, version: pv.Version, botName: botName, mode: mode, prompt: p})
 	return p, nil
+}
+
+// cachePrompt caches c as its conversation's prompt, the most recently used,
+// dropping the least recently used one when promptLimit are cached. The
+// caller holds promptMu.
+func (s *Service) cachePrompt(c cachedPrompt) {
+	if e, ok := s.prompts[c.convKey]; ok {
+		e.Value = c
+		s.promptOrder.MoveToFront(e)
+		return
+	}
+	if s.promptOrder.Len() >= s.promptLimit {
+		oldest := s.promptOrder.Back()
+		s.promptOrder.Remove(oldest)
+		delete(s.prompts, oldest.Value.(cachedPrompt).convKey)
+	}
+	s.prompts[c.convKey] = s.promptOrder.PushFront(c)
 }
 
 // Forget drops the conversation's cached system prompt.
 func (s *Service) Forget(convKey string) {
 	s.promptMu.Lock()
 	defer s.promptMu.Unlock()
-	delete(s.prompts, convKey)
+	if e, ok := s.prompts[convKey]; ok {
+		s.promptOrder.Remove(e)
+		delete(s.prompts, convKey)
+	}
 }
 
 // botID returns the bot instance part of a "bot:platform:type:id" conversation key.

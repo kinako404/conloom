@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -912,6 +913,45 @@ func TestService_ForgetDropsCachedPrompt(t *testing.T) {
 	}
 	if _, ok := svc.prompts[other]; !ok {
 		t.Error("Forget dropped another conversation's prompt")
+	}
+}
+
+func TestService_PromptCacheBounded(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newTestStore(t))
+	svc.promptLimit = 2
+	key := func(id string) string { return store.ConversationKey(testBot, "qq", conloomapi.ConvGroup, id) }
+	a, b, c := key("10001"), key("10002"), key("10003")
+	prompt := func(convKey string) Prompt {
+		t.Helper()
+		p, err := svc.SystemPrompt(ctx, convKey, "default", "小助手")
+		if err != nil {
+			t.Fatalf("SystemPrompt(%s): %v", convKey, err)
+		}
+		return p
+	}
+	cached := func() []string {
+		svc.promptMu.Lock()
+		defer svc.promptMu.Unlock()
+		return slices.Sorted(maps.Keys(svc.prompts))
+	}
+	prompt(a)
+	first := prompt(b)
+	prompt(a)
+	prompt(c)
+	if got, want := cached(), []string{a, c}; !slices.Equal(got, want) {
+		t.Errorf("cached prompts = %v, want %v without the least recently used", got, want)
+	}
+	if again := prompt(b); again != first {
+		t.Errorf("prompt rebuilt after eviction = %+v, want %+v", again, first)
+	}
+	if got, want := cached(), []string{b, c}; !slices.Equal(got, want) {
+		t.Errorf("cached prompts = %v, want %v", got, want)
+	}
+	svc.Forget(c)
+	prompt(a)
+	if got, want := cached(), []string{a, b}; !slices.Equal(got, want) {
+		t.Errorf("cached prompts after Forget = %v, want %v", got, want)
 	}
 }
 
