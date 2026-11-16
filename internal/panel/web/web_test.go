@@ -117,6 +117,33 @@ func TestAssets_NoExternalOrUnsafeAPIs(t *testing.T) {
 	}
 }
 
+// QQ's in-app browser on Android (X5, reported at Chrome 89) still opens panel
+// links, so the scripts use no API newer than that.
+func TestAssets_NoAPIsNewerThanChrome89(t *testing.T) {
+	newer := []string{
+		"Object.hasOwn(",       // Chrome 93
+		"structuredClone(",     // Chrome 98
+		".at(",                 // Chrome 92
+		"crypto.randomUUID(",   // Chrome 92
+		".findLast(",           // Chrome 97
+		".findLastIndex(",      // Chrome 97
+		"AbortSignal.timeout(", // Chrome 103
+		".toSorted(",           // Chrome 110
+		".toReversed(",         // Chrome 110
+		".toSpliced(",          // Chrome 110
+		"AbortSignal.any(",     // Chrome 116
+		"Object.groupBy(",      // Chrome 117
+		"Map.groupBy(",         // Chrome 117
+	}
+	for name, text := range assets(t, ".js") {
+		for _, api := range newer {
+			if strings.Contains(text, api) {
+				t.Errorf("%s uses %s", name, strings.TrimSuffix(api, "("))
+			}
+		}
+	}
+}
+
 var importRe = regexp.MustCompile(`(?s)\b(?:import|export)\s+(?:[^'";]*?\s+from\s+)?['"]([^'"]+)['"]|\bimport\(\s*['"]([^'"]+)['"]\s*\)`)
 
 func TestAssets_ImportsResolve(t *testing.T) {

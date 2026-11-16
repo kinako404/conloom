@@ -22,7 +22,7 @@ function keyLabeler(report) {
   const labels = new Map();
   const used = new Set();
   for (const { key } of report.totals || []) {
-    const bot = Object.hasOwn(bots, key) ? bots[key] : null;
+    const bot = Object.prototype.hasOwnProperty.call(bots, key) ? bots[key] : null;
     let text = key || '（空）';
     if (bot && bot.deleted) {
       text = `${bot.name || key}（已删除）`;
@@ -106,8 +106,8 @@ export async function usageView(ctx) {
   const tz = await serverTimezone(signal);
   const today = dayIn(tz);
   const range = RANGES.includes(q.get('range')) || q.get('range') === 'custom' ? q.get('range') : '7';
-  const group = Object.hasOwn(GROUPS, q.get('group')) ? q.get('group') : 'model';
-  const metric = Object.hasOwn(METRICS, q.get('metric')) ? q.get('metric') : 'tokens';
+  const group = Object.prototype.hasOwnProperty.call(GROUPS, q.get('group')) ? q.get('group') : 'model';
+  const metric = Object.prototype.hasOwnProperty.call(METRICS, q.get('metric')) ? q.get('metric') : 'tokens';
   let from;
   let to;
   if (range === 'custom') {

@@ -134,7 +134,7 @@ export function pagedTable(columns, load, emptyText) {
 // current selected; a current value map lacks is added as the first option.
 export function select(map, current, attrs) {
   const opts = Object.entries(map).map(([v, t]) => h('option', { value: v, selected: v === current }, t));
-  if (current && !Object.hasOwn(map, current)) opts.unshift(h('option', { value: current, selected: true }, current));
+  if (current && !Object.prototype.hasOwnProperty.call(map, current)) opts.unshift(h('option', { value: current, selected: true }, current));
   return h('select', attrs, opts);
 }
 

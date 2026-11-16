@@ -184,7 +184,7 @@ async function policyTab({ key, conv, signal }) {
       if (summaryMax.value.trim() === '' || !Number.isInteger(summaryChars)) return fail(msg, '摘要字数上限必须是整数');
       const noteChars = Number(noteMax.value);
       if (noteMax.value.trim() === '' || !Number.isInteger(noteChars)) return fail(msg, '笔记字数上限必须是整数');
-      const policy = structuredClone(p);
+      const policy = JSON.parse(JSON.stringify(p));
       policy.proactive = { ...policy.proactive, enabled: proactive.checked };
       policy.memory = { ...policy.memory, enabled: memory.checked, summary_max_chars: summaryChars, note_max_chars: noteChars };
       policy.context = { ...policy.context, max_recent_messages: n };
