@@ -111,13 +111,13 @@ NapCat      Adapter                 Core                          SQLite        
 面板聊天（用法见 [Web 管理面板](panel.md)）不经过适配器：面板在进程内调用核心提交消息，回复也由核心自己投递。
 
 - **通道**：消息和发件箱动作各有一个 `channel` 列（迁移 `0011_channel.sql`）：空串是原平台，`panel` 是面板。从面板提交的消息记 `panel`。动作的通道由会话的平台定（`replyChannel`，`internal/core/orchestrator.go:1257`）：`panel` 平台的会话（面板里新建的聊天）的回复、回来说话都走面板，其他会话的走原平台。以前的版本能从面板接管平台私聊，那时写的 `panel` 通道消息留在平台会话的记录里，只作为历史显示，不影响通道。
-- **提交**（`SubmitPanel`，`internal/core/panelchat.go:35`）：只接受 `panel` 平台的会话，其他会话返回 `ErrNotPanelChat`（面板返回 400），什么都不存。面板合成一条私聊消息事件，发言人是 `panel_<面板用户名>`，平台消息 ID 为 `panel_<随机>`，交给与 `POST /events` 相同的提交入口，判定、输入审查、限流、内容模式、等停顿、合并、打断重来都照常。消息存下了但不回复时（暂停、限流、队列满），`SubmitPanel` 连同消息 ID 返回 `suppressed_reason`，面板放进 202 的响应里。
+- **提交**（`SubmitPanel`，`internal/core/panelchat.go`）：只接受 `panel` 平台的会话，其他会话返回 `ErrNotPanelChat`（面板返回 400），什么都不存。面板合成一条私聊消息事件，发言人是 `panel_<面板用户名>`，平台消息 ID 为 `panel_<随机>`，交给与 `POST /events` 相同的提交入口，判定、输入审查、限流、内容模式、等停顿、合并、打断重来都照常。消息存下了但不回复时（暂停、限流、队列满），`SubmitPanel` 连同消息 ID 返回 `suppressed_reason`，面板放进 202 的响应里。
 - **队首按（会话，通道）判断**：适配器的 `LeaseOutbox` 只看原平台通道，面板投递器的 `LeasePanelOutbox` 只看 `panel` 通道（`internal/store/sqlite/outbox.go:46`、`:51`），每个会话在每个通道里各自只发放最老的一条。一个通道里没到时间的分条或没确认的动作只挡这个通道，不挡同一会话的另一个通道。
 - **面板投递器**（`outbox.PanelDeliverer`，`internal/outbox/panel.go`）：一个后台协程，每秒一次、以及每次被唤醒时，租出所有 bot 已到期的面板动作（每批最多 50 条），直接以 `sent` 确认，平台消息 ID 合成为 `panel_<action_id>`。确认和适配器的 ACK 走同一个 `outbox.Service.Ack`，机器人的消息同样写进消息表，带 `panel` 通道。确认后同一会话的下一条成为队首，所以每轮一直拉到没有到期的动作为止。
 - **唤醒**：核心的 `Notifier` 是 `core.Notifiers{发件箱, 面板投递器}`（`orchestrator.go:52`，在 `internal/app/app.go` 装配），任务写出动作和分条到点（`partWakes`）时两边同时被唤醒，所以分条在面板里的间隔和原平台一样。重启后剩下的面板分条由每秒一次的轮询发出。
 - **“正在输入”**：会话里有排队或运行中的任务（`Orchestrator.Busy`），或者面板通道还有没确认、也没过期的动作（`PendingPanelActions`）时，聊天接口返回 `typing: true`。
 - **新建**（`CreatePanelChat`）：写一个 `panel` 平台的私聊会话（ID `panel_<随机>`）、它的用户，和一条不带消息的创建事件（记住称呼）。`panel` 平台的发言人一律算管理员（`isAdmin`，`orchestrator.go:848`），不受 `private_chat` 和白名单限制（`config.BotConfig.PrivateAllowed`）。
-- **删除**（`DeletePanelChat`，`panelchat.go:169`）：只允许 `panel` 平台的会话。先取消会话里排队和运行中的任务，最多等 5 秒让运行中的停下；没停下就什么都不删，返回 `ErrChatBusy`（面板返回 409，可以重试）。随后在一个事务里删掉这个会话键下所有表的数据和它的事件（`DeleteConversation`，`internal/store/sqlite/delete.go:25`），保留 `model_calls` 和审计；再清掉内存里的调度会话、限流记录、人设和策略缓存。这个 bot 的面板聊天共用的记忆（5.5）不在这个会话键下，保留不动；语义检索的段按聊天存，随聊天一起删掉；共用的状态是在这个聊天里设的（`origin_conversation_key`）时，同一个事务里删掉它，它的回来说话定时本来就挂在这个聊天下。被忽略的消息的事件既不存原文也没有任务，删除时认不出它属于这个会话，留到事件保留期（`idempotency_retention`）满由清理任务删除。
+- **删除**（`DeletePanelChat`，`panelchat.go`）：只允许 `panel` 平台的会话。先取消会话里排队和运行中的任务，最多等 5 秒让运行中的停下；没停下就什么都不删，返回 `ErrChatBusy`（面板返回 409，可以重试）。随后在一个事务里删掉这个会话键下所有表的数据和它的事件（`DeleteConversation`，`internal/store/sqlite/delete.go:25`），保留 `model_calls` 和审计；再清掉内存里的调度会话、限流记录、人设和策略缓存。这个 bot 的面板聊天共用的记忆（5.5）不在这个会话键下，保留不动；语义检索的段按聊天存，随聊天一起删掉；共用的状态是在这个聊天里设的（`origin_conversation_key`）时，同一个事务里删掉它，它的回来说话定时本来就挂在这个聊天下。被忽略的消息的事件既不存原文也没有任务，删除时认不出它属于这个会话，留到事件保留期（`idempotency_retention`）满由清理任务删除。
 - **锁**：同一个聊天的提交和删除按会话键串行（`lockTable`，`panelchat.go`），删除时提交等它结束，然后发现会话已不存在（404）。锁表只放正在使用的键，用完即删；不同聊天互不等待。
 - **关闭顺序**：`App.Close` 先停编排器（不再写新动作），再停面板投递器，然后写完用量记录、关库。
 
