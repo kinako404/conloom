@@ -370,7 +370,7 @@ embedding:
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `users` | 必填，至少一项 | 登录账号，每项 `{name, password_hash}`；都是管理员，权限相同 |
-| `users[].name` | 必填 | 用户名，不能重复 |
+| `users[].name` | 必填 | 用户名，不能重复，首尾不能有空白（登录时会去掉输入的首尾空白） |
 | `users[].password_hash` | 必填 | `conloom panel hash-password` 输出的哈希，形如 `pbkdf2-sha256:<迭代次数>:<盐>:<哈希>`，迭代次数不低于 100000。建议写成 `${CONLOOM_PANEL_ADMIN_HASH}` 放进 `.env`。换成新哈希并重启后，这个用户已有的登录会话全部失效 |
 | `session_ttl` | 168h | 登录后最长有效期，> 0 |
 | `idle_timeout` | 12h | 多久没有操作就要重新登录，> 0 |
@@ -384,7 +384,7 @@ panel:
       password_hash: ${CONLOOM_PANEL_ADMIN_HASH}
 ```
 
-`panel` 段只由 `serve` 校验：没有用户、用户名重复、哈希格式不对或迭代次数太低，或者 `listen` 不是 `host:port`（端口须是 0–65535 的数字）、和 `server.listen` 是同一个端口（端口相同且主机相同，或其中一个是 `0.0.0.0`、`::`、空主机）时启动失败，退出码 78，错误信息只指出字段，不包含哈希本身。`server.listen` 同样必须是 `host:port`。`listen` 的端口已被别的程序占用时核心启动失败。
+`panel` 段只由 `serve` 校验：没有用户、用户名重复或首尾有空白、哈希格式不对或迭代次数太低，或者 `listen` 不是 `host:port`（端口须是 0–65535 的数字）、和 `server.listen` 是同一个端口（端口相同且主机相同，或其中一个是 `0.0.0.0`、`::`、空主机）时启动失败，退出码 78，错误信息只指出字段，不包含哈希本身。`server.listen` 同样必须是 `host:port`。`listen` 的端口已被别的程序占用时核心启动失败。
 
 ## adapters
 

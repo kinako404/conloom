@@ -49,6 +49,11 @@ func TestValidate_Panel(t *testing.T) {
 		{"duplicate user", func(p *PanelConfig) { p.Users = append(p.Users, p.Users[0]) },
 			[]string{"panel.users[1].name", `duplicate user "admin"`}, nil},
 		{"empty name", func(p *PanelConfig) { p.Users[0].Name = " " }, []string{"panel.users[0].name"}, nil},
+		// Login trims the name it is given, so such a user could never log in.
+		{"leading space in name", func(p *PanelConfig) { p.Users[0].Name = " admin" },
+			[]string{"panel.users[0].name", "leading or trailing white space"}, nil},
+		{"trailing tab in name", func(p *PanelConfig) { p.Users[0].Name = "admin\t" },
+			[]string{"panel.users[0].name", "leading or trailing white space"}, nil},
 		{"empty hash", func(p *PanelConfig) { p.Users[0].PasswordHash = "" }, []string{"panel.users[0].password_hash"}, nil},
 		{"zero session_ttl", func(p *PanelConfig) { p.SessionTTL.Duration = 0 }, []string{"panel.session_ttl", "must be > 0"}, nil},
 		{"negative session_ttl", func(p *PanelConfig) { p.SessionTTL.Duration = -time.Hour }, []string{"panel.session_ttl"}, nil},

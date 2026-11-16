@@ -364,6 +364,9 @@ func (p *problems) panel(pc *PanelConfig, serverListen string) {
 	for i, u := range pc.Users {
 		path := fmt.Sprintf("panel.users[%d]", i)
 		p.required(path+".name", u.Name)
+		if name := strings.TrimSpace(u.Name); name != "" && name != u.Name {
+			p.addf(path+".name", "must not have leading or trailing white space, got %q", u.Name)
+		}
 		if u.Name != "" && names[u.Name] {
 			p.addf(path+".name", "duplicate user %q", u.Name)
 		}
