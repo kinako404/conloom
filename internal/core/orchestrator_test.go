@@ -175,13 +175,22 @@ type hookStore struct {
 	failComplete atomic.Bool
 	// failSetStatus makes SetTaskStatus fail.
 	failSetStatus atomic.Bool
+	// setStatus, when set, runs SetTaskStatus; set stores the status.
+	setStatus func(taskID, status string, set func() error) error
 }
 
 func (h *hookStore) SetTaskStatus(ctx context.Context, taskID, status string) error {
 	if h.failSetStatus.Load() {
 		return errors.New("test: task status unavailable")
 	}
-	return h.Store.SetTaskStatus(ctx, taskID, status)
+	h.mu.Lock()
+	fn := h.setStatus
+	h.mu.Unlock()
+	set := func() error { return h.Store.SetTaskStatus(ctx, taskID, status) }
+	if fn != nil {
+		return fn(taskID, status, set)
+	}
+	return set()
 }
 
 func (h *hookStore) ArmTimer(ctx context.Context, t store.ConversationTimer) error {

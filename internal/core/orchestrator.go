@@ -1184,7 +1184,8 @@ func (o *Orchestrator) complete(ctx context.Context, task store.TaskRecord, stat
 	ow.commit.Lock()
 	defer ow.commit.Unlock()
 	if ow.superseded {
-		// The runner may have marked the task running after it was superseded.
+		// supersede stored the task as cancelled; it is stored so again with
+		// the meta of the run.
 		if meta.Trigger == "" {
 			meta.Trigger = task.Meta.Trigger
 		}

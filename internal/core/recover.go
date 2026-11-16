@@ -177,7 +177,10 @@ func (o *Orchestrator) recoverOwned(ctx context.Context, t store.TaskRecord, now
 	case rec.Command != "":
 		return recoverRan, rec, o.runStoredCommand(ctx, rec)
 	}
-	if err := o.st.SetTaskStatus(ctx, rec.ID, conloomapi.TaskQueued); err != nil {
+	switch err := o.st.SetTaskStatus(ctx, rec.ID, conloomapi.TaskQueued); {
+	case errors.Is(err, store.ErrTaskFinished):
+		return recoverSkipped, rec, nil
+	case err != nil:
 		return recoverSkipped, rec, err
 	}
 	return recoverRequeued, rec, nil

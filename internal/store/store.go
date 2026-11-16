@@ -24,7 +24,8 @@ var (
 	ErrNotFound         = errors.New("store: not found")
 	ErrDuplicateMessage = errors.New("store: duplicate platform message")
 	// ErrTaskFinished, ErrReplyHandedOut and ErrTimerGone refuse an Ingest
-	// (see Ingest.CancelTaskID, Ingest.AbandonReplyOf and Ingest.FireTimer).
+	// (see Ingest.CancelTaskID, Ingest.AbandonReplyOf and Ingest.FireTimer);
+	// ErrTaskFinished also refuses a SetTaskStatus.
 	ErrTaskFinished   = errors.New("store: task already finished")
 	ErrReplyHandedOut = errors.New("store: reply already handed out")
 	ErrTimerGone      = errors.New("store: timer gone")
@@ -97,6 +98,8 @@ type Store interface {
 	// absent.
 	LatestDisplayNames(ctx context.Context, conversationKey string, actorIDs []string) (map[string]string, error)
 	GetTask(ctx context.Context, botID, taskID string) (TaskRecord, error)
+	// SetTaskStatus sets the status of a queued or running task; a finished
+	// one is left alone and gives ErrTaskFinished.
 	SetTaskStatus(ctx context.Context, taskID, status string) error
 	// CompleteTask updates the task and inserts its actions in one transaction.
 	CompleteTask(ctx context.Context, c TaskCompletion) error

@@ -95,7 +95,12 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 	if taskFinished(task.Status) {
 		return
 	}
-	if err := o.st.SetTaskStatus(dbctx, task.ID, conloomapi.TaskRunning); err != nil {
+	err = o.st.SetTaskStatus(dbctx, task.ID, conloomapi.TaskRunning)
+	if errors.Is(err, store.ErrTaskFinished) {
+		// Superseded since it was read: the task stays cancelled.
+		return
+	}
+	if err != nil {
 		// The task has left the scheduler: it fails rather than stay queued
 		// with no runner.
 		o.log.Error("mark task running failed; failing the task", "task_id", task.ID, "error", err)
