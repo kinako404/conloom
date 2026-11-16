@@ -27,6 +27,7 @@ func (s *Server) writeRoutes() {
 	s.api("DELETE /panel/api/conversations/{key}/autonomy/effects/{name}", s.deleteAutonomyEffect)
 	s.api("DELETE /panel/api/conversations/{key}/autonomy/status", s.deleteAutonomyStatus)
 	s.api("POST /panel/api/conversations/{key}/messages", s.postChatMessage)
+	s.api("POST /panel/api/conversations/{key}/suggestions", s.postSuggestions)
 	s.api("POST /panel/api/chats", s.createChat)
 	s.api("DELETE /panel/api/conversations/{key}", s.deleteChat)
 }

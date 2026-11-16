@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -32,6 +33,36 @@ type fakeChat struct {
 	created    []string // botID|panelUser|displayName
 	deleted    []string
 	busy       map[string]bool
+	// suggestions answers Suggest on panel conversations; suggested records
+	// its calls as convKey|afterSeq.
+	suggestions []string
+	suggested   []string
+}
+
+func (f *fakeChat) Suggest(ctx context.Context, convKey string, afterSeq int64) ([]string, error) {
+	conv, err := f.h.db.GetConversationByKey(ctx, convKey)
+	if err != nil {
+		return nil, err
+	}
+	if conv.Platform != store.PlatformPanel {
+		return nil, core.ErrNotPanelChat
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.suggested = append(f.suggested, fmt.Sprintf("%s|%d", convKey, afterSeq))
+	return f.suggestions, nil
+}
+
+func (f *fakeChat) suggestCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.suggested...)
+}
+
+func (f *fakeChat) setSuggestions(items []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.suggestions = items
 }
 
 func (f *fakeChat) SubmitPanel(_ context.Context, convKey, panelUser, text string) (string, string, error) {
@@ -492,6 +523,94 @@ func TestChat_ConversationsListBots(t *testing.T) {
 	}
 }
 
+type suggestionsResp struct {
+	Suggestions []string `json:"suggestions"`
+}
+
+func TestChat_Suggestions(t *testing.T) {
+	h, chat := newChatHarness(t)
+	panelChat := h.seedConv(store.PlatformPanel, conloomapi.ConvPrivate, "panel_1")
+	path := convPath(panelChat.Key, "suggestions")
+	want := []string{"火锅好吃吗", "下次一起去吧"}
+	chat.setSuggestions(want)
+
+	w := h.write(http.MethodPost, path, map[string]int64{"after_seq": 7})
+	var resp suggestionsResp
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &resp) != nil || !slices.Equal(resp.Suggestions, want) {
+		t.Fatalf("suggestions = %d %s, want 200 with %q", w.Code, w.Body, want)
+	}
+	if calls := chat.suggestCalls(); len(calls) != 1 || calls[0] != panelChat.Key+"|7" {
+		t.Fatalf("Suggest calls = %q, want the chat and after_seq 7", calls)
+	}
+	chat.setSuggestions(nil)
+	if w := h.write(http.MethodPost, path, map[string]int64{"after_seq": 7}); w.Code != http.StatusOK ||
+		!strings.Contains(w.Body.String(), `"suggestions":[]`) {
+		t.Fatalf("no suggestions = %d %s, want 200 with an empty list", w.Code, w.Body)
+	}
+
+	errorBody(t, h.do(http.MethodPost, path, `{"after_seq":7}`, withCookie(h.cookie)), http.StatusForbidden, conloomapi.CodeForbidden)
+	for _, body := range []string{`{}`, `{"after_seq":0}`, `{"after_seq":-1}`, `{"after_seq":"7"}`, `{"after_seq":7,"extra":1}`} {
+		errorBody(t, h.write(http.MethodPost, path, body), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	}
+	errorBody(t, h.write(http.MethodPost, convPath("qq-main:panel:private:missing", "suggestions"), map[string]int64{"after_seq": 7}),
+		http.StatusNotFound, conloomapi.CodeNotFound)
+	if calls := chat.suggestCalls(); len(calls) != 2 {
+		t.Fatalf("Suggest calls = %q, want only the two accepted requests'", calls)
+	}
+	body := errorBody(t, h.write(http.MethodPost, convPath(writeGroup.Key, "suggestions"), map[string]int64{"after_seq": 7}),
+		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	if body.Message != "not a panel chat" {
+		t.Errorf("platform conversation: message %q, want %q", body.Message, "not a panel chat")
+	}
+	events, err := h.db.ListAudit(context.Background(), store.AuditFilter{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range events {
+		if e.Kind != "panel.login" {
+			t.Errorf("audit %+v: suggestions change nothing and are not audited", e)
+		}
+	}
+}
+
+// Over a real orchestrator, suggestions are only for panel chats, and without
+// a reply model a panel chat gets none.
+func TestSuggestions_PanelOnly(t *testing.T) {
+	h := newBotsHarness(t)
+	at := h.now.Add(-time.Minute)
+	private := h.seedConv("telegram", conloomapi.ConvPrivate, "20001")
+	group := h.seedConv("qq", conloomapi.ConvGroup, "10001")
+	for _, conv := range []store.ConversationRecord{private, group} {
+		m := h.seedMessage(conv, "在的", at, true)
+		body := errorBody(t, h.write(http.MethodPost, convPath(conv.Key, "suggestions"), map[string]int64{"after_seq": m.Seq}),
+			http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+		if body.Message != "not a panel chat" {
+			t.Errorf("%s: message %q, want %q", conv.Key, body.Message, "not a panel chat")
+		}
+	}
+
+	w := h.write(http.MethodPost, "/panel/api/chats", map[string]string{"bot_instance_id": dataBot, "display_name": "小明"})
+	var created struct {
+		Key string `json:"key"`
+	}
+	if w.Code != http.StatusCreated || json.Unmarshal(w.Body.Bytes(), &created) != nil {
+		t.Fatalf("create chat: %d %s", w.Code, w.Body)
+	}
+	panelChat, err := h.db.GetConversationByKey(context.Background(), created.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.seedPanelMessage(panelChat, "在吗", at)
+	last := h.seedMessage(panelChat, "在的", at.Add(time.Second), true)
+	path := convPath(created.Key, "suggestions")
+	if w := h.write(http.MethodPost, path, map[string]int64{"after_seq": last.Seq}); w.Code != http.StatusOK ||
+		strings.TrimSpace(w.Body.String()) != `{"suggestions":[]}` {
+		t.Fatalf("panel chat without a model = %d %s, want 200 with no suggestions", w.Code, w.Body)
+	}
+	errorBody(t, h.do(http.MethodPost, path, fmt.Sprintf(`{"after_seq":%d}`, last.Seq), withCookie(h.cookie)),
+		http.StatusForbidden, conloomapi.CodeForbidden)
+}
+
 func TestChat_Unavailable(t *testing.T) {
 	h := newWriteHarness(t, nil)
 	private := h.seedConv("qq", conloomapi.ConvPrivate, "20001")
@@ -500,5 +619,7 @@ func TestChat_Unavailable(t *testing.T) {
 	errorBody(t, h.write(http.MethodPost, "/panel/api/chats", map[string]string{"bot_instance_id": dataBot}),
 		http.StatusServiceUnavailable, conloomapi.CodeInternal)
 	errorBody(t, h.write(http.MethodDelete, convPath(private.Key), nil), http.StatusServiceUnavailable, conloomapi.CodeInternal)
+	errorBody(t, h.write(http.MethodPost, convPath(private.Key, "suggestions"), map[string]int64{"after_seq": 1}),
+		http.StatusServiceUnavailable, conloomapi.CodeInternal)
 	h.getErr(convPath(private.Key, "chat"), http.StatusServiceUnavailable, conloomapi.CodeInternal)
 }

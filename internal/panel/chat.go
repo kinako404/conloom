@@ -17,6 +17,7 @@ type ChatService interface {
 	CreatePanelChat(ctx context.Context, botID, panelUser, displayName string) (string, error)
 	DeletePanelChat(ctx context.Context, convKey string) error
 	Busy(convKey string) bool
+	Suggest(ctx context.Context, convKey string, afterSeq int64) ([]string, error)
 }
 
 // maxChatMessages bounds the messages of one chat poll.
@@ -127,6 +128,44 @@ func (s *Server) getChat(w http.ResponseWriter, r *http.Request, _ *Session) {
 		Typing    bool          `json:"typing"`
 		NextAfter int64         `json:"next_after"`
 	}{out, typing, after})
+}
+
+// postSuggestions answers {suggestions}: up to three lines the user might
+// send next in a panel chat once the bot's turn is done, for after_seq, the
+// seq of the chat's newest message (see core.Orchestrator.Suggest). The list
+// is empty, not an error, when there are none or generating them failed;
+// other conversations are refused with 400. Nothing changes, so nothing is
+// audited.
+func (s *Server) postSuggestions(w http.ResponseWriter, r *http.Request, _ *Session) {
+	chat, ok := s.chatService(w, r)
+	if !ok {
+		return
+	}
+	conv, ok := s.conversation(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		AfterSeq int64 `json:"after_seq"`
+	}
+	if !s.decode(w, r, &req) {
+		return
+	}
+	if req.AfterSeq < 1 {
+		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "after_seq must be a positive message seq")
+		return
+	}
+	items, err := chat.Suggest(r.Context(), conv.Key, req.AfterSeq)
+	if err != nil {
+		s.chatFail(w, r, err)
+		return
+	}
+	if items == nil {
+		items = []string{}
+	}
+	s.writeJSON(w, http.StatusOK, struct {
+		Suggestions []string `json:"suggestions"`
+	}{items})
 }
 
 // createChat starts a panel chat of the session's user with a bot.

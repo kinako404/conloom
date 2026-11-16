@@ -160,6 +160,10 @@ type Orchestrator struct {
 	panelBots *PanelBotService
 	// describeTimeout bounds DescribeAppearance.
 	describeTimeout time.Duration
+	// suggestions keeps the panel chats' reply suggestions (see Suggest), and
+	// suggestTimeout bounds generating them.
+	suggestions    *suggestCache
+	suggestTimeout time.Duration
 }
 
 // taskOwner is the one party in this process allowed to execute and complete
@@ -209,6 +213,8 @@ func New(d Deps) (*Orchestrator, error) {
 
 		panelDeleteWait: cancelWait,
 		describeTimeout: describeTimeout,
+		suggestions:     newSuggestCache(suggestCacheSize),
+		suggestTimeout:  suggestTimeout,
 
 		cleanupBatch: defaultCleanupBatch, cleanupMaxBatches: defaultCleanupMaxBatches,
 	}

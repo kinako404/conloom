@@ -113,6 +113,7 @@ export const PURPOSE = {
   embed_index: '向量索引',
   embed_query: '向量查询',
   vision: '识图',
+  suggest: '建议回复',
 };
 
 export const OUTCOME = {

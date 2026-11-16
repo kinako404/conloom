@@ -8,6 +8,7 @@ const (
 	PurposeEmbedIndex = "embed_index"
 	PurposeEmbedQuery = "embed_query"
 	PurposeVision     = "vision"
+	PurposeSuggest    = "suggest"
 )
 
 const (

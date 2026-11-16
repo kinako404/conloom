@@ -161,8 +161,8 @@ func (o *Orchestrator) CreatePanelChat(ctx context.Context, botID, panelUser, di
 // (see store.Store.DeleteConversation: its history and the semantic search
 // chunks made of it, and the status of the bot's shared memory scope if it
 // was set in this chat, with its timer; the rest of the shared memory stays)
-// and then forgets the chat's session, lull timer, rate-limit hits and cached
-// persona prompt and policy.
+// and then forgets the chat's session, lull timer, rate-limit hits, cached
+// persona prompt and policy, and reply suggestions.
 // It holds the chat's panel lock throughout, so a SubmitPanel waits for it
 // and then finds no conversation. If a task has not stopped in time nothing
 // is deleted and ErrChatBusy is returned; the tasks stay cancelled, so a
@@ -203,6 +203,7 @@ func (o *Orchestrator) DeletePanelChat(ctx context.Context, convKey string) erro
 	o.limiter.Forget(convKey + ":")
 	o.personas.Forget(convKey)
 	o.policies.Forget(convKey)
+	o.suggestions.forget(convKey)
 	o.log.Info("panel chat deleted", "conversation", convKey)
 	return nil
 }

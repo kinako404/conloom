@@ -41,11 +41,16 @@ type ChatMessage struct {
 
 // ChatRequest is a chat completion request. Tools, when set, are offered to
 // the model; ToolChoice (e.g. "none") is sent only together with Tools.
+// ExtraBody is merged over the profile's extra_body for this request only:
+// where both have a JSON object under a key, the two are merged key by key in
+// turn, so a request can change one key of e.g. chat_template_kwargs and keep
+// the profile's others; the profile's own map is never changed.
 type ChatRequest struct {
 	Messages   []ChatMessage
 	MaxTokens  int
 	Tools      []Tool
 	ToolChoice string
+	ExtraBody  map[string]any
 }
 
 // ChatResponse is the model's answer: its cleaned Content and the ToolCalls it
@@ -190,11 +195,30 @@ func (c *Client) requestBody(req ChatRequest) ([]byte, error) {
 		}
 	}
 	maps.Copy(m, c.profile.ExtraBody)
+	for k, v := range req.ExtraBody {
+		m[k] = mergeExtra(m[k], v)
+	}
 	b, err := json.Marshal(m)
 	if err != nil {
 		return nil, fmt.Errorf("openai: encode request: %w", err)
 	}
 	return b, nil
+}
+
+// mergeExtra lays over on base: when both are JSON objects, a new object with
+// each of over's keys merged into base's in turn; otherwise over. Neither
+// argument is changed.
+func mergeExtra(base, over any) any {
+	b, ok := base.(map[string]any)
+	o, ok2 := over.(map[string]any)
+	if !ok || !ok2 {
+		return over
+	}
+	out := maps.Clone(b)
+	for k, v := range o {
+		out[k] = mergeExtra(out[k], v)
+	}
+	return out
 }
 
 type completionResponse struct {

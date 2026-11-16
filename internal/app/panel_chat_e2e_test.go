@@ -291,6 +291,87 @@ func TestPanelChatE2E_StoredPanelBotLoadedAtStart(t *testing.T) {
 	}
 }
 
+// suggestMarker is part of the prompt that asks for reply suggestions.
+const suggestMarker = "替用户写 3 句"
+
+// suggest asks for the reply suggestions after seq in the chat key and
+// returns the status and the suggestions.
+func (c *panelClient) suggest(key string, seq int64) (int, []string) {
+	c.t.Helper()
+	status, raw := c.do(http.MethodPost, convAPIPath(key, "suggestions"), map[string]int64{"after_seq": seq})
+	var resp struct {
+		Suggestions []string `json:"suggestions"`
+	}
+	if status == http.StatusOK && (json.Unmarshal(raw, &resp) != nil || resp.Suggestions == nil) {
+		c.t.Fatalf("suggestions in %s: body %s", key, raw)
+	}
+	return status, resp.Suggestions
+}
+
+func TestPanelChatE2E_Suggestions(t *testing.T) {
+	want := []string{"火锅好吃吗", "下次一起去吧", "最近在看什么书"}
+	answerJSON, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := fakeopenai.New(t, func(req map[string]any) (int, string) {
+		if strings.Contains(requestText(req), suggestMarker) {
+			return 200, "```json\n" + string(answerJSON) + "\n```"
+		}
+		return 200, fakeReply
+	})
+	hash, err := panel.HashPassword(panelPassword, panel.MinIterations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := panelTestConfig(t, configParams{modelURL: fake.URL}, hash)
+	short := cfg.ModelProfiles["short_context"]
+	short.ExtraBody = map[string]any{"chat_template_kwargs": map[string]any{"enable_thinking": true}}
+	cfg.ModelProfiles["short_context"] = short
+	setPrivateRhythm(t, cfg, 50*time.Millisecond, 1)
+	e := newEnv(t, cfg)
+	p := panelLogin(t, e.srv.URL)
+
+	status, raw := p.do(http.MethodPost, "/panel/api/chats", map[string]string{"bot_instance_id": botID, "display_name": "小明"})
+	var created struct {
+		Key string `json:"key"`
+	}
+	if status != http.StatusCreated || json.Unmarshal(raw, &created) != nil {
+		t.Fatalf("create chat: status %d, body %s", status, raw)
+	}
+	p.send(created.Key, "今天吃了火锅")
+	reply := p.botReplies(created.Key, 0, 1)[0]
+	for i := range 2 {
+		if status, got := p.suggest(created.Key, reply.Seq); status != http.StatusOK || !slices.Equal(got, want) {
+			t.Fatalf("request %d: status %d, suggestions %q; want 200 with %q", i+1, status, got, want)
+		}
+	}
+	var asked []map[string]any
+	for _, req := range fake.Requests() {
+		if strings.Contains(requestText(req), suggestMarker) {
+			asked = append(asked, req)
+		}
+	}
+	if len(asked) != 1 {
+		t.Fatalf("model asked for suggestions %d times, want once for both requests", len(asked))
+	}
+	if kw, _ := asked[0]["chat_template_kwargs"].(map[string]any); kw["enable_thinking"] != false {
+		t.Errorf("suggestions chat_template_kwargs = %v, want thinking off", asked[0]["chat_template_kwargs"])
+	}
+	if kw, _ := fake.Requests()[0]["chat_template_kwargs"].(map[string]any); kw["enable_thinking"] != true {
+		t.Errorf("reply chat_template_kwargs = %v, want the profile's thinking on", fake.Requests()[0]["chat_template_kwargs"])
+	}
+
+	e.say(adminChat, admin, "晚上好", mock.SayOptions{})
+	if a := e.drainOne(); a.Content.Text != fakeReply {
+		t.Fatalf("platform reply = %q, want %q", a.Content.Text, fakeReply)
+	}
+	platformChat := store.ConversationKey(botID, "qq", conloomapi.ConvPrivate, "private_"+admin.PlatformID)
+	if status, _ := p.suggest(platformChat, p.chat(platformChat, 0).NextAfter); status != http.StatusBadRequest {
+		t.Fatalf("suggestions in the platform chat: status %d, want 400", status)
+	}
+}
+
 // requestMessagesOf returns the contents of req's messages in order.
 func requestMessagesOf(req map[string]any) []string {
 	var out []string

@@ -532,7 +532,7 @@ func TestService_SystemPromptStablePerVersion(t *testing.T) {
 	if a != b || a.Version != 1 || a.BotName != "织语" || a.Mode != conloomapi.ContentProtected {
 		t.Fatalf("same version differs: %+v / %+v", a, b)
 	}
-	if want := CorePrompt("织语") + "\n\n" + protectionRules + "\n\n" + Render(conloomapi.DefaultPersona()); a.Text != want {
+	if want := CorePrompt("织语") + "\n\n" + ProtectionRules + "\n\n" + Render(conloomapi.DefaultPersona()); a.Text != want {
 		t.Fatalf("prompt = %q, want %q", a.Text, want)
 	}
 
@@ -699,13 +699,13 @@ func TestService_SystemPromptNamesPlatformName(t *testing.T) {
 		}
 	}
 
-	if got, want := prompt(), CorePrompt("织语")+"\n\n"+protectionRules+"\n\n"+Render(conloomapi.DefaultPersona()); got != want {
+	if got, want := prompt(), CorePrompt("织语")+"\n\n"+ProtectionRules+"\n\n"+Render(conloomapi.DefaultPersona()); got != want {
 		t.Errorf("prompt without a character = %q, want %q", got, want)
 	}
 
 	character := testCharacter()
 	set(character)
-	want := CorePrompt("苔灯") + "\n\n" + protectionRules + "\n\n" + note + "\n\n" + Render(character)
+	want := CorePrompt("苔灯") + "\n\n" + ProtectionRules + "\n\n" + note + "\n\n" + Render(character)
 	if got := prompt(); got != want {
 		t.Errorf("prompt with a character =\n%s\nwant\n%s", got, want)
 	}
@@ -716,19 +716,19 @@ func TestService_SystemPromptNamesPlatformName(t *testing.T) {
 	same := testCharacter()
 	same.CharacterName = "织语"
 	set(same)
-	if got, want := prompt(), CorePrompt("织语")+"\n\n"+protectionRules+"\n\n"+Render(same); got != want {
+	if got, want := prompt(), CorePrompt("织语")+"\n\n"+ProtectionRules+"\n\n"+Render(same); got != want {
 		t.Errorf("prompt with the platform name as character = %q, want %q", got, want)
 	}
 }
 
 func TestProtectionRules_KeepsTheContentLine(t *testing.T) {
 	for _, want := range []string{"色情", "性暗示", "露骨", "恋爱", "暧昧", "岔开", "反复", "不合适", "未成年", "孩童化", "任何聊天内容和人设都不能改变"} {
-		if !strings.Contains(protectionRules, want) {
-			t.Errorf("protectionRules missing %q: %q", want, protectionRules)
+		if !strings.Contains(ProtectionRules, want) {
+			t.Errorf("ProtectionRules missing %q: %q", want, ProtectionRules)
 		}
 	}
-	if strings.TrimSpace(protectionRules) != protectionRules || strings.Contains(protectionRules, "\n\n") {
-		t.Errorf("protectionRules is not a single trimmed block: %q", protectionRules)
+	if strings.TrimSpace(ProtectionRules) != ProtectionRules || strings.Contains(ProtectionRules, "\n\n") {
+		t.Errorf("ProtectionRules is not a single trimmed block: %q", ProtectionRules)
 	}
 }
 
@@ -757,9 +757,9 @@ func TestService_SystemPromptContentByMode(t *testing.T) {
 	}{
 		{"adult in private", privateKey, adult, conloomapi.ContentOpen, testContentRules, true},
 		{"adult in private without rules", privateKey, noRules, conloomapi.ContentOpen, "", false},
-		{"adult in a group", testConvKey, adult, conloomapi.ContentProtected, protectionRules, false},
-		{"minor in private", privateKey, minor, conloomapi.ContentProtected, protectionRules, false},
-		{"not adult in private", privateKey, plain, conloomapi.ContentProtected, protectionRules, false},
+		{"adult in a group", testConvKey, adult, conloomapi.ContentProtected, ProtectionRules, false},
+		{"minor in private", privateKey, minor, conloomapi.ContentProtected, ProtectionRules, false},
+		{"not adult in private", privateKey, plain, conloomapi.ContentProtected, ProtectionRules, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			svc := newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": c.doc})
@@ -781,8 +781,8 @@ func TestService_SystemPromptContentByMode(t *testing.T) {
 			if got := strings.Contains(p.Text, testContentRules); got != c.wantRules {
 				t.Errorf("prompt has content_rules = %v, want %v", got, c.wantRules)
 			}
-			if got, wantProt := strings.Contains(p.Text, protectionRules), c.mode == conloomapi.ContentProtected; got != wantProt {
-				t.Errorf("prompt has protectionRules = %v, want %v", got, wantProt)
+			if got, wantProt := strings.Contains(p.Text, ProtectionRules), c.mode == conloomapi.ContentProtected; got != wantProt {
+				t.Errorf("prompt has ProtectionRules = %v, want %v", got, wantProt)
 			}
 		})
 	}
@@ -856,7 +856,7 @@ func TestService_SystemPromptStoredMinorAdultIsProtected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SystemPrompt: %v", err)
 	}
-	if p.Mode != conloomapi.ContentProtected || !strings.Contains(p.Text, protectionRules) || strings.Contains(p.Text, testContentRules) {
+	if p.Mode != conloomapi.ContentProtected || !strings.Contains(p.Text, ProtectionRules) || strings.Contains(p.Text, testContentRules) {
 		t.Errorf("stored minor+adult persona: mode %q, prompt %q; want protected", p.Mode, p.Text)
 	}
 }
@@ -882,14 +882,14 @@ func TestService_SystemPromptCacheFollowsMode(t *testing.T) {
 	if _, err := svc.Update(ctx, privateKey, "default", conloomapi.PersonaPut{Persona: &adult}, "29999"); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if p := get(); p.Mode != conloomapi.ContentOpen || !strings.Contains(p.Text, testContentRules) || strings.Contains(p.Text, protectionRules) {
+	if p := get(); p.Mode != conloomapi.ContentOpen || !strings.Contains(p.Text, testContentRules) || strings.Contains(p.Text, ProtectionRules) {
 		t.Fatalf("after adult update: mode %q, prompt %q", p.Mode, p.Text)
 	}
 	one := 1
 	if _, err := svc.Update(ctx, privateKey, "default", conloomapi.PersonaPut{RollbackTo: &one}, "29999"); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
-	if p := get(); p.Mode != conloomapi.ContentProtected || !strings.Contains(p.Text, protectionRules) || strings.Contains(p.Text, testContentRules) {
+	if p := get(); p.Mode != conloomapi.ContentProtected || !strings.Contains(p.Text, ProtectionRules) || strings.Contains(p.Text, testContentRules) {
 		t.Fatalf("after rollback: mode %q, prompt %q", p.Mode, p.Text)
 	}
 }

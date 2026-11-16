@@ -143,6 +143,45 @@ func TestChat_ExtraBodyOverridesBaseKeys(t *testing.T) {
 	}
 }
 
+func TestChat_RequestExtraBodyMergesOverProfile(t *testing.T) {
+	fake := fakeopenai.New(t, func(map[string]any) (int, string) { return http.StatusOK, "好" })
+	p := testProfile(fake.URL)
+	p.ExtraBody = map[string]any{
+		"chat_template_kwargs": map[string]any{"enable_thinking": true, "keep": "x"},
+		"top_k":                20,
+	}
+	c := newTestClient(p)
+	req := userRequest()
+	req.ExtraBody = map[string]any{
+		"chat_template_kwargs": map[string]any{"enable_thinking": false},
+		"temperature":          0.5,
+	}
+	if _, err := c.Chat(context.Background(), req); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if _, err := c.Chat(context.Background(), userRequest()); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	reqs := fake.Requests()
+	want := map[string]any{"enable_thinking": false, "keep": "x"}
+	if got := reqs[0]["chat_template_kwargs"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("chat_template_kwargs = %v, want %v: the request's key over the profile's others", got, want)
+	}
+	if reqs[0]["top_k"] != float64(20) || reqs[0]["temperature"] != 0.5 {
+		t.Errorf("top_k = %v, temperature = %v; want the profile's and the request's", reqs[0]["top_k"], reqs[0]["temperature"])
+	}
+	want = map[string]any{"enable_thinking": true, "keep": "x"}
+	if got := reqs[1]["chat_template_kwargs"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("next request chat_template_kwargs = %v, want the profile's %v", got, want)
+	}
+	if _, ok := reqs[1]["temperature"]; ok {
+		t.Errorf("next request has temperature %v, only the first asked for it", reqs[1]["temperature"])
+	}
+	if got := p.ExtraBody["chat_template_kwargs"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("profile extra_body changed to %v", got)
+	}
+}
+
 func TestChat_RetriesOn5xxThenSucceeds(t *testing.T) {
 	var n atomic.Int32
 	fake := fakeopenai.New(t, func(map[string]any) (int, string) {

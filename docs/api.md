@@ -36,7 +36,7 @@
 
 会话 `{id}` 是标准会话 ID，如 `group_10001`、`private_20001`；核心收到过这个会话的消息后它才存在，在此之前读写它的人格、群策略、记忆和自主状态都返回 404。没有列出的路径返回纯文本 404（不是下面的 JSON 错误格式）。
 
-配置了 `panel` 段时，`/panel/` 下的路径属于 Web 管理面板，用登录 cookie 而不是 Bearer 令牌鉴权，见 [Web 管理面板](panel.md)。面板还能直接和 bot 私聊（在面板里新建 `panel` 平台的会话），接口见 [Web 管理面板：接口](panel.md#接口)。设了 `panel.listen` 时面板只在那个单独的端口上，API 端口上的 `/panel/` 返回 404。
+配置了 `panel` 段时，`/panel/` 下的路径属于 Web 管理面板，用登录 cookie 而不是 Bearer 令牌鉴权，见 [Web 管理面板](panel.md)。面板还能直接和 bot 私聊（在面板里新建 `panel` 平台的会话），bot 回完一轮后还能为这类聊天生成建议回复（`POST /panel/api/conversations/{key}/suggestions`，用量记为 `suggest`），接口见 [Web 管理面板：接口](panel.md#接口)。这些都只在面板接口里，Bearer API 没有对应的接口。设了 `panel.listen` 时面板只在那个单独的端口上，API 端口上的 `/panel/` 返回 404。
 
 ## 事件
 

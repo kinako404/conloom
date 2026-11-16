@@ -441,6 +441,46 @@ func TestAssets_AppearanceLimitsMatchServer(t *testing.T) {
 	}
 }
 
+// The chat offers reply suggestions behind a 建议回复 switch the browser keeps,
+// on unless turned off; it asks for those after the newest message, drops an
+// answer that is no longer wanted, sends a suggestion when clicked and drops
+// the suggestions when the user types or a message comes.
+func TestAssets_ChatSuggestions(t *testing.T) {
+	js := assets(t, ".js")["views/chat.js"]
+	for _, want := range []string{
+		"const SUGGEST_KEY = 'conloom.chat.suggestions';", "localStorage.getItem(SUGGEST_KEY) !== SUGGEST_OFF",
+		"localStorage.setItem(SUGGEST_KEY, SUGGEST_OFF)", "checked: suggestionsOn()", "toggle, '建议回复'",
+		"post(convPath(key, 'suggestions'), { after_seq: seq })", "last.seq === seq", "!botTyping", "last.from_bot",
+		"if (!items.length || !wanted(seq)) return;", "onclick: () => submit(text)",
+		"input.addEventListener('input', clearSuggestions)", "if (!added) clearSuggestions();",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chat.js lacks %q", want)
+		}
+	}
+}
+
+// Every purpose a model call is recorded with has a label on the usage page.
+func TestAssets_PurposeLabelsMatchStore(t *testing.T) {
+	js := assets(t, ".js")["lib/format.js"]
+	m := regexp.MustCompile(`(?s)export const PURPOSE = \{(.*?)\};`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("lib/format.js has no PURPOSE")
+	}
+	var got []string
+	for _, k := range regexp.MustCompile(`(?m)^\s*(\w+):`).FindAllStringSubmatch(m[1], -1) {
+		got = append(got, k[1])
+	}
+	want := []string{store.PurposeChat, store.PurposeMemory, store.PurposeEmbedIndex, store.PurposeEmbedQuery,
+		store.PurposeVision, store.PurposeSuggest}
+	if !slices.Equal(got, want) {
+		t.Errorf("PURPOSE keys = %v, want the store's purposes %v", got, want)
+	}
+	if !strings.Contains(m[1], "suggest: '建议回复'") {
+		t.Errorf("PURPOSE does not label suggest 建议回复: %s", m[1])
+	}
+}
+
 // A message stored without a reply says why under the chat box, by the
 // suppressed_reason of the 202 to POST messages.
 func TestAssets_ChatShowsSuppressedReason(t *testing.T) {
