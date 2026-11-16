@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -416,6 +417,68 @@ func TestChat_CanceledContextStopsRetrying(t *testing.T) {
 	}
 	if fake.Calls() != 0 {
 		t.Errorf("Calls() = %d, want 0", fake.Calls())
+	}
+}
+
+func TestIsTransient(t *testing.T) {
+	chat := func(ctx context.Context, p config.ModelProfile) error {
+		_, err := newTestClient(p).Chat(ctx, userRequest())
+		return err
+	}
+	status := func(code int) error {
+		fake := fakeopenai.New(t, func(map[string]any) (int, string) { return code, "fake failure" })
+		return chat(context.Background(), testProfile(fake.URL))
+	}
+	body := func(raw string) error {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, raw) }))
+		t.Cleanup(srv.Close)
+		return chat(context.Background(), testProfile(srv.URL))
+	}
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+	release := make(chan struct{})
+	hung := fakeopenai.New(t, func(map[string]any) (int, string) {
+		<-release
+		return http.StatusOK, "好"
+	})
+	t.Cleanup(func() { close(release) })
+	slow := testProfile(hung.URL)
+	slow.Runtime.Timeout.Duration = 100 * time.Millisecond
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	inFlight, cancelInFlight := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancelInFlight)
+	duringCall := chat(inFlight, testProfile(hung.URL))
+	if n := hung.Calls(); n != 1 {
+		t.Fatalf("hung model calls = %d, want the cancelled one", n)
+	}
+
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"429", status(http.StatusTooManyRequests), true},
+		{"500", status(http.StatusInternalServerError), true},
+		{"503 wrapped by the caller", fmt.Errorf("model short_context: %w", status(http.StatusServiceUnavailable)), true},
+		{"connection refused", chat(context.Background(), testProfile(closed.URL)), true},
+		{"attempt timeout", chat(context.Background(), slow), true},
+		{"400", status(http.StatusBadRequest), false},
+		{"401", status(http.StatusUnauthorized), false},
+		{"404", status(http.StatusNotFound), false},
+		{"undecodable answer", body("not json"), false},
+		{"no choices", body(`{"choices":[]}`), false},
+		{"empty answer", body(`{"choices":[{"message":{"content":"<think>只有推理</think>"}}]}`), false},
+		{"cancelled before the call", chat(cancelled, testProfile(hung.URL)), false},
+		{"cancelled during the call", duringCall, false},
+	} {
+		if tc.err == nil {
+			t.Errorf("%s: Chat succeeded, want an error", tc.name)
+			continue
+		}
+		if got := IsTransient(tc.err); got != tc.want {
+			t.Errorf("%s: IsTransient(%v) = %v, want %v", tc.name, tc.err, got, tc.want)
+		}
 	}
 }
 

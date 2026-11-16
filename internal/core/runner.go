@@ -686,7 +686,8 @@ func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router
 }
 
 // chat waits for admission for a request estimated at estimate prompt tokens
-// and calls the model. Model errors (not admission errors) count against the
+// and calls the model. Transient model errors (openai.IsTransient; not
+// admission errors, nor a request the service refuses) count against the
 // role's circuit breaker. Every model call, failed or not, is recorded (see
 // recordCall). logAttrs are added to the model call log.
 func (o *Orchestrator) chat(ctx context.Context, task store.TaskRecord, d router.Decision, req openai.ChatRequest,
@@ -704,7 +705,7 @@ func (o *Orchestrator) chat(ctx context.Context, task store.TaskRecord, d router
 	latency := time.Since(start)
 	o.recordCall(task, p, start, latency, estimate, resp, err)
 	if err != nil {
-		if ctx.Err() == nil {
+		if ctx.Err() == nil && openai.IsTransient(err) {
 			o.router.ReportFailure(p.Role)
 		}
 		return openai.ChatResponse{}, fmt.Errorf("model %s: %w", role, err)

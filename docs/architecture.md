@@ -468,9 +468,9 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 
 - `Route`（`internal/router/router.go:112`）：短上下文模型装得下就用它；装不下、且群策略允许长请求（`concurrency.allow_long_requests`）时用长上下文模型。私聊算敏感会话，只能用允许敏感内容的 Profile。
 - **识图模型** `vision`（可选）：`Route` 从不选它，只有生成外观介绍（`Orchestrator.DescribeAppearance`，`internal/core/describe.go`）通过 `Router.Profile` 取用。流程：读外观参考图的原图，缩到长边不超过 1536 像素、编码成 JPEG，和固定的中文提示（150–400 字、只写看得见的外观、第三人称、不加标题和列表、不写图里的文字、画师和背景）一起作为唯一一条 user 消息（图片段在前）发出；先申请 `vision` 的准入名额，读图、缩图、排队和调用合起来最多 40 秒，超时返回 `context.DeadlineExceeded`；用量按用途 `vision` 记录，成功和失败都记；只返回去掉思考段（`CleanOutput`）后的最终回答，客户端不读单独返回的推理字段。识图调用不计入熔断。没有配置 `vision` 时返回 `ErrNoVision`。估算 token 的系数取各 Profile 最大值时不算 `vision`。
-- **熔断**按角色计：连续失败 3 次打开，30 秒后半开，一次成功清零。参数写死在代码里，不能配置。
+- **熔断**按角色计：连续 3 次暂时性失败（`openai.IsTransient`：网络错误、单次请求超时、429、5xx）打开，30 秒后半开，一次成功清零；服务拒绝的请求（其他 4xx，如内容审核、上下文过长、密钥错误）、无法解析或为空的回答和被取消的调用不计入。参数写死在代码里，不能配置。
 - **任何一次调用失败**（包括输出为空、直接对话的输出只剩聊天记录格式）都会排除这个角色重新路由一次（`internal/core/runner.go:280`），所以一个任务最多调用两次模型；带工具的回复每次可能包含几轮请求，重路由后从已有的工具进度继续（5.6）。
-- 客户端（`internal/provider/openai`）只用非流式 `/chat/completions`；网络错误、429、5xx 最多重试 `max_retries` 次（默认 2）。消息带图片（`ChatMessage.Images`）时 `content` 写成数组，图片段（`image_url`）在前、文字段在后；不带图时仍是字符串，请求体和以前逐字节相同。
+- 客户端（`internal/provider/openai`）只用非流式 `/chat/completions`；网络错误、429、5xx 最多重试 `max_retries` 次（默认 2），重试前依次等 500ms、1s、2s……；准入租约按单次超时 ×（1 + `max_retries`）加上这些等待（`openai.MaxChatDuration`）再加 10 秒，调用没结束前不会自动释放。消息带图片（`ChatMessage.Images`）时 `content` 写成数组，图片段（`image_url`）在前、文字段在后；不带图时仍是字符串，请求体和以前逐字节相同。
 
 ### 5.4 输出处理链
 
