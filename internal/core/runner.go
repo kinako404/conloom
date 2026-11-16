@@ -746,7 +746,6 @@ func (o *Orchestrator) recordCall(task store.TaskRecord, p *router.Profile, star
 
 // acquire waits for an admission lease at the task's stored priority.
 func (o *Orchestrator) acquire(ctx context.Context, task store.TaskRecord, p *router.Profile, tokens int) (*admission.Lease, error) {
-	rt := p.Config.Runtime
 	wctx, cancel := context.WithTimeout(ctx, admissionWait)
 	defer cancel()
 	o.metrics.QueueDepth.Inc()
@@ -756,7 +755,7 @@ func (o *Orchestrator) acquire(ctx context.Context, task store.TaskRecord, p *ro
 		Profile:  string(p.Role),
 		Tokens:   tokens,
 		Priority: admission.Priority(task.Priority),
-		TTL:      rt.Timeout.Duration*time.Duration(rt.MaxRetries+1) + leaseSlack,
+		TTL:      openai.MaxChatDuration(p.Config.Runtime) + leaseSlack,
 	})
 	o.metrics.QueueDepth.Dec()
 	o.metrics.QueueWait.Observe(time.Since(start).Seconds())

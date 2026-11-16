@@ -190,6 +190,28 @@ func TestChat_GivesUpAfterMaxRetries(t *testing.T) {
 	}
 }
 
+func TestMaxChatDuration_CoversRetriesAndBackoff(t *testing.T) {
+	fake := fakeopenai.New(t, func(map[string]any) (int, string) {
+		time.Sleep(100 * time.Millisecond)
+		return http.StatusBadGateway, "upstream down"
+	})
+	p := testProfile(fake.URL)
+	p.Runtime.Timeout.Duration = 200 * time.Millisecond
+	start := time.Now()
+	_, err := New(p, nil).Chat(context.Background(), userRequest())
+	took := time.Since(start)
+	if err == nil || fake.Calls() != 3 {
+		t.Fatalf("Chat = %v after %d calls, want a 502 after 3", err, fake.Calls())
+	}
+	if limit := MaxChatDuration(p.Runtime); took > limit {
+		t.Errorf("Chat took %s, more than MaxChatDuration %s", took, limit)
+	}
+	rt := config.ProfileRuntime{Timeout: conloomapi.Duration{Duration: time.Minute}, MaxRetries: 5}
+	if got, want := MaxChatDuration(rt), 6*time.Minute+15500*time.Millisecond; got != want {
+		t.Errorf("MaxChatDuration(60s, 5 retries) = %s, want %s", got, want)
+	}
+}
+
 func TestChat_NoRetryOn400(t *testing.T) {
 	fake := fakeopenai.New(t, func(map[string]any) (int, string) { return http.StatusBadRequest, "bad" })
 	_, err := newTestClient(testProfile(fake.URL)).Chat(context.Background(), userRequest())

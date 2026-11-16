@@ -136,6 +136,15 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 	}
 }
 
+// MaxChatDuration is the longest Chat takes with runtime rt when none of its
+// attempts is cut short: each of the 1+MaxRetries attempts up to
+// Runtime.Timeout, and the backoff before every retry (500ms, doubling). An
+// admission lease held for a call must last this long.
+func MaxChatDuration(rt config.ProfileRuntime) time.Duration {
+	retries := max(rt.MaxRetries, 0)
+	return rt.Timeout.Duration*time.Duration(retries+1) + defaultBackoff*(1<<retries-1)
+}
+
 func (c *Client) requestBody(req ChatRequest) ([]byte, error) {
 	m := map[string]any{
 		"model":    c.profile.Model,

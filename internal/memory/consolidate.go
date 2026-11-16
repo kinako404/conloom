@@ -762,7 +762,6 @@ func (c *Consolidator) clearFailures(convKey string) {
 
 // acquire waits up to c.admissionWait for a background lease on p.
 func (c *Consolidator) acquire(ctx context.Context, p *router.Profile, convKey string, tokens int) (*admission.Lease, error) {
-	rt := p.Config.Runtime
 	wctx, cancel := context.WithTimeout(ctx, c.admissionWait)
 	defer cancel()
 	return c.d.Admission.Acquire(wctx, admission.Request{
@@ -770,7 +769,7 @@ func (c *Consolidator) acquire(ctx context.Context, p *router.Profile, convKey s
 		Profile:  string(p.Role),
 		Tokens:   tokens,
 		Priority: admission.PriorityBackground,
-		TTL:      rt.Timeout.Duration*time.Duration(rt.MaxRetries+1) + consLeaseSlack,
+		TTL:      openai.MaxChatDuration(p.Config.Runtime) + consLeaseSlack,
 	})
 }
 
