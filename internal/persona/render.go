@@ -43,18 +43,25 @@ var (
 		"clear_and_practical": "技术问题讲清楚、讲实用，给出能直接用的做法。",
 		"detailed":            "技术问题解释得详细全面，必要时说明原理。",
 	}
+	genderText = map[string]string{
+		conloomapi.GenderFemale: "性别：女。",
+		conloomapi.GenderMale:   "性别：男。",
+	}
 )
 
 // Render describes p in natural Chinese: the style and behavior lines, then
-// the character description, appearance, speaking style and example exchanges
-// when set, each section after a blank line. The output depends only on p; a
-// persona without those texts renders as the three lines alone. The
-// appearance image never enters the output.
+// the character description, gender line, appearance, speaking style and
+// example exchanges when set, each section after a blank line. The output
+// depends only on p; a persona without those renders as the three lines
+// alone. The appearance image never enters the output.
 func Render(p conloomapi.PersonaDoc) string {
 	var b strings.Builder
 	b.WriteString(renderLines(p))
 	if d := strings.TrimSpace(p.Description); d != "" {
 		b.WriteString("\n\n角色设定：\n" + d)
+	}
+	if g := genderText[p.Gender]; g != "" {
+		b.WriteString("\n\n" + g)
 	}
 	if a := strings.TrimSpace(p.Appearance); a != "" {
 		b.WriteString("\n\n外貌：\n" + a)

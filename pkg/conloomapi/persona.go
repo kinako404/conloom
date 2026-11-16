@@ -10,10 +10,11 @@ import (
 	"unicode/utf8"
 )
 
-// PersonaDoc is a persona. CharacterName, Description, Appearance,
+// PersonaDoc is a persona. CharacterName, Gender, Description, Appearance,
 // SpeakingStyle and Examples are optional; a set CharacterName is the bot's
-// name in the conversation. AppearanceImage, also optional, is the ID of an
-// appearance reference image; it never enters the system prompt. A reply
+// name in the conversation, Gender is GenderFemale or GenderMale when set.
+// AppearanceImage, also optional, is the ID of an appearance reference
+// image; it never enters the system prompt. A reply
 // request carries the image only when AppearanceImageSkip is not set and the
 // model it is routed to declares image support. Adult, unless Minor is also set,
 // makes ContentOpen possible (see ModeFor); ContentRules and MemoryRules only
@@ -25,6 +26,7 @@ type PersonaDoc struct {
 	Style               PersonaStyle     `json:"style" yaml:"style"`
 	Behavior            PersonaBehavior  `json:"behavior" yaml:"behavior"`
 	CharacterName       string           `json:"character_name,omitempty" yaml:"character_name,omitempty"`
+	Gender              string           `json:"gender,omitempty" yaml:"gender,omitempty"`
 	Description         string           `json:"description,omitempty" yaml:"description,omitempty"`
 	Appearance          string           `json:"appearance,omitempty" yaml:"appearance,omitempty"`
 	AppearanceImage     string           `json:"appearance_image,omitempty" yaml:"appearance_image,omitempty"`
@@ -37,6 +39,12 @@ type PersonaDoc struct {
 	MemoryRules         string           `json:"memory_rules,omitempty" yaml:"memory_rules,omitempty"`
 	Bars                []PersonaBar     `json:"bars,omitempty" yaml:"bars,omitempty"`
 }
+
+// Values of PersonaDoc.Gender.
+const (
+	GenderFemale = "female"
+	GenderMale   = "male"
+)
 
 // PersonaExample is one example exchange: a member's message and the reply.
 type PersonaExample struct {
@@ -239,6 +247,9 @@ func (p PersonaDoc) Validate() error {
 	maxRunes("character_name", p.CharacterName, MaxCharacterNameRunes)
 	if strings.ContainsFunc(strings.TrimSpace(p.CharacterName), breaksName) {
 		fail("character_name must be a single line without control or zero-width characters")
+	}
+	if !slices.Contains([]string{"", GenderFemale, GenderMale}, p.Gender) {
+		fail("gender must be one of female|male or empty, got %q", p.Gender)
 	}
 	maxRunes("description", p.Description, MaxDescriptionRunes)
 	maxRunes("appearance", p.Appearance, MaxAppearanceRunes)

@@ -320,3 +320,76 @@ func TestPersona_AppearanceJSONAndYAML(t *testing.T) {
 		t.Errorf("YAML appearance fields = %q, %q, %v", doc.Appearance, doc.AppearanceImage, doc.AppearanceImageSkip)
 	}
 }
+
+func TestPersona_GenderValidate(t *testing.T) {
+	for _, g := range []string{"", GenderFemale, GenderMale} {
+		p := DefaultPersona()
+		p.Gender = g
+		if err := p.Validate(); err != nil {
+			t.Errorf("gender %q: unexpected error: %v", g, err)
+		}
+	}
+	if GenderFemale != "female" || GenderMale != "male" {
+		t.Errorf("GenderFemale, GenderMale = %q, %q, want female, male", GenderFemale, GenderMale)
+	}
+	for _, g := range []string{"Female", "MALE", " female", "male\n", "女", "男", "other", "unknown"} {
+		p := DefaultPersona()
+		p.Gender = g
+		want := `gender must be one of female|male or empty, got "` + strings.ReplaceAll(g, "\n", `\n`) + `"`
+		if err := p.Validate(); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("gender %q: err = %v, want containing %q", g, err, want)
+		}
+	}
+
+	p := DefaultPersona()
+	p.Style.Humor = -1
+	p.Gender = "other"
+	err := p.Validate()
+	for _, want := range []string{"style.humor", "gender must be"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
+func TestPersona_GenderJSONAndYAML(t *testing.T) {
+	b, err := json.Marshal(DefaultPersona())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "gender") {
+		t.Errorf("persona without gender encodes a gender key: %s", b)
+	}
+	y, err := yaml.Marshal(DefaultPersona())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(y), "gender") {
+		t.Errorf("persona without gender encodes a gender key in YAML: %s", y)
+	}
+
+	p := DefaultPersona()
+	p.CharacterName, p.Gender = "小红", GenderFemale
+	b, err = json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"character_name":"小红","gender":"female"`; !strings.Contains(string(b), want) {
+		t.Errorf("JSON %s missing %s", b, want)
+	}
+	var back PersonaDoc
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(back, p) {
+		t.Errorf("JSON round trip = %+v, want %+v", back, p)
+	}
+
+	var doc PersonaDoc
+	if err := yaml.Unmarshal([]byte("persona_name: 测试人格\ngender: male\n"), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Gender != GenderMale {
+		t.Errorf("YAML gender = %q, want %q", doc.Gender, GenderMale)
+	}
+}

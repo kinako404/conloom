@@ -150,6 +150,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `behavior.ask_followup_questions` | `never` \| `occasionally` \| `often` | 追问频率 |
 | `behavior.technical_explanations` | `brief` \| `clear_and_practical` \| `detailed` | 技术解释的详细程度 |
 | `character_name` | ≤20 字，单行 | 角色名。设置后就是机器人在使用这个人格的会话里的名字：system prompt 的“你是{名字}”、上下文里的“你（名字）”、回复的回声清洗和 `/help` 都改用它；不设时用 `bots[].name` |
+| `gender` | `female` \| `male` | 角色性别。设置后渲染为一行“性别：女。”或“性别：男。”，位于“角色设定”之后、“外貌”之前，帮模型分清恋人、夫妻、亲属这类关系词的方向；不设时不写这一行 |
 | `description` | ≤2000 字 | 角色设定，渲染为“角色设定：”一段 |
 | `appearance` | ≤800 字 | 外貌描述，渲染为“外貌：”一段，位于“角色设定”之后、“说话方式”之前 |
 | `appearance_image` | 64 位小写十六进制 | 外观参考图的图片 ID（图片内容的 SHA-256），不是文件路径或网址。图片在面板上传，上传后由面板填入这个字段；图片 ID 不进系统提示。只有 `appearance_image_skip` 不为 `true`、而且这次回复路由到的模型在 `modalities` 里声明了 `image` 时，回复请求才附带这张图的缩小图（放在第一条 user 消息里） |
@@ -162,7 +163,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `memory_rules` | ≤1000 字 | 记忆规则，只在开放模式下生效：替换记忆整理提示词的第 6 条；为空则省略这一条 |
 | `bars` | ≤4 条 | 私聊的隐藏状态条，见下面的“状态条” |
 
-`character_name`、`description`、`appearance`、`speaking_style`、`examples`，`appearance_image`、`appearance_image_skip`，以及 `content_rules`、`memory_rules`、`bars`，都可以省略。字数按字符计（去掉首尾空白后），超出时面板、`PUT …/persona` 和旧配置的启动校验都会拒绝并指出字段；`appearance_image` 不为空又不是 64 位小写十六进制时同样拒绝。
+`character_name`、`gender`、`description`、`appearance`、`speaking_style`、`examples`，`appearance_image`、`appearance_image_skip`，以及 `content_rules`、`memory_rules`、`bars`，都可以省略。字数按字符计（去掉首尾空白后），超出时面板、`PUT …/persona` 和旧配置的启动校验都会拒绝并指出字段；`appearance_image` 不为空又不是 64 位小写十六进制时、`gender` 不为空又不是 `female` 或 `male` 时同样拒绝。
 
 模板引用的 `appearance_image` 在保存时必须是已上传的图片。从旧配置文件导入的模板原样保留图片 ID，不检查图片是否存在：图还没上传时新会话照样复制这个 ID，回复时读不到图就记一条警告、不带图照常回复；`/persona use` 和面板、API 里的套用模板会因为图片不存在而失败（接口返回 400）。先在面板里上传这张图（同一张图得到同一个 ID）。
 

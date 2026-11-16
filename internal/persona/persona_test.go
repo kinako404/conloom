@@ -73,8 +73,8 @@ func TestCorePrompt_RulesOverridePersona(t *testing.T) {
 			t.Errorf("CorePrompt still has %q", gone)
 		}
 	}
-	if n := strings.Count(got, "\n"); n != 8 {
-		t.Errorf("CorePrompt has %d line breaks, want 8 (a header and 8 rules)", n)
+	if n := strings.Count(got, "\n"); n != 9 {
+		t.Errorf("CorePrompt has %d line breaks, want 9 (a header, 8 rules and the relationship-direction line)", n)
 	}
 	if strings.Contains(got, "一个在聊天平台上和大家交流的 AI") {
 		t.Error("CorePrompt still has the old header")
@@ -87,6 +87,16 @@ func TestCorePrompt_ForbidsPretendingToAct(t *testing.T) {
 		"暂停、恢复、切换人格模板等只能由管理员用命令完成（/help 可查看），其他设置需要管理员在后台修改；"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("CorePrompt missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestCorePrompt_RelationshipDirection(t *testing.T) {
+	const want = "\n8. 操作：你不能在聊天里执行任何操作。暂停、恢复、切换人格模板等只能由管理员用命令完成（/help 可查看），其他设置需要管理员在后台修改；有人让你做这些时如实说明，不要假装已经做了，也不要编造不存在的命令。" +
+		"\n说到恋人、夫妻、亲属这类关系时，分清自己是哪一方、对方是哪一方，称呼和关系词不要说反：女性一方是女朋友、妻子、老婆，男性一方是男朋友、丈夫、老公。"
+	for _, name := range []string{"织语", "小红"} {
+		if got := CorePrompt(name); !strings.HasSuffix(got, want) {
+			t.Errorf("CorePrompt(%q) does not end with rule 8 and the relationship-direction line:\n%s", name, got)
 		}
 	}
 }
@@ -259,6 +269,61 @@ func TestRender_Appearance(t *testing.T) {
 	blank.Appearance = " \n\t"
 	if got := Render(blank); got != legacyDefaultRender {
 		t.Errorf("Render with blank appearance =\n%q\nwant the legacy render", got)
+	}
+}
+
+func TestRender_Gender(t *testing.T) {
+	want := "人格：灯塔看守\n" +
+		"说话风格：语气温暖亲切，乐于回应大家。偶尔可以轻松幽默一下。表达清楚，不绕弯子也不生硬。通常一两句话，尽量简短。不使用表情符号。只回应别人说的，不主动展开话题。\n" +
+		"行为习惯：默认回复简短，一两句话就好。可以适当使用网络梗。只在确实需要澄清时偶尔追问。技术问题讲清楚、讲实用，给出能直接用的做法。\n" +
+		"\n角色设定：\n苔灯是海边小镇的灯塔看守，十几岁，做事认真，喜欢收集贝壳。\n她把群友当成镇上的邻居。\n" +
+		"\n性别：女。\n" +
+		"\n外貌：\n短发，常穿一件蓝色雨衣。\n" +
+		"\n说话方式：\n说话轻快，句子短，偶尔用“呐”结尾。\n" +
+		"\n示例对话（只示范语气和分寸，不要照搬内容）：\n" +
+		"群友：今天好累\n你：辛苦啦，喝口热水歇一会儿吧。\n" +
+		"群友：你会修电脑吗\n你：唔，这个我不太在行呐，你先说说是哪里不对劲？"
+	p := testCharacter()
+	p.Appearance = "短发，常穿一件蓝色雨衣。"
+	p.Gender = conloomapi.GenderFemale
+	if got := Render(p); got != want {
+		t.Errorf("Render =\n%s\nwant\n%s", got, want)
+	}
+	p.Gender = conloomapi.GenderMale
+	if got, want := Render(p), strings.Replace(want, "性别：女。", "性别：男。", 1); got != want {
+		t.Errorf("Render with male =\n%s\nwant\n%s", got, want)
+	}
+
+	only := conloomapi.DefaultPersona()
+	only.Gender = conloomapi.GenderMale
+	if got, want := Render(only), legacyDefaultRender+"\n\n性别：男。"; got != want {
+		t.Errorf("Render with only gender = %q, want %q", got, want)
+	}
+	only.Appearance = "短发。"
+	if got, want := Render(only), legacyDefaultRender+"\n\n性别：男。\n\n外貌：\n短发。"; got != want {
+		t.Errorf("Render with gender and appearance = %q, want %q", got, want)
+	}
+
+	for _, base := range []conloomapi.PersonaDoc{conloomapi.DefaultPersona(), testCharacter(), p} {
+		without := base
+		without.Gender = ""
+		if got := Render(without); strings.Contains(got, "性别") {
+			t.Errorf("Render without gender mentions 性别:\n%s", got)
+		}
+	}
+	if got := Render(conloomapi.DefaultPersona()); got != legacyDefaultRender {
+		t.Errorf("Render(DefaultPersona) without gender =\n%q\nwant the legacy render", got)
+	}
+
+	female := testCharacter()
+	female.Gender = conloomapi.GenderFemale
+	svc := newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": female})
+	prompt, err := svc.SystemPrompt(context.Background(), testConvKey, "t", "织语")
+	if err != nil {
+		t.Fatalf("SystemPrompt: %v", err)
+	}
+	if want := "\n\n角色设定：\n" + female.Description + "\n\n性别：女。\n\n说话方式："; !strings.Contains(prompt.Text, want) {
+		t.Errorf("system prompt =\n%s\nwant it to contain %q", prompt.Text, want)
 	}
 }
 

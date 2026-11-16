@@ -7,6 +7,8 @@ import { post, upload, isAbort } from '../lib/api.js';
 const REPLY_LENGTH = { short: '短（short）', medium: '中（medium）', long: '长（long）' };
 const FOLLOWUP = { never: '从不（never）', occasionally: '偶尔（occasionally）', often: '经常（often）' };
 const TECHNICAL = { brief: '简要（brief）', clear_and_practical: '清楚实用（clear_and_practical）', detailed: '详细（detailed）' };
+// GENDER is the values of conloomapi.PersonaDoc.Gender.
+const GENDER = { '': '不指定', female: '女', male: '男' };
 const STYLE = [
   ['warmth', '亲和'],
   ['humor', '幽默'],
@@ -219,6 +221,7 @@ export function personaForm(doc, { save, saveText = '保存人设' }) {
   const name = h('input', { value: base.persona_name || '' });
   const templateVersion = h('input', { type: 'number', min: 0, step: 1, value: base.template_version ?? 0 });
   const characterName = h('input', { value: base.character_name || '' });
+  const gender = select(GENDER, base.gender || '');
   const description = h('textarea', { value: base.description || '' });
   const speakingStyle = h('textarea', { value: base.speaking_style || '' });
   const appearance = appearanceEditor(base);
@@ -292,6 +295,7 @@ export function personaForm(doc, { save, saveText = '保存人设' }) {
       technical_explanations: technical.value,
     };
     persona.character_name = characterName.value;
+    persona.gender = gender.value;
     persona.description = description.value;
     Object.assign(persona, look.fields);
     persona.speaking_style = speakingStyle.value;
@@ -322,7 +326,8 @@ export function personaForm(doc, { save, saveText = '保存人设' }) {
   h('div', { class: 'form-grid' },
     field('人设名', name),
     field('模板版本', templateVersion),
-    field('角色名', characterName, '可选，最多 20 字；设置后就是 bot 在会话里的名字')),
+    field('角色名', characterName, '可选，最多 20 字；设置后就是 bot 在会话里的名字'),
+    field('性别', gender, '可选；选了女或男时，系统提示里写一行“性别：女。”或“性别：男。”')),
   field('描述', description, '可选，最多 2000 字'),
   field('说话风格', speakingStyle, '可选，最多 1000 字'),
   h('h3', null, '外观'),

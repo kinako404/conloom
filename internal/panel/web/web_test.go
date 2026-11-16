@@ -356,6 +356,24 @@ func TestAssets_MaxBarsMatchesPersona(t *testing.T) {
 	}
 }
 
+func TestAssets_GenderOptionsMatchPersona(t *testing.T) {
+	js := assets(t, ".js")["views/personaform.js"]
+	m := regexp.MustCompile(`const GENDER = \{(.*?)\};`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("views/personaform.js has no GENDER")
+	}
+	var got []string
+	for _, k := range regexp.MustCompile(`'?(\w*)'?: '`).FindAllStringSubmatch(m[1], -1) {
+		got = append(got, k[1])
+	}
+	if want := []string{"", conloomapi.GenderFemale, conloomapi.GenderMale}; !slices.Equal(got, want) {
+		t.Errorf("GENDER keys = %q, want %q", got, want)
+	}
+	if !strings.Contains(js, "persona.gender = gender.value") {
+		t.Error("views/personaform.js does not save the gender select")
+	}
+}
+
 func TestAssets_EventKindsMatchStore(t *testing.T) {
 	js := assets(t, ".js")["views/autonomy.js"]
 	m := regexp.MustCompile(`(?s)const EVENT_KIND = \{(.*?)\};`).FindStringSubmatch(js)
