@@ -34,6 +34,8 @@ ssh -L 8787:127.0.0.1:8787 <用户>@<服务器>
 
 需要不经 SSH 直接从公网访问时，推荐用反向代理负责 HTTPS，并把 `panel.cookie_secure` 改为 `true`，示例见 [部署：经 HTTPS 反向代理访问](deployment.md#经-https-反向代理访问)。不要把 `server.listen` 直接改成公网地址：那样连 `/metrics`（不需要鉴权）和 API 一起暴露出去，面板也没有 HTTPS。只想开放面板时用下面的 `panel.listen`。
 
+**地址被改坏时**：有些手机浏览器和 App 内置浏览器重新打开或分享链接时会把 `#` 编码成 `%23`，`/panel/#/login?next=%23%2F` 变成 `/panel/%23/login?next=%23%2F`，面板把这种地址 302 跳转回 `/panel/#/login?next=%23%2F`（`#` 之后的部分和查询串原样保留）。`/panel/` 下其他不是文件的地址（最后一段没有扩展名，如 `/panel/login`）302 跳转到 `/panel/`，不存在的文件（如 `/panel/missing.js`）仍然返回 404；在 `panel.listen` 的端口上，大小写不同的前缀（如 `/Panel`、`/PANEL/...`）301 跳转到小写的 `/panel`。面板每返回一次这样的 404（包括不存在的接口和面板端口上不存在的路径）都记一条 info 日志 `panel not found`，带 `path`（不含查询串，最多 512 个字符）、`method`、`user_agent`（最多 200 个字符）和 `remote`（对方地址）。
+
 ### 用单独端口直接访问
 
 `panel.listen` 让核心多开一个只提供面板的端口，`server.listen` 保持只监听本机：
