@@ -9,6 +9,9 @@ const HISTORY = 50;
 // PAGE is the most messages one GET chat returns (maxChatMessages); a full
 // page is followed by another poll right away.
 const PAGE = 200;
+// TOUCH matches a device whose main pointer is a finger. Its on-screen
+// keyboard has no Shift+Return, so Return types a newline and 发送 sends.
+const TOUCH = '(pointer: coarse)';
 
 function bubble(m) {
   return h('li', { class: m.from_bot ? 'bubble bot' : 'bubble user' },
@@ -31,7 +34,10 @@ export async function chatPane({ key, signal, hint }) {
   const typing = h('div', { class: 'chat-typing', hidden: true }, '对方正在输入…');
   const pollError = h('div');
   const sendError = h('div');
-  const input = h('textarea', { class: 'chat-input', rows: 3, placeholder: '输入消息，回车发送，Shift+回车换行' });
+  const touch = matchMedia(TOUCH).matches;
+  const input = h('textarea', {
+    class: 'chat-input', rows: 3, placeholder: touch ? '输入消息' : '输入消息，回车发送，Shift+回车换行',
+  });
   const send = h('button', { type: 'submit', class: 'primary' }, '发送');
   let after = 0;
 
@@ -124,12 +130,16 @@ export async function chatPane({ key, signal, hint }) {
       if (!gone) input.focus();
     }
   };
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-      e.preventDefault();
-      submit();
-    }
-  });
+  if (!touch) {
+    input.addEventListener('keydown', (e) => {
+      // Safari ends an IME composition before the keydown of the Enter that
+      // commits it; that keydown has keyCode 229.
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+        e.preventDefault();
+        submit();
+      }
+    });
+  }
   const form = h('form', {
     class: 'chat-form',
     onsubmit: (e) => {

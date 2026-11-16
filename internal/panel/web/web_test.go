@@ -217,6 +217,30 @@ func TestAssets_ChatScrollsIntoViewOnNarrowScreens(t *testing.T) {
 	}
 }
 
+// In Safari the Enter that commits an IME composition comes after
+// compositionend, with keyCode 229, and must not send. On a touch screen
+// Return types a newline and only 发送 sends.
+func TestAssets_ChatEnterSendsOnlyWithKeyboard(t *testing.T) {
+	js := assets(t, ".js")["views/chat.js"]
+	for _, c := range []struct{ name, re string }{
+		{"a coarse-pointer media query", `const TOUCH = '\(pointer: coarse\)';`},
+		{"a touch check", `const touch = matchMedia\(TOUCH\)\.matches;`},
+		{"Enter-to-send bound only without touch", `if \(!touch\) \{\s*input\.addEventListener\('keydown',`},
+		{"the IME keyCode check", `e\.key === 'Enter' && !e\.shiftKey && !e\.isComposing && e\.keyCode !== 229\b`},
+	} {
+		if !regexp.MustCompile(c.re).MatchString(js) {
+			t.Errorf("views/chat.js lacks %s (%s)", c.name, c.re)
+		}
+	}
+	m := regexp.MustCompile(`placeholder: touch \? '([^']*)' : '([^']*)'`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("views/chat.js has no placeholder for touch screens")
+	}
+	if strings.Contains(m[1], "回车") {
+		t.Errorf("touch placeholder %q mentions the Enter key", m[1])
+	}
+}
+
 var cssRule = regexp.MustCompile(`([^{}]+)\{([^{}]*)\}`)
 
 // iOS Safari zooms in on a focused field whose text is under 16px and does not
