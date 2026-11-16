@@ -44,7 +44,7 @@ func assets(t *testing.T, exts ...string) map[string]string {
 func TestAssets_PlannedFilesPresent(t *testing.T) {
 	for _, name := range []string{
 		"index.html", "style.css", "app.js",
-		"lib/api.js", "lib/router.js", "lib/dom.js", "lib/chart.js", "lib/format.js",
+		"lib/api.js", "lib/router.js", "lib/dom.js", "lib/chart.js", "lib/format.js", "lib/sections.js",
 		"views/login.js", "views/overview.js", "views/usage.js", "views/conversations.js",
 		"views/conversation.js", "views/chat.js", "views/chats.js", "views/avatar.js", "views/autonomy.js", "views/tasks.js", "views/audit.js", "views/config.js",
 		"views/personaform.js", "views/templates.js",
@@ -291,14 +291,34 @@ func TestChatsView_TelegramShell(t *testing.T) {
 		}
 	}
 	app := files["app.js"]
-	for _, want := range []string{"document.body.classList.toggle('chat-app', chat);", "topbar.hidden = section === 'login' || chat;", "export const SECTIONS = ["} {
+	for _, want := range []string{"document.body.classList.toggle('chat-app', chat);", "topbar.hidden = section === 'login' || chat;", "import { SECTIONS } from './lib/sections.js';"} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.js lacks %q", want)
 		}
 	}
-	// The ≡ menu lists the top bar's sections, not a copy of them.
-	if !strings.Contains(js, "import { SECTIONS } from '../app.js';") || strings.Contains(js, "['usage', '用量']") {
-		t.Error("views/chats.js does not take its menu links from app.js's SECTIONS")
+	// The top bar and the ≡ menu list the same sections, from lib/sections.js,
+	// in the panel's order; neither has its own copy.
+	m := regexp.MustCompile(`(?s)export const SECTIONS = \[(.*?)\];`).FindStringSubmatch(files["lib/sections.js"])
+	if m == nil {
+		t.Fatal("lib/sections.js has no SECTIONS")
+	}
+	var sections []string
+	for _, s := range regexp.MustCompile(`\['([^']*)', '([^']*)'\]`).FindAllStringSubmatch(m[1], -1) {
+		sections = append(sections, s[1]+"="+s[2])
+	}
+	if want := []string{"=概览", "usage=用量", "chat=聊天", "conversations=会话", "templates=人设模板", "tasks=任务", "audit=审计", "config=配置"}; !slices.Equal(sections, want) {
+		t.Errorf("SECTIONS = %q, want %q", sections, want)
+	}
+	if !strings.Contains(js, "import { SECTIONS } from '../lib/sections.js';") {
+		t.Error("views/chats.js does not take its menu links from lib/sections.js")
+	}
+	for name, text := range map[string]string{"app.js": app, "views/chats.js": js} {
+		if strings.Contains(text, "['usage', '用量']") {
+			t.Errorf("%s has its own copy of the sections", name)
+		}
+		if strings.Contains(text, "app.js'") && name != "app.js" {
+			t.Errorf("%s imports app.js", name)
+		}
 	}
 	// Every chat page rule is scoped to .chat-app, so other pages keep their
 	// look.

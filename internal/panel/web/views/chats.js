@@ -2,7 +2,7 @@ import { h, s, mount, errorBox, loading, field, kv } from '../lib/dom.js';
 import { get, post, put, request, convPath, isAbort, currentUser, logout } from '../lib/api.js';
 import { go, href, withQuery } from '../lib/router.js';
 import { fmtTime, fmtClock } from '../lib/format.js';
-import { SECTIONS } from '../app.js';
+import { SECTIONS } from '../lib/sections.js';
 import { chatPane, deleteChatConfirmed } from './chat.js';
 import { avatarEl } from './avatar.js';
 

@@ -1,6 +1,7 @@
 import { h, mount } from './lib/dom.js';
 import { route, start, go } from './lib/router.js';
 import { currentUser, loadSession, logout } from './lib/api.js';
+import { SECTIONS } from './lib/sections.js';
 import { loginView } from './views/login.js';
 import { overviewView } from './views/overview.js';
 import { usageView } from './views/usage.js';
@@ -26,20 +27,6 @@ route('/tasks', tasksView);
 route('/tasks/:id', taskDetailView);
 route('/audit', auditView);
 route('/config', configView);
-
-// SECTIONS are the panel's pages as [route segment, title], as the top bar
-// lists them; the chat page's ≡ menu lists them too. A view that imports them
-// reads them only once the page runs, after this module has.
-export const SECTIONS = [
-  ['', '概览'],
-  ['usage', '用量'],
-  ['chat', '聊天'],
-  ['conversations', '会话'],
-  ['templates', '人设模板'],
-  ['tasks', '任务'],
-  ['audit', '审计'],
-  ['config', '配置'],
-];
 
 const topbar = document.getElementById('topbar');
 const nav = document.getElementById('nav');

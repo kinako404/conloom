@@ -382,10 +382,17 @@ func TestStatic_ServesChatsView(t *testing.T) {
 		}
 	}
 	app := get("/panel/app.js").Body.String()
-	for _, want := range []string{"from './views/chats.js'", "route('/chat', chatsView)", "route('/chat/:key', chatsView)", "['chat', '聊天']"} {
+	for _, want := range []string{"from './views/chats.js'", "route('/chat', chatsView)", "route('/chat/:key', chatsView)", "from './lib/sections.js'"} {
 		if !strings.Contains(app, want) {
 			t.Errorf("/panel/app.js lacks %q", want)
 		}
+	}
+	w = get("/panel/lib/sections.js")
+	if ct := w.Header().Get("Content-Type"); w.Code != http.StatusOK || !strings.Contains(ct, "javascript") {
+		t.Fatalf("/panel/lib/sections.js: %d Content-Type %q", w.Code, ct)
+	}
+	if !strings.Contains(w.Body.String(), "['chat', '聊天']") {
+		t.Error("/panel/lib/sections.js lacks the chat section")
 	}
 	if w = get("/panel/views/conversations.js"); !strings.Contains(w.Body.String(), "from './chats.js'") {
 		t.Errorf("/panel/views/conversations.js: %d, does not import ./chats.js", w.Code)
@@ -440,8 +447,9 @@ func TestStatic_ServesTemplatesViews(t *testing.T) {
 		{"/panel/lib/api.js", []string{"export const upload ="}},
 		{"/panel/app.js", []string{
 			"from './views/templates.js'", "route('/templates', templatesView)", "route('/templates/:name', templateView)",
-			"['templates', '人设模板']",
+			"from './lib/sections.js'",
 		}},
+		{"/panel/lib/sections.js", []string{"['templates', '人设模板']"}},
 	} {
 		w := get(c.path)
 		if ct := w.Header().Get("Content-Type"); w.Code != http.StatusOK || !strings.Contains(ct, "javascript") {
