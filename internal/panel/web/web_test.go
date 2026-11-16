@@ -270,7 +270,7 @@ func TestChatsView_TelegramShell(t *testing.T) {
 		// A light poll never drops a full reload, bots changed elsewhere
 		// show, and the bot forms open with the bot read afresh.
 		"if (fullPending) return;", "if (fullPending || n !== fullLoads) return;", "if (n === fullLoads) showChats(chats);",
-		"const BOTS_EVERY = 6;", "await load(signal, ++ticks % BOTS_EVERY === 0);",
+		"const BOTS_EVERY = 6;", "await load(signal, !fetched || ++ticks % BOTS_EVERY === 0);",
 		"if (n === botReads) {", "const fresh = (all.bots || []).find((b) => b.id === bot.id);",
 		"configForm.open(fresh,", "botForm.open(fresh,", "if (fresh) deleteForm.open(fresh);",
 	} {
@@ -765,6 +765,30 @@ func TestAssets_ChatShowsSuppressedReason(t *testing.T) {
 	}
 }
 
+// jsBlock returns the text of js from head to the brace that closes the first
+// block after it.
+func jsBlock(t *testing.T, js, head string) string {
+	t.Helper()
+	start := strings.Index(js, head)
+	if start < 0 {
+		t.Fatalf("no %q", head)
+	}
+	depth := 0
+	for i := start; i < len(js); i++ {
+		switch js[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return js[start : i+1]
+			}
+		}
+	}
+	t.Fatalf("%q is not closed", head)
+	return ""
+}
+
 // The chat open counts as seen as messages arrive in it, the user's own and
 // the bot's replies, not only when the list is read again: the pane hands
 // the page every message it shows, and the page counts those the list read
@@ -788,6 +812,37 @@ func TestChatsView_UnreadFollowsTheOpenChat(t *testing.T) {
 	} {
 		if !strings.Contains(chats, want) {
 			t.Errorf("views/chats.js lacks %q", want)
+		}
+	}
+	// noteSeen forgets the chats it is not given: it never runs on the empty
+	// list of a page that has not read it yet.
+	if !strings.Contains(chats, "if (key && fetched) seen = noteSeen(allChats(), key);") {
+		t.Error("views/chats.js notes seen on opening a chat before the list is read")
+	}
+}
+
+// The chat page shows its rail, ≡ menu, list and pane before reading the
+// list, so a failed first read leaves the navigation there; the error is
+// shown in the list and the poll keeps trying, at once the first time.
+func TestChatsView_ShellBeforeTheList(t *testing.T) {
+	js := assets(t, ".js")["views/chats.js"]
+	view := jsBlock(t, js, "export function chatsView(ctx) {")
+	for _, want := range []string{"ctx.show(page.layout);", "page.select(ctx.params.key || '', ctx.signal);", "page.watch(ctx.signal);"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("chatsView lacks %q", want)
+		}
+	}
+	if strings.Contains(view, "await") || strings.Contains(view, "load(") {
+		t.Errorf("chatsView waits for the list before showing the page:\n%s", view)
+	}
+	watch := jsBlock(t, js, "function watch(signal) {")
+	for _, want := range []string{
+		"timer = setTimeout(tick, fetched ? REFRESH_MS : 0);",
+		"mount(pollMsg, errorBox(err));",
+		"if (fetched && pending === signal) select(current, signal);",
+	} {
+		if !strings.Contains(watch, want) {
+			t.Errorf("watch lacks %q", want)
 		}
 	}
 }

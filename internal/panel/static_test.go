@@ -376,7 +376,7 @@ func TestStatic_ServesChatsView(t *testing.T) {
 	if ct := w.Header().Get("Content-Type"); w.Code != http.StatusOK || !strings.Contains(ct, "javascript") {
 		t.Fatalf("/panel/views/chats.js: %d Content-Type %q", w.Code, ct)
 	}
-	for _, want := range []string{"export async function chatsView(", "export function newChatDialog("} {
+	for _, want := range []string{"export function chatsView(", "export function newChatDialog("} {
 		if !strings.Contains(w.Body.String(), want) {
 			t.Errorf("/panel/views/chats.js lacks %q", want)
 		}

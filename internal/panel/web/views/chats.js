@@ -415,11 +415,11 @@ function allIcon() {
 
 // chatPage lays out the chat page like Telegram Desktop: a rail of folders
 // (≡, 全部 and a folder per bot), the chat list of the folder chosen, and the
-// chat open. load reads the list; select(key, signal) shows the chat key, or
-// a pill when key is empty; setFolder(id) chooses the folder of bot id, all
-// chats when empty; watch(signal) reads the list again every REFRESH_MS until
-// signal fires. Reading the list again replaces the folders and the list but
-// leaves the chat as it is.
+// chat open. select(key, signal) shows the chat key, or a pill when key is
+// empty; setFolder(id) chooses the folder of bot id, all chats when empty;
+// watch(signal) reads the list, at once when it has not been read yet,
+// then again every REFRESH_MS until signal fires. Reading the list again
+// replaces the folders and the list but leaves the chat as it is.
 function chatPage() {
   // fetched is the bots of the last GET chats shown, groups the same with
   // the messages arrived counted in.
@@ -434,6 +434,9 @@ function chatPage() {
   // arrived holds, by chat key, the messages the chat pane showed that the
   // list read last may not count yet: they count as seen at once.
   let arrived = {};
+  // pending is the signal of a chat opened before the list was read, which
+  // is shown once it is.
+  let pending = null;
   // fullLoads counts the full reloads started, fullPending those under way,
   // botReads the reads of the bots started and ticks the polls.
   let fullLoads = 0;
@@ -704,7 +707,9 @@ function chatPage() {
     const shown = rows.filter(({ g, c }) => !q ||
       [g.name || g.id, c.title, c.last ? c.last.text : ''].some((t) => (t || '').toLowerCase().includes(q)));
     shown.sort((a, b) => recency(b.c) - recency(a.c));
-    if (!rows.length) {
+    if (!fetched) {
+      mount(list, h('li', { class: 'tg-list-empty muted' }, '加载中…'));
+    } else if (!rows.length) {
       mount(list, h('li', { class: 'tg-list-empty muted' }, '还没有聊天，点右下角的 ✎ 开始'));
     } else if (!shown.length) {
       mount(list, h('li', { class: 'tg-list-empty muted' }, `没有符合“${search.value.trim()}”的聊天`));
@@ -796,19 +801,24 @@ function chatPage() {
     renderLists();
   }
 
+  // watch reads the list, the first time with the bots, and shows a chat
+  // opened before it was read. A failed read is shown in pollMsg until one
+  // succeeds.
   function watch(signal) {
     let timer = 0;
     const tick = async () => {
       try {
-        await load(signal, ++ticks % BOTS_EVERY === 0);
+        await load(signal, !fetched || ++ticks % BOTS_EVERY === 0);
         mount(pollMsg);
       } catch (err) {
         if (isAbort(err) || signal.aborted) return;
         mount(pollMsg, errorBox(err));
       }
-      if (!signal.aborted) timer = setTimeout(tick, REFRESH_MS);
+      if (signal.aborted) return;
+      if (fetched && pending === signal) select(current, signal);
+      timer = setTimeout(tick, REFRESH_MS);
     };
-    timer = setTimeout(tick, REFRESH_MS);
+    timer = setTimeout(tick, fetched ? REFRESH_MS : 0);
     signal.addEventListener('abort', () => clearTimeout(timer));
   }
 
@@ -818,8 +828,9 @@ function chatPage() {
 
   async function select(key, signal) {
     current = key;
+    pending = null;
     layout.classList.toggle('open', !!key);
-    if (key) seen = noteSeen(allChats(), key);
+    if (key && fetched) seen = noteSeen(allChats(), key);
     renderLists();
     mount(paneMsg);
     if (!key) {
@@ -835,6 +846,10 @@ function chatPage() {
     };
     const bar = (b, t) => chatBar({ key, bot: b, title: t, onBack, signal });
     mount(pane, bar(bot, title), loading());
+    if (!fetched) {
+      pending = signal;
+      return;
+    }
     try {
       if (!shown) {
         const conv = await get(convPath(key), null, signal);
@@ -888,26 +903,22 @@ function chatPage() {
     }
   });
 
-  return { layout, load, select, setFolder, watch };
+  return { layout, select, setFolder, watch };
 }
 
 // page is the chat page on screen. Switching chats reuses it, rebuilding only
 // the chat pane; leaving the page detaches its layout, so the next visit
-// reads the list afresh.
+// reads the list afresh. The page shows before the list is read, so that its
+// ≡ menu is there even when reading the list fails; watch reads it, and
+// keeps trying.
 let page = null;
 
-export async function chatsView(ctx) {
-  const folder = ctx.query.get('bot') || '';
+export function chatsView(ctx) {
   if (!page || page.layout.parentNode !== ctx.el) {
-    const next = chatPage();
-    next.setFolder(folder);
-    await next.load(ctx.signal);
-    if (ctx.signal.aborted) return;
-    page = next;
+    page = chatPage();
     ctx.show(page.layout);
-  } else {
-    page.setFolder(folder);
   }
+  page.setFolder(ctx.query.get('bot') || '');
   page.select(ctx.params.key || '', ctx.signal);
   page.watch(ctx.signal);
 }
