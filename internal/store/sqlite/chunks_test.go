@@ -21,6 +21,22 @@ func testChunk(convKey string, from, to int64, start, end time.Time, model strin
 		TextHash: "h", Model: model, Vector: []float32{1, -0.5, 0.25}}
 }
 
+// newChunkDB is a test database holding the conversations of testConvKey,
+// testConvKeyB and testPrivateKey, since chunks are stored only for a stored
+// conversation.
+func newChunkDB(t *testing.T) *DB {
+	t.Helper()
+	db := newTestDB(t)
+	seedConversations(t, db,
+		store.ConversationRecord{BotInstanceID: testBot, ID: testConvID, Key: testConvKey, Type: conloomapi.ConvGroup,
+			Platform: testPlatform, PlatformConversationID: "10001"},
+		store.ConversationRecord{BotInstanceID: testBot, ID: "conv_10002", Key: testConvKeyB, Type: conloomapi.ConvGroup,
+			Platform: testPlatform, PlatformConversationID: "10002"},
+		store.ConversationRecord{BotInstanceID: testBot, ID: "conv_20001", Key: testPrivateKey, Type: conloomapi.ConvPrivate,
+			Platform: testPlatform, PlatformConversationID: "20001"})
+	return db
+}
+
 func writeChunks(t *testing.T, db *DB, w store.ChunkWrite) {
 	t.Helper()
 	if w.ForgetStamp == "" {
@@ -81,7 +97,7 @@ func chunkMessages(t *testing.T, db *DB, convKey string, users ...string) []int6
 
 func TestChunks_WriteLoadAndCursor(t *testing.T) {
 	ctx := context.Background()
-	db := newTestDB(t)
+	db := newChunkDB(t)
 	if n := countRows(t, db, "memory_chunks"); n != 0 {
 		t.Fatalf("memory_chunks rows = %d", n)
 	}
@@ -118,7 +134,7 @@ func TestChunks_WriteLoadAndCursor(t *testing.T) {
 
 func TestChunks_WriteSkippedAfterForgetting(t *testing.T) {
 	ctx := context.Background()
-	db := newTestDB(t)
+	db := newChunkDB(t)
 	stamp, err := db.ForgetStamp(ctx, testConvKey)
 	if err != nil {
 		t.Fatal(err)
@@ -149,9 +165,40 @@ func TestChunks_WriteSkippedAfterForgetting(t *testing.T) {
 	}
 }
 
+// The indexer embeds a chat between reading it and writing its chunks, so the
+// chat can be deleted in between; nothing of it may be stored then.
+func TestChunks_NothingWrittenForADeletedChat(t *testing.T) {
+	ctx := context.Background()
+	db := newChunkDB(t)
+	a, b := panelChatConv(testBot, "panel_a"), panelChatConv(testBot, "panel_b")
+	seedConversations(t, db, a, b)
+	stamp, err := db.ForgetStamp(ctx, a.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DeleteConversation(ctx, a.Key); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SwitchChunkModel(ctx, a.Key, "m1"); err != nil {
+		t.Fatalf("SwitchChunkModel of a deleted chat: %v", err)
+	}
+	ok, err := db.WriteChunks(ctx, store.ChunkWrite{ConversationKey: a.Key, Model: "m1", ForgetStamp: stamp, CursorSeq: 2,
+		Chunks: []store.MemoryChunk{testChunk(a.Key, 1, 2, chunkAt(0), chunkAt(1), "m1")}})
+	if err != nil || ok {
+		t.Fatalf("WriteChunks of a deleted chat = %v, %v; want skipped", ok, err)
+	}
+	for _, table := range []string{"memory_chunks", "memory_chunk_state", "memory_chunk_rebuild"} {
+		if n := countRows(t, db, table); n != 0 {
+			t.Errorf("%s rows = %d, want none", table, n)
+		}
+	}
+	writeChunks(t, db, store.ChunkWrite{ConversationKey: b.Key, Model: "m1", CursorSeq: 2,
+		Chunks: []store.MemoryChunk{testChunk(b.Key, 1, 2, chunkAt(0), chunkAt(1), "m1")}})
+}
+
 func TestChunks_ForgetMemberDeletesAndQueuesChunksWithTheirMessages(t *testing.T) {
 	ctx := context.Background()
-	db := newTestDB(t)
+	db := newChunkDB(t)
 	seqs := chunkMessages(t, db, testConvKey, "20001", "20002", "", "20002", "20001", "20002", "20002")
 	other := chunkMessages(t, db, testConvKeyB, "20001", "20001")
 	writeChunks(t, db, store.ChunkWrite{ConversationKey: testConvKey, Model: "m1", Chunks: []store.MemoryChunk{
@@ -200,7 +247,7 @@ func TestChunks_ForgetMemberDeletesAndQueuesChunksWithTheirMessages(t *testing.T
 
 func TestChunks_ForgetPrivateDeletesEverythingBefore(t *testing.T) {
 	ctx := context.Background()
-	db := newTestDB(t)
+	db := newChunkDB(t)
 	writeChunks(t, db, store.ChunkWrite{ConversationKey: testPrivateKey, Model: "m1", Chunks: []store.MemoryChunk{
 		testChunk(testPrivateKey, 1, 2, chunkAt(0), chunkAt(1), "m1"),
 		testChunk(testPrivateKey, 3, 5, chunkAt(2), chunkAt(6), "m1"),
@@ -219,7 +266,7 @@ func TestChunks_ForgetPrivateDeletesEverythingBefore(t *testing.T) {
 
 func TestChunks_Rebuild(t *testing.T) {
 	ctx := context.Background()
-	db := newTestDB(t)
+	db := newChunkDB(t)
 	writeChunks(t, db, store.ChunkWrite{ConversationKey: testConvKey, Model: "m1", Chunks: []store.MemoryChunk{
 		testChunk(testConvKey, 1, 4, chunkAt(0), chunkAt(3), "m1"),
 		testChunk(testConvKey, 5, 9, chunkAt(5), chunkAt(9), "m1"),
@@ -243,7 +290,7 @@ func TestChunks_Rebuild(t *testing.T) {
 
 func TestChunks_SwitchModel(t *testing.T) {
 	ctx := context.Background()
-	db := newTestDB(t)
+	db := newChunkDB(t)
 	writeChunks(t, db, store.ChunkWrite{ConversationKey: testConvKey, Model: "m1", CursorSeq: 9, Chunks: []store.MemoryChunk{
 		testChunk(testConvKey, 1, 4, chunkAt(0), chunkAt(3), "m1"),
 		testChunk(testConvKey, 5, 9, chunkAt(5), chunkAt(9), "m1"),
@@ -291,7 +338,7 @@ func TestChunks_SwitchModel(t *testing.T) {
 
 func TestChunks_Stamp(t *testing.T) {
 	ctx := context.Background()
-	db := newTestDB(t)
+	db := newChunkDB(t)
 	s, err := db.ChunkStamp(ctx, testConvKey, "m1", 0)
 	if err != nil || s != (store.ChunkStamp{}) {
 		t.Fatalf("ChunkStamp of nothing = %+v, %v", s, err)
@@ -312,7 +359,7 @@ func TestChunks_Stamp(t *testing.T) {
 
 func TestMessagesUpTo(t *testing.T) {
 	ctx := context.Background()
-	db := newTestDB(t)
+	db := newChunkDB(t)
 	seqs := chunkMessages(t, db, testConvKey, "20001", "20002", "20001", "20002")
 	chunkMessages(t, db, testConvKeyB, "20001")
 	got, err := db.MessagesUpTo(ctx, testConvKey, seqs[2], 2)
@@ -346,7 +393,7 @@ func reconcile(t *testing.T, db *DB) int {
 
 func TestChunks_ReconcileForgetting(t *testing.T) {
 	ctx := context.Background()
-	db := newTestDB(t)
+	db := newChunkDB(t)
 	seqs := chunkMessages(t, db, testConvKey, "20001", "20002", "20001", "20001")
 	writeChunks(t, db, store.ChunkWrite{ConversationKey: testConvKey, Model: "m1", Chunks: []store.MemoryChunk{
 		testChunk(testConvKey, seqs[0], seqs[2], chunkAt(0), chunkAt(2), "m1"),
@@ -408,7 +455,7 @@ func TestChunks_ReconcileForgetting(t *testing.T) {
 
 func TestChunks_Dims(t *testing.T) {
 	ctx := context.Background()
-	db := newTestDB(t)
+	db := newChunkDB(t)
 	long := testChunk(testConvKey, 5, 9, chunkAt(5), chunkAt(9), "m1")
 	long.Vector = []float32{1, 2, 3, 4}
 	writeChunks(t, db, store.ChunkWrite{ConversationKey: testConvKey, Model: "m1", Chunks: []store.MemoryChunk{

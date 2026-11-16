@@ -63,8 +63,17 @@ func forgetStamp(ctx context.Context, q queryer, convKey string) (string, error)
 	return s, err
 }
 
+// conversationExists reports whether the conversation is stored, that is
+// has not been deleted.
+func conversationExists(ctx context.Context, q queryer, convKey string) (bool, error) {
+	var exists bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM conversations WHERE key = ?)`, convKey).Scan(&exists)
+	return exists, err
+}
+
 // WriteChunks applies w and reports whether it did: nothing is written when
-// the conversation's forget stamp is no longer w.ForgetStamp.
+// the conversation's forget stamp is no longer w.ForgetStamp or the
+// conversation has been deleted.
 func (db *DB) WriteChunks(ctx context.Context, w store.ChunkWrite) (bool, error) {
 	written := false
 	err := db.inTx(ctx, func(tx *sql.Tx) error {
@@ -74,6 +83,9 @@ func (db *DB) WriteChunks(ctx context.Context, w store.ChunkWrite) (bool, error)
 		}
 		if stamp != w.ForgetStamp {
 			return nil
+		}
+		if exists, err := conversationExists(ctx, tx, w.ConversationKey); err != nil || !exists {
+			return err
 		}
 		for _, r := range w.Rebuilt {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM memory_chunks
@@ -113,9 +125,13 @@ func (db *DB) WriteChunks(ctx context.Context, w store.ChunkWrite) (bool, error)
 }
 
 // SwitchChunkModel makes model the conversation's embedding model: when it
-// was another, every chunk of another model is queued to be rebuilt.
+// was another, every chunk of another model is queued to be rebuilt. It does
+// nothing when the conversation has been deleted.
 func (db *DB) SwitchChunkModel(ctx context.Context, convKey, model string) error {
 	return db.inTx(ctx, func(tx *sql.Tx) error {
+		if exists, err := conversationExists(ctx, tx, convKey); err != nil || !exists {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO memory_chunk_rebuild (conversation_key, start_seq, end_seq)
 			SELECT conversation_key, start_seq, end_seq FROM memory_chunks WHERE conversation_key = ? AND model <> ?
 			ORDER BY start_seq`, convKey, model); err != nil {
