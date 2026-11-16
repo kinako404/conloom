@@ -169,7 +169,10 @@ func (o *Orchestrator) privateProactiveStatus(ctx context.Context, convKey strin
 	if err != nil {
 		return conloomapi.AutonomyProactive{}, err
 	}
-	user := conv.PlatformConversationID
+	user, err := o.chatUser(ctx, conv)
+	if err != nil {
+		return conloomapi.AutonomyProactive{}, err
+	}
 	rows, err := o.st.GetMemberMemories(ctx, memory.ScopeKeyOf(convKey), []string{user})
 	if err != nil {
 		return conloomapi.AutonomyProactive{}, err
@@ -197,6 +200,25 @@ func (o *Orchestrator) privateProactiveStatus(ctx context.Context, convKey strin
 		out.Timers = append(out.Timers, conloomapi.AutonomyTimer{Kind: string(t.Kind), DueAt: t.DueAt})
 	}
 	return out, nil
+}
+
+// chatUser is the user of the private chat conv: its platform conversation
+// ID or, in a panel chat, whose ID is the chat's own, the panel actor who sent
+// the newest user message among its newest wakeRecentScan ("" without one).
+func (o *Orchestrator) chatUser(ctx context.Context, conv store.ConversationRecord) (string, error) {
+	if conv.Platform != store.PlatformPanel {
+		return conv.PlatformConversationID, nil
+	}
+	msgs, err := o.st.RecentMessages(ctx, conv.Key, wakeRecentScan)
+	if err != nil {
+		return "", err
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if !msgs[i].FromBot {
+			return msgs[i].PlatformUserID, nil
+		}
+	}
+	return "", nil
 }
 
 // minuteClock formats minutes of the day as "HH:MM".
