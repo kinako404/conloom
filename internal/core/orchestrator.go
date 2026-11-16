@@ -1103,30 +1103,38 @@ func taskError(code, traceID string) *conloomapi.ErrorBody {
 
 // CancelTask cancels a queued or running task and returns its state. If the
 // task is being executed (a running reply or a command in progress) it waits
-// briefly for the executor to record the outcome.
+// briefly for the executor to record the outcome. An initiate task (see
+// wake.go) it cancelled has the chat's next initiate planned
+// (replanInitiate): its timer went when it fired, and cancelling one message
+// does not stop the bot from starting the chat later.
 func (o *Orchestrator) CancelTask(ctx context.Context, botID, taskID string) (conloomapi.Task, error) {
 	rec, err := o.st.GetTask(ctx, botID, taskID)
 	if err != nil {
 		return conloomapi.Task{}, err
 	}
-	if !taskFinished(rec.Status) {
-		done, err := o.cancel(ctx, botID, rec.ConversationKey, taskID)
-		if err != nil {
-			return conloomapi.Task{}, err
-		}
-		if done != nil {
-			t := time.NewTimer(cancelWait)
-			select {
-			case <-done:
-			case <-t.C:
-			case <-ctx.Done():
-				t.Stop()
-				return conloomapi.Task{}, ctx.Err()
-			}
-			t.Stop()
-		}
+	if taskFinished(rec.Status) {
+		return o.GetTask(ctx, botID, taskID)
 	}
-	return o.GetTask(ctx, botID, taskID)
+	done, err := o.cancel(ctx, botID, rec.ConversationKey, taskID)
+	if err != nil {
+		return conloomapi.Task{}, err
+	}
+	if done != nil {
+		t := time.NewTimer(cancelWait)
+		select {
+		case <-done:
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+			return conloomapi.Task{}, ctx.Err()
+		}
+		t.Stop()
+	}
+	task, err := o.GetTask(ctx, botID, taskID)
+	if err == nil && rec.Meta.Trigger == TriggerInitiate && task.Status == conloomapi.TaskCancelled {
+		o.replanInitiate(context.WithoutCancel(ctx), rec.ConversationKey)
+	}
+	return task, err
 }
 
 // cancel cancels taskID. If another party owns the task, the returned channel

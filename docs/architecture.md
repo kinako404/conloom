@@ -212,7 +212,7 @@ API 里还定义了 `observe`、`manual`，核心不使用。
 
 ### 3.5 取消
 
-- `POST /tasks/{id}/cancel`：正在执行的任务取消它的 context，最多等 5 秒让 Runner 记成 `cancelled`；还在排队的直接从队列删除。正在执行的命令无法取消。
+- `POST /tasks/{id}/cancel`：正在执行的任务取消它的 context，最多等 5 秒让 Runner 记成 `cancelled`；还在排队的先记成 `cancelled`（请求中途断开也照样记），再从队列删除，记不下来时留在队列里并返回错误。正在执行的命令无法取消。取消的是私聊里的主动找人（`initiate`）时，随后重新排下一次主动（`replanInitiate`）：取消一条不等于关掉主动找人。
 - `/stop`：取消本群里发送者自己发起的任务，管理员可以取消全部。发送者最近一条已写出的回复（`LastReplyTask`）还没发放的动作也标成 `cancelled`（`cancelStoredParts`，`commands.go:202`），审计记一条 `outbox.stopped`（含任务和被取消的条数）；已发放的照常发送。管理员只作废自己的这条回复，不动别人的。
 - `/pause`（或策略并发改为 0）：结束在聊会话、停掉停顿计时器、取消所有活跃任务。
 - 私聊打断重来：回复开始后同一个人又发来消息，旧任务被取代，见 3.7。
