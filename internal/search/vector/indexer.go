@@ -370,7 +370,10 @@ func (ix *Indexer) rebuild(ctx context.Context, convKey, model, stamp string, bu
 }
 
 // forward cuts the conversation's messages after cursor into chunks and
-// embeds up to budget closed ones, moving the cursor past them.
+// embeds up to budget closed ones, moving the cursor past them. When the scan
+// reads forwardScan messages it may stop inside the last chunk, which then
+// waits for the next round unless it is the only one: the next round would
+// read the same messages again, so it is embedded as it is.
 func (ix *Indexer) forward(ctx context.Context, convKey, model, stamp string, cursor int64, budget int, transcript transcriptFunc) (int, error) {
 	msgs, err := ix.d.Store.MessagesAfter(ctx, convKey, cursor, forwardScan)
 	if err != nil || len(msgs) == 0 {
@@ -384,7 +387,13 @@ func (ix *Indexer) forward(ctx context.Context, convKey, model, stamp string, cu
 	}
 	chunks := split(lines)
 	closed := len(chunks)
-	if closed > 0 && (truncated || !chunks[closed-1].closedAt(ix.now())) {
+	switch {
+	case closed == 0:
+	case truncated:
+		if closed > 1 {
+			closed--
+		}
+	case !chunks[closed-1].closedAt(ix.now()):
 		closed--
 	}
 	next := newest
