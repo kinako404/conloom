@@ -195,13 +195,6 @@ func TestTemplatesAPI_CRUDResetDelete(t *testing.T) {
 	if got := h.template("night-owl"); !reflect.DeepEqual(got.Users, []templateUserResp{{bot.ID, "小红", "panel"}}) {
 		t.Errorf("night-owl users = %+v, want 小红", got.Users)
 	}
-	e := errorBody(t, h.write(http.MethodDelete, templatePath("night-owl"), nil), http.StatusConflict, conloomapi.CodeTemplateInUse)
-	if !strings.Contains(e.Message, "小红") || e.Retryable {
-		t.Errorf("in-use delete = %+v, want the bot 小红 named, not retryable", e)
-	}
-	if _, ok := h.personas.Template("night-owl"); !ok {
-		t.Fatal("template in use was deleted")
-	}
 
 	for _, name := range []string{"night-owl", "cat", "nope"} {
 		errorBody(t, h.write(http.MethodPost, templatePath(name, "reset"), nil), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
@@ -211,8 +204,8 @@ func TestTemplatesAPI_CRUDResetDelete(t *testing.T) {
 	h.getErr(templatePath("nope"), http.StatusNotFound, conloomapi.CodeNotFound)
 
 	decodeBot(t, h.write(http.MethodPut, botPath(bot.ID), map[string]any{"name": "小红", "persona_template": "cat", "skills": []string{}}), http.StatusOK)
-	if w := h.write(http.MethodDelete, templatePath("night-owl"), nil); w.Code != http.StatusNoContent {
-		t.Fatalf("delete free template: %d %s", w.Code, w.Body)
+	if got := h.deleteTemplate("night-owl"); !reflect.DeepEqual(got, deletedResp{Name: "night-owl", AffectedBots: []string{}}) {
+		t.Errorf("delete of a template no bot uses = %+v, want no affected bots", got)
 	}
 	h.getErr(templatePath("night-owl"), http.StatusNotFound, conloomapi.CodeNotFound)
 	if _, ok := h.personas.Template("night-owl"); ok {
@@ -230,7 +223,118 @@ func TestTemplatesAPI_CRUDResetDelete(t *testing.T) {
 		}
 	}
 	checkTemplateAudits(t, h, "persona.template.reset", "default", "default")
-	checkTemplateAudits(t, h, "persona.template.delete", "night-owl")
+	if deletes := checkTemplateAudits(t, h, "persona.template.delete", "night-owl"); !someContains(deletes, `"affected_bots":[]`) {
+		t.Errorf("delete audit details = %v, want no affected bots", deletes)
+	}
+}
+
+// deletedResp is the response to a persona template's DELETE.
+type deletedResp struct {
+	Name         string   `json:"name"`
+	AffectedBots []string `json:"affected_bots"`
+}
+
+// deleteTemplate deletes the persona template name through the API, which
+// must answer 200.
+func (h *writeHarness) deleteTemplate(name string) deletedResp {
+	h.t.Helper()
+	w := h.write(http.MethodDelete, templatePath(name), nil)
+	if w.Code != http.StatusOK {
+		h.t.Fatalf("DELETE %s: status = %d, want 200 (body %s)", name, w.Code, w.Body)
+	}
+	var v deletedResp
+	if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil {
+		h.t.Fatalf("decode %s: %v", w.Body, err)
+	}
+	return v
+}
+
+func TestTemplatesAPI_DeleteInUseFallsBack(t *testing.T) {
+	h := newBotsHarnessUsing(t, "cat")
+	bot := h.createBot("小红", "cat", "time")
+	h.advance(time.Minute)
+	other := h.createBot("小刚", "default")
+	if got := h.template("cat"); !reflect.DeepEqual(got.Users, []templateUserResp{{dataBot, "织语", "config"}, {bot.ID, "小红", "panel"}}) {
+		t.Fatalf("cat users = %+v, want the config bot and 小红", got.Users)
+	}
+
+	got := h.deleteTemplate("cat")
+	if want := (deletedResp{Name: "cat", AffectedBots: []string{"织语（" + dataBot + "）", "小红"}}); !reflect.DeepEqual(got, want) {
+		t.Errorf("delete of a template in use = %+v, want %+v", got, want)
+	}
+	h.getErr(templatePath("cat"), http.StatusNotFound, conloomapi.CodeNotFound)
+	if _, ok := h.personas.Template("cat"); ok {
+		t.Error("deleted template still in the catalog")
+	}
+
+	problem := []string{"人设模板“cat”已不存在，暂用 default"}
+	bots := h.bots()
+	if len(bots.Bots) != 3 {
+		t.Fatalf("bots after the delete = %+v, want the config bot, 小红 and 小刚", bots.Bots)
+	}
+	for i, want := range []botResp{
+		{ID: dataBot, Name: "织语", Source: "config", PersonaTemplate: "default", Skills: []string{"time"}, Problems: problem},
+		{ID: bot.ID, Name: "小红", Source: "panel", PersonaTemplate: "default", Skills: []string{"time"}, Problems: problem},
+		{ID: other.ID, Name: "小刚", Source: "panel", PersonaTemplate: "default", Skills: []string{}, Problems: []string{}},
+	} {
+		if !reflect.DeepEqual(bots.Bots[i], want) {
+			t.Errorf("bot %d after the delete = %+v, want %+v", i, bots.Bots[i], want)
+		}
+	}
+	if slices.Contains(bots.Templates, "cat") {
+		t.Errorf("templates to choose = %v, still with cat", bots.Templates)
+	}
+	if got := h.template("default").Users; !reflect.DeepEqual(got, []templateUserResp{
+		{dataBot, "织语", "config"}, {bot.ID, "小红", "panel"}, {other.ID, "小刚", "panel"},
+	}) {
+		t.Errorf("default users after the delete = %+v, want every bot", got)
+	}
+	if deletes := checkTemplateAudits(t, h, "persona.template.delete", "cat"); !someContains(deletes,
+		`"affected_bots":["织语（`+dataBot+`）","小红"]`) {
+		t.Errorf("delete audit details = %v, want the affected bots", deletes)
+	}
+
+	// Choosing a template again clears the panel bot's problem.
+	decodeBot(t, h.write(http.MethodPut, botPath(bot.ID), map[string]any{"name": "小红", "persona_template": "default", "skills": []string{"time"}}), http.StatusOK)
+	if b := h.bots().Bots[1]; b.PersonaTemplate != "default" || len(b.Problems) != 0 {
+		t.Errorf("小红 after choosing default = %+v, want no problems", b)
+	}
+}
+
+func TestTemplatesAPI_CreateBlank(t *testing.T) {
+	h := newBotsHarness(t)
+	// A saved default is not the built-in default persona a blank template
+	// starts from.
+	decodeTemplate(t, h.putTemplate("default", lighthousePersona(), ""), http.StatusOK)
+
+	var builtin struct {
+		Persona *conloomapi.PersonaDoc `json:"persona"`
+	}
+	h.getJSON(templatePath("default", "builtin"), &builtin)
+	if builtin.Persona == nil || !reflect.DeepEqual(*builtin.Persona, conloomapi.DefaultPersona()) {
+		t.Fatalf("built-in default = %+v, want conloomapi.DefaultPersona()", builtin.Persona)
+	}
+	errorBody(t, h.do(http.MethodGet, templatePath("default", "builtin"), ""), http.StatusUnauthorized, conloomapi.CodeUnauthorized)
+	for _, name := range []string{"cat", "nope"} {
+		if w := h.get(templatePath(name, "builtin")); w.Code != http.StatusNotFound {
+			t.Errorf("GET %s/builtin = %d, want 404: only default has a built-in version", name, w.Code)
+		}
+	}
+
+	got := decodeTemplate(t, h.putTemplate("blank-1", *builtin.Persona, "从内置默认人设新建"), http.StatusCreated)
+	if got.Name != "blank-1" || got.Source != "db" || got.Persona == nil || !reflect.DeepEqual(*got.Persona, conloomapi.DefaultPersona()) {
+		t.Errorf("new blank template = %+v, want the built-in default persona", got)
+	}
+	if doc, _ := h.personas.Template("default"); !reflect.DeepEqual(doc, lighthousePersona()) {
+		t.Errorf("default = %+v, want the saved one unchanged", doc)
+	}
+	for _, name := range []string{"export", "import"} {
+		errorBody(t, h.putTemplate(name, *builtin.Persona, ""), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	}
+	if puts := checkTemplateAudits(t, h, "persona.template.put", "default", "blank-1"); !someContains(puts,
+		`"created":true`, `"reason":"从内置默认人设新建"`) {
+		t.Errorf("put audit details = %v, want blank-1 created", puts)
+	}
 }
 
 func TestTemplatesAPI_ClearsPanelBotProblem(t *testing.T) {
@@ -253,7 +357,12 @@ func TestTemplatesAPI_ClearsPanelBotProblem(t *testing.T) {
 	if b := h.bots().Bots[1]; b.PersonaTemplate != "night-owl" || len(b.Problems) != 0 {
 		t.Errorf("bot after its template was created = %+v, want night-owl without problems", b)
 	}
-	errorBody(t, h.write(http.MethodDelete, templatePath("night-owl"), nil), http.StatusConflict, conloomapi.CodeTemplateInUse)
+	if got := h.deleteTemplate("night-owl"); !slices.Equal(got.AffectedBots, []string{"小红"}) {
+		t.Errorf("delete of night-owl = %+v, want 小红 affected", got)
+	}
+	if b := h.bots().Bots[1]; b.PersonaTemplate != "default" || len(b.Problems) != 1 {
+		t.Errorf("bot after its template was deleted again = %+v, want default and one problem", b)
+	}
 }
 
 func TestTemplatesAPI_NameRules(t *testing.T) {
@@ -688,7 +797,8 @@ func TestTemplatesAPI_ExportAllSkipsTemplateDeletedMeanwhile(t *testing.T) {
 	// moon is deleted while lighthouse, written before it, is read.
 	spy.onRead = func(id string) error {
 		if id == lighthouse {
-			return h.srv.d.Personas.DeleteTemplate(context.Background(), "moon")
+			_, err := h.srv.d.Personas.DeleteTemplate(context.Background(), "moon")
+			return err
 		}
 		return nil
 	}

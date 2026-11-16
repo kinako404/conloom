@@ -76,8 +76,7 @@ func (s *Server) respond(w http.ResponseWriter, r *http.Request, status int, cod
 // error text, and so is a request for the hidden state of a conversation that
 // is not private; a change to a bot of the config file, and deleting the
 // persona template "default", is 403; a refused consolidation is 409
-// MEMORY_DISABLED or PAUSED; deleting a persona template bots use is 409
-// TEMPLATE_IN_USE naming them; importing templates whose names stored
+// MEMORY_DISABLED or PAUSED; importing templates whose names stored
 // templates have is 409 TEMPLATE_EXISTS listing them in names; a bot being
 // deleted, or a chat whose cancelled tasks are still stopping, is a retryable
 // 409 CHAT_BUSY; a cancelled request or a member memory that kept changing is
@@ -108,9 +107,6 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		s.respondError(w, r, http.StatusForbidden, conloomapi.CodeForbidden, strings.TrimPrefix(core.ErrConfigBot.Error(), "core: "), err)
 	case errors.Is(err, persona.ErrDefaultTemplate):
 		s.respondError(w, r, http.StatusForbidden, conloomapi.CodeForbidden, strings.TrimPrefix(err.Error(), "persona: "), err)
-	case errors.Is(err, persona.ErrTemplateInUse):
-		s.respondError(w, r, http.StatusConflict, conloomapi.CodeTemplateInUse,
-			strings.TrimPrefix(err.Error(), persona.ErrTemplateInUse.Error()+": "), err)
 	case errors.As(err, &conflict):
 		s.respond(w, r, http.StatusConflict, conloomapi.CodeTemplateExists, strings.TrimPrefix(conflict.Error(), "persona: "), err,
 			false, conflict.Names)

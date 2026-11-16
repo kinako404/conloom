@@ -304,8 +304,11 @@ func TestDirectory_ConfigBotMissingTemplate(t *testing.T) {
 		t.Errorf("config bot after its template was created = %+v, want night-owl without problems", b)
 	}
 	status, raw := p.do("DELETE", "/panel/api/persona-templates/night-owl", nil)
-	if status != 409 || !strings.Contains(string(raw), botID) {
-		t.Errorf("DELETE night-owl: status %d, body %s; want 409 naming %s", status, raw, botID)
+	if status != 200 || !strings.Contains(string(raw), botID) {
+		t.Errorf("DELETE night-owl: status %d, body %s; want 200 naming %s", status, raw, botID)
+	}
+	if b := configBot(); b.PersonaTemplate != "default" || !slices.Equal(b.Problems, want) {
+		t.Errorf("config bot after its template was deleted = %+v, want default with the problem %q", b, want)
 	}
 }
 

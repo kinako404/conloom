@@ -1194,7 +1194,7 @@ func TestCatalog_BuiltinDefault(t *testing.T) {
 	loadTemplates(t, restarted)
 	checkInfos(t, restarted.Templates(), svc.Templates())
 
-	if err := svc.DeleteTemplate(ctx, "default"); !errors.Is(err, ErrDefaultTemplate) {
+	if _, err := svc.DeleteTemplate(ctx, "default"); !errors.Is(err, ErrDefaultTemplate) {
 		t.Errorf("DeleteTemplate default err = %v, want ErrDefaultTemplate", err)
 	}
 	if doc, _ := svc.Template("default"); !reflect.DeepEqual(doc, edited) {
@@ -1209,7 +1209,7 @@ func TestCatalog_BuiltinDefault(t *testing.T) {
 	if names := storedTemplateNames(t, st); len(names) != 0 {
 		t.Errorf("stored templates after reset = %v, want none", names)
 	}
-	if err := svc.DeleteTemplate(ctx, "default"); !errors.Is(err, ErrDefaultTemplate) {
+	if _, err := svc.DeleteTemplate(ctx, "default"); !errors.Is(err, ErrDefaultTemplate) {
 		t.Errorf("DeleteTemplate of the built-in default err = %v, want ErrDefaultTemplate", err)
 	}
 
@@ -1226,9 +1226,10 @@ func TestCatalog_BuiltinDefault(t *testing.T) {
 	}
 }
 
-func TestCatalog_DeleteInUseByConfigBot(t *testing.T) {
+func TestCatalog_DeleteInUseAllowed(t *testing.T) {
 	ctx := context.Background()
-	svc := NewService(newTestStore(t))
+	st := newTestStore(t)
+	svc := NewService(st)
 	for _, name := range []string{"lighthouse", "cat", "free"} {
 		if err := svc.PutTemplate(ctx, name, tagged(name), "panel:admin"); err != nil {
 			t.Fatalf("PutTemplate %s: %v", name, err)
@@ -1241,20 +1242,27 @@ func TestCatalog_DeleteInUseByConfigBot(t *testing.T) {
 	bots.SetPanel([]botdir.Entry{{Bot: botdir.PanelBotConfig(store.PanelBot{ID: "panel-a1b2c3d4", Name: "小红", PersonaTemplate: "cat"})}})
 	svc.SetTemplateUsers(bots.TemplateUsers)
 
-	err := svc.DeleteTemplate(ctx, "lighthouse")
-	if !errors.Is(err, ErrTemplateInUse) || !strings.Contains(err.Error(), "小明（qq-main）") || strings.Contains(err.Error(), "tg-main") {
-		t.Errorf("DeleteTemplate of a config bot's template err = %v, want ErrTemplateInUse naming qq-main only", err)
-	}
-	if err := svc.DeleteTemplate(ctx, "cat"); !errors.Is(err, ErrTemplateInUse) || !strings.Contains(err.Error(), "小红") {
-		t.Errorf("DeleteTemplate of a panel bot's template err = %v, want ErrTemplateInUse naming 小红", err)
-	}
-	for _, name := range []string{"lighthouse", "cat"} {
-		if _, ok := svc.Template(name); !ok {
-			t.Errorf("template %s in use was deleted", name)
+	for _, c := range []struct {
+		name  string
+		users []string
+	}{
+		{"lighthouse", []string{"小明（qq-main）"}},
+		{"cat", []string{"小红"}},
+		{"free", nil},
+	} {
+		users, err := svc.DeleteTemplate(ctx, c.name)
+		if err != nil || !slices.Equal(users, c.users) {
+			t.Errorf("DeleteTemplate %s = %q, %v; want it deleted, used by %q", c.name, users, err, c.users)
+		}
+		if _, ok := svc.Template(c.name); ok {
+			t.Errorf("deleted template %s still in the catalog", c.name)
 		}
 	}
-	if err := svc.DeleteTemplate(ctx, "free"); err != nil {
-		t.Errorf("DeleteTemplate of a template no bot uses: %v", err)
+	if names := storedTemplateNames(t, st); len(names) != 0 {
+		t.Errorf("stored templates after deleting them all = %v, want none", names)
+	}
+	if users, err := svc.DeleteTemplate(ctx, "default"); !errors.Is(err, ErrDefaultTemplate) || users != nil {
+		t.Errorf("DeleteTemplate default = %q, %v; want ErrDefaultTemplate: tg-main uses it, and it is the fallback", users, err)
 	}
 }
 
@@ -1284,19 +1292,9 @@ func TestCatalog_PutAndDelete(t *testing.T) {
 		t.Errorf("new template = %+v", got)
 	}
 	usersOf[name] = []string{"小红", "小明（qq-main）"}
-	err := svc.DeleteTemplate(ctx, name)
-	if !errors.Is(err, ErrTemplateInUse) || !strings.Contains(err.Error(), "小红") || !strings.Contains(err.Error(), "小明（qq-main）") {
-		t.Errorf("DeleteTemplate of a template in use err = %v, want ErrTemplateInUse naming 小红 and 小明", err)
-	}
-	if _, ok := svc.Template(name); !ok {
-		t.Error("template in use deleted from the catalog")
-	}
-	if names := storedTemplateNames(t, st); !slices.Contains(names, name) {
-		t.Errorf("template in use deleted from the store: %v", names)
-	}
-	delete(usersOf, name)
-	if err := svc.DeleteTemplate(ctx, name); err != nil {
-		t.Fatalf("DeleteTemplate %s: %v", name, err)
+	users, err := svc.DeleteTemplate(ctx, name)
+	if err != nil || !slices.Equal(users, usersOf[name]) {
+		t.Fatalf("DeleteTemplate of a template in use = %q, %v; want it deleted, used by 小红 and 小明", users, err)
 	}
 	if _, ok := svc.Template(name); ok {
 		t.Error("deleted template still in the catalog")
@@ -1304,8 +1302,8 @@ func TestCatalog_PutAndDelete(t *testing.T) {
 	if names := storedTemplateNames(t, st); slices.Contains(names, name) {
 		t.Errorf("deleted template still stored: %v", names)
 	}
-	if err := svc.DeleteTemplate(ctx, name); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("DeleteTemplate of an unknown template err = %v, want ErrNotFound", err)
+	if users, err := svc.DeleteTemplate(ctx, name); !errors.Is(err, store.ErrNotFound) || users != nil {
+		t.Errorf("DeleteTemplate of an unknown template = %q, %v; want ErrNotFound and no users", users, err)
 	}
 
 	namesBefore, storedBefore := svc.TemplateNames(), storedTemplateNames(t, st)
@@ -1373,7 +1371,7 @@ func TestCatalog_ReservedNames(t *testing.T) {
 
 	for _, name := range []string{"import", "export"} {
 		if name == "export" {
-			if err := svc.DeleteTemplate(ctx, "export"); err != nil {
+			if _, err := svc.DeleteTemplate(ctx, "export"); err != nil {
 				t.Fatalf("DeleteTemplate export: %v", err)
 			}
 		}
@@ -1421,7 +1419,7 @@ func TestCatalog_ConcurrentPutAndRead(t *testing.T) {
 		for i := range rounds {
 			var err error
 			if i%2 == 1 {
-				err = svc.DeleteTemplate(ctx, "cat")
+				_, err = svc.DeleteTemplate(ctx, "cat")
 			} else {
 				err = svc.PutTemplate(ctx, "cat", tagged(fmt.Sprint("猫", i)), "panel:admin")
 			}
@@ -1600,7 +1598,7 @@ func TestCatalog_ReferencedImages(t *testing.T) {
 		t.Errorf("ReferencedImages after a put = %v, want %v", got, want)
 	}
 	for _, name := range []string{"plain", "again"} {
-		if err := svc.DeleteTemplate(ctx, name); err != nil {
+		if _, err := svc.DeleteTemplate(ctx, name); err != nil {
 			t.Fatalf("DeleteTemplate %s: %v", name, err)
 		}
 	}

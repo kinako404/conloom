@@ -39,11 +39,18 @@ func (stubTool) Call(context.Context, skills.Invocation, json.RawMessage) (strin
 // newBotsHarness is a writeHarness whose panel bots, panel chats and
 // appearance descriptions are served by a real orchestrator (without a vision
 // model) over its store, on the harness's clock; deleting a persona template
-// checks the bots using it, as in the app. The config bot is dataBot, the
-// persona templates are the built-in default and the stored cat, and the
-// skills are the built-in ones, with stub tools, plus grouponly, which only
-// group chats may use.
+// finds the bots using it, as in the app. The config bot is dataBot, whose
+// persona template is default, the persona templates are the built-in default
+// and the stored cat, and the skills are the built-in ones, with stub tools,
+// plus grouponly, which only group chats may use.
 func newBotsHarness(t *testing.T) *writeHarness {
+	t.Helper()
+	return newBotsHarnessUsing(t, "default")
+}
+
+// newBotsHarnessUsing is newBotsHarness whose config bot's persona template
+// is template.
+func newBotsHarnessUsing(t *testing.T, template string) *writeHarness {
 	t.Helper()
 	loaded, err := skills.Load("")
 	if err != nil {
@@ -61,7 +68,7 @@ func newBotsHarness(t *testing.T) *writeHarness {
 	}
 	h := &writeHarness{trigger: &fakeTrigger{}}
 	h.storeHarness = newStoreHarness(t,
-		[]config.BotConfig{{ID: dataBot, Platform: "qq", Name: "织语", PersonaTemplate: "default", Skills: []string{"time"}}},
+		[]config.BotConfig{{ID: dataBot, Platform: "qq", Name: "织语", PersonaTemplate: template, Skills: []string{"time"}}},
 		map[string]conloomapi.PersonaDoc{"cat": catPersona},
 		func(d *Deps) {
 			o, err := core.New(core.Deps{

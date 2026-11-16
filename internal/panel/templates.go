@@ -153,16 +153,35 @@ func (s *Server) resetTemplate(w http.ResponseWriter, r *http.Request, sess *Ses
 	s.writeTemplate(w, r, http.StatusOK, name)
 }
 
-// deleteTemplate deletes the template {name}; "default" is 403.
+// deleteTemplate deletes the template {name}, also while bots use it, and
+// answers the bots that did (see persona.Service.DeleteTemplate), which use
+// "default" from now on, each noting the problem; "default" is 403.
 func (s *Server) deleteTemplate(w http.ResponseWriter, r *http.Request, sess *Session) {
 	name := r.PathValue("name")
-	if err := s.d.Personas.DeleteTemplate(r.Context(), name); err != nil {
+	affected, err := s.d.Personas.DeleteTemplate(r.Context(), name)
+	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
+	if affected == nil {
+		affected = []string{}
+	}
 	s.templatesChanged(r)
-	s.audit(r, sess, "", "persona.template.delete", name, struct{}{})
-	w.WriteHeader(http.StatusNoContent)
+	s.audit(r, sess, "", "persona.template.delete", name, struct {
+		AffectedBots []string `json:"affected_bots"`
+	}{affected})
+	s.writeJSON(w, http.StatusOK, struct {
+		Name         string   `json:"name"`
+		AffectedBots []string `json:"affected_bots"`
+	}{name, affected})
+}
+
+// getBuiltinTemplate answers the built-in default persona: "default" while
+// none is stored, and where a new blank template starts.
+func (s *Server) getBuiltinTemplate(w http.ResponseWriter, _ *http.Request, _ *Session) {
+	s.writeJSON(w, http.StatusOK, struct {
+		Persona conloomapi.PersonaDoc `json:"persona"`
+	}{conloomapi.DefaultPersona()})
 }
 
 // exportTemplate downloads the persona template {name} as an exchange file

@@ -36,7 +36,6 @@ func Validate(p conloomapi.PersonaDoc) error {
 // Errors of the template catalog. ErrInvalidTemplate wraps ErrInvalid.
 var (
 	ErrInvalidTemplate = fmt.Errorf("%w template", ErrInvalid)
-	ErrTemplateInUse   = errors.New("persona: template is in use")
 	ErrDefaultTemplate = errors.New("persona: the default template cannot be deleted")
 )
 
@@ -160,10 +159,10 @@ func (s *Service) SetImageChecker(f func(ctx context.Context, id string) (bool, 
 	s.imageExists = f
 }
 
-// SetTemplateUsers sets how DeleteTemplate finds the users of a template: f
-// returns the bots, config and panel bots alike, whose persona template is
-// name. Without it no template is in use. Call it before the Service is
-// shared.
+// SetTemplateUsers sets how DeleteTemplate finds the bots a deleted template
+// leaves without their persona template: f returns the bots, config and
+// panel bots alike, whose persona template is name. Without it DeleteTemplate
+// reports none. Call it before the Service is shared.
 func (s *Service) SetTemplateUsers(f func(name string) []string) {
 	s.templateUsers = f
 }
@@ -283,31 +282,32 @@ func (s *Service) ResetTemplate(ctx context.Context, name string) error {
 }
 
 // DeleteTemplate deletes the stored template name, also a row LoadTemplates
-// left out. "default" is ErrDefaultTemplate (see ResetTemplate); a template
-// bots use (see SetTemplateUsers) is ErrTemplateInUse naming them; an
-// unknown name is store.ErrNotFound.
-func (s *Service) DeleteTemplate(ctx context.Context, name string) error {
+// left out, even while bots use it, and returns those bots (see
+// SetTemplateUsers). It does not change them: publishing the bots again
+// (core.PanelBotService.Load) makes them use "default", noting the problem.
+// "default" is ErrDefaultTemplate (see ResetTemplate); an unknown name is
+// store.ErrNotFound.
+func (s *Service) DeleteTemplate(ctx context.Context, name string) ([]string, error) {
 	if name == defaultTemplate {
-		return fmt.Errorf("%w; reset it to go back to the built-in default persona", ErrDefaultTemplate)
+		return nil, fmt.Errorf("%w; reset it to go back to the built-in default persona", ErrDefaultTemplate)
 	}
 	s.templateMu.Lock()
 	defer s.templateMu.Unlock()
+	var users []string
 	if s.templateUsers != nil {
-		if users := s.templateUsers(name); len(users) > 0 {
-			return fmt.Errorf("%w: bot %s 还在用这个模板", ErrTemplateInUse, strings.Join(users, "、"))
-		}
+		users = s.templateUsers(name)
 	}
 	deleted, err := s.st.DeletePersonaTemplate(ctx, name)
 	if err != nil {
-		return fmt.Errorf("persona: delete template %q: %w", name, err)
+		return nil, fmt.Errorf("persona: delete template %q: %w", name, err)
 	}
 	if !deleted {
-		return fmt.Errorf("%w: persona template %q", store.ErrNotFound, name)
+		return nil, fmt.Errorf("%w: persona template %q", store.ErrNotFound, name)
 	}
 	stored := maps.Clone(s.stored)
 	delete(stored, name)
 	s.publish(stored)
-	return nil
+	return users, nil
 }
 
 // publish makes stored the catalog's stored templates and publishes the

@@ -335,22 +335,32 @@ func TestPanelBots_OnlineTemplate(t *testing.T) {
 		t.Errorf("system prompt of the bot's new chat does not use the online template:\n%s", sys)
 	}
 
-	if err := env.o.personas.DeleteTemplate(ctx, "online_cat"); !errors.Is(err, persona.ErrTemplateInUse) {
-		t.Fatalf("DeleteTemplate of the bot's template err = %v, want ErrTemplateInUse", err)
-	}
-	// The template disappears behind the catalog's back, as a stored row
-	// found invalid at startup does.
-	if _, err := env.st.DeletePersonaTemplate(ctx, "online_cat"); err != nil {
-		t.Fatal(err)
-	}
-	if err := env.o.personas.LoadTemplates(ctx); err != nil {
-		t.Fatal(err)
+	users, err := env.o.personas.DeleteTemplate(ctx, "online_cat")
+	if err != nil || !slices.Equal(users, []string{"小红"}) {
+		t.Fatalf("DeleteTemplate of the bot's template = %q, %v; want it deleted, used by 小红", users, err)
 	}
 	if err := svc.Load(ctx); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if b, _ := env.o.bots.Bot(bot.ID); b.PersonaTemplate != "default" || len(env.o.bots.Problems(bot.ID)) != 1 {
-		t.Errorf("bot after its template was deleted = %+v, problems %v; want default with a problem", b, env.o.bots.Problems(bot.ID))
+	want := []string{"人设模板“online_cat”已不存在，暂用 default"}
+	if b, _ := env.o.bots.Bot(bot.ID); b.PersonaTemplate != "default" || !slices.Equal(env.o.bots.Problems(bot.ID), want) {
+		t.Errorf("bot after its template was deleted = %+v, problems %q; want default and %q", b, env.o.bots.Problems(bot.ID), want)
+	}
+
+	// A new chat starts from default; the chat that copied the template keeps it.
+	fresh := env.createChat(t, bot.ID)
+	if task := env.waitBotTask(t, bot.ID, env.panelBotMessage(t, bot.ID, fresh, "你好")); task.Status != conloomapi.TaskSucceeded {
+		t.Fatalf("new chat's task after the template was deleted = %+v", task)
+	}
+	if sys := systemPrompt(t, env.lastRequest(t)); !strings.HasPrefix(sys, persona.CorePrompt("小红")) ||
+		!strings.Contains(sys, persona.Render(conloomapi.DefaultPersona())) {
+		t.Errorf("system prompt of a new chat after the template was deleted does not use default:\n%s", sys)
+	}
+	if task := env.waitBotTask(t, bot.ID, env.panelBotMessage(t, bot.ID, key, "还在吗")); task.Status != conloomapi.TaskSucceeded {
+		t.Fatalf("old chat's task after the template was deleted = %+v", task)
+	}
+	if sys := systemPrompt(t, env.lastRequest(t)); !strings.HasPrefix(sys, persona.CorePrompt("小猫")) || !strings.Contains(sys, persona.Render(cat)) {
+		t.Errorf("system prompt of the chat that copied the deleted template changed:\n%s", sys)
 	}
 }
 
@@ -782,8 +792,15 @@ func TestPanelBots_LoadMarksConfigBotProblems(t *testing.T) {
 	if bot, _ := env.o.bots.Bot(testBot); bot.PersonaTemplate != "night-owl" || env.o.bots.Problems(testBot) != nil {
 		t.Fatalf("config bot after its template was created = %+v, problems %q; want night-owl without problems", bot, env.o.bots.Problems(testBot))
 	}
-	if err := env.o.personas.DeleteTemplate(ctx, "night-owl"); !errors.Is(err, persona.ErrTemplateInUse) || !strings.Contains(err.Error(), testBot) {
-		t.Errorf("DeleteTemplate of the config bot's template err = %v, want ErrTemplateInUse naming %s", err, testBot)
+	users, err := env.o.personas.DeleteTemplate(ctx, "night-owl")
+	if err != nil || len(users) != 1 || !strings.Contains(users[0], testBot) {
+		t.Fatalf("DeleteTemplate of the config bot's template = %q, %v; want it deleted, used by %s", users, err, testBot)
+	}
+	if err := env.o.PanelBots().Load(ctx); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if bot, _ := env.o.bots.Bot(testBot); bot.PersonaTemplate != "default" || !slices.Equal(env.o.bots.Problems(testBot), want) {
+		t.Errorf("config bot after its template was deleted = %+v, problems %q; want default and %q", bot, env.o.bots.Problems(testBot), want)
 	}
 }
 

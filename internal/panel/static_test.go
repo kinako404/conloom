@@ -274,10 +274,43 @@ func TestStatic_TemplatesExportImport(t *testing.T) {
 	api := get("/panel/lib/api.js")
 	for _, want := range []string{
 		"this.names = names || [];", "res.headers.get('Retry-After'), e.names)",
+		"export const del = (path) => request('DELETE', path);",
 		"export const upload = (path, blob, params) => request('POST', path, { blob, params });",
 	} {
 		if !strings.Contains(api, want) {
 			t.Errorf("/panel/lib/api.js lacks %q", want)
+		}
+	}
+}
+
+func TestStatic_TemplatesCreateAndDelete(t *testing.T) {
+	h := staticHandler(t, web.FS)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/panel/views/templates.js", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("/panel/views/templates.js: %d", w.Code)
+	}
+	js := w.Body.String()
+	for _, want := range []string{
+		// 新建模板: a name under the rules of a new template, started from
+		// the built-in default persona or a copy of a template, never
+		// overwriting one.
+		"'新建模板')", "const BUILTIN_DEFAULT = 'persona-templates/default/builtin';",
+		"const RESERVED_NAMES = ['export', 'import'];", "RESERVED_NAMES.includes(name)",
+		"'空白（内置默认人设）'", "`复制 ${t.name}`", "(await get(BUILTIN_DEFAULT)).persona",
+		"if (await exists(to)) throw new Error(", "await createTemplate(to, persona,", "go(href('templates', to))",
+		// 复制为新模板 stays, under the same name rules.
+		"'复制为新模板')", "const problem = nameProblem(to);",
+		// Deleting names the bots that use the template, before and after.
+		"(t.users || []).map(botLabel)", "删除后改用 default", "res.affected_bots", "改用 default：",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("/panel/views/templates.js lacks %q", want)
+		}
+	}
+	for _, gone := range []string{"{ title: '默认模板用于'", "新建模板：打开一个模板", "TEMPLATE_IN_USE"} {
+		if strings.Contains(js, gone) {
+			t.Errorf("/panel/views/templates.js still has %q", gone)
 		}
 	}
 }

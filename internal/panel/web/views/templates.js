@@ -1,4 +1,4 @@
-import { h, mount, errorBox, empty, table, kv } from '../lib/dom.js';
+import { h, mount, errorBox, empty, table, kv, field } from '../lib/dom.js';
 import { get, post, put, del, upload, isAbort } from '../lib/api.js';
 import { go, href } from '../lib/router.js';
 import { fmtTime } from '../lib/format.js';
@@ -10,6 +10,17 @@ const BUILTIN = 'builtin';
 
 // TEMPLATE_NAME is the form of a template name.
 const TEMPLATE_NAME = /^[a-z0-9_-]{1,32}$/;
+
+// RESERVED_NAMES are the names no new template may have
+// (persona.reservedTemplateNames): the API's export and import use them.
+const RESERVED_NAMES = ['export', 'import'];
+
+// BUILTIN_DEFAULT is the built-in default persona, where a blank template
+// starts, also after default was saved.
+const BUILTIN_DEFAULT = 'persona-templates/default/builtin';
+
+// BLANK is the start of a new template that is the built-in default persona.
+const BLANK = '';
 
 // MAX_IMPORT_MIB is the largest file an import takes.
 const MAX_IMPORT_MIB = 64;
@@ -37,13 +48,14 @@ function takeFlash() {
 }
 
 // write runs a change, showing its error in box, and goes to hash (the page
-// itself by default) with done as the success message.
+// itself by default) with done as the success message, or with done(result)
+// when done is a function of the change's result.
 async function write(box, button, fn, done, hash = location.hash) {
   if (button) button.disabled = true;
   mount(box);
   try {
-    await fn();
-    flash = done;
+    const res = await fn();
+    flash = typeof done === 'function' ? done(res) : done;
     go(hash);
   } catch (err) {
     if (!isAbort(err)) mount(box, errorBox(err));
@@ -87,6 +99,82 @@ function updated(t) {
 async function exists(name) {
   const res = await get('persona-templates');
   return (res.templates || []).some((t) => t.name === name);
+}
+
+// nameProblem says why a new template cannot be called name, or '' when it
+// can.
+function nameProblem(name) {
+  if (!TEMPLATE_NAME.test(name)) return '模板名只能是 1–32 个小写字母、数字、- 或 _';
+  if (RESERVED_NAMES.includes(name)) return '模板名不能是 export 或 import，这两个名字留给导出和导入';
+  return '';
+}
+
+// createTemplate stores persona as the new template to, with reason for the
+// audit; a name a template already has is refused, not overwritten.
+async function createTemplate(to, persona, reason) {
+  if (await exists(to)) throw new Error(`已经有名为 ${to} 的模板`);
+  await put(templatePath(to), { persona, reason });
+}
+
+// deletedNote is the message after template name was deleted: res, the
+// response, names the bots that used it, which use default from now on.
+function deletedNote(name, res) {
+  const bots = (res && res.affected_bots) || [];
+  if (!bots.length) return `已删除模板 ${name}`;
+  return `已删除模板 ${name}。这些 bot 把它当默认模板，现在改用 default：${bots.join('、')}`;
+}
+
+// newTemplateDialog creates a template from the name and start chosen in it,
+// the built-in default persona or a copy of the saved version of one of
+// templates, and opens it. open() shows it.
+function newTemplateDialog(templates) {
+  const dialog = h('dialog', { class: 'card dialog' });
+  const name = h('input', { required: true, autocomplete: 'off', maxlength: 32 });
+  const from = h('select', null,
+    h('option', { value: BLANK }, '空白（内置默认人设）'),
+    templates.map((t) => h('option', { value: t.name }, `复制 ${t.name}`)));
+  const msg = h('div');
+  const create = h('button', { type: 'submit', class: 'primary' }, '新建');
+  const cancel = h('button', { type: 'button', onclick: () => dialog.close() }, '取消');
+  mount(dialog, h('form', {
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const to = name.value.trim();
+      const problem = nameProblem(to);
+      if (problem) {
+        fail(msg, problem);
+        return;
+      }
+      const start = from.value;
+      create.disabled = true;
+      mount(msg);
+      try {
+        const persona = start === BLANK
+          ? (await get(BUILTIN_DEFAULT)).persona
+          : (await get(templatePath(start))).persona;
+        await createTemplate(to, persona, start === BLANK ? '从内置默认人设新建' : `复制自 ${start}`);
+        dialog.close();
+        flash = `已新建模板 ${to}`;
+        go(href('templates', to));
+      } catch (err) {
+        if (!isAbort(err)) mount(msg, errorBox(err));
+      } finally {
+        create.disabled = false;
+      }
+    },
+  },
+  h('h2', null, '新建模板'),
+  field('模板名', name, '1–32 个小写字母、数字、- 或 _，不能是 export 或 import，不能和已有模板重名'),
+  field('起点', from, '空白就是内置的默认人设；复制时用那个模板保存过的版本，原模板不变'),
+  msg,
+  h('div', { class: 'toolbar' }, create, cancel)));
+  const open = () => {
+    name.value = '';
+    from.value = BLANK;
+    mount(msg);
+    dialog.showModal();
+  };
+  return { dialog, open };
 }
 
 // importSummary tells under which names an import stored its templates,
@@ -205,16 +293,17 @@ export async function templatesView(ctx) {
     flash = importSummary(list);
     go('#/templates');
   });
+  const create = newTemplateDialog(all);
   ctx.show(
     h('h1', null, '人设模板'),
     takeFlash(),
     h('div', { class: 'toolbar' },
+      h('button', { type: 'button', class: 'primary', onclick: create.open }, '新建模板'),
       h('a', { class: 'button', href: EXPORT_ALL, download: true }, '导出全部'),
       imp.button, imp.file),
     h('p', { class: 'hint' }, `导出的是 JSON 文件，参考图在文件里。导入时选导出的文件，单个模板或全部模板的都可以，最大 ${MAX_IMPORT_MIB} MiB、最多 ${MAX_IMPORT_TEMPLATES} 个模板；模板多、参考图大时，“导出全部”的文件可能超过这个上限，没法整个导入，这时请逐个导出。`),
     imp.msg,
     h('p', { class: 'hint' }, EXISTING_CHATS),
-    h('p', { class: 'hint' }, '新建模板：打开一个模板，点“复制为新模板”。'),
     all.length ? table([
       {
         title: '模板',
@@ -226,11 +315,10 @@ export async function templatesView(ctx) {
       { title: '人设名', cell: (t) => t.persona_name || '—' },
       { title: '角色名', cell: (t) => t.character_name || '—' },
       { title: '参考图', cell: (t) => (t.appearance_image ? '有' : '—') },
-      { title: '默认模板用于', class: 'text', cell: users },
       { title: '在线修改', class: 'nowrap', cell: updated },
       { title: '导出', class: 'nowrap', cell: (t) => exportLink(t.name) },
     ], all) : empty('没有模板'),
-    imp.dialog);
+    imp.dialog, create.dialog);
 }
 
 export async function templateView(ctx) {
@@ -257,8 +345,12 @@ export async function templateView(ctx) {
     type: 'button',
     class: 'danger',
     onclick: (e) => {
-      if (!confirm(`删除模板 ${name}？已经用它的会话不受影响。`)) return;
-      write(actionMsg, e.currentTarget, () => del(templatePath(name)), `已删除模板 ${name}`, '#/templates');
+      const usedBy = (t.users || []).map(botLabel);
+      const question = usedBy.length
+        ? `删除模板 ${name}？这些 bot 把它当默认模板，删除后改用 default：${usedBy.join('、')}。已经用它的会话不受影响。`
+        : `删除模板 ${name}？已经用它的会话不受影响。`;
+      if (!confirm(question)) return;
+      write(actionMsg, e.currentTarget, () => del(templatePath(name)), (res) => deletedNote(name, res), '#/templates');
     },
   }, '删除') : null;
 
@@ -271,11 +363,10 @@ export async function templateView(ctx) {
       const answer = prompt('新模板的名字：1–32 个小写字母、数字、- 或 _，不能是 export 或 import。新模板用下面表单里当前的内容，本模板不变。', '');
       if (answer === null) return undefined;
       const to = answer.trim();
-      if (!TEMPLATE_NAME.test(to)) return fail(actionMsg, '模板名只能是 1–32 个小写字母、数字、- 或 _');
-      return write(actionMsg, button, async () => {
-        if (await exists(to)) throw new Error(`已经有名为 ${to} 的模板`);
-        await put(templatePath(to), { persona: r.persona, reason: `复制自 ${name}` });
-      }, `已复制为新模板 ${to}`, href('templates', to));
+      const problem = nameProblem(to);
+      if (problem) return fail(actionMsg, problem);
+      return write(actionMsg, button, () => createTemplate(to, r.persona, `复制自 ${name}`),
+        `已复制为新模板 ${to}`, href('templates', to));
     },
   }, '复制为新模板');
 
