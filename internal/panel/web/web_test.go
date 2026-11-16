@@ -838,8 +838,38 @@ func TestChatsView_ShellBeforeTheList(t *testing.T) {
 	watch := jsBlock(t, js, "function watch(signal) {")
 	for _, want := range []string{
 		"timer = setTimeout(tick, fetched ? REFRESH_MS : 0);",
-		"mount(pollMsg, errorBox(err));",
+		"if (!isAbort(err) && !signal.aborted) mount(pollMsg, errorBox(err));",
 		"if (fetched && pending === signal) select(current, signal);",
+	} {
+		if !strings.Contains(watch, want) {
+			t.Errorf("watch lacks %q", want)
+		}
+	}
+}
+
+// Reading the list again renders it only when what it shows changed, so the
+// focus, a click under way and the avatars stay; and the list is not read
+// while the page is hidden, but at once when it shows again.
+func TestChatsView_ListPollQuiet(t *testing.T) {
+	js := assets(t, ".js")["views/chats.js"]
+	for _, want := range []string{
+		"const listState = () => JSON.stringify([groups, seen, bots, shownFolder(), current, new Date().toDateString()]);",
+		"rendered = listState();", "if (listState() !== rendered) renderLists();",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chats.js lacks %q", want)
+		}
+	}
+	load := jsBlock(t, js, "async function load(signal, withBots = true) {")
+	if strings.Contains(load, "renderLists()") || strings.Count(load, "renderChanged();") != 2 {
+		t.Errorf("load does not render only on change:\n%s", load)
+	}
+	watch := jsBlock(t, js, "function watch(signal) {")
+	for _, want := range []string{
+		"if (signal.aborted || running || document.hidden) return;",
+		"if (!document.hidden) timer = setTimeout(tick, REFRESH_MS);",
+		"document.addEventListener('visibilitychange', onVisibility);",
+		"document.removeEventListener('visibilitychange', onVisibility);",
 	} {
 		if !strings.Contains(watch, want) {
 			t.Errorf("watch lacks %q", want)

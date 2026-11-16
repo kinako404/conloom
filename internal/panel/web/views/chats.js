@@ -418,8 +418,9 @@ function allIcon() {
 // chat open. select(key, signal) shows the chat key, or a pill when key is
 // empty; setFolder(id) chooses the folder of bot id, all chats when empty;
 // watch(signal) reads the list, at once when it has not been read yet,
-// then again every REFRESH_MS until signal fires. Reading the list again
-// replaces the folders and the list but leaves the chat as it is.
+// then again every REFRESH_MS while the page is visible until signal fires.
+// Reading the list again replaces the folders and the list, only when they
+// changed, but leaves the chat as it is.
 function chatPage() {
   // fetched is the bots of the last GET chats shown, groups the same with
   // the messages arrived counted in.
@@ -435,8 +436,10 @@ function chatPage() {
   // list read last may not count yet: they count as seen at once.
   let arrived = {};
   // pending is the signal of a chat opened before the list was read, which
-  // is shown once it is.
+  // is shown once it is; rendered is the state the folders and the list
+  // show (see listState).
   let pending = null;
+  let rendered = '';
   // fullLoads counts the full reloads started, fullPending those under way,
   // botReads the reads of the bots started and ticks the polls.
   let fullLoads = 0;
@@ -718,11 +721,23 @@ function chatPage() {
     }
   };
 
+  // listState is what the folders and the list show, but the search, as a
+  // string; the day is in it for the times of the last messages.
+  const listState = () => JSON.stringify([groups, seen, bots, shownFolder(), current, new Date().toDateString()]);
+
   function renderLists() {
+    rendered = listState();
     renderFolders();
     renderBotBar();
     renderList();
   }
+
+  // renderChanged renders the folders and the list again only when what
+  // they show changed, so that a poll that reads the same list keeps the
+  // focus, a click under way and the avatars already loaded or failed.
+  const renderChanged = () => {
+    if (listState() !== rendered) renderLists();
+  };
 
   // withArrived is chat c counting the messages arrived after its last.
   const withArrived = (c) => {
@@ -770,7 +785,7 @@ function chatPage() {
     const known = new Set((arrived[key] || []).map((m) => m.seq));
     arrived[key] = (arrived[key] || []).concat(messages.filter((m) => !known.has(m.seq)).map(lastOf));
     showFetched();
-    renderLists();
+    renderChanged();
   };
 
   // load reads the list again: a full reload reads the chats and the bots,
@@ -788,7 +803,7 @@ function chatPage() {
         if (n === fullLoads) showChats(chats);
       } finally {
         fullPending--;
-        renderLists();
+        renderChanged();
       }
       return;
     }
@@ -798,28 +813,41 @@ function chatPage() {
     if ((chats.bots || []).some((g) => !bots.some((b) => b.id === g.id))) await readBots(signal);
     if (fullPending || n !== fullLoads) return;
     showChats(chats);
-    renderLists();
+    renderChanged();
   }
 
   // watch reads the list, the first time with the bots, and shows a chat
-  // opened before it was read. A failed read is shown in pollMsg until one
-  // succeeds.
+  // opened before it was read. It pauses while the page is hidden and reads
+  // the list at once when the page shows again. A failed read is shown in
+  // pollMsg until one succeeds.
   function watch(signal) {
     let timer = 0;
+    let running = false;
     const tick = async () => {
+      clearTimeout(timer);
+      if (signal.aborted || running || document.hidden) return;
+      running = true;
       try {
         await load(signal, !fetched || ++ticks % BOTS_EVERY === 0);
         mount(pollMsg);
       } catch (err) {
-        if (isAbort(err) || signal.aborted) return;
-        mount(pollMsg, errorBox(err));
+        if (!isAbort(err) && !signal.aborted) mount(pollMsg, errorBox(err));
+      } finally {
+        running = false;
       }
       if (signal.aborted) return;
       if (fetched && pending === signal) select(current, signal);
-      timer = setTimeout(tick, REFRESH_MS);
+      if (!document.hidden) timer = setTimeout(tick, REFRESH_MS);
     };
+    const onVisibility = () => {
+      if (!document.hidden) tick();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    signal.addEventListener('abort', () => {
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    });
     timer = setTimeout(tick, fetched ? REFRESH_MS : 0);
-    signal.addEventListener('abort', () => clearTimeout(timer));
   }
 
   function setFolder(id) {
