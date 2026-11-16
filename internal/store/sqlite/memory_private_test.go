@@ -167,3 +167,50 @@ func TestApplyMemoryWrite_KeepSummary(t *testing.T) {
 		t.Fatalf("group = %+v, %v; want the stored summary with the new cursor and error", g, err)
 	}
 }
+
+// The memory scheduler (ensureCursor) reads a scope's row, works out a cursor
+// and puts the row back. A forget committing in between must survive the put:
+// neither the cursor nor the cleared summary may go back to before it.
+func TestPutGroupMemory_KeepsAForgetInBetween(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+
+	fresh := store.ConversationKey(testBot, testPlatform, "private", "private_20001")
+	for range 3 {
+		memInsertMessages(t, db, memMessage(fresh, "user_20001", "20001", false))
+	}
+	backlog := latestSeq(t, db, fresh) - 2
+	if err := db.ForgetPrivate(ctx, fresh, "20001", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutGroupMemory(ctx, store.GroupMemory{ConversationKey: fresh, CursorSeq: backlog}); err != nil {
+		t.Fatal(err)
+	}
+	if g, err := db.GetGroupMemory(ctx, fresh); err != nil || g.CursorSeq != latestSeq(t, db, fresh) {
+		t.Errorf("new row put after a forget = %+v, %v; want the cursor kept at the newest message %d", g, err, latestSeq(t, db, fresh))
+	}
+
+	resumed := store.ConversationKey(testBot, testPlatform, "private", "private_29999")
+	for range 3 {
+		memInsertMessages(t, db, memMessage(resumed, "user_29999", "29999", false))
+	}
+	newest := latestSeq(t, db, resumed)
+	if err := db.PutGroupMemory(ctx, store.GroupMemory{ConversationKey: resumed, Summary: "小红喜欢猫", CursorSeq: newest - 2}); err != nil {
+		t.Fatal(err)
+	}
+	read, err := db.GetGroupMemory(ctx, resumed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ForgetPrivate(ctx, resumed, "29999", at); err != nil {
+		t.Fatal(err)
+	}
+	read.CursorSeq = newest - 1
+	if err := db.PutGroupMemory(ctx, read); err != nil {
+		t.Fatal(err)
+	}
+	if g, err := db.GetGroupMemory(ctx, resumed); err != nil || g.Summary != "" || g.CursorSeq != newest {
+		t.Errorf("row put back after a forget = %+v, %v; want the summary cleared and the cursor at %d", g, err, newest)
+	}
+}

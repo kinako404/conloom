@@ -182,13 +182,21 @@ func TestGroupMemory_PutGet(t *testing.T) {
 		t.Fatalf("group memory = %+v, want %+v with UpdatedAt set", got, g)
 	}
 
-	g.CursorSeq, g.LastError = 50, "parse failed"
+	stored := g.Summary
+	g.Summary, g.CursorSeq, g.LastError, g.LastRunAt = "过时的摘要", 50, "parse failed", runAt.Add(time.Hour)
 	if err := db.PutGroupMemory(ctx, g); err != nil {
 		t.Fatalf("PutGroupMemory upsert: %v", err)
 	}
 	got, err = db.GetGroupMemory(ctx, testConvKey)
-	if err != nil || got.CursorSeq != 50 || got.LastError != "parse failed" || got.Summary != g.Summary {
-		t.Fatalf("after upsert = %+v, %v", got, err)
+	if err != nil || got.CursorSeq != 50 || got.LastError != "" || got.Summary != stored || !got.LastRunAt.Equal(runAt) {
+		t.Fatalf("after upsert = %+v, %v; want only the cursor moved", got, err)
+	}
+	g.CursorSeq = 7
+	if err := db.PutGroupMemory(ctx, g); err != nil {
+		t.Fatalf("PutGroupMemory with an older cursor: %v", err)
+	}
+	if got, err := db.GetGroupMemory(ctx, testConvKey); err != nil || got.CursorSeq != 50 {
+		t.Fatalf("after an older cursor = %+v, %v; want cursor 50 kept", got, err)
 	}
 	if n := countRows(t, db, "group_memory"); n != 1 {
 		t.Fatalf("group_memory rows = %d, want 1", n)

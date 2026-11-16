@@ -226,8 +226,8 @@ func TestMemoryCommand_AdminSubcommands(t *testing.T) {
 	if got := env.command(t, "29999", "/记忆 群"); got != CopyMemoryNoSummary {
 		t.Fatalf("/记忆 群 with an empty summary = %q", got)
 	}
-	if err := env.st.PutGroupMemory(context.Background(), store.GroupMemory{ConversationKey: testConvKey,
-		Summary: "大家在聊咖啡。", CursorSeq: 3}); err != nil {
+	if _, err := env.st.ApplyMemoryWrite(context.Background(), store.MemoryWrite{ConversationKey: testConvKey,
+		Group: &store.GroupMemory{ConversationKey: testConvKey, Summary: "大家在聊咖啡。", CursorSeq: 3}}); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := env.command(t, "29999", "/memory group"), "群聊摘要：大家在聊咖啡。"; got != want {

@@ -195,7 +195,10 @@ type Store interface {
 
 	// GetGroupMemory returns ErrNotFound when the conversation has no memory row.
 	GetGroupMemory(ctx context.Context, convKey string) (GroupMemory, error)
-	// PutGroupMemory inserts g or replaces the conversation's row; UpdatedAt is set to now.
+	// PutGroupMemory inserts g when the conversation has no memory row, and
+	// otherwise only moves the row's cursor forward to g.CursorSeq, keeping
+	// the rest, so that a row read before a forget cannot undo it; UpdatedAt
+	// is set to now.
 	PutGroupMemory(ctx context.Context, g GroupMemory) error
 	// GetMemberMemories maps each of userIDs that has a row to its memory.
 	GetMemberMemories(ctx context.Context, convKey string, userIDs []string) (map[string]MemberMemory, error)
