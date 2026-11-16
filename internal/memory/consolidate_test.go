@@ -508,11 +508,13 @@ func consWaitFor(t *testing.T, cond func() bool) {
 func TestConsolidate_FailureKeepsCursorAndBacksOff(t *testing.T) {
 	e := newConsEnv(t, consOpts{})
 	consSeedThree(t, e)
-	e.long.answer("抱歉，这次我整理不了")
+	e.long.setReply(func(int, openai.ChatRequest) (openai.ChatResponse, error) {
+		return openai.ChatResponse{}, &openai.StatusError{Code: 503, Body: "抱歉，这次我整理不了"}
+	})
 
 	for i := 1; i <= 3; i++ {
 		if _, err := e.c.Run(context.Background(), testConvKey, false); err == nil {
-			t.Fatalf("run %d: want error for bad JSON", i)
+			t.Fatalf("run %d: want error for the unavailable model", i)
 		}
 	}
 	g := e.group(t)

@@ -424,6 +424,78 @@ func TestConsolidate_TimeoutShrinksMessagesToFloor(t *testing.T) {
 	}
 }
 
+func TestConsolidate_RefusedBatchShrinksThenIsSkipped(t *testing.T) {
+	status := func(code int) func() (openai.ChatResponse, error) {
+		return func() (openai.ChatResponse, error) {
+			return openai.ChatResponse{}, &openai.StatusError{Code: code, Body: `{"error":"Content Exists Risk"}`}
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		reply func() (openai.ChatResponse, error)
+		// skipped is the last error once the batch is skipped, "" when
+		// the failure is never blamed on the batch.
+		skipped string
+	}{
+		{"content check 400", status(400), "skipped_" + consErrModel},
+		{"request too large 413", status(413), "skipped_" + consErrModel},
+		{"no text", func() (openai.ChatResponse, error) { return openai.ChatResponse{}, openai.ErrEmptyOutput }, "skipped_" + consErrModel},
+		{"prose refusal", func() (openai.ChatResponse, error) {
+			return openai.ChatResponse{Content: "抱歉，这段聊天记录我无法整理。", Model: "fake-long"}, nil
+		}, "skipped_" + consErrParse},
+		{"server error", status(500), ""},
+		{"rate limited", status(429), ""},
+		{"bad api key", status(401), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newConsEnv(t, consOpts{})
+			var msgs []store.MessageRecord
+			for i := range 50 {
+				msgs = append(msgs, e.msg("20001", "小明", "第"+strconv.Itoa(i)+"条", consAt(i)))
+			}
+			msgs = e.add(t, msgs...)
+			e.long.setReply(func(int, openai.ChatRequest) (openai.ChatResponse, error) { return tc.reply() })
+			const runs = 5
+			for i := range runs {
+				if _, err := e.c.Run(context.Background(), testConvKey, true); err == nil {
+					t.Fatalf("run %d: want the failure", i)
+				}
+			}
+			var sizes []int
+			for i := range runs {
+				sizes = append(sizes, len(consBatchLines(t, e.long.request(t, i))))
+			}
+			g := e.group(t)
+			if tc.skipped == "" {
+				if !slices.Equal(sizes, []int{50, 50, 50, 50, 50}) || g.CursorSeq != 0 || g.LastError != consErrModel {
+					t.Fatalf("sizes %v, group %+v; want every batch whole and the cursor kept", sizes, g)
+				}
+				if strings.Contains(e.logs.String(), "skipped a batch") {
+					t.Errorf("a failure not caused by the batch skipped it:\n%s", e.logs.String())
+				}
+				return
+			}
+			if !slices.Equal(sizes, []int{50, 25, 20, 20, 20}) {
+				t.Fatalf("refused batch sizes = %v, want [50 25 20 20 20] (halved to the floor, then three tries)", sizes)
+			}
+			if g.CursorSeq != msgs[19].Seq || g.LastError != tc.skipped || g.Summary != "" {
+				t.Fatalf("group = %+v, want the cursor past the 20-message batch at %d and %s", g, msgs[19].Seq, tc.skipped)
+			}
+			if logs := e.logs.String(); !strings.Contains(logs, "level=WARN msg=\"memory consolidation skipped a batch that keeps failing\"") {
+				t.Errorf("no skip warning:\n%s", logs)
+			}
+
+			e.long.answer(`{"group_summary":"S","members":[]}`)
+			if res := e.run(t, true); res.Messages != 30 {
+				t.Fatalf("Result = %+v, want the 30 messages after the skipped batch", res)
+			}
+			if g := e.group(t); g.CursorSeq != msgs[49].Seq || g.LastError != "" || g.Summary != "S" {
+				t.Errorf("group = %+v, want consolidated to %d", g, msgs[49].Seq)
+			}
+		})
+	}
+}
+
 func TestConsolidate_BusyWhenAdmissionWaitExpires(t *testing.T) {
 	e := newConsEnv(t, consOpts{})
 	consSeedThree(t, e)
