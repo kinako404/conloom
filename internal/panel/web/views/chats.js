@@ -334,6 +334,10 @@ const SEEN_KEY = 'conloom.chat.seen';
 // REFRESH_MS is how often the chat page reads the chat list again.
 const REFRESH_MS = 5000;
 
+// BOTS_EVERY is how many of those reads make one that also reads the bots, so
+// that bot settings changed elsewhere show within BOTS_EVERY × REFRESH_MS.
+const BOTS_EVERY = 6;
+
 function readSeen() {
   try {
     const v = JSON.parse(localStorage.getItem(SEEN_KEY) || '{}');
@@ -420,7 +424,12 @@ function chatPage() {
   let current = '';
   let folder = '';
   let seen = {};
-  let loads = 0;
+  // fullLoads counts the full reloads started, fullPending those under way,
+  // botReads the reads of the bots started and ticks the polls.
+  let fullLoads = 0;
+  let fullPending = 0;
+  let botReads = 0;
+  let ticks = 0;
   const listMsg = h('div');
   const pollMsg = h('div');
   const paneMsg = h('div');
@@ -524,28 +533,62 @@ function chatPage() {
     return skills;
   };
 
+  // readBots reads the bots and the templates, and keeps them unless a later
+  // read started meanwhile; it returns what it read.
+  async function readBots(signal) {
+    const n = ++botReads;
+    const all = await get('bots', null, signal);
+    if (n === botReads) {
+      bots = all.bots || [];
+      templates = all.templates || [];
+    }
+    return all;
+  }
+
+  // freshBot reads the bots again and returns the one with bot's ID, with
+  // all the bots and the templates, or shows that it is gone.
+  const freshBot = async (bot) => {
+    const all = await readBots();
+    renderBotBar();
+    const fresh = (all.bots || []).find((b) => b.id === bot.id);
+    if (!fresh) {
+      mount(listMsg, errorBox({ message: `Bot “${bot.name}” 已不存在。` }));
+      refresh();
+    }
+    return { fresh, all };
+  };
+
   // editBot opens the form of bot, a new panel bot when null: a config bot's
-  // or a panel bot's.
+  // or a panel bot's, with its settings read afresh, so the form never shows
+  // settings saved over since.
   const editBot = async (bot) => {
     mount(listMsg);
     try {
-      const res = await loadSkills();
-      if (bot && bot.source !== PANEL) {
-        configForm.open(bot, { templates, skills: res.config_skills || [], bots });
+      const [res, { fresh, all }] = await Promise.all([loadSkills(), bot ? freshBot(bot) : { fresh: null, all: { bots, templates } }]);
+      if (bot && !fresh) return;
+      const ctx = { templates: all.templates || [], bots: all.bots || [] };
+      if (fresh && fresh.source !== PANEL) {
+        configForm.open(fresh, { ...ctx, skills: res.config_skills || [] });
       } else {
-        botForm.open(bot, { templates, skills: res.skills || [], bots });
+        botForm.open(fresh, { ...ctx, skills: res.skills || [] });
       }
     } catch (err) {
       if (!isAbort(err)) mount(listMsg, errorBox(err));
     }
   };
 
+  // deleteButton deletes bot, with its chat count read afresh.
   const deleteButton = (bot) => h('button', {
     type: 'button',
     class: 'link danger',
-    onclick: () => {
+    onclick: async () => {
       mount(listMsg);
-      deleteForm.open(bot);
+      try {
+        const { fresh } = await freshBot(bot);
+        if (fresh) deleteForm.open(fresh);
+      } catch (err) {
+        if (!isAbort(err)) mount(listMsg, errorBox(err));
+      }
     },
   }, '删除');
 
@@ -666,25 +709,37 @@ function chatPage() {
     renderList();
   }
 
-  // load reads the chats, and the bots too when withBots or when a bot is
-  // new to the page, and shows them, unless a later load started meanwhile.
-  async function load(signal, withBots = true) {
-    const n = ++loads;
-    let chats;
-    let all = null;
-    if (withBots) {
-      [chats, all] = await Promise.all([get('chats', null, signal), get('bots', null, signal)]);
-    } else {
-      chats = await get('chats', null, signal);
-      if ((chats.bots || []).some((g) => !bots.some((b) => b.id === g.id))) all = await get('bots', null, signal);
-    }
-    if (n !== loads) return;
+  // showChats shows chats, the response of GET chats.
+  const showChats = (chats) => {
     groups = chats.bots || [];
-    if (all) {
-      bots = all.bots || [];
-      templates = all.templates || [];
-    }
     seen = noteSeen(allChats(), current);
+  };
+
+  // load reads the list again: a full reload reads the chats and the bots,
+  // a light one (withBots false), as the polls do, only the chats, and the
+  // bots when a bot is new to the page. A full reload shows its chats unless
+  // a later full reload started meanwhile; a light one never supersedes a
+  // full one: it reads nothing while one is under way, and drops its chats
+  // when one started meanwhile. The bots are shown as readBots says.
+  async function load(signal, withBots = true) {
+    if (withBots) {
+      const n = ++fullLoads;
+      fullPending++;
+      try {
+        const [chats] = await Promise.all([get('chats', null, signal), readBots(signal)]);
+        if (n === fullLoads) showChats(chats);
+      } finally {
+        fullPending--;
+        renderLists();
+      }
+      return;
+    }
+    if (fullPending) return;
+    const n = fullLoads;
+    const chats = await get('chats', null, signal);
+    if ((chats.bots || []).some((g) => !bots.some((b) => b.id === g.id))) await readBots(signal);
+    if (fullPending || n !== fullLoads) return;
+    showChats(chats);
     renderLists();
   }
 
@@ -692,7 +747,7 @@ function chatPage() {
     let timer = 0;
     const tick = async () => {
       try {
-        await load(signal, false);
+        await load(signal, ++ticks % BOTS_EVERY === 0);
         mount(pollMsg);
       } catch (err) {
         if (isAbort(err) || signal.aborted) return;

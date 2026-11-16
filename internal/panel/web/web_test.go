@@ -267,6 +267,12 @@ func TestChatsView_TelegramShell(t *testing.T) {
 		"'选择一个对话开始聊天'", "'还没有聊天，点右下角的 ✎ 开始'", "const SEEN_KEY = 'conloom.chat.seen';",
 		"'你：'", "'99+'", "title: '新建聊天'", "placeholder: '搜索'", "const REFRESH_MS = 5000;",
 		"SECTIONS.filter(", "'新建 Bot'", "currentUser()", "'退出'",
+		// A light poll never drops a full reload, bots changed elsewhere
+		// show, and the bot forms open with the bot read afresh.
+		"if (fullPending) return;", "if (fullPending || n !== fullLoads) return;", "if (n === fullLoads) showChats(chats);",
+		"const BOTS_EVERY = 6;", "await load(signal, ++ticks % BOTS_EVERY === 0);",
+		"if (n === botReads) {", "const fresh = (all.bots || []).find((b) => b.id === bot.id);",
+		"configForm.open(fresh,", "botForm.open(fresh,", "if (fresh) deleteForm.open(fresh);",
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("views/chats.js lacks %q", want)
