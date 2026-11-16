@@ -22,15 +22,29 @@ const clauseEnds = "。！!？?；;，,～~…\n"
 
 // Question tones: after a cue (and 了, 过 or 得) they make it a question
 // about remembering, as in "记住了吗" or "记住没有", rather than a request.
+// Ending a clause, they make one that mentions recallTerms, or ends in 了
+// and a tone ("你记住我说的话了吗"), a question about what was remembered.
 var (
 	cueAspects     = []string{"了", "过", "得"}
 	questionTones  = []string{"吗", "嘛", "么", "呢", "没", "?", "？"}
 	recallingAsked = []string{"记不记", "记没记", "do you remember", "did you remember", "don't you remember"}
+	recallTerms    = []string{"记得", "记着"}
+	closingTones   = []string{"吗", "嘛", "么", "呢", "没", "没有"}
+)
+
+// cueNegators right before a cue, past cueFillers such as 帮我 or 再, ask not
+// to remember, as in "别记住" or "不用帮我记"; "没让你记住" says it was never
+// asked.
+var (
+	cueNegators = []string{"别", "不要", "不用", "不必", "无需", "无须", "不需要", "没必要", "用不着", "没", "没有", "不让",
+		"don't", "don’t", "dont", "do not", "never", "no need to"}
+	cueFillers = []string{"帮我", "给我", "替我", "你", "再", "去", "让"}
 )
 
 // asksToRemember reports whether text has a clause that uses a rememberCue
 // as a request: "记住我喜欢草莓" or the polite "帮我记一下好吗" and
-// "你能记住我生日是5月1日吗", but not "记住了吗" or "你记不记得".
+// "你能记住我生日是5月1日吗", but not "记住了吗", "你记不记得", "别记住这个"
+// or "你还记得我让你记住的事吗".
 func asksToRemember(text string) bool {
 	text = strings.ToLower(text)
 	for len(text) > 0 {
@@ -49,20 +63,24 @@ func asksToRemember(text string) bool {
 }
 
 // requestsToRemember reports whether clause uses a rememberCue that is not
-// asking about remembering: the clause does not ask "记不记得" and the cue is
-// not followed, after an optional 了, 过 or 得, by a question tone.
+// asking about remembering: the clause asks neither "记不记得" nor about what
+// was remembered (asksRecall), and the cue is not negated (negated), not
+// followed, after an optional 了, 过 or 得, by a question tone, and not
+// followed by 的, which makes it describe a thing ("记住的事").
 func requestsToRemember(clause string) bool {
-	if slices.ContainsFunc(recallingAsked, func(q string) bool { return strings.Contains(clause, q) }) {
+	if slices.ContainsFunc(recallingAsked, func(q string) bool { return strings.Contains(clause, q) }) || asksRecall(clause) {
 		return false
 	}
 	for _, cue := range rememberCues {
-		for rest := clause; ; {
-			i := strings.Index(rest, cue)
+		for start := 0; ; {
+			i := strings.Index(clause[start:], cue)
 			if i < 0 {
 				break
 			}
-			rest = rest[i+len(cue):]
-			if !asksAbout(rest) {
+			before := clause[:start+i]
+			start += i + len(cue)
+			if after := clause[start:]; !negated(before) && !asksAbout(after) &&
+				!strings.HasPrefix(strings.TrimLeft(after, " "), "的") {
 				return true
 			}
 		}
@@ -81,6 +99,50 @@ func asksAbout(after string) bool {
 		}
 	}
 	return slices.ContainsFunc(questionTones, func(t string) bool { return strings.HasPrefix(after, t) })
+}
+
+// asksRecall reports whether clause is a question about what was remembered:
+// it ends in a question mark or a closing tone and mentions one of
+// recallTerms ("你还记得…吗"), or ends in 了 and a question mark or a closing
+// tone other than 呢 ("…了吗", "…了？"; "…了呢" is mostly said, not asked).
+func asksRecall(clause string) bool {
+	clause = strings.TrimRight(clause, " ")
+	marked := strings.HasSuffix(clause, "?") || strings.HasSuffix(clause, "？")
+	body := strings.TrimRight(clause, clauseEnds+" ")
+	tone := slices.IndexFunc(closingTones, func(t string) bool { return strings.HasSuffix(body, t) })
+	if !marked && tone < 0 {
+		return false
+	}
+	if slices.ContainsFunc(recallTerms, func(r string) bool { return strings.Contains(clause, r) }) {
+		return true
+	}
+	if tone >= 0 {
+		if closingTones[tone] == "呢" {
+			return false
+		}
+		body = strings.TrimSuffix(body, closingTones[tone])
+	}
+	return strings.HasSuffix(body, "了")
+}
+
+// negated reports whether before, the clause up to a cue, ends in one of
+// cueNegators, past any cueFillers; adverbs that end like one, such as 特别,
+// do not count.
+func negated(before string) bool {
+	for {
+		before = strings.TrimRight(before, " ")
+		if strings.HasSuffix(before, "特别") || strings.HasSuffix(before, "分别") {
+			return false
+		}
+		if slices.ContainsFunc(cueNegators, func(n string) bool { return strings.HasSuffix(before, n) }) {
+			return true
+		}
+		i := slices.IndexFunc(cueFillers, func(f string) bool { return strings.HasSuffix(before, f) })
+		if i < 0 {
+			return false
+		}
+		before = strings.TrimSuffix(before, cueFillers[i])
+	}
 }
 
 // RememberStore is the part of store.Store that remember uses.

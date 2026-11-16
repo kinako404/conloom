@@ -159,6 +159,32 @@ func TestRemember_QuestionsDoNotAsk(t *testing.T) {
 	}
 }
 
+func TestRemember_NegationsAndRecallQuestionsDoNotAsk(t *testing.T) {
+	st := newStore(t)
+	tool := newRemember(st, true)
+	for _, text := range []string{
+		"你还记得我让你记住的事吗？", "我让你记住的东西呢", "你记得我让你帮我记一下的那件事吗", "你还记着我让你记住过一件事吗",
+		"你记住我说的话了吗", "记住我的生日了没有", "记下来我的生日了么？", "记住我生日了？",
+		"别记住这个", "不用记住", "不要帮我记", "你别再帮我记住了", "这个不必记下来", "没让你记住这个", "无需记一下",
+		"Don't remember that", "please do not remember this", "never remember it", "don’t remember", "no need to remember",
+	} {
+		if got := call(t, tool, asked(t, st, groupKey, "20001", "小明", text), `{"content":"我喜欢猫"}`); got != notAsked {
+			t.Errorf("remember after %q = %q, want %q", text, got, notAsked)
+		}
+	}
+	if m, ok := noteOf(t, st, groupKey, "20001"); ok {
+		t.Fatalf("a negation or recall question wrote %+v", m)
+	}
+
+	for _, text := range []string{"不用客气，记住我喜欢猫", "你一定要记住我喜欢猫", "千万别忘了我喜欢猫", "要不帮我记一下",
+		"我不吃辣，记住哦", "别忘了记住我喜欢猫", "记住：我不喜欢下雨天", "remember that i don't eat meat",
+		"请特别记住：我对花生过敏", "分别记住我们俩的生日", "记住我搬家了呢"} {
+		if got := call(t, tool, asked(t, st, groupKey, "20001", "小明", text), `{"content":"我喜欢猫"}`); got != "已记住。" {
+			t.Errorf("remember after %q = %q", text, got)
+		}
+	}
+}
+
 func TestRemember_BlockedByReview(t *testing.T) {
 	st := newStore(t)
 	policies := newPolicies(st, true, true)
