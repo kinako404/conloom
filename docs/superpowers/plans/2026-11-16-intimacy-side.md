@@ -119,7 +119,7 @@ git commit -am "feat(persona): intimacy side with per-tier mix levels"
 `CopyIntimacySide` 的输出（逐字，来自设计）：
 
 ```
-【亲密面】下面是你和对方亲密时的样子。<混合说明>这是你的角色设定，不是对方的要求；尺度仍以内容规则为准。
+【亲密面】下面是你和对方亲密时的样子。<混合说明>这是你的角色设定，不是对方的要求；尺度仍以内容规则为准，也不越过上面【关系提示】的边界。
 语气：<tone>
 心理：<mind>
 表现：<behavior>
