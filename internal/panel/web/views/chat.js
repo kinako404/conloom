@@ -149,8 +149,9 @@ export function chatBar({ key, bot, title, status, items, onBack, onDelete, sign
 // themselves when clicked. hint, when given, is shown above the messages.
 // bot ({id, name, avatar}) is who the chat is with, title who the bot talks
 // with; onBack() returns to the chat list and onDelete() deletes the chat
-// after confirmation.
-export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete }) {
+// after confirmation. onMessages(messages), when given, gets the messages
+// each time some are shown: the latest at first, then each one new.
+export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete, onMessages }) {
   const log = h('ul', { class: 'tg-log' }, hint ? h('li', { class: 'tg-note' }, hint) : null);
   const status = h('span', { class: 'tg-bar-status' });
   const pollError = h('div', { class: 'tg-status' });
@@ -207,22 +208,24 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     lastEl = el;
   };
 
-  // add appends the rows not shown yet, in place of any suggestions, and
-  // reports whether there were any; stick scrolls them into view even when
-  // the user has scrolled up.
+  // add appends the rows not shown yet, in place of any suggestions, hands
+  // them to onMessages and reports whether there were any; stick scrolls them
+  // into view even when the user has scrolled up.
   const add = (rows, stick) => {
     const atBottom = nearBottom();
-    let added = false;
+    const added = [];
     for (const m of rows) {
       if (m.seq <= after) continue;
-      if (!added) clearSuggestions();
+      if (!added.length) clearSuggestions();
       place(m);
       after = m.seq;
       last = m;
-      added = true;
+      added.push(m);
     }
-    if (added && (stick || atBottom)) log.scrollTop = log.scrollHeight;
-    return added;
+    if (!added.length) return false;
+    if (stick || atBottom) log.scrollTop = log.scrollHeight;
+    if (onMessages && !signal.aborted) onMessages(added);
+    return true;
   };
 
   const first = await get(convPath(key, 'messages'), { limit: HISTORY }, signal);

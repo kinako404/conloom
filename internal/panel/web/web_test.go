@@ -718,7 +718,7 @@ func TestAssets_ChatSuggestions(t *testing.T) {
 		"seq !== sentAfter", "if (last !== null) sentAfter = last.seq;",
 		"if (!items.length || !wanted(seq)) return;", "onclick: () => submit(text)",
 		"if (!input.value.trim()) input.value = text;",
-		"input.addEventListener('input', clearSuggestions)", "if (!added) clearSuggestions();",
+		"input.addEventListener('input', clearSuggestions)", "if (!added.length) clearSuggestions();",
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("views/chat.js lacks %q", want)
@@ -761,6 +761,33 @@ func TestAssets_ChatShowsSuppressedReason(t *testing.T) {
 	for _, reason := range []string{conloomapi.SuppressedPaused, conloomapi.SuppressedRateLimited, conloomapi.SuppressedQueueFull} {
 		if !regexp.MustCompile(`(?m)^\s*` + reason + `:`).MatchString(m[1]) {
 			t.Errorf("SUPPRESSED has no note for %s", reason)
+		}
+	}
+}
+
+// The chat open counts as seen as messages arrive in it, the user's own and
+// the bot's replies, not only when the list is read again: the pane hands
+// the page every message it shows, and the page counts those the list read
+// last does not have yet.
+func TestChatsView_UnreadFollowsTheOpenChat(t *testing.T) {
+	files := assets(t, ".js")
+	chat, chats := files["views/chat.js"], files["views/chats.js"]
+	for _, want := range []string{
+		"export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete, onMessages })",
+		"if (onMessages && !signal.aborted) onMessages(added);",
+	} {
+		if !strings.Contains(chat, want) {
+			t.Errorf("views/chat.js lacks %q", want)
+		}
+	}
+	for _, want := range []string{
+		"chatPane({ key, signal, hint: PANEL_HINT, bot, title, onBack, onDelete, onMessages })",
+		"if (!signal.aborted) noteArrived(key, messages);",
+		"(arrived[c.key] || []).filter((m) => !c.last || m.seq > c.last.seq)",
+		"seen = noteSeen(allChats(), current);",
+	} {
+		if !strings.Contains(chats, want) {
+			t.Errorf("views/chats.js lacks %q", want)
 		}
 	}
 }

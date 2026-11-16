@@ -379,6 +379,25 @@ function unreadBadge(n, cls) {
   return h('span', { class: cls }, n > 99 ? '99+' : String(n));
 }
 
+// PREVIEW_RUNES is how many characters of the last message GET chats
+// previews, as maxChatLastRunes.
+const PREVIEW_RUNES = 60;
+
+// lastOf is message m, as GET chat returns it, in the form of a chat's last
+// in GET chats: on one line and cut to PREVIEW_RUNES characters, with …
+// when cut.
+function lastOf(m) {
+  const text = (m.text || '').split(/\s+/).filter(Boolean).join(' ');
+  const runes = [...text];
+  return {
+    seq: m.seq,
+    from_bot: !!m.from_bot,
+    sender_id: m.sender_id || '',
+    at: m.at,
+    text: runes.length > PREVIEW_RUNES ? runes.slice(0, PREVIEW_RUNES).join('') + '…' : text,
+  };
+}
+
 // recency orders chats by their last message, newest first; a chat without
 // messages, as one just started, comes first.
 function recency(c) {
@@ -402,6 +421,9 @@ function allIcon() {
 // signal fires. Reading the list again replaces the folders and the list but
 // leaves the chat as it is.
 function chatPage() {
+  // fetched is the bots of the last GET chats shown, groups the same with
+  // the messages arrived counted in.
+  let fetched = null;
   let groups = [];
   let bots = [];
   let templates = [];
@@ -409,6 +431,9 @@ function chatPage() {
   let current = '';
   let folder = '';
   let seen = {};
+  // arrived holds, by chat key, the messages the chat pane showed that the
+  // list read last may not count yet: they count as seen at once.
+  let arrived = {};
   // fullLoads counts the full reloads started, fullPending those under way,
   // botReads the reads of the bots started and ticks the polls.
   let fullLoads = 0;
@@ -694,10 +719,53 @@ function chatPage() {
     renderList();
   }
 
-  // showChats shows chats, the response of GET chats.
-  const showChats = (chats) => {
-    groups = chats.bots || [];
+  // withArrived is chat c counting the messages arrived after its last.
+  const withArrived = (c) => {
+    const rows = (arrived[c.key] || []).filter((m) => !c.last || m.seq > c.last.seq);
+    if (!rows.length) return c;
+    const m = rows[rows.length - 1];
+    const after = !c.last_message_at || Date.parse(m.at) > Date.parse(c.last_message_at);
+    return {
+      ...c,
+      message_count: (c.message_count || 0) + rows.length,
+      last: m,
+      last_message_at: after ? m.at : c.last_message_at,
+    };
+  };
+
+  // showFetched shows the list read last with the messages arrived since,
+  // the chat open seen up to its newest.
+  const showFetched = () => {
+    if (!fetched) return;
+    groups = fetched.map((g) => ({ ...g, chats: (g.chats || []).map(withArrived) }));
     seen = noteSeen(allChats(), current);
+  };
+
+  // showChats shows chats, the response of GET chats, and forgets the
+  // messages arrived that it counts, and those of chats it no longer lists
+  // but the chat open, which may be too new for it.
+  const showChats = (chats) => {
+    fetched = chats.bots || [];
+    const listed = {};
+    for (const g of fetched) for (const c of g.chats || []) listed[c.key] = c;
+    const kept = {};
+    for (const [key, rows] of Object.entries(arrived)) {
+      const c = listed[key];
+      const left = c ? rows.filter((m) => !c.last || m.seq > c.last.seq) : key === current ? rows : [];
+      if (left.length) kept[key] = left;
+    }
+    arrived = kept;
+    showFetched();
+  };
+
+  // noteArrived counts messages, just shown in the chat key, as arrived and
+  // seen while key is still open.
+  const noteArrived = (key, messages) => {
+    if (key !== current) return;
+    const known = new Set((arrived[key] || []).map((m) => m.seq));
+    arrived[key] = (arrived[key] || []).concat(messages.filter((m) => !known.has(m.seq)).map(lastOf));
+    showFetched();
+    renderLists();
   };
 
   // load reads the list again: a full reload reads the chats and the bots,
@@ -762,6 +830,9 @@ function chatPage() {
     let bot = shown ? { id: shown.group.id, name: shown.group.name || shown.group.id, avatar: shown.group.avatar || '' } : null;
     let title = shown ? shown.chat.title || key : '';
     const onDelete = () => removeChat(key);
+    const onMessages = (messages) => {
+      if (!signal.aborted) noteArrived(key, messages);
+    };
     const bar = (b, t) => chatBar({ key, bot: b, title: t, onBack, signal });
     mount(pane, bar(bot, title), loading());
     try {
@@ -777,7 +848,7 @@ function chatPage() {
         bot = { id: conv.bot_instance_id, name: conv.bot_name || conv.bot_instance_id, avatar: g ? g.avatar || '' : '' };
         title = conv.platform_conversation_id;
       }
-      const [head, ...body] = await chatPane({ key, signal, hint: PANEL_HINT, bot, title, onBack, onDelete });
+      const [head, ...body] = await chatPane({ key, signal, hint: PANEL_HINT, bot, title, onBack, onDelete, onMessages });
       if (!signal.aborted) mount(pane, head, paneMsg, body);
     } catch (err) {
       if (!isAbort(err) && !signal.aborted) mount(pane, bar(bot, title), errorBox(err));
