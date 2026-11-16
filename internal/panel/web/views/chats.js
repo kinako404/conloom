@@ -8,6 +8,10 @@ import { chatPane } from './chat.js';
 // chats held in the panel.
 const PANEL = 'panel';
 
+// NARROW is the media query under which style.css puts the chat list above
+// the chat.
+const NARROW = '(max-width: 699px)';
+
 // MAX_DISPLAY_NAME is the longest name a panel chat calls its user by.
 const MAX_DISPLAY_NAME = 32;
 
@@ -195,8 +199,10 @@ function chatHead(key, title, botName) {
 }
 
 // chatPage lays out the chat page: the bots with their panel chats on the
-// left, the chat chosen on the right. load reads the list; select(key,
-// signal) shows the chat key, or a hint when key is empty, and keeps the list.
+// left, the chat chosen on the right; on a narrow screen the list is above
+// the chat. load reads the list; select(key, signal) shows the chat key,
+// scrolled into view on a narrow screen, or a hint when key is empty, and
+// keeps the list.
 function chatPage() {
   let groups = [];
   let bots = [];
@@ -221,6 +227,11 @@ function chatPage() {
 
   const mark = () => {
     for (const [key, a] of links) a.classList.toggle('active', key === current);
+  };
+
+  // reveal scrolls the chat into view when the list is above it.
+  const reveal = () => {
+    if (matchMedia(NARROW).matches) pane.scrollIntoView();
   };
 
   const refresh = async () => {
@@ -323,12 +334,13 @@ function chatPage() {
     mark();
     if (!key) {
       mount(pane, h('div', { class: 'chat-empty' },
-        h('p', null, '从左边选一个聊天，或者在某个 bot 下点“新建聊天”。')));
+        h('p', null, '从聊天列表里选一个聊天，或者在某个 bot 下点“新建聊天”。')));
       return;
     }
     const shown = find(key);
     let head = shown ? chatHead(key, shown.chat.title || key, shown.group.name || shown.group.id) : null;
     mount(pane, head, loading());
+    reveal();
     try {
       if (!shown) {
         const conv = await get(convPath(key), null, signal);
@@ -340,7 +352,10 @@ function chatPage() {
         head = chatHead(key, conv.platform_conversation_id, conv.bot_name || conv.bot_instance_id);
       }
       const nodes = await chatPane({ key, signal, hint: PANEL_HINT });
-      if (!signal.aborted) mount(pane, head, nodes);
+      if (!signal.aborted) {
+        mount(pane, head, nodes);
+        reveal();
+      }
     } catch (err) {
       if (!isAbort(err) && !signal.aborted) mount(pane, errorBox(err));
     }

@@ -36,11 +36,12 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
-// login checks a name and password and starts a session. A wrong password and
-// an unknown name get the same response after the same work; failures, and
-// attempts still being checked, are rate-limited per source IP and in total.
-// The body is read before the limiter is consulted, so a malformed or slowly
-// sent body holds no attempt.
+// login checks a name and password and starts a session. The name is trimmed
+// of surrounding whitespace, which phone keyboards tend to add. A wrong
+// password and an unknown name get the same response after the same work;
+// failures, and attempts still being checked, are rate-limited per source IP
+// and in total. The body is read before the limiter is consulted, so a
+// malformed or slowly sent body holds no attempt.
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		s.writeError(w, r, http.StatusForbidden, conloomapi.CodeForbidden, "cross-origin request")
@@ -59,7 +60,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	failed := false
 	defer func() { s.limiter.end(ip, s.now(), failed) }()
-	user, known := s.user(req.Name)
+	user, known := s.user(strings.TrimSpace(req.Name))
 	hash := s.dummyHash
 	if known {
 		hash = user.PasswordHash

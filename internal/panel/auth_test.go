@@ -366,6 +366,34 @@ func TestLogin_WrongPasswordAndUnknownUser(t *testing.T) {
 	errorBody(t, h.do(http.MethodPost, "/panel/api/login", `not json`), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
 }
 
+// A phone keyboard may add a space after a suggested word; the name is
+// trimmed before it is looked up.
+func TestLogin_TrimsName(t *testing.T) {
+	h := newHarness(t, nil)
+	for _, name := range []string{testUser + " ", " " + testUser, "\t" + testUser + "\u3000"} {
+		w := h.login(name, testPassword)
+		if w.Code != http.StatusOK {
+			t.Fatalf("login as %q: status %d, body %s", name, w.Code, w.Body)
+		}
+		var resp sessionResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.User != testUser {
+			t.Errorf("login as %q: user = %q, want %q", name, resp.User, testUser)
+		}
+	}
+	for _, s := range h.sessions.all() {
+		if s.User != testUser {
+			t.Errorf("stored session user = %q, want %q", s.User, testUser)
+		}
+	}
+	if got := h.counter("conloom_panel_login_failures_total", nil); got != 0 {
+		t.Errorf("login failures = %v, want 0", got)
+	}
+	errorBody(t, h.login(" ", testPassword), http.StatusUnauthorized, conloomapi.CodeUnauthorized)
+}
+
 func TestLogin_RateLimited(t *testing.T) {
 	t.Parallel() // over 30 PBKDF2 runs; slow under -race
 	h := newHarness(t, nil)

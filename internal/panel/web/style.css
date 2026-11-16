@@ -268,7 +268,7 @@ ul.plain { list-style: none; margin: 0; padding: 0; }
 .hint.warn { color: var(--warn); }
 button.link.danger { color: var(--danger); }
 
-dialog.dialog { width: min(420px, 92vw); color: var(--text); }
+dialog.dialog { width: min(420px, 92vw); margin: auto; color: var(--text); }
 dialog.dialog.wide { width: min(560px, 92vw); }
 dialog.dialog select, dialog.dialog input { width: 100%; }
 dialog.dialog input[type=checkbox] { width: 16px; flex: none; }
@@ -304,4 +304,5 @@ details > summary { cursor: pointer; color: var(--accent); white-space: nowrap; 
   dl.kv dd { margin-bottom: 6px; }
   .chat-page { grid-template-columns: 1fr; }
   .chat-side { max-height: none; }
+  input, select, textarea, textarea.json { font-size: 16px; }
 }

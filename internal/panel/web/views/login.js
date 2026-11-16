@@ -8,7 +8,9 @@ function afterLogin(next) {
 }
 
 export function loginView(ctx) {
-  const name = h('input', { name: 'name', autocomplete: 'username', required: true });
+  const name = h('input', {
+    name: 'name', autocomplete: 'username', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', required: true,
+  });
   const password = h('input', { type: 'password', name: 'password', autocomplete: 'current-password', required: true });
   const msg = h('div');
   const submit = h('button', { type: 'submit', class: 'primary' }, '登录');
@@ -19,7 +21,7 @@ export function loginView(ctx) {
       submit.disabled = true;
       mount(msg);
       try {
-        await login(name.value, password.value);
+        await login(name.value.trim(), password.value);
         go(afterLogin(ctx.query.get('next')));
       } catch (err) {
         password.value = '';

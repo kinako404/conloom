@@ -117,6 +117,33 @@ func TestAssets_NoExternalOrUnsafeAPIs(t *testing.T) {
 	}
 }
 
+// QQ's in-app browser on Android (X5, reported at Chrome 89) still opens panel
+// links, so the scripts use no API newer than that.
+func TestAssets_NoAPIsNewerThanChrome89(t *testing.T) {
+	newer := []string{
+		"Object.hasOwn(",       // Chrome 93
+		"structuredClone(",     // Chrome 98
+		".at(",                 // Chrome 92
+		"crypto.randomUUID(",   // Chrome 92
+		".findLast(",           // Chrome 97
+		".findLastIndex(",      // Chrome 97
+		"AbortSignal.timeout(", // Chrome 103
+		".toSorted(",           // Chrome 110
+		".toReversed(",         // Chrome 110
+		".toSpliced(",          // Chrome 110
+		"AbortSignal.any(",     // Chrome 116
+		"Object.groupBy(",      // Chrome 117
+		"Map.groupBy(",         // Chrome 117
+	}
+	for name, text := range assets(t, ".js") {
+		for _, api := range newer {
+			if strings.Contains(text, api) {
+				t.Errorf("%s uses %s", name, strings.TrimSuffix(api, "("))
+			}
+		}
+	}
+}
+
 var importRe = regexp.MustCompile(`(?s)\b(?:import|export)\s+(?:[^'";]*?\s+from\s+)?['"]([^'"]+)['"]|\bimport\(\s*['"]([^'"]+)['"]\s*\)`)
 
 func TestAssets_ImportsResolve(t *testing.T) {
@@ -150,6 +177,160 @@ func TestAssets_ImportsResolve(t *testing.T) {
 		if _, err := fs.Stat(FS, path.Clean(m[1])); err != nil {
 			t.Errorf("index.html references %q, which is not embedded", m[1])
 		}
+	}
+}
+
+// Phone keyboards capitalize and correct a plain text field and may add a
+// space after a suggested word; the login name field turns that off and the
+// name is sent trimmed.
+func TestAssets_LoginNameNotAutocorrected(t *testing.T) {
+	js := assets(t, ".js")["views/login.js"]
+	m := regexp.MustCompile(`const name = h\('input', \{([^}]*)\}\);`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("views/login.js has no name input")
+	}
+	for _, attr := range []string{`autocapitalize: 'none'`, `autocorrect: 'off'`, `spellcheck: 'false'`} {
+		if !strings.Contains(m[1], attr) {
+			t.Errorf("name input lacks %s: {%s}", attr, m[1])
+		}
+	}
+	if !regexp.MustCompile(`\blogin\(name\.value\.trim\(\),`).MatchString(js) {
+		t.Error("views/login.js does not send the name trimmed")
+	}
+}
+
+// mediaBlock returns the rules inside css's @media block for query.
+func mediaBlock(t *testing.T, css, query string) string {
+	t.Helper()
+	head := "@media " + query + " {"
+	start := strings.Index(css, head)
+	if start < 0 {
+		t.Fatalf("style.css has no %q block", head)
+	}
+	depth := 0
+	for i := start + len(head) - 1; i < len(css); i++ {
+		switch css[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return css[start+len(head) : i]
+			}
+		}
+	}
+	t.Fatalf("style.css: %q block is not closed", head)
+	return ""
+}
+
+// On a narrow screen style.css puts the chat list above the chat, so opening
+// a chat scrolls it into view, and the empty pane does not point left.
+func TestAssets_ChatScrollsIntoViewOnNarrowScreens(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js := files["views/chats.js"]
+	m := regexp.MustCompile(`const NARROW = '([^']+)';`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("views/chats.js has no NARROW media query")
+	}
+	block := mediaBlock(t, files["style.css"], m[1])
+	if !regexp.MustCompile(`\.chat-page\s*\{\s*grid-template-columns:\s*1fr;`).MatchString(block) {
+		t.Errorf("style.css @media %s does not stack the chat page", m[1])
+	}
+	if !regexp.MustCompile(`if \(matchMedia\(NARROW\)\.matches\) pane\.scrollIntoView\(\);`).MatchString(js) {
+		t.Error("views/chats.js does not scroll the chat into view on a narrow screen")
+	}
+	if strings.Contains(js, "从左边") {
+		t.Error("views/chats.js points to the list on the left, which is above the chat on a narrow screen")
+	}
+}
+
+// In Safari the Enter that commits an IME composition comes after
+// compositionend, with keyCode 229, and must not send. On a touch screen
+// Return types a newline and only 发送 sends.
+func TestAssets_ChatEnterSendsOnlyWithKeyboard(t *testing.T) {
+	js := assets(t, ".js")["views/chat.js"]
+	for _, c := range []struct{ name, re string }{
+		{"a coarse-pointer media query", `const TOUCH = '\(pointer: coarse\)';`},
+		{"a touch check", `const touch = matchMedia\(TOUCH\)\.matches;`},
+		{"Enter-to-send bound only without touch", `if \(!touch\) \{\s*input\.addEventListener\('keydown',`},
+		{"the IME keyCode check", `e\.key === 'Enter' && !e\.shiftKey && !e\.isComposing && e\.keyCode !== 229\b`},
+	} {
+		if !regexp.MustCompile(c.re).MatchString(js) {
+			t.Errorf("views/chat.js lacks %s (%s)", c.name, c.re)
+		}
+	}
+	m := regexp.MustCompile(`placeholder: touch \? '([^']*)' : '([^']*)'`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("views/chat.js has no placeholder for touch screens")
+	}
+	if strings.Contains(m[1], "回车") {
+		t.Errorf("touch placeholder %q mentions the Enter key", m[1])
+	}
+}
+
+var cssRule = regexp.MustCompile(`([^{}]+)\{([^{}]*)\}`)
+
+// iOS Safari zooms in on a focused field whose text is under 16px and does not
+// zoom back out, so on a narrow screen every rule that sizes the text of a
+// form control is overridden to 16px.
+func TestAssets_FormControlsAre16pxOnNarrowScreens(t *testing.T) {
+	css := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(assets(t, ".css")["style.css"], "")
+	block := mediaBlock(t, css, "(max-width: 699px)")
+	big := map[string]bool{}
+	for _, m := range cssRule.FindAllStringSubmatch(block, -1) {
+		if regexp.MustCompile(`font-size:\s*16px`).MatchString(m[2]) {
+			for _, sel := range strings.Split(m[1], ",") {
+				big[strings.TrimSpace(sel)] = true
+			}
+		}
+	}
+	control := regexp.MustCompile(`(?:^|[\s>+~])(?:input|select|textarea)(?:$|[.\[:])[^\s>+~]*$`)
+	sized := regexp.MustCompile(`(?:^|[;\s])font(?:-size)?\s*:`)
+	checked := 0
+	for _, m := range cssRule.FindAllStringSubmatch(strings.Replace(css, block, "", 1), -1) {
+		if !sized.MatchString(m[2]) {
+			continue
+		}
+		for _, sel := range strings.Split(m[1], ",") {
+			sel = strings.TrimSpace(sel)
+			if !control.MatchString(sel) {
+				continue
+			}
+			checked++
+			if !big[sel] {
+				t.Errorf("style.css: %q sets a font size but is not 16px on a narrow screen", sel)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("style.css: found no rule sizing the text of a form control")
+	}
+}
+
+// Every dialog is also a card, and .card sets margin-bottom, which overrides
+// the margin: auto that centers a modal dialog; dialog.dialog puts it back.
+func TestAssets_DialogsCentered(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	dialogs := 0
+	for name, text := range files {
+		for _, m := range regexp.MustCompile(`h\('dialog', \{ class: '([^']*)'`).FindAllStringSubmatch(text, -1) {
+			dialogs++
+			if classes := strings.Fields(m[1]); !slices.Contains(classes, "dialog") {
+				t.Errorf("%s: dialog with classes %q lacks the dialog class", name, m[1])
+			}
+		}
+	}
+	if dialogs == 0 {
+		t.Fatal("no dialogs found")
+	}
+	centered := false
+	for _, m := range cssRule.FindAllStringSubmatch(files["style.css"], -1) {
+		if strings.TrimSpace(m[1]) == "dialog.dialog" && regexp.MustCompile(`(?:^|[;\s])margin:\s*auto;`).MatchString(m[2]) {
+			centered = true
+		}
+	}
+	if !centered {
+		t.Error("style.css: dialog.dialog does not set margin: auto")
 	}
 }
 

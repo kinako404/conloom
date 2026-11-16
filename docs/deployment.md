@@ -299,7 +299,7 @@ server {
     location /panel {
         proxy_pass http://127.0.0.1:8787;
         proxy_set_header Host $http_host;
-        client_max_body_size 9m;
+        client_max_body_size 64m;
     }
     location / {
         return 404;
@@ -322,7 +322,7 @@ panel:
 注意：
 
 - 代理必须原样转发 `Host` 头：面板的 CSRF 检查要求请求的 `Origin` 和 `Host` 一致。Caddy 默认就这样做；nginx 要写 `proxy_set_header Host $http_host;`（见上面的例子）。
-- 上传人设参考图的请求体最多 8 MiB。nginx 默认只收 1 MiB，要像上面那样调大 `client_max_body_size`，否则大一点的图在代理那里就被拒绝（413）。
+- 面板最大的请求体是导入的人设模板文件，最多 64 MiB；上传人设参考图最多 8 MiB。导出文件里内嵌原图，一个带大参考图的模板导出后就可能超过 9 MiB。nginx 默认只收 1 MiB，要像上面那样把 `client_max_body_size` 调到 `64m`，否则大一点的图或导入文件在代理那里就被拒绝（413），面板只显示“请求失败（HTTP 413）”。
 - 不要把 `/api/v1`、`/metrics`、`/healthz` 一起暴露到公网，上面的配置只转发 `/panel`。
 - 面板只信任 TCP 连接的对端地址，不读 `X-Forwarded-For`，经代理时所有人的来源 IP 都是代理的地址：登录失败的“每 IP 15 分钟 5 次”额度由所有访问者共用，有人在公网上乱试密码时，你自己也可能要等最多 15 分钟才能再登录。
 - 设了 `cookie_secure: true` 以后浏览器只经 HTTPS 发送登录 cookie，再用 SSH 隧道的 `http://` 地址访问可能登录不上，这时改用 HTTPS 地址。
@@ -346,6 +346,8 @@ sudo journalctl -u conloom | grep 'panel listening'
 ```
 
 然后在浏览器打开 `http://<服务器地址>:8788/panel/`。这个端口上 `/` 跳转到 `/panel/`，`/api/v1/*`、`/healthz`、`/metrics` 返回 404；`server.listen` 上不再有 `/panel/`，用 SSH 隧道时改为转发 8788 端口。
+
+这个端口上一个请求连同请求体要在 30 秒内传完。上行带宽不到约 2 Mbit/s 时（比如手机信号差），8 MiB 的参考图传不完，大的导入文件更是如此，连接被断开，面板显示“无法连接服务器”；这时换个网络，或者用图小一些的文件。
 
 **警告：这样访问是普通 HTTP，登录密码和会话 cookie 都以明文经过网络**，路上的任何人都可能截获并冒用（拿到 cookie 就是管理员）。按推荐程度：
 

@@ -212,7 +212,7 @@ function appearanceEditor(base) {
 // save(persona, reason, msg, button), which stores it and shows the outcome
 // in msg; read() reads the persona without saving, as {persona} or {error}.
 export function personaForm(doc, { save, saveText = '保存人设' }) {
-  const base = structuredClone(doc || {});
+  const base = JSON.parse(JSON.stringify(doc || {}));
   const style = base.style || {};
   const behavior = base.behavior || {};
 
@@ -275,7 +275,7 @@ export function personaForm(doc, { save, saveText = '保存人设' }) {
     if (barRows.error) return { error: barRows.error };
     const look = appearance.read();
     if (look.error) return { error: look.error };
-    const persona = structuredClone(base);
+    const persona = JSON.parse(JSON.stringify(base));
     persona.persona_name = name.value;
     persona.template_version = tv;
     persona.style = { ...style };
