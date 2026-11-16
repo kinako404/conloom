@@ -331,6 +331,36 @@ func TestScope_CustomBarsAndEffectsShared(t *testing.T) {
 	}
 }
 
+func TestScope_RemoveBarKeepsOtherPersonasValue(t *testing.T) {
+	env, clock := scopeAutonomyEnv(t)
+	ctx := context.Background()
+	a, b := env.createChat(t, testBot), env.createChat(t, testBot)
+	scope := memory.ScopeKeyOf(a)
+	own := conloomapi.DefaultPersona()
+	own.Bars = []conloomapi.PersonaBar{{Name: "体力", Baseline: 50, HalfLife: conloomapi.Duration{Duration: 2 * time.Hour}}}
+	for key, doc := range map[string]conloomapi.PersonaDoc{a: conloomapi.DefaultPersona(), b: own} {
+		if _, err := env.st.AppendPersonaVersion(ctx, store.PersonaVersion{ConversationKey: key, TemplateName: "default",
+			Persona: doc, Reason: "init", UpdatedBy: "system"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The bot added 心情 in B, whose persona lacks it; in A the persona's 心情
+	// shows the same value.
+	if err := env.st.AddCustomBar(ctx, store.CustomBar{ConversationKey: scope, Name: "心情", TaskID: "task_old", Baseline: 10,
+		HalfLife: time.Hour, CreatedAt: clock.now()}, 80, 6); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.o.Autonomy().RemoveBar(ctx, b, "心情", store.BuffSourcePanel, "panel:admin"); err != nil {
+		t.Fatal(err)
+	}
+	if bars, err := env.st.ListCustomBars(ctx, scope); err != nil || len(bars) != 0 {
+		t.Errorf("scope bars after the removal = %+v, %v; want none", bars, err)
+	}
+	if values, err := env.st.GetBuffs(ctx, scope); err != nil || len(values) != 1 || values[0].Name != "心情" || values[0].Value != 80 {
+		t.Errorf("scope values after removing B's 心情 = %+v, %v; want A's 心情 at 80 kept", values, err)
+	}
+}
+
 func TestScope_DeleteChatKeepsSharedMemory(t *testing.T) {
 	env, _ := scopeAutonomyEnv(t)
 	ctx := context.Background()
