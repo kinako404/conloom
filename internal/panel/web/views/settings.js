@@ -44,7 +44,7 @@ function block(kind, title, section, shown) {
     h('h3', null, `当前：第 ${cur.version ?? 0} 版`),
     kv([['修改人', cur.updated_by || '—'], ['原因', cur.reason || '—'], ['时间', fmtTime(cur.created_at)]]),
     h('h3', null, '常用设置'),
-    policyForm({ policy: cur.policy, isPrivate: kind === 'private', limits: section.memory_limits, onSave: store }),
+    policyForm({ policy: cur.policy, isPrivate: kind === 'private', limits: section.memory_limits, forDefaults: true, onSave: store }),
     h('details', null, h('summary', null, '高级：JSON 编辑'),
       policyJSONForm({ policy: cur.policy, hint: '整份替换默认策略；没写的字段按内置默认值补齐。', onSave: store })),
     h('h3', null, '历史版本'),

@@ -35,9 +35,11 @@ export function jsonDetails(v) {
 
 // policyForm edits the common settings of policy, keeping the fields the form
 // does not show; isPrivate adds a private chat's. limits are the memory limits
-// in effect (memoryLimitsView). Submitting calls onSave(policy, reason), whose
-// promise stores it; its error shows in the form.
-export function policyForm({ policy, isPrivate, limits, onSave }) {
+// in effect (memoryLimitsView). forDefaults says policy is a default policy,
+// which is stored as written: 0 and 0 for the private waits means no wait, not
+// the defaults. Submitting calls onSave(policy, reason), whose promise stores
+// it; its error shows in the form.
+export function policyForm({ policy, isPrivate, limits, forDefaults = false, onSave }) {
   const p = policy || {};
   const proactive = h('input', { type: 'checkbox', checked: !!(p.proactive || {}).enabled });
   const memory = h('input', { type: 'checkbox', checked: !!(p.memory || {}).enabled });
@@ -47,7 +49,9 @@ export function policyForm({ policy, isPrivate, limits, onSave }) {
   const reply = p.reply || {};
   const maxParts = h('input', { type: 'number', min: 1, max: 5, step: 1, value: reply.max_parts ?? '' });
   const lim = limits || {};
-  const limitHint = (range, def, cur) => `${range}；0 表示用本会话类型的默认值（${def ?? '—'}），当前生效 ${cur ?? '—'}`;
+  const zeroLimit = forDefaults ? '0 表示用内置默认值' : '0 表示用本会话类型的默认值';
+  const limitHint = (range, def, cur) => `${range}；${zeroLimit}（${def ?? '—'}），当前生效 ${cur ?? '—'}`;
+  const zeroWait = forDefaults ? '两项都填 0 表示不等待、收到消息立即回复' : '两项都填 0 表示用默认值';
   const privateWait = h('input', { value: reply.private_wait || '', placeholder: '6s' });
   const privateMaxWait = h('input', { value: reply.private_max_wait || '', placeholder: '20s' });
   const initiative = (p.proactive || {}).private || {};
@@ -98,7 +102,7 @@ export function policyForm({ policy, isPrivate, limits, onSave }) {
     field('笔记字数上限', noteMax, limitHint('每人的记忆笔记最多多少字，50–2000', lim.default_note_max_chars, lim.note_max_chars))),
   isPrivate ? h('div', { class: 'form-grid' },
     field('私聊等待', privateWait, '对方停顿多久才开始回复，0–60s'),
-    field('私聊最长等待', privateMaxWait, '从开始等待起最多等多久，打断重来时重新计算，私聊等待–2m；两项都填 0 表示用默认值')) : null,
+    field('私聊最长等待', privateMaxWait, `从开始等待起最多等多久，打断重来时重新计算，私聊等待–2m；${zeroWait}`)) : null,
   isPrivate ? h('div', { class: 'form-grid' },
     field('主动找人档位', level, '关：不主动找人；低、中、高：每天最多发起 1、2、4 条，距上一条消息至少 8、4、2 小时。要打开“主动发言”才会发'),
     field('免打扰开始', quietStart, 'HH:MM，按服务器时区，可以跨午夜'),

@@ -1673,7 +1673,7 @@ func TestSettingsView(t *testing.T) {
 		"默认策略保存后立即生效，不用重启。", "settings/policies",
 		"个会话跟随这个默认值；单独改过策略的会话不受影响。", "policyVersions(", "高级：JSON 编辑",
 		"整份替换默认策略；没写的字段按内置默认值补齐。", "warnings", "'hint warn'", "已保存",
-		"群聊默认策略", "私聊默认策略", "/restore")
+		"群聊默认策略", "私聊默认策略", "/restore", "forDefaults: true")
 	containsAll(t, "app.js", files["app.js"],
 		"import { settingsView } from './views/settings.js';", "route('/settings', settingsView)")
 }
@@ -1688,6 +1688,9 @@ func TestPolicyForm_Shared(t *testing.T) {
 		"field('分条上限'", "field('免打扰开始'", "field('私聊等待'", "field('主动找人档位'", "恢复此版本",
 		"'分条上限必须是整数'", "'免打扰时段写成 23:00 这样的两位数时间'", "'JSON 格式错误：'")
 	conv := files["views/conversation.js"]
+	if strings.Contains(conv, "forDefaults") {
+		t.Error("views/conversation.js passes forDefaults; its hints must say 0 takes the defaults")
+	}
 	containsAll(t, "views/conversation.js", conv, "from './policyform.js'", "policyForm(", "policyJSONForm(", "policyVersions(",
 		"整份替换当前策略。含 proactive 或 memory 段时，该段必须完整；不含时保留当前设置。")
 	for name, text := range map[string]string{"views/conversation.js": conv, "views/settings.js": files["views/settings.js"]} {
@@ -1697,6 +1700,19 @@ func TestPolicyForm_Shared(t *testing.T) {
 			}
 		}
 	}
+}
+
+// A default policy is stored as written, so on the settings page (forDefaults)
+// the hints say 0 and 0 for the private waits means no wait and a 0 memory
+// limit the built-in one; the conversation page keeps saying 0 takes the
+// defaults.
+func TestPolicyForm_DefaultsHints(t *testing.T) {
+	form := assets(t, ".js")["views/policyform.js"]
+	containsAll(t, "views/policyform.js", form,
+		"export function policyForm({ policy, isPrivate, limits, forDefaults = false, onSave })",
+		"forDefaults ? '0 表示用内置默认值' : '0 表示用本会话类型的默认值'",
+		"forDefaults ? '两项都填 0 表示不等待、收到消息立即回复' : '两项都填 0 表示用默认值'",
+		"私聊等待–2m；${zeroWait}`", "；${zeroLimit}（${def ?? '—'}）")
 }
 
 // The conversation's policy tab tells whether the conversation follows its
