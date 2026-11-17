@@ -21,6 +21,18 @@ const SUGGEST_KEY = 'conloom.chat.suggestions';
 const SUGGEST_OFF = 'off';
 // MAX_LINES is how many lines the message box grows to before it scrolls.
 const MAX_LINES = 6;
+// LONG_PRESS_MS is how long a finger rests on a message to open its menu;
+// moving it more than LONG_PRESS_SLOP pixels meanwhile makes it a scroll.
+export const LONG_PRESS_MS = 450;
+const LONG_PRESS_SLOP = 10;
+// FOLLOW_MS is how long after the message menu opens by a long press or the
+// keyboard, or after the finger that opened it lifts, the browser's own click
+// or contextmenu that follows is ignored.
+const FOLLOW_MS = 500;
+// MENU_MARGIN keeps the message menu this many pixels inside the window.
+const MENU_MARGIN = 4;
+// TOAST_MS is how long a note such as 已复制 shows.
+const TOAST_MS = 1500;
 
 // suggestionsOn reads the 建议回复 switch; a browser that refuses storage
 // gets it on.
@@ -65,19 +77,16 @@ function clock(v) {
 
 // bubble shows message m: the bot's on the left, the user's on the right,
 // with its time in the corner, its sender and full time on hover, and its
-// channel only when it is not the panel. Under it are 撤回 and, for the bot's,
-// 重新生成 (hidden until refreshActions shows it), which call
-// actions.withdraw(m) and actions.regenerate(m).
-function bubble(m, actions) {
+// channel only when it is not the panel. It holds no buttons: its actions are
+// in the message menu (see chatPane), which the keyboard opens on the bubble
+// once it has the focus.
+function bubble(m) {
   const when = fmtTime(m.at);
   return h('li', { class: m.from_bot ? 'tg-msg in' : 'tg-msg out', dataset: { seq: String(m.seq) } },
-    h('div', { class: 'tg-bubble' },
+    h('div', { class: 'tg-bubble', tabindex: '0', 'aria-haspopup': 'menu' },
       m.channel && m.channel !== 'panel' ? h('div', null, h('span', { class: 'badge' }, m.channel)) : null,
       h('span', { class: 'tg-text' }, m.text),
-      h('span', { class: 'tg-time', title: m.sender_name ? `${m.sender_name} · ${when}` : when }, clock(m.at)),
-      h('div', { class: 'tg-actions' },
-        h('button', { type: 'button', class: 'tg-action danger', onclick: () => actions.withdraw(m) }, '撤回'),
-        m.from_bot ? h('button', { type: 'button', class: 'tg-action', 'data-regenerate': '1', onclick: () => actions.regenerate(m) }, '重新生成') : null)));
+      h('span', { class: 'tg-time', title: m.sender_name ? `${m.sender_name} · ${when}` : when }, clock(m.at))));
 }
 
 // listen adds fn as a listener of type on target, in the capture phase when
@@ -85,6 +94,48 @@ function bubble(m, actions) {
 export function listen(target, type, fn, signal, capture = false) {
   target.addEventListener(type, fn, capture);
   signal.addEventListener('abort', () => target.removeEventListener(type, fn, capture));
+}
+
+// shownMenuClose closes the context menu open on the page, if any. Only one
+// is open at a time: menuOpened(close), called by a menu that opens with its
+// close, closes any other first, and menuClosed(close) tells that it closed.
+let shownMenuClose = null;
+
+export function menuOpened(close) {
+  if (shownMenuClose && shownMenuClose !== close) {
+    const other = shownMenuClose;
+    shownMenuClose = null;
+    other();
+  }
+  shownMenuClose = close;
+}
+
+export function menuClosed(close) {
+  if (shownMenuClose === close) shownMenuClose = null;
+}
+
+// copyText puts text on the clipboard and reports whether it did. Without the
+// Clipboard API (a page not served over HTTPS, an old browser) it copies from
+// a hidden box.
+export async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // falls back to the hidden box
+  }
+  const box = h('textarea', { class: 'tg-copy-buffer', readonly: true, tabindex: '-1', 'aria-hidden': 'true' });
+  box.value = text;
+  document.body.appendChild(box);
+  box.select();
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  box.remove();
+  return ok;
 }
 
 // GONE is shown, once, when the chat no longer exists.
@@ -178,14 +229,16 @@ export function chatBar({ key, bot, title, status, items, onBack, onDelete, sign
 // onDelete() deletes the chat after confirmation. onMessages(messages), when
 // given, gets the messages each time some are shown: the latest at first,
 // then each one new.
-// Each message can be withdrawn (撤回, with what follows it), and the one GET
-// chat names in regenerate_seq regenerated (重新生成); both are off while the
-// bot is busy or a message is being sent. Polling stops before either is
-// asked for and a poll already under way is dropped, so no message they
-// delete is shown again; once done, reload(note) opens the chat afresh (by
-// default the route of key), with note, when given, shown there: a message
-// that is gone already reloads with MESSAGE_GONE_NOTE, a chat that is gone
-// stops the pane as a 404 of the polling does.
+// A right-click, a long press or the menu key on a message opens its menu,
+// where it can be copied (复制), withdrawn (撤回, with what follows it) and,
+// the one GET chat names in regenerate_seq, regenerated (重新生成); the last
+// two are off while the bot is busy or a message is being sent, and only one
+// menu of the page is open at a time (see menuOpened). Polling stops before
+// a withdraw or regenerate is asked for and a poll already under way is
+// dropped, so no message they delete is shown again; once done, reload(note)
+// opens the chat afresh (by default the route of key), with note, when given,
+// shown there: a message that is gone already reloads with MESSAGE_GONE_NOTE,
+// a chat that is gone stops the pane as a 404 of the polling does.
 export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete, onMessages, reload = () => go(href('im', key)) }) {
   const log = h('ul', { class: 'tg-log' }, hint ? h('li', { class: 'tg-note' }, hint) : null);
   // typing is 正在输入 with three blinking dots, always in the status line,
@@ -236,14 +289,223 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     mount(chips);
     chips.remove();
   };
+
+  // The message menu floats over the page, outside the scrolling messages:
+  // 复制, 重新生成 for the message regenSeq names, and 撤回, of the message
+  // menuMsg, whose bubble, menuBubble, is marked tg-selected while it is
+  // open. menuVia tells what opened it, at menuAt: 'mouse' (a right-click),
+  // 'touch' (a long press, which leaves the focus where it was, so an
+  // on-screen keyboard stays) or 'key' (the menu key or Shift+F10). press is
+  // the finger resting on a bubble, until it lifts, moves or the list
+  // scrolls; clicks before followUntil, those a long press ends with, do not
+  // close the menu.
+  const messages = new Map();
+  const copyItem = h('button', { type: 'button', class: 'tg-bar-item', role: 'menuitem', onclick: () => choose((m) => copyMessage(m)) }, '复制');
+  const regenItem = h('button', { type: 'button', class: 'tg-bar-item', role: 'menuitem', onclick: () => choose((m) => actions.regenerate(m)) }, '重新生成');
+  const withdrawItem = h('button', { type: 'button', class: 'tg-bar-item danger', role: 'menuitem', onclick: () => choose((m) => actions.withdraw(m)) }, '撤回');
+  const msgMenu = h('div', { class: 'tg-ctx-menu tg-msg-menu', role: 'menu' }, copyItem, regenItem, withdrawItem);
+  let menuBubble = null;
+  let menuMsg = null;
+  let menuVia = '';
+  let menuAt = 0;
+  let press = null;
+  let followUntil = 0;
+  let toastEl = null;
+
+  // refreshActions shows, in the open message menu, 重新生成 only on the
+  // message regenSeq names, and turns 重新生成 and 撤回 off while they cannot
+  // run; the focus on an item turned off moves to 复制.
   const refreshActions = () => {
+    if (!menuBubble) return;
     const off = botTyping || gone || acting || send.disabled;
-    for (const row of log.querySelectorAll('.tg-msg')) {
-      const regen = row.querySelector('[data-regenerate]');
-      if (regen) regen.hidden = !regenSeq || Number(row.dataset.seq) !== regenSeq;
-      for (const b of row.querySelectorAll('.tg-action')) b.disabled = off;
-    }
+    const focused = msgMenu.contains(document.activeElement);
+    regenItem.hidden = !regenSeq || menuMsg.seq !== regenSeq;
+    regenItem.disabled = off;
+    withdrawItem.disabled = off;
+    if (focused && !msgMenu.contains(document.activeElement)) copyItem.focus({ preventScroll: true });
   };
+  // placeMenu puts the menu's top left at x, y, its top right when fromRight,
+  // or, when it does not fit under y, its bottom at above; it stays inside the
+  // window and grows from where it was opened.
+  const placeMenu = (x, y, above, fromRight) => {
+    const w = msgMenu.offsetWidth;
+    const ht = msgMenu.offsetHeight;
+    const maxLeft = window.innerWidth - w - MENU_MARGIN;
+    const maxTop = window.innerHeight - ht - MENU_MARGIN;
+    const left = Math.max(MENU_MARGIN, Math.min(fromRight ? x - w : x, maxLeft));
+    const top = Math.max(MENU_MARGIN, Math.min(y <= maxTop ? y : above - ht, maxTop));
+    msgMenu.style.left = `${left}px`;
+    msgMenu.style.top = `${top}px`;
+    msgMenu.style.transformOrigin = `${Math.min(Math.max(x - left, 0), w)}px ${Math.min(Math.max(y - top, 0), ht)}px`;
+  };
+  // closeMenu closes the message menu, with the focus back on its bubble when
+  // refocus is true.
+  const closeMenu = (refocus) => {
+    if (!menuBubble) return;
+    const b = menuBubble;
+    menuBubble = null;
+    menuMsg = null;
+    b.classList.remove('tg-selected');
+    msgMenu.remove();
+    menuClosed(closeMenu);
+    if (refocus === true && b.isConnected) b.focus({ preventScroll: true });
+  };
+  // openMenu opens the message menu of bubble b, opened via via, at x, y (see
+  // placeMenu), closing any other menu on the page.
+  const openMenu = (b, via, x, y, above = y, fromRight = false) => {
+    const m = messages.get(Number(b.parentNode.dataset.seq));
+    if (!m) return;
+    closeMenu();
+    menuBubble = b;
+    menuMsg = m;
+    menuVia = via;
+    menuAt = Date.now();
+    b.classList.add('tg-selected');
+    refreshActions();
+    document.body.appendChild(msgMenu);
+    placeMenu(x, y, above, fromRight);
+    menuOpened(closeMenu);
+    if (via !== 'touch') copyItem.focus({ preventScroll: true });
+  };
+  // choose closes the menu, the focus back on the bubble unless a finger
+  // opened it, and runs run with its message.
+  const choose = (run) => {
+    const m = menuMsg;
+    closeMenu(menuVia !== 'touch');
+    if (m) run(m);
+  };
+  const cancelPress = () => {
+    if (!press) return;
+    clearTimeout(press.timer);
+    press = null;
+  };
+  // showToast shows text over the bottom of the messages for TOAST_MS.
+  const showToast = (text) => {
+    if (toastEl) toastEl.remove();
+    const el = h('div', { class: 'tg-toast', role: 'status' }, text);
+    toastEl = el;
+    conv.appendChild(el);
+    setTimeout(() => {
+      el.remove();
+      if (toastEl === el) toastEl = null;
+    }, TOAST_MS);
+  };
+  // copyMessage copies the text of message m, then puts the focus back where
+  // it was, which copying through the hidden box moves.
+  const copyMessage = async (m) => {
+    const back = document.activeElement;
+    const ok = await copyText(m.text || '');
+    if (back && back.isConnected && document.activeElement !== back) back.focus({ preventScroll: true });
+    if (!signal.aborted) showToast(ok ? '已复制' : '复制失败');
+  };
+
+  // A right-click on a bubble opens its menu at the pointer. Android fires
+  // contextmenu on a long press too: the menu then opens once, where the
+  // finger rests, and the contextmenu that follows a long press or the menu
+  // key is ignored.
+  log.addEventListener('contextmenu', (e) => {
+    const b = e.target.closest('.tg-bubble');
+    if (!b) return;
+    e.preventDefault();
+    if (press) {
+      clearTimeout(press.timer);
+      if (!press.opened) {
+        press.opened = true;
+        openMenu(press.b, 'touch', press.x, press.y);
+      }
+      return;
+    }
+    if (menuBubble === b && menuVia !== 'mouse' && (Date.now() - menuAt < FOLLOW_MS || Date.now() < followUntil)) return;
+    openMenu(b, 'mouse', e.clientX, e.clientY);
+  });
+  // A finger resting LONG_PRESS_MS on a bubble opens its menu there; one
+  // that lifts, moves more than LONG_PRESS_SLOP or is joined by another does
+  // not. Once open, the finger no longer scrolls, and lifting it neither
+  // clicks nor closes the menu.
+  log.addEventListener('touchstart', (e) => {
+    cancelPress();
+    const b = e.touches.length === 1 ? e.target.closest('.tg-bubble') : null;
+    if (!b) return;
+    const t = e.touches[0];
+    const p = { b, x: t.clientX, y: t.clientY, opened: false, timer: 0 };
+    p.timer = setTimeout(() => {
+      if (press !== p || p.opened) return;
+      p.opened = true;
+      openMenu(b, 'touch', p.x, p.y);
+    }, LONG_PRESS_MS);
+    press = p;
+  }, { passive: true });
+  log.addEventListener('touchmove', (e) => {
+    if (!press) return;
+    if (press.opened) {
+      if (e.cancelable) e.preventDefault();
+      return;
+    }
+    const t = e.touches[0];
+    if (Math.hypot(t.clientX - press.x, t.clientY - press.y) > LONG_PRESS_SLOP) cancelPress();
+  }, { passive: false });
+  log.addEventListener('touchend', (e) => {
+    if (press && press.opened) {
+      if (e.cancelable) e.preventDefault();
+      followUntil = Date.now() + FOLLOW_MS;
+    }
+    cancelPress();
+  }, { passive: false });
+  log.addEventListener('touchcancel', cancelPress);
+  // The menu key or Shift+F10 on a bubble opens its menu under it, on the
+  // side of the bubble, with the focus on its first item.
+  log.addEventListener('keydown', (e) => {
+    const b = e.target.classList && e.target.classList.contains('tg-bubble') ? e.target : null;
+    if (!b || !(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;
+    e.preventDefault();
+    const r = b.getBoundingClientRect();
+    const out = b.parentNode.classList.contains('out');
+    openMenu(b, 'key', out ? r.right : r.left, r.bottom + MENU_MARGIN, r.top - MENU_MARGIN, out);
+  });
+  // In the menu the arrows, Home and End move between the items that can
+  // run, Return or Space chooses one, and Tab, like Escape, closes it.
+  msgMenu.addEventListener('keydown', (e) => {
+    const items = [copyItem, regenItem, withdrawItem].filter((b) => !b.hidden && !b.disabled);
+    const n = items.length;
+    const i = items.indexOf(document.activeElement);
+    let next = null;
+    if (e.key === 'ArrowDown') next = items[(i + 1) % n];
+    else if (e.key === 'ArrowUp') next = items[(i <= 0 ? n : i) - 1];
+    else if (e.key === 'Home') next = items[0];
+    else if (e.key === 'End') next = items[n - 1];
+    else if (e.key === 'Tab') {
+      e.preventDefault();
+      closeMenu(true);
+      return;
+    }
+    if (next) {
+      e.preventDefault();
+      next.focus();
+    }
+  });
+  msgMenu.addEventListener('contextmenu', (e) => e.preventDefault());
+  // A click or a right-click elsewhere, Escape, a scroll, a resized window or
+  // the end of the pane closes the menu, and a scroll drops a long press.
+  listen(document, 'click', (e) => {
+    if (menuBubble && !msgMenu.contains(e.target) && Date.now() >= followUntil) closeMenu();
+  }, signal);
+  listen(document, 'contextmenu', (e) => {
+    const t = e.target;
+    if (menuBubble && !msgMenu.contains(t) && !(log.contains(t) && t.closest('.tg-bubble'))) closeMenu();
+  }, signal, true);
+  listen(document, 'keydown', (e) => {
+    if (e.key === 'Escape' && menuBubble) closeMenu(true);
+  }, signal);
+  listen(document, 'scroll', () => {
+    cancelPress();
+    closeMenu();
+  }, signal, true);
+  listen(window, 'resize', closeMenu, signal);
+  signal.addEventListener('abort', () => {
+    cancelPress();
+    closeMenu();
+    if (toastEl) toastEl.remove();
+  });
   const warn = (text) => h('p', { class: 'tg-warn', role: 'status' }, text);
   const actionError = (err) => {
     if (isAbort(err)) return;
@@ -310,7 +572,8 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
       log.appendChild(h('li', { class: 'tg-day' }, h('span', null, dayLabel(m.at))));
       lastDay = day;
     }
-    const el = bubble(m, actions);
+    const el = bubble(m);
+    messages.set(m.seq, m);
     if (lastEl && !newDay && last.from_bot === m.from_bot && last.sender_id === m.sender_id) {
       lastEl.classList.remove('tail');
       el.classList.add('cont');
@@ -522,12 +785,14 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     },
   }, input, send);
 
+  const conv = h('section', { class: 'tg-conv' }, log, pollError, sendError, form);
+
   poll();
   requestAnimationFrame(() => {
     log.scrollTop = log.scrollHeight;
   });
   return [
     chatBar({ key, bot, title, status, items: [suggestItem], onBack, onDelete, signal }),
-    h('section', { class: 'tg-conv' }, log, pollError, sendError, form),
+    conv,
   ];
 }

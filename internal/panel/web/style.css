@@ -647,15 +647,8 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
 }
 .chat-app .tg-bar-item:hover { background: var(--code-bg); text-decoration: none; }
 .chat-app .tg-bar-item.danger { color: var(--danger); }
-.chat-app .tg-actions { display: none; gap: 6px; margin-top: 4px; }
-.chat-app .tg-msg.out .tg-actions { justify-content: flex-end; }
-.chat-app .tg-msg:hover .tg-actions,
-.chat-app .tg-msg:focus-within .tg-actions { display: flex; }
-.chat-app .tg-action { padding: 0; border: 0; background: none; color: var(--muted); font-size: 12px; cursor: pointer; }
-.chat-app .tg-action:hover { text-decoration: underline; }
-.chat-app .tg-action.danger { color: var(--danger); }
-.chat-app .tg-action[hidden] { display: none; }
-.chat-app .tg-action:disabled { opacity: .45; cursor: default; text-decoration: none; }
+.chat-app .tg-bar-item[hidden] { display: none; }
+.chat-app .tg-bar-item:disabled { opacity: .45; cursor: default; background: none; }
 .chat-app .tg-ctx-menu {
   position: fixed;
   z-index: 30;
@@ -669,12 +662,43 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   animation: tg-menu-in 150ms cubic-bezier(.2,.8,.2,1);
 }
 .chat-app .tg-ctx-menu[hidden] { display: none; }
+.chat-app .tg-msg-menu .tg-bar-item:focus-visible { background: var(--code-bg); outline: none; }
 .chat-app .tg-warn { margin: 4px 0; color: var(--warn); font-size: 13px; }
+/* A message's actions are in its menu, opened by a right-click, a long press
+   or the menu key, so the bubble keeps its size. A finger's long press opens
+   the menu rather than selecting text, which 复制 copies instead. */
+.chat-app .tg-bubble:focus { outline: none; }
+.chat-app .tg-bubble:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.chat-app .tg-bubble.tg-selected { filter: brightness(.9); }
+.chat-app .tg-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 72px;
+  z-index: 5;
+  padding: 6px 14px;
+  border-radius: 14px;
+  background: var(--tg-pill);
+  color: #ffffff;
+  font-size: 13px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  animation: tg-fade-in 150ms ease-out;
+}
+.chat-app .tg-copy-buffer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  font-size: 16px;
+  opacity: 0;
+  pointer-events: none;
+}
 @media (pointer: coarse) {
-  .chat-app .tg-actions { display: flex; }
+  .chat-app .tg-bubble { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 }
 
-.chat-app .tg-conv { flex: 1; min-height: 0; display: flex; flex-direction: column; animation: tg-fade-in 150ms ease-out; }
+.chat-app .tg-conv { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; animation: tg-fade-in 150ms ease-out; }
 .chat-app .tg-log {
   flex: 1;
   min-height: 0;

@@ -3,7 +3,7 @@ import { get, post, put, request, convPath, isAbort, currentUser, logout } from 
 import { go, href, withQuery } from '../lib/router.js';
 import { fmtTime, fmtClock } from '../lib/format.js';
 import { SECTIONS } from '../lib/sections.js';
-import { chatBar, chatPane, deleteChatConfirmed, listen } from './chat.js';
+import { chatBar, chatPane, deleteChatConfirmed, listen, menuClosed, menuOpened } from './chat.js';
 import { avatarEl } from './avatar.js';
 
 // PANEL is the source of a bot created in the panel and the platform of the
@@ -591,6 +591,7 @@ function chatPage() {
   const closeCtx = () => {
     ctxMenu.hidden = true;
     ctxKey = '';
+    menuClosed(closeCtx);
   };
   const openCtx = (e, c) => {
     ctxKey = c.key;
@@ -607,6 +608,7 @@ function chatPage() {
     ctxMenu.style.left = `${left}px`;
     ctxMenu.style.top = `${top}px`;
     ctxMenu.hidden = false;
+    menuOpened(closeCtx);
   };
   list.addEventListener('contextmenu', (e) => {
     const a = e.target.closest('a.tg-chat');

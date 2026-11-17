@@ -1339,7 +1339,7 @@ func TestChatTG_MessageActions(t *testing.T) {
 		"del(convPath(key, 'messages', seq))",
 		"post(convPath(key, 'messages', seq, 'regenerate'))",
 		"reload = () => go(href('im', key))",
-		"regen.hidden = !regenSeq || Number(row.dataset.seq) !== regenSeq;",
+		"regenItem.hidden = !regenSeq || menuMsg.seq !== regenSeq;",
 		"regenSeq = res.regenerate_seq || 0;",
 		"export const ACTION_BUSY = '对方正在回复，等它说完再试。';",
 		"refreshActions",
@@ -1348,10 +1348,96 @@ func TestChatTG_MessageActions(t *testing.T) {
 			t.Errorf("views/chat.js lacks %q", want)
 		}
 	}
-	for _, want := range []string{".chat-app .tg-action", ".chat-app .tg-actions"} {
-		if !strings.Contains(files["style.css"], want) {
-			t.Errorf("style.css lacks %q", want)
+}
+
+// On the TG page a message's actions are in a context menu, so its bubble
+// holds no buttons and keeps its size: a right-click, a long press or the
+// menu key opens 复制, 重新生成 and 撤回, which run the pane's own withdraw
+// and regenerate. Its listeners on document and window end with the pane, and
+// opening it closes the list's context menu.
+func TestChatTG_MessageMenu(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js := files["views/chat.js"]
+	css := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(files["style.css"], "")
+	for _, want := range []string{
+		"'复制'", "'重新生成'", "'撤回'",
+		"log.addEventListener('contextmenu', (e) => {",
+		"log.addEventListener('touchstart', (e) => {", "log.addEventListener('touchmove', (e) => {",
+		"log.addEventListener('touchend', (e) => {", "log.addEventListener('touchcancel', cancelPress);",
+		"export const LONG_PRESS_MS = 450;", "const LONG_PRESS_SLOP = 10;", "}, LONG_PRESS_MS);",
+		"e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')",
+		"'ArrowDown'", "'ArrowUp'", "e.key === 'Escape' && menuBubble) closeMenu(true);",
+		"b.classList.add('tg-selected');", "b.classList.remove('tg-selected');",
+		"h('div', { class: 'tg-bubble', tabindex: '0', 'aria-haspopup': 'menu' },",
+		"document.body.appendChild(msgMenu);", "msgMenu.remove();",
+		"choose((m) => actions.regenerate(m))", "choose((m) => actions.withdraw(m))",
+		"await navigator.clipboard.writeText(text);", "document.execCommand('copy')", "'已复制'",
+		"listen(document, 'click', (e) => {", "listen(document, 'contextmenu', (e) => {",
+		"listen(document, 'scroll', () => {", "listen(window, 'resize', closeMenu, signal);",
+		"menuOpened(closeMenu);", "menuClosed(closeMenu);",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chat.js lacks %q", want)
 		}
+	}
+	for _, gone := range []string{"tg-actions", "tg-action'", "data-regenerate", "bubble(m, actions)"} {
+		if strings.Contains(js, gone) {
+			t.Errorf("views/chat.js still has the in-bubble actions (%q)", gone)
+		}
+	}
+	if strings.Contains(css, ".tg-action") {
+		t.Error("style.css still styles the in-bubble actions (.tg-action)")
+	}
+	for _, c := range []struct{ name, re string }{
+		{"a floating menu that opens from where it is asked for", `\.chat-app \.tg-ctx-menu\s*\{[^}]*position:\s*fixed;[^}]*animation:\s*tg-menu-in `},
+		{"the selected bubble marked", `\.chat-app \.tg-bubble\.tg-selected\s*\{`},
+		{"items that cannot run turned off", `\.chat-app \.tg-bar-item:disabled\s*\{`},
+		{"items shown only when they apply", `\.chat-app \.tg-bar-item\[hidden\]\s*\{\s*display:\s*none;`},
+	} {
+		if !regexp.MustCompile(c.re).MatchString(css) {
+			t.Errorf("style.css lacks %s (%s)", c.name, c.re)
+		}
+	}
+	coarse := mediaBlock(t, css, "(pointer: coarse)")
+	for _, want := range []string{"-webkit-touch-callout: none;", "user-select: none;"} {
+		if !regexp.MustCompile(`\.chat-app \.tg-bubble\s*\{[^}]*` + regexp.QuoteMeta(want)).MatchString(coarse) {
+			t.Errorf("style.css @media (pointer: coarse) does not give TG bubbles %q", want)
+		}
+	}
+	if strings.Contains(coarse, "tg-action") {
+		t.Error("style.css @media (pointer: coarse) still shows in-bubble actions")
+	}
+	chats := files["views/chats.js"]
+	for _, want := range []string{"menuOpened(closeCtx);", "menuClosed(closeCtx);", "listen, menuClosed, menuOpened } from './chat.js';"} {
+		if !strings.Contains(chats, want) {
+			t.Errorf("views/chats.js lacks %q", want)
+		}
+	}
+	for _, bad := range []string{
+		"document.addEventListener(", "window.addEventListener(",
+	} {
+		if strings.Contains(js, bad) {
+			t.Errorf("views/chat.js adds a listener that outlives the pane: %q", bad)
+		}
+	}
+}
+
+// The classic chat page keeps its in-bubble 撤回 and 重新生成 buttons.
+func TestChatClassic_KeepsBubbleButtons(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js := files["views/chatclassic.js"]
+	for _, want := range []string{"class: 'chat-actions'", "class: 'chat-action", "'撤回'", "'重新生成'"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chatclassic.js lacks %q", want)
+		}
+	}
+	for _, bad := range []string{"'contextmenu'", "touchstart", "tg-selected", "'复制'"} {
+		if strings.Contains(js, bad) {
+			t.Errorf("views/chatclassic.js has %q of the TG message menu", bad)
+		}
+	}
+	if !strings.Contains(files["style.css"], ".chat-classic .chat-actions") {
+		t.Error("style.css has no .chat-classic .chat-actions rule")
 	}
 }
 
