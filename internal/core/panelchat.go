@@ -1,11 +1,14 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +16,7 @@ import (
 
 	"github.com/kinako404/conloom/internal/admission"
 	"github.com/kinako404/conloom/internal/ids"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -226,10 +230,11 @@ func (o *Orchestrator) panelBusy(ctx context.Context, convKey string) bool {
 }
 
 // WithdrawPanel deletes the messages of panel chat convKey from seq onward,
-// with their search index, chunks and timers. It holds the chat's panel lock,
-// refuses a busy chat with ErrChatNotIdle, and returns how many messages it
-// deleted. A conversation not on store.PlatformPanel is ErrNotPanelChat, an
-// unknown one or one without the message store.ErrNotFound.
+// with their search index, chunks and timers, and returns how many it
+// deleted. It holds the chat's panel lock. A busy chat is ErrChatNotIdle; a conversation not on store.PlatformPanel
+// ErrNotPanelChat, one that is not private ErrNotPrivate, an unknown one
+// store.ErrNotFound and a seq that is not a message of the chat
+// ErrMessageNotFound; a bot being deleted is ErrBotDeleting.
 func (o *Orchestrator) WithdrawPanel(ctx context.Context, convKey string, seq int64) (int, error) {
 	botID, _, _ := strings.Cut(convKey, ":")
 	if err := o.panelBots.notDeleting(botID); err != nil {
@@ -259,7 +264,7 @@ func (o *Orchestrator) WithdrawPanel(ctx context.Context, convKey string, seq in
 	}
 	target, ok := found[seq]
 	if !ok {
-		return 0, store.ErrNotFound
+		return 0, ErrMessageNotFound
 	}
 	actor := target.PlatformUserID
 	if actor == "" {
@@ -286,12 +291,191 @@ func (o *Orchestrator) WithdrawPanel(ctx context.Context, convKey string, seq in
 	return deleted, nil
 }
 
+// regenScan bounds the messages of one reply that regenerating it reads.
+const regenScan = 50
+
+// regenTurn is what regenerating a panel chat's newest message redoes: task,
+// the ordinary reply task whose reply it ends, and that task's trigger
+// messages, oldest first.
+type regenTurn struct {
+	task     store.TaskRecord
+	triggers []store.MessageRecord
+}
+
+// regenerable finds what regenerating the message seq of the panel chat conv
+// would redo. It must be the chat's newest message and from the bot
+// (ErrNotLatest; ErrMessageNotFound when it is not a message of the chat),
+// and end the reply of an ordinary reply task to the user's messages: a task
+// triggered by the user's private messages, not a wake, proactive or
+// command task (ErrNotReply, ErrCommandReply), whose trigger messages are all
+// still stored, none of them a command under the chat's policy, and after the
+// last of which every message is a part of its reply (ErrNotReply). A reply to
+// messages sent before their sender was forgotten is ErrForgotten.
+func (o *Orchestrator) regenerable(ctx context.Context, conv store.ConversationRecord, seq int64) (regenTurn, error) {
+	found, err := o.st.MessagesBySeq(ctx, conv.Key, []int64{seq})
+	if err != nil {
+		return regenTurn{}, err
+	}
+	target, ok := found[seq]
+	if !ok {
+		return regenTurn{}, ErrMessageNotFound
+	}
+	if !target.FromBot {
+		return regenTurn{}, ErrNotLatest
+	}
+	after, err := o.st.MessagesAfter(ctx, conv.Key, seq, 1)
+	if err != nil {
+		return regenTurn{}, err
+	}
+	if len(after) != 0 {
+		return regenTurn{}, ErrNotLatest
+	}
+	taskID, err := o.replyTaskID(ctx, target)
+	if err != nil {
+		return regenTurn{}, err
+	}
+	task, err := o.st.GetTask(ctx, conv.BotInstanceID, taskID)
+	if errors.Is(err, store.ErrNotFound) {
+		return regenTurn{}, ErrNotReply
+	}
+	if err != nil {
+		return regenTurn{}, err
+	}
+	if task.Command != "" || task.Meta.Trigger == conloomapi.TriggerCommand {
+		return regenTurn{}, ErrCommandReply
+	}
+	if task.ConversationKey != conv.Key || task.Meta.Trigger != conloomapi.TriggerPrivate || len(task.TriggerMessageIDs) == 0 {
+		return regenTurn{}, ErrNotReply
+	}
+	triggers, err := o.st.GetMessages(ctx, conv.BotInstanceID, task.TriggerMessageIDs)
+	if err != nil {
+		return regenTurn{}, err
+	}
+	if len(triggers) != len(task.TriggerMessageIDs) {
+		return regenTurn{}, ErrNotReply
+	}
+	pv, err := o.policies.Current(ctx, conv.Key)
+	if err != nil {
+		return regenTurn{}, err
+	}
+	for _, m := range triggers {
+		if m.ConversationKey != conv.Key || m.FromBot {
+			return regenTurn{}, ErrNotReply
+		}
+		if _, _, ok := ParseCommand(m.Text, pv.Policy.Reply.CommandPrefix); ok {
+			return regenTurn{}, ErrCommandReply
+		}
+	}
+	slices.SortFunc(triggers, func(a, b store.MessageRecord) int { return cmp.Compare(a.Seq, b.Seq) })
+	last := triggers[len(triggers)-1]
+	reply, err := o.st.MessagesAfter(ctx, conv.Key, last.Seq, regenScan)
+	if err != nil {
+		return regenTurn{}, err
+	}
+	if len(reply) == 0 || reply[len(reply)-1].Seq != seq {
+		return regenTurn{}, ErrNotReply
+	}
+	for _, m := range reply[:len(reply)-1] {
+		if !m.FromBot {
+			return regenTurn{}, ErrNotReply
+		}
+		id, err := o.replyTaskID(ctx, m)
+		if err != nil {
+			return regenTurn{}, err
+		}
+		if id != task.ID {
+			return regenTurn{}, ErrNotReply
+		}
+	}
+	rows, err := o.st.GetMemberMemories(ctx, memory.ScopeKeyOf(conv.Key), []string{task.ActorPlatformUserID})
+	if err != nil {
+		return regenTurn{}, err
+	}
+	if forgotten := rows[task.ActorPlatformUserID].ForgottenAt; !forgotten.IsZero() && last.CreatedAt.Before(forgotten) {
+		return regenTurn{}, ErrForgotten
+	}
+	return regenTurn{task: task, triggers: triggers}, nil
+}
+
+// replyTaskID returns the ID of the task whose panel action delivered the bot
+// message m (stored with the platform message ID panel_<action ID>, see
+// outbox.PanelDeliverer); ErrNotReply when no panel action did.
+func (o *Orchestrator) replyTaskID(ctx context.Context, m store.MessageRecord) (string, error) {
+	actionID, ok := strings.CutPrefix(m.PlatformMessageID, "panel_")
+	if !ok {
+		return "", ErrNotReply
+	}
+	rec, err := o.st.GetOutbox(ctx, m.BotInstanceID, actionID)
+	if errors.Is(err, store.ErrNotFound) || err == nil && rec.ConversationKey != m.ConversationKey {
+		return "", ErrNotReply
+	}
+	if err != nil {
+		return "", err
+	}
+	return rec.TaskID, nil
+}
+
+// regenRefused reports whether err is regenerable's refusal of a message
+// rather than a failure.
+func regenRefused(err error) bool {
+	for _, refusal := range []error{ErrNotLatest, ErrNotReply, ErrCommandReply, ErrForgotten, store.ErrNotFound} {
+		if errors.Is(err, refusal) {
+			return true
+		}
+	}
+	return false
+}
+
+// RegenerableSeq returns the seq of the panel chat's newest message when
+// RegeneratePanel would accept it now, and 0 when it would refuse it: the
+// chat is busy or paused, its bot is being deleted, or the message is not the
+// bot's ordinary reply to the user's messages before it (see regenerable).
+// A conversation that is not a private panel chat has none; an unknown one
+// is store.ErrNotFound.
+func (o *Orchestrator) RegenerableSeq(ctx context.Context, convKey string) (int64, error) {
+	conv, err := o.panelConversation(ctx, convKey)
+	if err != nil {
+		return 0, err
+	}
+	if conv.Platform != store.PlatformPanel || conv.Type != conloomapi.ConvPrivate {
+		return 0, nil
+	}
+	if _, ok := o.bots.Bot(conv.BotInstanceID); !ok || o.panelBots.notDeleting(conv.BotInstanceID) != nil || o.panelBusy(ctx, convKey) {
+		return 0, nil
+	}
+	newest, err := o.newestSeq(ctx, convKey)
+	if err != nil || newest == 0 {
+		return 0, err
+	}
+	if _, err := o.regenerable(ctx, conv, newest); err != nil {
+		if regenRefused(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	pv, err := o.policies.Current(ctx, convKey)
+	if err != nil {
+		return 0, err
+	}
+	if pv.Policy.Concurrency.MaxInteractiveRequests == 0 {
+		return 0, nil
+	}
+	return newest, nil
+}
+
 // RegeneratePanel deletes the newest bot reply of panel chat convKey and
-// queues a new reply task for the user message before it, without storing a
-// duplicate user message. It holds the chat's panel lock and refuses a busy
-// chat with ErrChatNotIdle. The target must be the chat's newest message and
-// from the bot, or it is ErrNotLatest. The old reply's messages, chunks and
-// timers go in the same transaction that stores the task.
+// queues a new reply task for the same user messages, without storing them
+// again: the new task's trigger messages are those of the reply's task, and
+// everything after the last of them is deleted in the same transaction that
+// stores the task. Only the bot's ordinary reply to the user's messages can
+// be regenerated (see regenerable: ErrNotLatest, ErrNotReply, ErrCommandReply,
+// ErrForgotten, ErrMessageNotFound). It holds the chat's panel lock. A busy chat
+// is ErrChatNotIdle, a paused one errPaused (ErrPaused), a full queue
+// ErrQueueFull and a task of the same sender created meanwhile
+// ErrRegenMerged; a conversation not on store.PlatformPanel is
+// ErrNotPanelChat, one that is not private ErrNotPrivate, an unknown one or
+// one of an unknown bot store.ErrNotFound, and a bot being deleted
+// ErrBotDeleting.
 func (o *Orchestrator) RegeneratePanel(ctx context.Context, convKey string, seq int64) (string, error) {
 	botID, _, _ := strings.Cut(convKey, ":")
 	if err := o.panelBots.notDeleting(botID); err != nil {
@@ -312,46 +496,23 @@ func (o *Orchestrator) RegeneratePanel(ctx context.Context, convKey string, seq 
 	if conv.Type != conloomapi.ConvPrivate {
 		return "", ErrNotPrivate
 	}
+	if _, ok := o.bots.Bot(conv.BotInstanceID); !ok {
+		return "", fmt.Errorf("%w: unknown bot %q", store.ErrNotFound, conv.BotInstanceID)
+	}
 	if o.panelBusy(ctx, convKey) {
 		return "", ErrChatNotIdle
 	}
-	found, err := o.st.MessagesBySeq(ctx, convKey, []int64{seq})
+	turn, err := o.regenerable(ctx, conv, seq)
 	if err != nil {
 		return "", err
 	}
-	target, ok := found[seq]
-	if !ok {
-		return "", store.ErrNotFound
-	}
-	if !target.FromBot {
-		return "", ErrNotLatest
-	}
-	after, err := o.st.MessagesAfter(ctx, convKey, seq, 1)
-	if err != nil {
-		return "", err
-	}
-	if len(after) != 0 {
-		return "", ErrNotLatest
-	}
-	older, err := o.st.MessagesBefore(ctx, convKey, seq, 50)
-	if err != nil {
-		return "", err
-	}
-	var user store.MessageRecord
-	for _, m := range older {
-		if !m.FromBot {
-			user = m
-			break
-		}
-	}
-	if user.ID == "" {
-		return "", ErrNotLatest
-	}
-	o.sched.EndTurn(convKey, user.PlatformUserID)
+	actor := turn.task.ActorPlatformUserID
+	last := turn.triggers[len(turn.triggers)-1]
+	o.sched.EndTurn(convKey, actor)
 	closed := MergeOptions{Debounce: time.Nanosecond, MaxMergeWindow: time.Nanosecond}
 	now := o.now()
 	var taskID string
-	_, err = o.sched.AdmitWith(convKey, user.PlatformUserID, user.ID, AdmitNew, closed, func(ap AdmitPlan) error {
+	_, err = o.sched.AdmitWith(convKey, actor, last.ID, AdmitNew, closed, func(ap AdmitPlan) error {
 		if ap.NewTaskID == "" {
 			return ErrRegenMerged
 		}
@@ -365,13 +526,10 @@ func (o *Orchestrator) RegeneratePanel(ctx context.Context, convKey string, seq 
 		if pv.Policy.Concurrency.MaxInteractiveRequests == 0 {
 			return errPaused
 		}
-		if _, _, ok := ParseCommand(user.Text, pv.Policy.Reply.CommandPrefix); ok {
-			return ErrCommandReply
-		}
 		id := ap.NewTaskID
 		task := store.TaskRecord{
-			ID: id, BotInstanceID: target.BotInstanceID, ConversationKey: convKey, Status: conloomapi.TaskQueued,
-			ActorPlatformUserID: user.PlatformUserID, TriggerMessageIDs: []string{user.ID},
+			ID: id, BotInstanceID: conv.BotInstanceID, ConversationKey: convKey, Status: conloomapi.TaskQueued,
+			ActorPlatformUserID: actor, TriggerMessageIDs: slices.Clone(turn.task.TriggerMessageIDs),
 			Priority: int(admission.PriorityInteractive), Meta: conloomapi.TaskMeta{Trigger: conloomapi.TriggerPrivate},
 			EventOccurredAt: now.UTC(), CreatedAt: now, UpdatedAt: now,
 		}
@@ -382,12 +540,12 @@ func (o *Orchestrator) RegeneratePanel(ctx context.Context, convKey string, seq 
 			return err
 		}
 		ev := store.EventRecord{
-			BotInstanceID: target.BotInstanceID, IdempotencyKey: "conloom:regen:" + id, EventID: "regen_" + id,
+			BotInstanceID: conv.BotInstanceID, IdempotencyKey: "conloom:regen:" + id, EventID: "regen_" + id,
 			Response: resp, CreatedAt: now,
 		}
 		if err := o.ingest(ctx, store.Ingest{
 			Event: ev, NewTask: &task,
-			DeleteMessages: &store.MessageDelete{ConversationKey: convKey, FromSeq: user.Seq + 1},
+			DeleteMessages: &store.MessageDelete{ConversationKey: convKey, FromSeq: last.Seq + 1},
 		}); err != nil {
 			return err
 		}

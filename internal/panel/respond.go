@@ -78,8 +78,9 @@ func (s *Server) respond(w http.ResponseWriter, r *http.Request, status int, cod
 // persona template "default", is 403; a refused consolidation is 409
 // MEMORY_DISABLED or PAUSED; importing templates whose names stored
 // templates have is 409 TEMPLATE_EXISTS listing them in names; a bot being
-// deleted, or a chat whose cancelled tasks are still stopping, is a retryable
-// 409 CHAT_BUSY; a cancelled request or a member memory that kept changing is
+// deleted, a chat whose cancelled tasks are still stopping, or a chat still
+// replying that a message is to be withdrawn or regenerated in, is a
+// retryable 409 CHAT_BUSY; a cancelled request or a member memory that kept changing is
 // a retryable 503; a description without a vision model is a 503
 // MODEL_UNAVAILABLE that is not retryable, as only a config change helps;
 // anything else is a 500 whose details are only logged.

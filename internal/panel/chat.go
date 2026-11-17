@@ -18,6 +18,7 @@ type ChatService interface {
 	DeletePanelChat(ctx context.Context, convKey string) error
 	WithdrawPanel(ctx context.Context, convKey string, seq int64) (deleted int, err error)
 	RegeneratePanel(ctx context.Context, convKey string, seq int64) (taskID string, err error)
+	RegenerableSeq(ctx context.Context, convKey string) (int64, error)
 	Busy(convKey string) bool
 	Suggest(ctx context.Context, convKey string, afterSeq int64) ([]string, error)
 }
@@ -34,16 +35,26 @@ func (s *Server) chatService(w http.ResponseWriter, r *http.Request) (ChatServic
 	return s.d.Chat, true
 }
 
-// chatFail is fail for the chat service: a request it refuses is 400 with
-// the reason.
+// chatFail is fail for the chat service: a request it refuses for what was
+// asked (not a panel chat, not private, bad text, a message that cannot be
+// regenerated) is 400 with the reason; a paused chat is 409 PAUSED, a full
+// queue or a regenerate the scheduler would merge 409 CHAT_BUSY; a seq that is
+// not a message of the chat is 404 MESSAGE_NOT_FOUND, unlike a missing chat
+// (404 NOT_FOUND).
 func (s *Server) chatFail(w http.ResponseWriter, r *http.Request, err error) {
-	if errors.Is(err, core.ErrNotLatest) {
-		s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "只能重新生成最新一条回复", err)
-		return
-	}
-	if errors.Is(err, core.ErrCommandReply) {
-		s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "命令的回复不能重新生成", err)
-		return
+	for _, c := range []struct {
+		err error
+		msg string
+	}{
+		{core.ErrNotLatest, "只能重新生成最新一条回复"},
+		{core.ErrNotReply, "只能重新生成 bot 对前面那几条消息的回复；它自己发起的消息（如主动找你说话）不能重新生成"},
+		{core.ErrCommandReply, "命令的回复不能重新生成"},
+		{core.ErrForgotten, "这条回复答的消息已经被忘记了，不能重新生成"},
+	} {
+		if errors.Is(err, c.err) {
+			s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, c.msg, err)
+			return
+		}
 	}
 	for _, refused := range []error{core.ErrNotPrivate, core.ErrNotPanelChat, core.ErrBadText} {
 		if errors.Is(err, refused) {
@@ -52,15 +63,18 @@ func (s *Server) chatFail(w http.ResponseWriter, r *http.Request, err error) {
 			return
 		}
 	}
-	if errors.Is(err, core.ErrPaused) {
-		s.respondError(w, r, http.StatusConflict, conloomapi.CodePaused, "这个聊天暂停中，不能重新生成。", err)
-		return
-	}
-	if errors.Is(err, core.ErrQueueFull) || errors.Is(err, core.ErrRegenMerged) {
+	switch {
+	case errors.Is(err, core.ErrMessageNotFound):
+		s.respondError(w, r, http.StatusNotFound, conloomapi.CodeMessageNotFound, "这条消息已经不在了", err)
+	case errors.Is(err, core.ErrPaused):
+		s.respondError(w, r, http.StatusConflict, conloomapi.CodePaused, "这个聊天暂停中。", err)
+	case errors.Is(err, core.ErrQueueFull):
+		s.respondError(w, r, http.StatusConflict, conloomapi.CodeChatBusy, "待回复的消息太多，稍后再试。", err)
+	case errors.Is(err, core.ErrRegenMerged):
 		s.respondError(w, r, http.StatusConflict, conloomapi.CodeChatBusy, "这个聊天正在变化，稍后再试。", err)
-		return
+	default:
+		s.fail(w, r, err)
 	}
-	s.fail(w, r, err)
 }
 
 // postChatMessage sends text to the bot in a panel chat as the session's
@@ -97,7 +111,8 @@ func (s *Server) postChatMessage(w http.ResponseWriter, r *http.Request, sess *S
 	}{id, suppressed})
 }
 
-// withdrawChatMessage deletes a panel chat's messages from seq onward.
+// withdrawChatMessage deletes a panel chat's messages from seq onward. The
+// audit records seq and how many were deleted, not their text.
 func (s *Server) withdrawChatMessage(w http.ResponseWriter, r *http.Request, sess *Session) {
 	chat, ok := s.chatService(w, r)
 	if !ok {
@@ -125,7 +140,8 @@ func (s *Server) withdrawChatMessage(w http.ResponseWriter, r *http.Request, ses
 }
 
 // regenerateChatMessage replaces a panel chat's newest bot reply with a new
-// reply task for the user message before it.
+// reply task for the user messages it answered. The audit records seq and
+// the new task's ID, not any text.
 func (s *Server) regenerateChatMessage(w http.ResponseWriter, r *http.Request, sess *Session) {
 	chat, ok := s.chatService(w, r)
 	if !ok {
@@ -141,6 +157,10 @@ func (s *Server) regenerateChatMessage(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 	taskID, err := chat.RegeneratePanel(r.Context(), conv.Key, seq)
+	if errors.Is(err, core.ErrPaused) {
+		s.respondError(w, r, http.StatusConflict, conloomapi.CodePaused, "这个聊天暂停中，不能重新生成。", err)
+		return
+	}
 	if err != nil {
 		s.chatFail(w, r, err)
 		return
@@ -157,7 +177,10 @@ func (s *Server) regenerateChatMessage(w http.ResponseWriter, r *http.Request, s
 // getChat lists the conversation's messages after the seq cursor after,
 // oldest first and at most 200, and whether the bot is still answering: the
 // conversation has queued or running tasks, or panel-channel actions neither
-// delivered nor expired. NextAfter is the cursor of the next poll.
+// delivered nor expired. NextAfter is the cursor of the next poll and
+// RegenerateSeq the seq of the newest message when POST …/regenerate would
+// accept it now (see core.Orchestrator.RegenerableSeq), 0 otherwise and
+// always while the bot is answering.
 func (s *Server) getChat(w http.ResponseWriter, r *http.Request, _ *Session) {
 	chat, ok := s.chatService(w, r)
 	if !ok {
@@ -198,11 +221,19 @@ func (s *Server) getChat(w http.ResponseWriter, r *http.Request, _ *Session) {
 	if len(msgs) > 0 {
 		after = msgs[len(msgs)-1].Seq
 	}
+	var regen int64
+	if !typing {
+		if regen, err = chat.RegenerableSeq(r.Context(), conv.Key); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+	}
 	s.writeJSON(w, http.StatusOK, struct {
-		Messages  []messageView `json:"messages"`
-		Typing    bool          `json:"typing"`
-		NextAfter int64         `json:"next_after"`
-	}{out, typing, after})
+		Messages      []messageView `json:"messages"`
+		Typing        bool          `json:"typing"`
+		NextAfter     int64         `json:"next_after"`
+		RegenerateSeq int64         `json:"regenerate_seq"`
+	}{out, typing, after, regen})
 }
 
 // postSuggestions answers {suggestions}: up to three lines the user might

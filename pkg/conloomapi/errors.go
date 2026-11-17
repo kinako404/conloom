@@ -18,6 +18,7 @@ const (
 	CodePaused                = "PAUSED"
 	CodeChatBusy              = "CHAT_BUSY"
 	CodeTemplateExists        = "TEMPLATE_EXISTS"
+	CodeMessageNotFound       = "MESSAGE_NOT_FOUND"
 )
 
 type ErrorBody struct {

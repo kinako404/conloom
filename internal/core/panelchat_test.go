@@ -6,12 +6,16 @@ import (
 	"errors"
 	"hash/fnv"
 	"maps"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/kinako404/conloom/internal/admission"
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/ids"
+	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/outbox"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -920,7 +924,7 @@ func TestRegeneratePanel_RefusesWithoutUserMessage(t *testing.T) {
 		OccurredAt: now, CreatedAt: now,
 	}
 	if _, err := env.st.Ingest(ctx, store.Ingest{
-		Event: store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "seed_orphan", EventID: "evt_seed_orphan", CreatedAt: now},
+		Event:   store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "seed_orphan", EventID: "evt_seed_orphan", CreatedAt: now},
 		Message: &m,
 	}); err != nil {
 		t.Fatal(err)
@@ -929,8 +933,8 @@ func TestRegeneratePanel_RefusesWithoutUserMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.o.RegeneratePanel(ctx, key, got.Seq); !errors.Is(err, ErrNotLatest) {
-		t.Fatalf("RegeneratePanel without a user message err = %v, want ErrNotLatest", err)
+	if _, err := env.o.RegeneratePanel(ctx, key, got.Seq); !errors.Is(err, ErrNotReply) {
+		t.Fatalf("RegeneratePanel without a user message err = %v, want ErrNotReply", err)
 	}
 	if _, err := env.st.GetMessage(ctx, testBot, m.ID); err != nil {
 		t.Errorf("bot message was deleted: %v", err)
@@ -952,5 +956,173 @@ func TestRegeneratePanel_RefusesCommandReply(t *testing.T) {
 	}
 	if _, err := env.st.GetMessage(ctx, testBot, bot.ID); err != nil {
 		t.Errorf("command reply was deleted: %v", err)
+	}
+}
+
+// seedBotTurn stores a finished task of the panel chat key with trigger and
+// triggers whose reply is text, as a wake or a reply task would, delivers it
+// through d and returns the bot message.
+func (e *testEnv) seedBotTurn(t *testing.T, d *outbox.PanelDeliverer, key, trigger string, triggers []string, text string) store.MessageRecord {
+	t.Helper()
+	ctx := context.Background()
+	conv, err := e.o.panelConversation(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newest, err := e.o.newestSeq(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	id := ids.New("task")
+	task := store.TaskRecord{ID: id, BotInstanceID: testBot, ConversationKey: key, Status: conloomapi.TaskRunning,
+		ActorPlatformUserID: PanelActorID("admin"), TriggerMessageIDs: triggers, Priority: int(admission.PriorityBackground),
+		Meta: conloomapi.TaskMeta{Trigger: trigger}, EventOccurredAt: now, CreatedAt: now, UpdatedAt: now}
+	if _, err := e.st.Ingest(ctx, store.Ingest{
+		Event:   store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "seed:" + id, EventID: "seed_" + id, Response: []byte(`{}`), CreatedAt: now},
+		NewTask: &task,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.st.CompleteTask(ctx, store.TaskCompletion{TaskID: id, Status: conloomapi.TaskSucceeded, Meta: task.Meta,
+		Actions: []store.OutboxRecord{e.o.newAction(ctx, task, conv, nil, text)}}); err != nil {
+		t.Fatal(err)
+	}
+	return e.waitPanelReply(t, d, key, newest)
+}
+
+// chatIDs lists the IDs of the panel chat's messages in order.
+func (e *testEnv) chatIDs(t *testing.T, key string) []string {
+	t.Helper()
+	msgs, err := e.st.MessagesAfter(context.Background(), key, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, m := range msgs {
+		out = append(out, m.ID)
+	}
+	return out
+}
+
+// regenerableSeq is what the panel shows 重新生成 on.
+func (e *testEnv) regenerableSeq(t *testing.T, key string) int64 {
+	t.Helper()
+	seq, err := e.o.RegenerableSeq(context.Background(), key)
+	if err != nil {
+		t.Fatalf("RegenerableSeq: %v", err)
+	}
+	return seq
+}
+
+// A message the bot sent on its own is not a reply: regenerating it would
+// delete the reply before it too and answer the old message again.
+func TestRegeneratePanel_RefusesWakeMessage(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	ctx := context.Background()
+	key := env.createChat(t, testBot)
+	d := env.startPanelDeliverer(t)
+	id := env.submitPanel(t, key, "admin", "第一句")
+	env.waitTask(t, env.panelResponse(t, id).TaskID)
+	user := env.panelMessage(t, id)
+	reply := env.waitPanelReply(t, d, key, user.Seq)
+	if got := env.regenerableSeq(t, key); got != reply.Seq {
+		t.Errorf("RegenerableSeq after a reply = %d, want %d", got, reply.Seq)
+	}
+
+	for _, trigger := range []string{TriggerInitiate, TriggerFollowUp, TriggerStatusReturn, TriggerProactive} {
+		wake := env.seedBotTurn(t, d, key, trigger, nil, "在吗")
+		before := env.chatIDs(t, key)
+		if _, err := env.o.RegeneratePanel(ctx, key, wake.Seq); !errors.Is(err, ErrNotReply) {
+			t.Errorf("RegeneratePanel on a %s message err = %v, want ErrNotReply", trigger, err)
+		}
+		if after := env.chatIDs(t, key); !slices.Equal(after, before) {
+			t.Errorf("messages after a refused regenerate of a %s message = %v, want %v", trigger, after, before)
+		}
+		if got := env.regenerableSeq(t, key); got != 0 {
+			t.Errorf("RegenerableSeq after a %s message = %d, want 0", trigger, got)
+		}
+	}
+}
+
+// A reply to several messages merged into one turn is regenerated for all of
+// them, and only the reply is deleted.
+func TestRegeneratePanel_KeepsAllMergedTriggers(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: privateWait(300 * time.Millisecond)})
+	ctx := context.Background()
+	key := env.createChat(t, testBot)
+	d := env.startPanelDeliverer(t)
+	firstID := env.submitPanel(t, key, "admin", "第一句")
+	secondID := env.submitPanel(t, key, "admin", "第二句")
+	taskID := env.panelResponse(t, firstID).TaskID
+	if got := env.panelResponse(t, secondID).TaskID; got != taskID {
+		t.Fatalf("second message went to task %q, want it merged into %q", got, taskID)
+	}
+	env.waitTask(t, taskID)
+	second := env.panelMessage(t, secondID)
+	reply := env.waitPanelReply(t, d, key, second.Seq)
+
+	newID, err := env.o.RegeneratePanel(ctx, key, reply.Seq)
+	if err != nil {
+		t.Fatalf("RegeneratePanel: %v", err)
+	}
+	task, err := env.st.GetTask(ctx, testBot, newID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{firstID, secondID}; !slices.Equal(task.TriggerMessageIDs, want) {
+		t.Errorf("trigger messages = %v, want %v", task.TriggerMessageIDs, want)
+	}
+	if got := env.chatIDs(t, key); !slices.Equal(got, []string{firstID, secondID}) {
+		t.Errorf("messages after regenerating = %v, want both user messages and no reply", got)
+	}
+	env.waitTask(t, newID)
+}
+
+// After the user was forgotten, a new reply would answer nothing: the
+// runner drops the messages from before the forget.
+func TestRegeneratePanel_RefusesAfterForget(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	ctx := context.Background()
+	key := env.createChat(t, testBot)
+	d := env.startPanelDeliverer(t)
+	id := env.submitPanel(t, key, "admin", "第一句")
+	env.waitTask(t, env.panelResponse(t, id).TaskID)
+	user := env.panelMessage(t, id)
+	reply := env.waitPanelReply(t, d, key, user.Seq)
+	if err := env.st.ForgetPrivateScope(ctx, memory.ScopeKeyOf(key), []string{key}, PanelActorID("admin"), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.o.RegeneratePanel(ctx, key, reply.Seq); !errors.Is(err, ErrForgotten) {
+		t.Fatalf("RegeneratePanel after a forget err = %v, want ErrForgotten", err)
+	}
+	if _, err := env.st.GetMessage(ctx, testBot, reply.ID); err != nil {
+		t.Errorf("reply was deleted: %v", err)
+	}
+	if got := env.regenerableSeq(t, key); got != 0 {
+		t.Errorf("RegenerableSeq after a forget = %d, want 0", got)
+	}
+}
+
+// A seq that is not a message of the chat is told apart from a missing chat.
+func TestPanelMessageActions_UnknownMessage(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	ctx := context.Background()
+	key := env.createChat(t, testBot)
+	other := env.createChat(t, testBot)
+	id := env.submitPanel(t, other, "admin", "别的聊天")
+	env.waitTask(t, env.panelResponse(t, id).TaskID)
+	seq := env.panelMessage(t, id).Seq
+	for _, s := range []int64{seq, 999999} {
+		if _, err := env.o.WithdrawPanel(ctx, key, s); !errors.Is(err, ErrMessageNotFound) || !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("WithdrawPanel(%d) err = %v, want ErrMessageNotFound", s, err)
+		}
+		if _, err := env.o.RegeneratePanel(ctx, key, s); !errors.Is(err, ErrMessageNotFound) {
+			t.Errorf("RegeneratePanel(%d) err = %v, want ErrMessageNotFound", s, err)
+		}
+	}
+	gone := store.ConversationKey(testBot, store.PlatformPanel, conloomapi.ConvPrivate, "panel_missing")
+	if _, err := env.o.WithdrawPanel(ctx, gone, 1); !errors.Is(err, store.ErrNotFound) || errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("WithdrawPanel in a missing chat err = %v, want a plain ErrNotFound", err)
 	}
 }
