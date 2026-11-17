@@ -63,13 +63,19 @@ type Service struct {
 	reserved int
 	log      *slog.Logger
 
-	// mu guards defaults, cache and the callbacks, and serialises version creation, so a cache fill
-	// never stores a stale version.
+	// mu guards defaults, cache, the callbacks, saves and joined, and serialises version creation,
+	// so a cache fill never stores a stale version.
 	mu           sync.Mutex
 	defaults     map[string]store.PolicyDefaults
 	cache        map[string]store.PolicyVersion
 	onChange     []func(convKey string)
 	onTransition []func(convKey string, before, after conloomapi.GroupPolicy)
+	// saves counts the default policy changes made by SetDefaults.
+	saves uint64
+	// joined holds, for a conversation that FollowDefaults returned to the default policy, the
+	// saves count then: the changes up to it are already in the transition change notified, so
+	// notifying their following conversations skips it.
+	joined map[string]uint64
 
 	// ctx is cancelled by Close, which stops notifying conversations of default policy changes.
 	ctx    context.Context
@@ -87,6 +93,8 @@ type Service struct {
 // conversations are still to be notified, with the callbacks registered when
 // it was made.
 type defaultsChange struct {
+	// save is the saves count of the change.
+	save          uint64
 	before, after store.PolicyDefaults
 	onChange      []func(convKey string)
 	onTransition  []func(convKey string, before, after conloomapi.GroupPolicy)
@@ -101,7 +109,7 @@ func NewService(st store.Store, defaults conloomapi.GroupPolicy) *Service {
 			KindGroup:   {Kind: KindGroup, Policy: defaults},
 			KindPrivate: {Kind: KindPrivate, Policy: defaults},
 		},
-		cache: map[string]store.PolicyVersion{}}
+		cache: map[string]store.PolicyVersion{}, joined: map[string]uint64{}}
 }
 
 // WithPrivateDefaults makes private conversations default to p instead of the
@@ -179,15 +187,21 @@ func (s *Service) checkContextCap(p conloomapi.GroupPolicy) error {
 }
 
 // SetDefaults stores p as a new version of kind's default policy and makes it the default policy
-// of the conversations that follow it at once. p is stored as given; an unknown kind, a p that
-// fails Validate or a context.max_context_tokens refused as in Update is ErrInvalid and stores
-// nothing. It records a settings.policy.update audit event with action (update or restore), and
-// notifies the following conversations (see PolicyFollowers) in the background, in batches,
-// calling the OnChange and OnTransition callbacks for each, after it returns (see Wait and
-// Close). An audit failure is returned together with the already stored version.
+// of the conversations that follow it at once. p is stored as given; an unknown kind, an action
+// other than update or restore, a p that fails Validate or a context.max_context_tokens refused as
+// in Update is ErrInvalid and stores nothing. It records a settings.policy.update audit event with
+// action, and notifies the following conversations (see PolicyFollowers) in the background, in
+// batches and in the order of the changes, after it returns (see Wait and Close): each that still
+// follows the default policy when its turn comes, and was not returned to it by FollowDefaults
+// after this change, gets the OnChange callbacks, then the OnTransition callbacks with the
+// previous default policy and its effective policy re-read then. An audit failure is returned
+// together with the already stored version.
 func (s *Service) SetDefaults(ctx context.Context, kind string, p conloomapi.GroupPolicy, reason, by, action string) (store.PolicyDefaults, error) {
 	if kind != KindGroup && kind != KindPrivate {
 		return store.PolicyDefaults{}, fmt.Errorf("%w: unknown default policy kind %q", ErrInvalid, kind)
+	}
+	if action != "update" && action != "restore" {
+		return store.PolicyDefaults{}, fmt.Errorf("%w: unknown default policy action %q", ErrInvalid, action)
 	}
 	if err := Validate(p); err != nil {
 		return store.PolicyDefaults{}, err
@@ -204,7 +218,8 @@ func (s *Service) SetDefaults(ctx context.Context, kind string, p conloomapi.Gro
 	before := s.defaults[kind]
 	s.defaults[kind] = d
 	s.cache = map[string]store.PolicyVersion{}
-	s.enqueue(defaultsChange{before: before, after: d, onChange: s.onChange, onTransition: s.onTransition})
+	s.saves++
+	s.enqueue(defaultsChange{save: s.saves, before: before, after: d, onChange: s.onChange, onTransition: s.onTransition})
 	s.mu.Unlock()
 
 	detail, _ := json.Marshal(struct {
@@ -269,17 +284,47 @@ func (s *Service) notifyFollowers(c defaultsChange) {
 			return
 		}
 		for _, key := range keys[start:min(start+defaultsBatch, len(keys))] {
+			after, ok := s.followingAfter(c, key)
+			if !ok {
+				continue
+			}
 			for _, fn := range c.onChange {
 				fn(key)
 			}
 			for _, fn := range c.onTransition {
-				fn(key, c.before.Policy, c.after.Policy)
+				fn(key, c.before.Policy, after)
 			}
 		}
 	}
 }
 
+// followingAfter re-reads the conversation listed as following c's kind's default policy and
+// returns its effective policy now. It reports false, so c is not notified to it, when it no
+// longer follows the default policy (a change of its own already notified that), when
+// FollowDefaults returned it to the default policy after c was made (that notified the change
+// into c's default policy), or when it cannot be read.
+func (s *Service) followingAfter(c defaultsChange, key string) (conloomapi.GroupPolicy, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if save, ok := s.joined[key]; ok {
+		if save >= c.save {
+			return conloomapi.GroupPolicy{}, false
+		}
+		delete(s.joined, key)
+	}
+	pv, err := s.current(s.ctx, key)
+	if err != nil {
+		if s.ctx.Err() == nil {
+			s.log.Error("policy: read a conversation following the default policy; it keeps running on its previous "+
+				"policy until it next changes", "conversation", key, "kind", c.after.Kind, "version", c.after.Version, "err", err)
+		}
+		return conloomapi.GroupPolicy{}, false
+	}
+	return pv.Policy, pv.FollowsDefaults
+}
+
 // Wait waits until the conversations of every default policy change made so far are notified.
+// Call it only while no SetDefaults runs concurrently.
 func (s *Service) Wait() {
 	s.wg.Wait()
 }
@@ -417,8 +462,9 @@ func (s *Service) Pause(ctx context.Context, convKey, by string) (store.PolicyVe
 	})
 }
 
-// Resume restores the interactive concurrency to the newest non-zero value in the history,
-// falling back to the defaults and then to 1. A running policy is returned unchanged.
+// Resume restores the interactive concurrency to the newest non-zero value in the history, where a
+// version that follows the default policy counts with the current default policy's, falling back
+// to the defaults and then to 1. A running policy is returned unchanged.
 func (s *Service) Resume(ctx context.Context, convKey, by string) (store.PolicyVersion, error) {
 	return s.change(ctx, convKey, by, "resume", false, func(cur store.PolicyVersion) (conloomapi.GroupPolicy, string, bool, error) {
 		if cur.Policy.Concurrency.MaxInteractiveRequests != 0 {
@@ -428,9 +474,14 @@ func (s *Service) Resume(ctx context.Context, convKey, by string) (store.PolicyV
 		if err != nil {
 			return conloomapi.GroupPolicy{}, "", false, err
 		}
-		n := s.defaultsFor(convKey).Concurrency.MaxInteractiveRequests
+		def := s.defaultsFor(convKey).Concurrency.MaxInteractiveRequests
+		n := def
 		for _, pv := range history {
-			if c := pv.Policy.Concurrency.MaxInteractiveRequests; c != 0 {
+			c := pv.Policy.Concurrency.MaxInteractiveRequests
+			if pv.FollowsDefaults {
+				c = def
+			}
+			if c != 0 {
 				n = c
 				break
 			}
@@ -523,7 +574,12 @@ func (s *Service) change(ctx context.Context, convKey, by, action string, follow
 		return store.PolicyVersion{}, err
 	}
 	delete(s.cache, convKey)
-	before, after := cur.Policy, pv.Policy
+	if follows {
+		s.joined[convKey] = s.saves
+	} else {
+		delete(s.joined, convKey)
+	}
+	before, after := cur.Policy, pv.Policy.WithDefaults(s.defaultsFor(convKey))
 	if eff, err := s.current(ctx, convKey); err == nil {
 		after = eff.Policy
 	}

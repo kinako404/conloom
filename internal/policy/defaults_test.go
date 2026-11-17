@@ -410,16 +410,20 @@ func TestPolicy_SetDefaultsFanOutInBatches(t *testing.T) {
 	if len(trs) != 2*len(want) {
 		t.Fatalf("transitions = %d, want %d", len(trs), 2*len(want))
 	}
-	last := map[string]int{}
+	// Each change is notified in order with the default it replaced as before, and the effective
+	// policy re-read when notified as after: the second change's 44, or the first's 33 when the
+	// first change reached the conversation before the second was saved.
+	befores, afters := map[string][]int{}, map[string][]int{}
 	for _, tr := range trs {
-		if prev, ok := last[tr.key]; ok && tr.before.Context.MaxRecentMessages != prev {
-			t.Fatalf("transition of %s out of order: before %d, previous after %d", tr.key, tr.before.Context.MaxRecentMessages, prev)
-		}
-		last[tr.key] = tr.after.Context.MaxRecentMessages
+		befores[tr.key] = append(befores[tr.key], tr.before.Context.MaxRecentMessages)
+		afters[tr.key] = append(afters[tr.key], tr.after.Context.MaxRecentMessages)
 	}
 	for _, key := range want {
-		if last[key] != 44 {
-			t.Fatalf("last transition of %s ends at %d, want 44", key, last[key])
+		if !slices.Equal(befores[key], []int{50, 33}) {
+			t.Fatalf("befores of %s = %v, want [50 33] in order", key, befores[key])
+		}
+		if a := afters[key]; len(a) != 2 || (a[0] != 33 && a[0] != 44) || a[1] != 44 {
+			t.Fatalf("afters of %s = %v, want [33|44 44]", key, a)
 		}
 	}
 }
