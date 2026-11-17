@@ -64,11 +64,12 @@ model_profiles:
     context: {native_window: 32768, configured_window: 32768, soft_input_budget: 16000, reserved_output_tokens: 1024, safety_margin_tokens: 1024}
     runtime: {max_concurrency: 2, timeout: 10s, max_retries: 0}
     privacy: {data_location: remote, allow_sensitive_content: true}
-default_group_policy:
+default_group_policy: &test_policy
   concurrency: {max_interactive_requests: 1, max_queued_requests: 10, priority: normal, allow_long_requests: true}
   reply: {command_prefix: /, continuation_window: 0s, debounce: 20ms, min_reply_interval: 0s, user_rate_limit_per_minute: 30, private_wait: 20ms, private_max_wait: 1s}
   context: {max_recent_messages: 50, max_context_tokens: 0}
   review: {level: basic, review_input: true, review_output: true, action: block}
+default_private_policy: *test_policy
 runtime:
   outbox_lease: LEASE
 `

@@ -2,10 +2,7 @@ package app_test
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -51,31 +48,9 @@ var memoryConfigTemplate = strings.NewReplacer(
 // loads it and stores the settings of its bot, as testConfig does.
 func memoryTestConfig(t *testing.T, modelURL string) *config.Config {
 	t.Helper()
-	dir := t.TempDir()
-	yml := strings.NewReplacer(
-		"DATA_DIR", strconv.Quote(filepath.Join(dir, "data")),
-		"MODEL_URL", modelURL,
-		"MODEL_NAME", "fake-model",
-		"LEASE", "60s",
-		"DEBOUNCE", "20ms",
-		"RATE_LIMIT", "30",
-		"CONTINUATION", "0s",
-		"COOLDOWN", "30m",
-		"TURN_GAP", "6s",
-		"TURN_MAX_WAIT", "20s",
-		"TURN_COOLDOWN", "45s",
-	).Replace(memoryConfigTemplate)
-	path := filepath.Join(dir, "conloom.yaml")
-	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("config.Load: %v", err)
-	}
-	if err := cfg.ValidateServe(); err != nil {
-		t.Fatalf("ValidateServe: %v", err)
-	}
+	p := configParams{modelURL: modelURL, rateLimit: 30}
+	cfg := loadTestConfig(t, memoryConfigTemplate, p, "")
+	useTestPolicies(t, cfg, p)
 	seedBotSettings(t, cfg, nil)
 	return cfg
 }

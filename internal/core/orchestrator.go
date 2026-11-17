@@ -261,7 +261,7 @@ func New(d Deps) (*Orchestrator, error) {
 	o.bgCtx, o.bgCancel = context.WithCancel(context.Background())
 	o.policies.OnChange(o.PolicyChanged)
 	o.personas.SetOnImport(o.panelBots.Load)
-	if lvl := o.cfg.DefaultGroupPolicy.Review.Level; !review.LevelImplemented(lvl) {
+	if lvl := o.policies.Defaults(policy.KindGroup).Policy.Review.Level; !review.LevelImplemented(lvl) {
 		o.log.Warn("model review is not implemented yet; this review level behaves like basic", "level", lvl)
 	}
 	return o, nil
@@ -355,7 +355,7 @@ func (o *Orchestrator) Close() {
 }
 
 func (o *Orchestrator) sessionConfig(convKey string) SessionConfig {
-	pol := o.cfg.DefaultGroupPolicy
+	pol := o.policies.Defaults(policy.KindOf(convKey)).Policy
 	if pv, err := o.policies.Current(context.Background(), convKey); err != nil {
 		o.log.Error("load policy failed; scheduling with defaults", "conversation", convKey, "error", err)
 	} else {

@@ -548,33 +548,39 @@ func TestConsolidate_PrivateNeedsALongModelAllowingSensitiveContent(t *testing.T
 }
 
 func TestWarnPrivateMemoryNotSensitive(t *testing.T) {
-	cfg := func(allowSensitive, groupOn, privateOn bool) *config.Config {
+	cfg := func(allowSensitive bool) *config.Config {
 		long := config.ModelProfile{Privacy: config.Privacy{AllowSensitiveContent: allowSensitive}}
-		c := &config.Config{DefaultGroupPolicy: conloomapi.DefaultGroupPolicy(),
-			ModelProfiles: map[string]config.ModelProfile{string(router.RoleLong): long}}
-		c.DefaultGroupPolicy.Memory.Enabled = groupOn
-		p := conloomapi.DefaultGroupPolicy()
-		p.Memory.Enabled = privateOn
-		c.DefaultPrivatePolicy = &p
-		return c
+		return &config.Config{ModelProfiles: map[string]config.ModelProfile{string(router.RoleLong): long}}
+	}
+	private := func(on bool) conloomapi.GroupPolicy {
+		p := conloomapi.DefaultPrivatePolicy()
+		p.Memory.Enabled = on
+		return p
 	}
 	for _, c := range []struct {
-		name string
-		cfg  *config.Config
-		warn bool
+		name    string
+		cfg     *config.Config
+		private conloomapi.GroupPolicy
+		warn    bool
 	}{
-		{"private memory, not sensitive", cfg(false, false, true), true},
-		{"private memory, sensitive", cfg(true, false, true), false},
-		{"group memory only, not sensitive", cfg(false, true, false), false},
-		{"no long model", &config.Config{DefaultGroupPolicy: conloomapi.DefaultGroupPolicy()}, false},
+		{"private memory, not sensitive", cfg(false), private(true), true},
+		{"private memory, sensitive", cfg(true), private(true), false},
+		{"private memory off, not sensitive", cfg(false), private(false), false},
+		{"no long model", &config.Config{}, private(true), false},
 	} {
 		var buf bytes.Buffer
-		WarnPrivateMemoryNotSensitive(c.cfg, slog.New(slog.NewTextHandler(&buf, nil)))
+		notice := WarnPrivateMemoryNotSensitive(c.cfg, c.private, slog.New(slog.NewTextHandler(&buf, nil)))
 		if got := strings.Contains(buf.String(), "level=WARN"); got != c.warn {
 			t.Errorf("%s: warned = %v, want %v: %s", c.name, got, c.warn, buf.String())
 		}
 		if c.warn && !strings.Contains(buf.String(), "allow_sensitive_content") {
 			t.Errorf("%s: warning does not name the setting: %s", c.name, buf.String())
+		}
+		if want := "私聊记忆已打开，但长模型（long_context）不允许处理敏感内容（privacy.allow_sensitive_content），私聊和面板聊天不会整理记忆"; c.warn && notice != want {
+			t.Errorf("%s: notice = %q, want %q", c.name, notice, want)
+		}
+		if !c.warn && notice != "" {
+			t.Errorf("%s: notice = %q, want none", c.name, notice)
 		}
 	}
 }

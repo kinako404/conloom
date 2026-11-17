@@ -23,6 +23,7 @@ import (
 	"github.com/kinako404/conloom/internal/panel"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/internal/store/sqlite"
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 const signalChildEnv = "CONLOOM_TEST_SIGNAL_CHILD"
@@ -364,6 +365,57 @@ storage:
 	for _, want := range []string{"Web 管理面板", "请删除配置文件里 bots[0]（qq-main）的 admins、private_chat，", "只留 id、platform、platform_self_id"} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("stderr = %q, want the Chinese request to remove the keys (%q)", stderr, want)
+		}
+	}
+}
+
+func TestServe_MigratedPolicyDefaultsExitWithConfigCode(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "conloom.yaml")
+	cfg := `server:
+  listen: 127.0.0.1:0
+api_tokens:
+  - {name: adapter, token: fake-adapter-token, bot_instance_id: qq-main, scopes: [events:write]}
+bots:
+  - {id: qq-main, platform: qq, platform_self_id: "30001"}
+model_profiles:
+  short_context:
+    endpoint: http://127.0.0.1:9/v1
+    model: fake-model
+    context: {native_window: 32768, configured_window: 32768, soft_input_budget: 16000}
+storage:
+  data_dir: ./data
+default_group_policy:
+  context: {max_recent_messages: 33}
+`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	db, err := sqlite.Open(ctx, filepath.Join(dir, "data", "conloom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.InitPolicyDefaults(ctx, nil, []store.PolicyDefaults{
+		{Kind: conloomapi.ConvGroup, Policy: conloomapi.DefaultGroupPolicy(), Reason: "内置默认值", UpdatedBy: "system"},
+	}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := runCommand(ctx, "serve", "-c", cfgPath)
+	if code != exitConfig || ctx.Err() != nil {
+		t.Fatalf("exit %d, want %d before the deadline; stderr %s", code, exitConfig, stderr)
+	}
+	for _, want := range []string{"设置页", "请删除配置文件里的 default_group_policy", "内置默认值"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr = %q, want the Chinese request to remove the section (%q)", stderr, want)
 		}
 	}
 }

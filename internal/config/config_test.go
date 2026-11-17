@@ -678,16 +678,51 @@ func TestLoad_MissingEnvRecorded(t *testing.T) {
 	}
 }
 
-func TestLoad_PrivatePolicyFallsBackToGroup(t *testing.T) {
+func TestLoad_PrivatePolicyWithoutSectionIsBuiltin(t *testing.T) {
+	cfg := mustLoad(t, writeConfig(t, "server:\n  timezone: Asia/Shanghai\n"))
+	if cfg.DefaultPrivatePolicy == nil || !reflect.DeepEqual(*cfg.DefaultPrivatePolicy, conloomapi.DefaultPrivatePolicy()) {
+		t.Fatalf("DefaultPrivatePolicy = %+v, want the built-in private defaults without the section", cfg.DefaultPrivatePolicy)
+	}
+	if group, private := cfg.PolicySections(); group || private {
+		t.Fatalf("PolicySections() = %v, %v; want false, false", group, private)
+	}
+
+	built := &Config{DefaultGroupPolicy: conloomapi.DefaultGroupPolicy()}
+	built.DefaultGroupPolicy.Context.MaxRecentMessages = 80
+	if got := built.PrivatePolicy(); got.Context.MaxRecentMessages != 80 || got.Memory.SummaryMaxChars != 0 {
+		t.Fatalf("PrivatePolicy() of a config built in Go = %+v, want the group defaults without memory limits", got)
+	}
+}
+
+func TestLoad_PolicySections(t *testing.T) {
 	cfg := mustLoad(t, writeConfig(t, `default_group_policy:
   context:
     max_recent_messages: 80
 `))
-	if cfg.DefaultPrivatePolicy != nil {
-		t.Fatalf("DefaultPrivatePolicy = %+v, want nil without the section", cfg.DefaultPrivatePolicy)
+	if group, private := cfg.PolicySections(); !group || private {
+		t.Fatalf("PolicySections() with only the group section = %v, %v; want true, false", group, private)
 	}
-	if got := cfg.PrivatePolicy(); !reflect.DeepEqual(got, cfg.DefaultGroupPolicy) || got.Context.MaxRecentMessages != 80 {
-		t.Fatalf("PrivatePolicy() = %+v, want the group defaults", got)
+	if cfg.DefaultPrivatePolicy == nil || !reflect.DeepEqual(*cfg.DefaultPrivatePolicy, conloomapi.DefaultPrivatePolicy()) {
+		t.Fatalf("DefaultPrivatePolicy = %+v, want the built-in private defaults, not the group section", cfg.DefaultPrivatePolicy)
+	}
+	if got := cfg.PrivatePolicy(); got.Context.MaxRecentMessages == 80 {
+		t.Fatalf("PrivatePolicy() = %+v, want it not to follow the group section", got)
+	}
+
+	cfg = mustLoad(t, writeConfig(t, "default_private_policy:\n  context:\n    max_recent_messages: 200\n"))
+	if group, private := cfg.PolicySections(); group || !private {
+		t.Fatalf("PolicySections() with only the private section = %v, %v; want false, true", group, private)
+	}
+	if !reflect.DeepEqual(cfg.DefaultGroupPolicy, conloomapi.DefaultGroupPolicy()) || cfg.PrivatePolicy().Context.MaxRecentMessages != 200 {
+		t.Fatalf("policies = %+v / %+v; want the built-in group defaults and the private section", cfg.DefaultGroupPolicy, cfg.PrivatePolicy())
+	}
+
+	cfg = mustLoad(t, writeConfig(t, "default_group_policy: null\ndefault_private_policy: ~\n"))
+	if group, private := cfg.PolicySections(); group || private {
+		t.Fatalf("PolicySections() with null sections = %v, %v; want false, false", group, private)
+	}
+	if cfg.DefaultPrivatePolicy == nil || !reflect.DeepEqual(*cfg.DefaultPrivatePolicy, conloomapi.DefaultPrivatePolicy()) {
+		t.Fatalf("DefaultPrivatePolicy with a null section = %+v, want the built-in private defaults", cfg.DefaultPrivatePolicy)
 	}
 }
 

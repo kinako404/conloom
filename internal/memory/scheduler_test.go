@@ -309,7 +309,7 @@ func TestScheduler_FirstEnableStartsBacklogBack(t *testing.T) {
 func TestScheduler_BacklogJumpOnlyOnEnableTransition(t *testing.T) {
 	e := newSchedEnv(t)
 	e.runner.advance = true
-	e.policies.OnChange(e.sched.PolicyChanged)
+	e.policies.OnTransition(e.sched.PolicyChanged)
 	ctx := context.Background()
 
 	e.seed(t, 100, testConvKey)
@@ -336,15 +336,64 @@ func TestScheduler_BacklogJumpOnlyOnEnableTransition(t *testing.T) {
 	wantCalls(t, e.runner.takeCalls(), schedCall{convKey: testConvKey, pending: 150})
 
 	restarted := e.newScheduler()
-	e.policies.OnChange(restarted.PolicyChanged)
+	e.policies.OnTransition(restarted.PolicyChanged)
 	e.seed(t, 150, testConvKey)
 	restarted.tick(ctx)
 	wantCalls(t, e.runner.takeCalls(), schedCall{convKey: testConvKey, pending: 150})
 }
 
+func TestScheduler_TransitionTurningMemoryOnJumps(t *testing.T) {
+	withMemory := func(on bool) conloomapi.GroupPolicy {
+		p := conloomapi.DefaultGroupPolicy()
+		p.Concurrency.AllowLongRequests = true
+		p.Memory.Enabled = on
+		return p
+	}
+	for _, c := range []struct {
+		name          string
+		before, after bool
+		jump          bool
+	}{
+		{"off to on", false, true, true},
+		{"on to on", true, true, false},
+		{"on to off", true, false, false},
+		{"off to off", false, false, false},
+	} {
+		e := newSchedEnv(t)
+		e.sched.PolicyChanged(testConvKey, withMemory(c.before), withMemory(c.after))
+		e.sched.mu.Lock()
+		got := e.sched.jump[ScopeKeyOf(testConvKey)]
+		e.sched.mu.Unlock()
+		if got != c.jump {
+			t.Errorf("%s: jump = %v, want %v", c.name, got, c.jump)
+		}
+	}
+	e := newSchedEnv(t)
+	noLong := withMemory(true)
+	noLong.Concurrency.AllowLongRequests = false
+	e.sched.PolicyChanged(testConvKey, noLong, withMemory(true))
+	if !e.sched.jump[ScopeKeyOf(testConvKey)] {
+		t.Error("allowing long requests with memory enabled did not jump")
+	}
+
+	e = newSchedEnv(t)
+	e.policies.OnTransition(e.sched.PolicyChanged)
+	e.seed(t, 1, testConvKey)
+	if _, err := e.policies.SetDefaults(context.Background(), policy.KindGroup, withMemory(true), "打开记忆", "panel:admin", "update"); err != nil {
+		t.Fatalf("SetDefaults: %v", err)
+	}
+	e.policies.Wait()
+	e.sched.mu.Lock()
+	jumped := e.sched.jump[ScopeKeyOf(testConvKey)]
+	e.sched.mu.Unlock()
+	if !jumped {
+		t.Error("a default policy turning memory on did not jump its following conversation")
+	}
+}
+
 func TestScheduler_BacklogCountsOwnConversationOnly(t *testing.T) {
 	e := newSchedEnv(t)
-	e.policies.OnChange(e.sched.PolicyChanged)
+	e.policies.OnTransition(e.sched.PolicyChanged)
 	ctx := context.Background()
 	e.seed(t, 2400, testConvKey, schedConvB)
 	e.setMemory(t, testConvKey, true, 1000)

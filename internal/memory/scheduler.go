@@ -124,16 +124,12 @@ func (s *Scheduler) Trigger(convKey string) {
 }
 
 // PolicyChanged marks the cursor of convKey's memory scope to skip ahead to
-// its backlog when the conversation's newest policy version turns memory on
-// and the one before had it off or had no memory section. The worker applies
-// the skip before the scope's next run.
-func (s *Scheduler) PolicyChanged(convKey string) {
-	versions, err := s.d.Store.ListPolicyVersions(s.ctx, convKey)
-	if err != nil {
-		s.logError(s.ctx, "memory: list policy versions failed", "conversation", convKey, "error", err)
-		return
-	}
-	if len(versions) == 0 || !memoryOn(versions[0].Policy) || len(versions) > 1 && memoryOn(versions[1].Policy) {
+// its backlog when the conversation's effective policy turns memory on: before
+// had it off and after has it on (see policy.Service.OnTransition, whose
+// effective policies fill a missing memory section from the default policy).
+// The worker applies the skip before the scope's next run.
+func (s *Scheduler) PolicyChanged(convKey string, before, after conloomapi.GroupPolicy) {
+	if memoryOn(before) || !memoryOn(after) {
 		return
 	}
 	s.mu.Lock()

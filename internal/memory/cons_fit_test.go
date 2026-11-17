@@ -92,36 +92,40 @@ func TestConsolidate_ShrunkPromptKeepsARememberedTail(t *testing.T) {
 }
 
 func TestWarnOutputReservation(t *testing.T) {
-	cfg := func(reserved int, groupOn, privateOn bool) *config.Config {
-		c := &config.Config{DefaultGroupPolicy: conloomapi.DefaultGroupPolicy(),
+	cfg := func(reserved int) *config.Config {
+		return &config.Config{
 			ModelProfiles: map[string]config.ModelProfile{string(router.RoleLong): {Context: config.ContextLimits{ReservedOutputTokens: reserved}}}}
-		c.DefaultGroupPolicy.Memory.Enabled = groupOn
-		if privateOn {
-			p := conloomapi.DefaultGroupPolicy()
-			p.Memory.Enabled = true
-			c.DefaultPrivatePolicy = &p
-		}
-		return c
 	}
+	withMemory := func(on bool) conloomapi.GroupPolicy {
+		p := conloomapi.DefaultGroupPolicy()
+		p.Memory.Enabled = on
+		return p
+	}
+	const notice4096 = "长模型（long_context）给输出预留的令牌数 4096 低于建议的 8192，记忆整理时摘要和笔记会比上限短"
 	for _, c := range []struct {
-		name string
-		cfg  *config.Config
-		warn bool
+		name           string
+		cfg            *config.Config
+		group, private conloomapi.GroupPolicy
+		notice         string
 	}{
-		{"private memory, 4096", cfg(4096, false, true), true},
-		{"group memory, 4096", cfg(4096, true, false), true},
-		{"memory off, 4096", cfg(4096, false, false), false},
-		{"private memory, 8192", cfg(8192, false, true), false},
-		{"private memory, unlimited", cfg(0, false, true), false},
-		{"no long model", &config.Config{DefaultGroupPolicy: conloomapi.DefaultGroupPolicy()}, false},
+		{"private memory, 4096", cfg(4096), withMemory(false), withMemory(true), notice4096},
+		{"group memory, 4096", cfg(4096), withMemory(true), withMemory(false), notice4096},
+		{"memory off, 4096", cfg(4096), withMemory(false), withMemory(false), ""},
+		{"private memory, 8192", cfg(8192), withMemory(false), withMemory(true), ""},
+		{"private memory, unlimited", cfg(0), withMemory(false), withMemory(true), ""},
+		{"no long model", &config.Config{}, withMemory(true), withMemory(true), ""},
 	} {
 		var buf bytes.Buffer
-		WarnOutputReservation(c.cfg, slog.New(slog.NewTextHandler(&buf, nil)))
-		if got := strings.Contains(buf.String(), "level=WARN"); got != c.warn {
-			t.Errorf("%s: warned = %v, want %v: %s", c.name, got, c.warn, buf.String())
+		notice := WarnOutputReservation(c.cfg, c.group, c.private, slog.New(slog.NewTextHandler(&buf, nil)))
+		warn := c.notice != ""
+		if got := strings.Contains(buf.String(), "level=WARN"); got != warn {
+			t.Errorf("%s: warned = %v, want %v: %s", c.name, got, warn, buf.String())
 		}
-		if c.warn && !strings.Contains(buf.String(), "recommended=8192") {
+		if warn && !strings.Contains(buf.String(), "recommended=8192") {
 			t.Errorf("%s: warning lacks the recommendation: %s", c.name, buf.String())
+		}
+		if notice != c.notice {
+			t.Errorf("%s: notice = %q, want %q", c.name, notice, c.notice)
 		}
 	}
 }

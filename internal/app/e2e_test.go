@@ -67,12 +67,6 @@ model_profiles:
     context: {native_window: 32768, configured_window: 32768, soft_input_budget: 16000, reserved_output_tokens: 1024, safety_margin_tokens: 1024}
     runtime: {max_concurrency: 2, timeout: 10s, max_retries: 0}
     privacy: {data_location: remote, allow_sensitive_content: true}
-default_group_policy:
-  concurrency: {max_interactive_requests: 1, max_queued_requests: 10, priority: normal, allow_long_requests: true}
-  reply: {command_prefix: /, continuation_window: CONTINUATION, debounce: DEBOUNCE, min_reply_interval: 0s, user_rate_limit_per_minute: RATE_LIMIT, turn_gap: TURN_GAP, turn_max_wait: TURN_MAX_WAIT, turn_cooldown: TURN_COOLDOWN}
-  context: {max_recent_messages: 50, max_context_tokens: 0}
-  review: {level: basic, review_input: true, review_output: true, action: block}
-  proactive: {user_cooldown: COOLDOWN}
 runtime:
   outbox_lease: LEASE
 `
@@ -94,12 +88,19 @@ type configParams struct {
 	turnGap, turnMaxWait, turnCooldown string
 }
 
-// testConfig writes a config for p to a temporary directory, loads it and
-// stores the settings of its bot unless the data directory has them already
-// (see seedBotSettings).
+// testConfig writes a config for p to a temporary directory, loads it, sets
+// the test default policies (see useTestPolicies) and stores the settings of
+// its bot unless the data directory has them already (see seedBotSettings).
 func testConfig(t testing.TB, p configParams) *config.Config {
 	t.Helper()
-	dir := t.TempDir()
+	cfg := loadTestConfig(t, configTemplate, p, "")
+	useTestPolicies(t, cfg, p)
+	seedBotSettings(t, cfg, nil)
+	return cfg
+}
+
+// withDefaults is p with the defaults of its empty fields.
+func (p configParams) withDefaults(dir string) configParams {
 	if p.dataDir == "" {
 		p.dataDir = filepath.Join(dir, "data")
 	}
@@ -130,19 +131,22 @@ func testConfig(t testing.TB, p configParams) *config.Config {
 	if p.turnCooldown == "" {
 		p.turnCooldown = "45s"
 	}
+	return p
+}
+
+// loadTestConfig writes template for p, followed by extra, to a temporary
+// directory, then loads and validates it. The file has no default policy
+// sections unless extra adds them.
+func loadTestConfig(t testing.TB, template string, p configParams, extra string) *config.Config {
+	t.Helper()
+	dir := t.TempDir()
+	p = p.withDefaults(dir)
 	yml := strings.NewReplacer(
 		"DATA_DIR", strconv.Quote(p.dataDir),
 		"MODEL_URL", p.modelURL,
 		"MODEL_NAME", p.modelName,
 		"LEASE", p.lease,
-		"DEBOUNCE", p.debounce,
-		"RATE_LIMIT", strconv.Itoa(p.rateLimit),
-		"CONTINUATION", p.continuation,
-		"COOLDOWN", p.cooldown,
-		"TURN_GAP", p.turnGap,
-		"TURN_MAX_WAIT", p.turnMaxWait,
-		"TURN_COOLDOWN", p.turnCooldown,
-	).Replace(configTemplate)
+	).Replace(template) + extra
 	path := filepath.Join(dir, "conloom.yaml")
 	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
 		t.Fatal(err)
@@ -154,8 +158,35 @@ func testConfig(t testing.TB, p configParams) *config.Config {
 	if err := cfg.ValidateServe(); err != nil {
 		t.Fatalf("ValidateServe: %v", err)
 	}
-	seedBotSettings(t, cfg, nil)
 	return cfg
+}
+
+// useTestPolicies sets the group default policy of cfg to the one the tests
+// run with, from p, and makes private conversations follow it (without its
+// memory limits, see config.Config.PrivatePolicy). The first start with an
+// empty data directory stores them as the default policies.
+func useTestPolicies(t testing.TB, cfg *config.Config, p configParams) {
+	t.Helper()
+	p = p.withDefaults("")
+	dur := func(s string) conloomapi.Duration {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			t.Fatalf("test policy duration %q: %v", s, err)
+		}
+		return conloomapi.Duration{Duration: d}
+	}
+	gp := &cfg.DefaultGroupPolicy
+	gp.Concurrency = conloomapi.ConcurrencyPolicy{MaxInteractiveRequests: 1, MaxQueuedRequests: 10, Priority: "normal", AllowLongRequests: true}
+	gp.Reply.CommandPrefix = "/"
+	gp.Reply.ContinuationWindow = dur(p.continuation)
+	gp.Reply.Debounce = dur(p.debounce)
+	gp.Reply.MinReplyInterval = dur("0s")
+	gp.Reply.UserRateLimitPerMinute = p.rateLimit
+	gp.Reply.TurnGap, gp.Reply.TurnMaxWait, gp.Reply.TurnCooldown = dur(p.turnGap), dur(p.turnMaxWait), dur(p.turnCooldown)
+	gp.Context = conloomapi.ContextPolicy{MaxRecentMessages: 50}
+	gp.Review.Level, gp.Review.ReviewInput, gp.Review.ReviewOutput, gp.Review.Action = "basic", true, true, "block"
+	gp.Proactive.UserCooldown = dur(p.cooldown)
+	cfg.DefaultPrivatePolicy = nil
 }
 
 // testBotSettings are the settings testConfig stores for bot_main, as if set

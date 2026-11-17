@@ -71,11 +71,14 @@ const usageFlushTimeout = 5 * time.Second
 
 // App is the assembled core service.
 type App struct {
-	st      *sqlite.DB
-	orch    *core.Orchestrator
-	sched   *memory.Scheduler
-	usage   *usage.Recorder
-	handler http.Handler
+	st *sqlite.DB
+	// policies notifies conversations of default policy changes in the
+	// background until Close.
+	policies *policy.Service
+	orch     *core.Orchestrator
+	sched    *memory.Scheduler
+	usage    *usage.Recorder
+	handler  http.Handler
 	// panelSite is the panel on its own listener, nil without panel.listen.
 	panelSite http.Handler
 	// panelOut delivers the actions of the panel channel.
@@ -98,14 +101,16 @@ type App struct {
 // (creating the directory if needed), migrates the persona templates of an
 // old config file into the database once (see migrateLegacyTemplates),
 // merges the memory older versions kept per panel chat into the bots' shared
-// scopes once (migratePanelMemory), loads the persona templates, migrates the
-// bot settings of an old config file into the database once
-// (migrateBotSettings), wires every component to one bot directory, which
-// holds the config bots with their stored settings and the panel bots stored
-// in the database, registers the config bots and adds the web panel when the
-// config has a panel section. An invalid skill configuration is an error
-// wrapping skills.ErrInvalid, and persona_templates or bot settings still in
-// the config file after they were migrated one wrapping
+// scopes once (migratePanelMemory), loads the persona templates, stores the
+// first default policies, importing those of an old config file
+// (migratePolicyDefaults), and loads the stored ones, migrates the bot
+// settings of an old config file into the database once (migrateBotSettings),
+// wires every component to one bot directory, which holds the config bots
+// with their stored settings and the panel bots stored in the database,
+// registers the config bots and adds the web panel when the config has a
+// panel section. An invalid skill configuration is an error wrapping
+// skills.ErrInvalid, and persona_templates, default policies or bot settings
+// still in the config file after they were migrated one wrapping
 // store.ErrAlreadyMigrated. The caller must Close the App.
 func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 	if logger == nil {
@@ -168,8 +173,16 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("app: %w", err)
 	}
+	if err := migratePolicyDefaults(ctx, st, cfg, now().UTC(), loc, logger); err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("app: %w", err)
+	}
 	policies := policy.NewService(st, cfg.DefaultGroupPolicy).WithPrivateDefaults(cfg.PrivatePolicy()).
-		WithReservedContextTokens(cfg.ReservedContextTokens())
+		WithReservedContextTokens(cfg.ReservedContextTokens()).WithLogger(logger)
+	if err := policies.LoadDefaults(ctx); err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("app: %w", err)
+	}
 	ob := outbox.New(st, outbox.Config{Lease: cfg.Runtime.OutboxLease.Duration}, metrics, now)
 	panelOut := outbox.NewPanelDeliverer(ob, st, opts.PanelDeliveryInterval, now, logger)
 	rec := usage.NewRecorder(st, usage.RecorderOptions{Metrics: metrics, Logger: logger})
@@ -192,8 +205,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Now:       now,
 		Usage:     rec,
 	})
-	memory.WarnOutputReservation(cfg, logger)
-	memory.WarnPrivateMemoryNotSensitive(cfg, logger)
+	groupDefaults, privateDefaults := policies.Defaults(policy.KindGroup).Policy, policies.Defaults(policy.KindPrivate).Policy
+	memory.WarnOutputReservation(cfg, groupDefaults, privateDefaults, logger)
+	memory.WarnPrivateMemoryNotSensitive(cfg, privateDefaults, logger)
 	sched := memory.NewScheduler(memory.SchedulerDeps{
 		Store:    st,
 		Policies: policies,
@@ -204,7 +218,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Location: loc,
 		Now:      now,
 	})
-	policies.OnChange(sched.PolicyChanged)
+	policies.OnTransition(sched.PolicyChanged)
 	reviewer := review.New(cfg.Secrets(), review.Options{})
 	var indexer *vector.Indexer
 	var vectors search.VectorSearcher
@@ -307,8 +321,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts Options) (*App, error) {
 		Presence:     presence,
 		Panel:        panelHandler,
 	})
-	return &App{st: st, orch: orch, panelOut: panelOut, sched: sched, usage: rec, handler: gw.Handler(), panelSite: panelSite,
-		indexer: indexer, vectors: vectors, logger: logger, usageFlushTimeout: usageFlushTimeout}, nil
+	return &App{st: st, policies: policies, orch: orch, panelOut: panelOut, sched: sched, usage: rec, handler: gw.Handler(),
+		panelSite: panelSite, indexer: indexer, vectors: vectors, logger: logger, usageFlushTimeout: usageFlushTimeout}, nil
 }
 
 // migrateLegacyTemplates migrates the persona templates legacy of an old
@@ -428,6 +442,69 @@ func migrateBotSettings(ctx context.Context, st *sqlite.DB, bots []config.BotCon
 	return nil
 }
 
+// migratePolicyDefaults stores the first group and private default policies
+// (see sqlite.DB.InitPolicyDefaults): a section the config file has
+// (config.Config.PolicySections) is imported as version 1 of its kind by
+// system, and a kind without a stored default policy or a section gets the
+// config's, which are the built-in ones unless a config built in Go changed
+// them. When it imported a section it logs each, audits the import as
+// settings.policy.migrate and warns that the sections must be removed from the
+// config file. Once a kind has a stored default policy, its section in the
+// file is an error in Chinese naming the sections and wrapping
+// store.ErrAlreadyMigrated, which the deployer fixes in the config file; the
+// default policies are then edited only in the panel's settings page.
+func migratePolicyDefaults(ctx context.Context, st *sqlite.DB, cfg *config.Config, now time.Time,
+	loc *time.Location, logger *slog.Logger) error {
+	group, private := cfg.PolicySections()
+	var imports []store.PolicyDefaults
+	var sections []string
+	if group {
+		imports = append(imports, store.PolicyDefaults{Kind: policy.KindGroup, Policy: cfg.DefaultGroupPolicy,
+			Reason: "从配置文件导入", UpdatedBy: "system"})
+		sections = append(sections, "default_group_policy")
+	}
+	if private {
+		imports = append(imports, store.PolicyDefaults{Kind: policy.KindPrivate, Policy: cfg.PrivatePolicy(),
+			Reason: "从配置文件导入", UpdatedBy: "system"})
+		sections = append(sections, "default_private_policy")
+	}
+	builtins := []store.PolicyDefaults{
+		{Kind: policy.KindGroup, Policy: cfg.DefaultGroupPolicy, Reason: "内置默认值", UpdatedBy: "system"},
+		{Kind: policy.KindPrivate, Policy: cfg.PrivatePolicy(), Reason: "内置默认值", UpdatedBy: "system"},
+	}
+	imported, err := st.InitPolicyDefaults(ctx, imports, builtins, now)
+	if errors.Is(err, store.ErrAlreadyMigrated) {
+		when := "第一次启动时写入的内置默认值"
+		if _, ok, _ := st.GetMeta(ctx, store.MetaConfigPolicyDefaultsMigrated); ok {
+			when = migratedWhen(ctx, st, store.MetaConfigPolicyDefaultsMigrated, loc) + "从配置文件导入"
+		}
+		return fmt.Errorf("数据库里已经有默认策略（%s），群聊、私聊默认策略现在只在 Web 管理面板的设置页里改；请删除配置文件里的 %s，然后再启动（%w）",
+			when, strings.Join(sections, "、"), err)
+	}
+	if err != nil {
+		return fmt.Errorf("store default policies: %w", err)
+	}
+	if len(imported) == 0 {
+		return nil
+	}
+	for _, kind := range imported {
+		logger.Info("default policy imported from the config file", "kind", kind)
+	}
+	detail, err := json.Marshal(struct {
+		Imported []string `json:"imported"`
+	}{imported})
+	if err == nil {
+		err = st.InsertAudit(ctx, store.AuditEvent{ID: ids.New("aud"), Kind: "settings.policy.migrate", Actor: "system",
+			Detail: string(detail), CreatedAt: now})
+	}
+	if err != nil {
+		logger.Error("default policies imported but audit failed", "error", err)
+	}
+	logger.Warn("the config file's default policies are now in the database and edited in the web panel's settings page; " +
+		"remove default_group_policy and default_private_policy from the config file, or the next start fails")
+	return nil
+}
+
 // registerConfigBots registers the config bots of bots, as they take effect,
 // as bot instances, warning about private enabled conversations that do not
 // take effect.
@@ -525,13 +602,15 @@ func (a *App) Start(ctx context.Context) error {
 	return nil
 }
 
-// Close stops memory consolidation, embedding, the orchestrator and then the
-// panel chat delivery, writes the queued model calls and closes the database,
-// returning the database's error. Model calls not written within 5s are lost
-// with a warning, like any other failed usage write. Further calls return the
-// first result.
+// Close stops notifying conversations of default policy changes, then memory
+// consolidation, embedding, the orchestrator and the panel chat delivery,
+// writes the queued model calls and closes the database, returning the
+// database's error. Model calls not written within 5s are lost with a
+// warning, like any other failed usage write. Further calls return the first
+// result.
 func (a *App) Close() error {
 	a.closeOnce.Do(func() {
+		a.policies.Close()
 		a.sched.Close()
 		if a.indexer != nil {
 			a.indexer.Close()

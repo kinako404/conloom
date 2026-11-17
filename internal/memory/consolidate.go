@@ -102,32 +102,34 @@ func consFitLimits(outputBudget, summaryMax, noteMax int) (int, int) {
 // consolidation under the default limits of every conversation type.
 const RecommendedOutputTokens = 8192
 
-// WarnOutputReservation logs a warning when a default policy of cfg turns
-// memory on while the long model reserves fewer than RecommendedOutputTokens
-// for output (0, no limit, is fine); consolidations then ask for shorter
-// summaries and notes than their limits (see consFitLimits).
-func WarnOutputReservation(cfg *config.Config, log *slog.Logger) {
+// WarnOutputReservation logs a warning when the group or private default
+// policy turns memory on while the long model of cfg reserves fewer than
+// RecommendedOutputTokens for output (0, no limit, is fine); consolidations
+// then ask for shorter summaries and notes than their limits (see
+// consFitLimits). It returns the warning in Chinese for the panel, or "".
+func WarnOutputReservation(cfg *config.Config, group, private conloomapi.GroupPolicy, log *slog.Logger) string {
 	long, ok := cfg.ModelProfiles[string(router.RoleLong)]
 	reserved := long.Context.ReservedOutputTokens
-	if !ok || reserved <= 0 || reserved >= RecommendedOutputTokens ||
-		!cfg.DefaultGroupPolicy.Memory.Enabled && !cfg.PrivatePolicy().Memory.Enabled {
-		return
+	if !ok || reserved <= 0 || reserved >= RecommendedOutputTokens || !group.Memory.Enabled && !private.Memory.Enabled {
+		return ""
 	}
 	log.Warn("long_context reserved_output_tokens is low for memory consolidation; summaries and notes will be kept shorter than their limits",
 		"reserved_output_tokens", reserved, "recommended", RecommendedOutputTokens)
+	return fmt.Sprintf("长模型（long_context）给输出预留的令牌数 %d 低于建议的 %d，记忆整理时摘要和笔记会比上限短", reserved, RecommendedOutputTokens)
 }
 
-// WarnPrivateMemoryNotSensitive logs a warning when the default private policy
-// of cfg turns memory on while the long model may not see sensitive content:
+// WarnPrivateMemoryNotSensitive logs a warning when the private default policy
+// turns memory on while the long model of cfg may not see sensitive content:
 // private chats and the panel's shared scope are then never consolidated (see
-// Run).
-func WarnPrivateMemoryNotSensitive(cfg *config.Config, log *slog.Logger) {
+// Run). It returns the warning in Chinese for the panel, or "".
+func WarnPrivateMemoryNotSensitive(cfg *config.Config, private conloomapi.GroupPolicy, log *slog.Logger) string {
 	long, ok := cfg.ModelProfiles[string(router.RoleLong)]
-	if !ok || long.Privacy.AllowSensitiveContent || !cfg.PrivatePolicy().Memory.Enabled {
-		return
+	if !ok || long.Privacy.AllowSensitiveContent || !private.Memory.Enabled {
+		return ""
 	}
 	log.Warn("private memory is on but long_context does not allow sensitive content; private and panel chats will not be consolidated",
 		"setting", "long_context.privacy.allow_sensitive_content")
+	return "私聊记忆已打开，但长模型（long_context）不允许处理敏感内容（privacy.allow_sensitive_content），私聊和面板聊天不会整理记忆"
 }
 
 // consLimits are a conversation's reduced batch limits after truncated,

@@ -29,9 +29,15 @@ type Config struct {
 	// persona_templates. They are only checked and migrated into the
 	// database on the first start (see app.New), never used at run time.
 	LegacyPersonaTemplates map[string]conloomapi.PersonaDoc `yaml:"persona_templates"`
-	DefaultGroupPolicy     conloomapi.GroupPolicy           `yaml:"default_group_policy"`
-	// DefaultPrivatePolicy is the default policy of private conversations; nil
-	// when the file has no default_private_policy (see PrivatePolicy).
+	// DefaultGroupPolicy and DefaultPrivatePolicy are legacy keys: a file's
+	// default_group_policy and default_private_policy are only imported into
+	// the database on the first start (see app.New), never read at run time,
+	// where the default policies are the database's (see PolicySections).
+	// Without the section in the file they are the built-in default policies
+	// (conloomapi.DefaultGroupPolicy and DefaultPrivatePolicy); a config built
+	// in Go (tests) may change them as the first default policies of an empty
+	// database, where a nil DefaultPrivatePolicy follows PrivatePolicy.
+	DefaultGroupPolicy   conloomapi.GroupPolicy  `yaml:"default_group_policy"`
 	DefaultPrivatePolicy *conloomapi.GroupPolicy `yaml:"default_private_policy"`
 	Runtime              RuntimeConfig           `yaml:"runtime"`
 	Skills               SkillsConfig            `yaml:"skills"`
@@ -48,6 +54,10 @@ type Config struct {
 	Path string `yaml:"-"`
 	// MissingEnv lists referenced environment variables that were unset and had no default.
 	MissingEnv []string `yaml:"-"`
+
+	// groupSection and privateSection record whether the loaded file has a
+	// non-null default_group_policy and default_private_policy.
+	groupSection, privateSection bool
 }
 
 type ServerConfig struct {
@@ -464,9 +474,13 @@ func Load(path string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("config %s: %w", abs, err)
 		}
+		if n := mappingValue(&root, "default_group_policy"); n != nil && n.Tag != "!!null" {
+			cfg.groupSection = true
+		}
 		if n := mappingValue(&root, "default_private_policy"); n != nil && n.Tag != "!!null" {
 			p := conloomapi.DefaultGroupPolicy()
 			cfg.DefaultPrivatePolicy = &p
+			cfg.privateSection = true
 		}
 		if n := mappingValue(&root, "embedding"); n != nil && n.Tag != "!!null" {
 			e := defaultEmbedding()
@@ -484,6 +498,10 @@ func Load(path string) (*Config, error) {
 		if err := applyElementDefaults(&root, cfg); err != nil {
 			return nil, fmt.Errorf("config %s: %w", abs, err)
 		}
+	}
+	if !cfg.privateSection {
+		p := conloomapi.DefaultPrivatePolicy()
+		cfg.DefaultPrivatePolicy = &p
 	}
 
 	for name, p := range cfg.ModelProfiles {
@@ -555,10 +573,19 @@ func resolveDir(base, p string) string {
 	return filepath.Join(base, p)
 }
 
-// PrivatePolicy is the default policy of private conversations:
-// DefaultPrivatePolicy when the file sets one, else DefaultGroupPolicy without
-// its memory summary and note limits, so private chats keep their own type's
-// defaults rather than a group's numbers.
+// PolicySections reports whether the loaded file has a non-null
+// default_group_policy and default_private_policy, the legacy sections the
+// first start imports into the database; both are false for a config built in
+// Go.
+func (c *Config) PolicySections() (group, private bool) {
+	return c.groupSection, c.privateSection
+}
+
+// PrivatePolicy is the private default policy of the config:
+// DefaultPrivatePolicy, which Load always sets, else (a config built in Go
+// without one) DefaultGroupPolicy without its memory summary and note limits,
+// so private chats keep their own type's defaults rather than a group's
+// numbers.
 func (c *Config) PrivatePolicy() conloomapi.GroupPolicy {
 	if c.DefaultPrivatePolicy != nil {
 		return *c.DefaultPrivatePolicy
