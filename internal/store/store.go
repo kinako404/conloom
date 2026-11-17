@@ -274,6 +274,12 @@ type Store interface {
 	// MessagesAfter returns up to limit messages with Seq > afterSeq ordered by
 	// Seq ascending (none when limit <= 0).
 	MessagesAfter(ctx context.Context, convKey string, afterSeq int64, limit int) ([]MessageRecord, error)
+	// MessagesBefore pages back through a conversation newest first: messages
+	// with Seq < beforeSeq, or the newest ones when beforeSeq <= 0.
+	MessagesBefore(ctx context.Context, convKey string, beforeSeq int64, limit int) ([]MessageRecord, error)
+	// MessagesBySeq maps each of seqs that belongs to the conversation to its
+	// message; other seqs are absent.
+	MessagesBySeq(ctx context.Context, convKey string, seqs []int64) (map[int64]MessageRecord, error)
 	// MessagesAfterIn is MessagesAfter over the messages of all of convKeys
 	// together (none without convKeys).
 	MessagesAfterIn(ctx context.Context, convKeys []string, afterSeq int64, limit int) ([]MessageRecord, error)
@@ -436,6 +442,12 @@ type Store interface {
 	// memory scope when that was set in the chat; the rest of the scope stays.
 	// ErrNotFound if absent.
 	DeleteConversation(ctx context.Context, convKey string) error
+	// DeleteMessagesFrom deletes the conversation's messages with seq >= fromSeq,
+	// their keyword index rows, its chunks that reach into the range (queuing the
+	// ones that straddle it for rebuild), and its timers anchored at or after
+	// fromSeq. It returns how many messages it deleted and ErrNotFound if the
+	// conversation is absent.
+	DeleteMessagesFrom(ctx context.Context, convKey string, fromSeq int64) (int, error)
 	// DeleteScope deletes everything stored under the shared panel memory scope
 	// scopeKey (summary and cursor, members with their forget times, revisions,
 	// chunk records, status, timers, bar values, bar changes, bot-created bars

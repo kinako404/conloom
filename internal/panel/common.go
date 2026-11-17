@@ -17,8 +17,6 @@ type Store interface {
 	store.Store
 	GetConversationByKey(ctx context.Context, key string) (store.ConversationRecord, error)
 	ConversationStats(ctx context.Context) ([]store.ConversationStats, error)
-	MessagesBefore(ctx context.Context, convKey string, beforeSeq int64, limit int) ([]store.MessageRecord, error)
-	MessagesBySeq(ctx context.Context, convKey string, seqs []int64) (map[int64]store.MessageRecord, error)
 	ListTasks(ctx context.Context, f store.TaskFilter) ([]store.TaskRecord, error)
 	ListAudit(ctx context.Context, f store.AuditFilter) ([]store.AuditEvent, error)
 	ListPersonaVersions(ctx context.Context, convKey string) ([]store.PersonaVersion, error)

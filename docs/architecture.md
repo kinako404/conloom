@@ -118,6 +118,7 @@ NapCat      Adapter                 Core                          SQLite        
 - **“正在输入”**：会话里有排队或运行中的任务（`Orchestrator.Busy`），或者面板通道还有没确认、也没过期的动作（`PendingPanelActions`）时，聊天接口返回 `typing: true`。
 - **新建**（`CreatePanelChat`）：写一个 `panel` 平台的私聊会话（ID `panel_<随机>`）、它的用户，和一条不带消息的创建事件（记住称呼）。`panel` 平台的发言人一律算管理员（`isAdmin`，`orchestrator.go:848`），不受 `private_chat` 和白名单限制（`config.BotConfig.PrivateAllowed`）。
 - **删除**（`DeletePanelChat`，`panelchat.go`）：只允许 `panel` 平台的会话。先取消会话里排队和运行中的任务，最多等 5 秒让运行中的停下；没停下就什么都不删，返回 `ErrChatBusy`（面板返回 409，可以重试）。随后在一个事务里删掉这个会话键下所有表的数据和它的事件（`DeleteConversation`，`internal/store/sqlite/delete.go:25`），保留 `model_calls` 和审计；再清掉内存里的调度会话、限流记录、人设和策略缓存。这个 bot 的面板聊天共用的记忆（5.5）不在这个会话键下，保留不动；语义检索的段按聊天存，随聊天一起删掉；共用的状态是在这个聊天里设的（`origin_conversation_key`）时，同一个事务里删掉它，它的回来说话定时本来就挂在这个聊天下。被忽略的消息的事件既不存原文也没有任务，删除时认不出它属于这个会话，留到事件保留期（`idempotency_retention`）满由清理任务删除。
+- **撤回、重新生成**（`WithdrawPanel`/`RegeneratePanel`，`panelchat.go`）：都只允许 `panel` 平台的私聊，按会话键串行；会话有排队或运行中的任务、或者面板通道还有没确认也没过期的动作时返回 `ErrChatNotIdle`（面板返回 409 `CHAT_BUSY`），什么都不删。撤回把 `seq` 及其后的消息交给 `DeleteMessagesFrom`（`internal/store/sqlite/delete.go`）：一个事务里删掉这些消息、它们的关键词索引行、`end_seq` 到这一段里的语义检索段（跨切点的段排队重建），以及 `anchor_seq` 在这一段里的定时。重新生成只接受最新一条 bot 消息：它向前找最近一条用户消息，删掉这轮回复，并用这条已有的用户消息作为触发消息，通过 `Scheduler.AdmitWith` 建一个新任务；删除旧回复和写新任务在同一个 `Ingest` 事务里（`Ingest.DeleteMessages`），所以不会插入重复的用户消息，也不会留下没删掉的旧回复。已经整理进摘要和笔记的内容、旧回复触发的工具副作用、用量和审计都不回滚。
 - **锁**：同一个聊天的提交和删除按会话键串行（`lockTable`，`panelchat.go`），删除时提交等它结束，然后发现会话已不存在（404）。锁表只放正在使用的键，用完即删；不同聊天互不等待。
 - **关闭顺序**：`App.Close` 先停编排器（不再写新动作），再停面板投递器，然后写完用量记录、关库。
 

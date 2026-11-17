@@ -642,3 +642,315 @@ func TestLockTable(t *testing.T) {
 		return len(l.locks) == 0
 	})
 }
+
+// startPanelDeliverer starts a panel deliverer for a test and returns it, so
+// tests can wake it after a task finishes.
+func (e *testEnv) startPanelDeliverer(t *testing.T) *outbox.PanelDeliverer {
+	t.Helper()
+	svc := outbox.New(e.st, outbox.Config{}, nil, nil)
+	d := outbox.NewPanelDeliverer(svc, e.st, time.Hour, nil, nil)
+	d.Start()
+	t.Cleanup(d.Close)
+	d.Wake()
+	return d
+}
+
+// panelMessage returns the stored message id.
+func (e *testEnv) panelMessage(t *testing.T, id string) store.MessageRecord {
+	t.Helper()
+	m, err := e.st.GetMessage(context.Background(), testBot, id)
+	if err != nil {
+		t.Fatalf("GetMessage(%s): %v", id, err)
+	}
+	return m
+}
+
+// waitPanelReply wakes d and waits for a bot message after seq.
+func (e *testEnv) waitPanelReply(t *testing.T, d *outbox.PanelDeliverer, key string, after int64) store.MessageRecord {
+	t.Helper()
+	d.Wake()
+	var got store.MessageRecord
+	waitUntil(t, "panel bot reply", func() bool {
+		msgs, err := e.st.MessagesAfter(context.Background(), key, after, 100)
+		if err != nil {
+			return false
+		}
+		for _, m := range msgs {
+			if m.FromBot {
+				got = m
+				return true
+			}
+		}
+		return false
+	})
+	return got
+}
+
+func TestWithdrawPanel_DeletesFromSeqToEnd(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	ctx := context.Background()
+	key := env.createChat(t, testBot)
+	d := env.startPanelDeliverer(t)
+
+	firstID := env.submitPanel(t, key, "admin", "第一句")
+	env.waitTask(t, env.panelResponse(t, firstID).TaskID)
+	firstUser := env.panelMessage(t, firstID)
+	firstBot := env.waitPanelReply(t, d, key, firstUser.Seq)
+
+	secondID := env.submitPanel(t, key, "admin", "第二句")
+	env.waitTask(t, env.panelResponse(t, secondID).TaskID)
+	secondUser := env.panelMessage(t, secondID)
+	env.waitPanelReply(t, d, key, secondUser.Seq)
+
+	deleted, err := env.o.WithdrawPanel(ctx, key, secondUser.Seq)
+	if err != nil {
+		t.Fatalf("WithdrawPanel: %v", err)
+	}
+	if deleted < 2 {
+		t.Errorf("deleted = %d, want at least the user message and its reply", deleted)
+	}
+	msgs, err := env.st.MessagesAfter(ctx, key, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 || msgs[0].ID != firstID || msgs[1].ID != firstBot.ID {
+		t.Fatalf("messages after withdraw = %+v, want the first user and bot only", msgs)
+	}
+	if env.o.Busy(key) {
+		t.Error("the chat is busy after withdrawing")
+	}
+}
+
+func TestRegeneratePanel_ReusesTheUserMessage(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	ctx := context.Background()
+	key := env.createChat(t, testBot)
+	d := env.startPanelDeliverer(t)
+
+	id := env.submitPanel(t, key, "admin", "第一句")
+	env.waitTask(t, env.panelResponse(t, id).TaskID)
+	user := env.panelMessage(t, id)
+	oldBot := env.waitPanelReply(t, d, key, user.Seq)
+
+	before := time.Now().Add(-time.Second)
+	taskID, err := env.o.RegeneratePanel(ctx, key, oldBot.Seq)
+	if err != nil {
+		t.Fatalf("RegeneratePanel: %v", err)
+	}
+	task, err := env.st.GetTask(ctx, testBot, taskID)
+	if err != nil {
+		t.Fatalf("new task: %v", err)
+	}
+	if len(task.TriggerMessageIDs) != 1 || task.TriggerMessageIDs[0] != user.ID {
+		t.Errorf("trigger messages = %v, want [%s]", task.TriggerMessageIDs, user.ID)
+	}
+	if task.EventOccurredAt.Before(before) {
+		t.Errorf("task EventOccurredAt = %v, want near now", task.EventOccurredAt)
+	}
+	if _, err := env.st.GetMessage(ctx, testBot, oldBot.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("old bot message err = %v, want ErrNotFound", err)
+	}
+	env.waitTask(t, taskID)
+	env.waitPanelReply(t, d, key, user.Seq)
+
+	msgs, err := env.st.MessagesAfter(ctx, key, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users, bots := 0, 0
+	for _, m := range msgs {
+		if m.FromBot {
+			bots++
+		} else {
+			users++
+			if m.ID != user.ID {
+				t.Errorf("user message = %s, want %s", m.ID, user.ID)
+			}
+		}
+	}
+	if users != 1 || bots == 0 {
+		t.Fatalf("messages = %d user, %d bot; want 1 user and a new reply", users, bots)
+	}
+}
+
+func TestRegeneratePanel_RefusesOlderReply(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	ctx := context.Background()
+	key := env.createChat(t, testBot)
+	d := env.startPanelDeliverer(t)
+
+	firstID := env.submitPanel(t, key, "admin", "第一句")
+	env.waitTask(t, env.panelResponse(t, firstID).TaskID)
+	firstUser := env.panelMessage(t, firstID)
+	firstBot := env.waitPanelReply(t, d, key, firstUser.Seq)
+
+	secondID := env.submitPanel(t, key, "admin", "第二句")
+	env.waitTask(t, env.panelResponse(t, secondID).TaskID)
+	secondUser := env.panelMessage(t, secondID)
+	env.waitPanelReply(t, d, key, secondUser.Seq)
+
+	before, err := env.st.MessagesAfter(ctx, key, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.o.RegeneratePanel(ctx, key, firstBot.Seq); !errors.Is(err, ErrNotLatest) {
+		t.Fatalf("RegeneratePanel older reply err = %v, want ErrNotLatest", err)
+	}
+	after, err := env.st.MessagesAfter(ctx, key, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("messages changed from %d to %d after a refused regenerate", len(before), len(after))
+	}
+	for i := range before {
+		if before[i].ID != after[i].ID {
+			t.Fatalf("message %d changed from %s to %s", i, before[i].ID, after[i].ID)
+		}
+	}
+}
+
+func TestWithdrawPanel_RefusesBusy(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	ctx := context.Background()
+	key := env.createChat(t, testBot)
+	entered, release := env.blockFirstCompletion(t, func(store.TaskCompletion) bool { return true })
+	id := env.submitPanel(t, key, "admin", "等等")
+	waitEntered(t, entered)
+	user := env.panelMessage(t, id)
+
+	if _, err := env.o.WithdrawPanel(ctx, key, user.Seq); !errors.Is(err, ErrChatNotIdle) {
+		t.Fatalf("WithdrawPanel while busy err = %v, want ErrChatNotIdle", err)
+	}
+	if _, err := env.st.GetMessage(ctx, testBot, id); err != nil {
+		t.Errorf("user message was deleted while the chat was busy: %v", err)
+	}
+	release()
+	env.waitTask(t, env.panelResponse(t, id).TaskID)
+}
+
+func TestWithdrawPanel_RefusesPendingPart(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	ctx := context.Background()
+	key := env.createChat(t, testBot)
+	id := env.submitPanel(t, key, "admin", "等等")
+	env.waitTask(t, env.panelResponse(t, id).TaskID)
+	user := env.panelMessage(t, id)
+	// Without a panel deliverer the reply action is stored but not delivered.
+	if _, err := env.o.WithdrawPanel(ctx, key, user.Seq); !errors.Is(err, ErrChatNotIdle) {
+		t.Fatalf("WithdrawPanel with a pending part err = %v, want ErrChatNotIdle", err)
+	}
+	if _, err := env.st.GetMessage(ctx, testBot, id); err != nil {
+		t.Errorf("user message was deleted while a part was pending: %v", err)
+	}
+}
+
+func TestRegeneratePanel_RefusesBusy(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	ctx := context.Background()
+	key := env.createChat(t, testBot)
+	d := env.startPanelDeliverer(t)
+	id := env.submitPanel(t, key, "admin", "第一句")
+	env.waitTask(t, env.panelResponse(t, id).TaskID)
+	user := env.panelMessage(t, id)
+	bot := env.waitPanelReply(t, d, key, user.Seq)
+
+	entered, release := env.blockFirstCompletion(t, func(store.TaskCompletion) bool { return true })
+	second := env.submitPanel(t, key, "admin", "第二句")
+	waitEntered(t, entered)
+	if _, err := env.o.RegeneratePanel(ctx, key, bot.Seq); !errors.Is(err, ErrChatNotIdle) {
+		t.Fatalf("RegeneratePanel while busy err = %v, want ErrChatNotIdle", err)
+	}
+	release()
+	env.waitTask(t, env.panelResponse(t, second).TaskID)
+}
+
+func TestRegeneratePanel_RefusesPaused(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	ctx := context.Background()
+	key := env.createChat(t, testBot)
+	d := env.startPanelDeliverer(t)
+	id := env.submitPanel(t, key, "admin", "第一句")
+	env.waitTask(t, env.panelResponse(t, id).TaskID)
+	user := env.panelMessage(t, id)
+	bot := env.waitPanelReply(t, d, key, user.Seq)
+
+	pol := conloomapi.DefaultGroupPolicy()
+	pol.Concurrency.MaxInteractiveRequests = 0
+	if _, err := env.st.AppendPolicyVersion(ctx, store.PolicyVersion{
+		ConversationKey: key, Policy: pol, Reason: "pause", UpdatedBy: "test", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	env.o.policies.Forget(key)
+	if _, err := env.o.RegeneratePanel(ctx, key, bot.Seq); !errors.Is(err, errPaused) {
+		t.Fatalf("RegeneratePanel paused err = %v, want errPaused", err)
+	}
+	if _, err := env.st.GetMessage(ctx, testBot, bot.ID); err != nil {
+		t.Errorf("bot message was deleted while paused: %v", err)
+	}
+}
+
+func TestRegeneratePanel_RefusesUserMessage(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	ctx := context.Background()
+	key := env.createChat(t, testBot)
+	d := env.startPanelDeliverer(t)
+	id := env.submitPanel(t, key, "admin", "第一句")
+	env.waitTask(t, env.panelResponse(t, id).TaskID)
+	user := env.panelMessage(t, id)
+	env.waitPanelReply(t, d, key, user.Seq)
+
+	if _, err := env.o.RegeneratePanel(ctx, key, user.Seq); !errors.Is(err, ErrNotLatest) {
+		t.Fatalf("RegeneratePanel on a user message err = %v, want ErrNotLatest", err)
+	}
+	if _, err := env.st.GetMessage(ctx, testBot, id); err != nil {
+		t.Errorf("user message was deleted: %v", err)
+	}
+}
+
+func TestRegeneratePanel_RefusesWithoutUserMessage(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	ctx := context.Background()
+	key := env.createChat(t, testBot)
+	now := time.Now().UTC()
+	m := store.MessageRecord{
+		ID: "msg_bot_orphan", BotInstanceID: testBot, ConversationKey: key, Platform: store.PlatformPanel,
+		PlatformMessageID: "panel_bot_orphan", FromBot: true, Text: "只有我", Channel: store.ChannelPanel,
+		OccurredAt: now, CreatedAt: now,
+	}
+	if _, err := env.st.Ingest(ctx, store.Ingest{
+		Event: store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "seed_orphan", EventID: "evt_seed_orphan", CreatedAt: now},
+		Message: &m,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := env.st.GetMessage(ctx, testBot, m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.o.RegeneratePanel(ctx, key, got.Seq); !errors.Is(err, ErrNotLatest) {
+		t.Fatalf("RegeneratePanel without a user message err = %v, want ErrNotLatest", err)
+	}
+	if _, err := env.st.GetMessage(ctx, testBot, m.ID); err != nil {
+		t.Errorf("bot message was deleted: %v", err)
+	}
+}
+
+func TestRegeneratePanel_RefusesCommandReply(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	ctx := context.Background()
+	key := env.createChat(t, testBot)
+	d := env.startPanelDeliverer(t)
+	id := env.submitPanel(t, key, "admin", "/help")
+	env.waitTask(t, env.panelResponse(t, id).TaskID)
+	user := env.panelMessage(t, id)
+	bot := env.waitPanelReply(t, d, key, user.Seq)
+
+	if _, err := env.o.RegeneratePanel(ctx, key, bot.Seq); !errors.Is(err, ErrCommandReply) {
+		t.Fatalf("RegeneratePanel on a command reply err = %v, want ErrCommandReply", err)
+	}
+	if _, err := env.st.GetMessage(ctx, testBot, bot.ID); err != nil {
+		t.Errorf("command reply was deleted: %v", err)
+	}
+}

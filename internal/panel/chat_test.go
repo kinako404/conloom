@@ -37,6 +37,13 @@ type fakeChat struct {
 	// its calls as convKey|afterSeq.
 	suggestions []string
 	suggested   []string
+
+	withdrawErr     error
+	regenerateErr   error
+	withdrawDeleted int
+	regenerateTask  string
+	withdrawn       []string
+	regenerated     []string
 }
 
 func (f *fakeChat) Suggest(ctx context.Context, convKey string, afterSeq int64) ([]string, error) {
@@ -142,6 +149,70 @@ func (f *fakeChat) calls() (submitted, created, deleted []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.submitted...), append([]string(nil), f.created...), append([]string(nil), f.deleted...)
+}
+
+func (f *fakeChat) WithdrawPanel(ctx context.Context, convKey string, seq int64) (int, error) {
+	conv, err := f.h.db.GetConversationByKey(ctx, convKey)
+	if err != nil {
+		return 0, err
+	}
+	if conv.Platform != store.PlatformPanel {
+		return 0, core.ErrNotPanelChat
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.withdrawErr != nil {
+		return 0, f.withdrawErr
+	}
+	f.withdrawn = append(f.withdrawn, fmt.Sprintf("%s|%d", convKey, seq))
+	return f.withdrawDeleted, nil
+}
+
+func (f *fakeChat) RegeneratePanel(ctx context.Context, convKey string, seq int64) (string, error) {
+	conv, err := f.h.db.GetConversationByKey(ctx, convKey)
+	if err != nil {
+		return "", err
+	}
+	if conv.Platform != store.PlatformPanel {
+		return "", core.ErrNotPanelChat
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.regenerateErr != nil {
+		return "", f.regenerateErr
+	}
+	f.regenerated = append(f.regenerated, fmt.Sprintf("%s|%d", convKey, seq))
+	return f.regenerateTask, nil
+}
+
+func (f *fakeChat) setWithdrawErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.withdrawErr = err
+}
+
+func (f *fakeChat) setRegenerateErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.regenerateErr = err
+}
+
+func (f *fakeChat) setWithdrawDeleted(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.withdrawDeleted = n
+}
+
+func (f *fakeChat) setRegenerateTask(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.regenerateTask = id
+}
+
+func (f *fakeChat) messageCalls() (withdrawn, regenerated []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.withdrawn...), append([]string(nil), f.regenerated...)
 }
 
 // newChatHarness is a writeHarness whose panel chats are fakeChat.
@@ -621,5 +692,112 @@ func TestChat_Unavailable(t *testing.T) {
 	errorBody(t, h.write(http.MethodDelete, convPath(private.Key), nil), http.StatusServiceUnavailable, conloomapi.CodeInternal)
 	errorBody(t, h.write(http.MethodPost, convPath(private.Key, "suggestions"), map[string]int64{"after_seq": 1}),
 		http.StatusServiceUnavailable, conloomapi.CodeInternal)
+	errorBody(t, h.write(http.MethodDelete, convPath(private.Key, "messages", "1"), nil),
+		http.StatusServiceUnavailable, conloomapi.CodeInternal)
+	errorBody(t, h.write(http.MethodPost, convPath(private.Key, "messages", "1", "regenerate"), nil),
+		http.StatusServiceUnavailable, conloomapi.CodeInternal)
 	h.getErr(convPath(private.Key, "chat"), http.StatusServiceUnavailable, conloomapi.CodeInternal)
+}
+
+func TestChat_WithdrawMessage(t *testing.T) {
+	h, chat := newChatHarness(t)
+	private := h.seedConv(store.PlatformPanel, conloomapi.ConvPrivate, "panel_1")
+	chat.setWithdrawDeleted(3)
+	path := convPath(private.Key, "messages", "7")
+
+	w := h.write(http.MethodDelete, path, nil)
+	if w.Code != http.StatusNoContent || w.Body.Len() != 0 {
+		t.Fatalf("withdraw = %d %q, want 204 with an empty body", w.Code, w.Body)
+	}
+	if withdrawn, _ := chat.messageCalls(); len(withdrawn) != 1 || withdrawn[0] != private.Key+"|7" {
+		t.Fatalf("withdraw calls = %q, want one at seq 7", withdrawn)
+	}
+	events := h.audits("panel.message.withdraw")
+	checkChatAudit(t, events, private.Key, "第一句")
+	if !strings.Contains(events[0].Detail, `"seq":7`) || !strings.Contains(events[0].Detail, `"deleted":3`) {
+		t.Errorf("audit detail %s lacks seq and deleted", events[0].Detail)
+	}
+
+	errorBody(t, h.do(http.MethodDelete, path, "", withCookie(h.cookie)), http.StatusForbidden, conloomapi.CodeForbidden)
+	if withdrawn, _ := chat.messageCalls(); len(withdrawn) != 1 {
+		t.Errorf("a CSRF-less withdraw reached the chat service: %q", withdrawn)
+	}
+}
+
+func TestChat_RegenerateMessage(t *testing.T) {
+	h, chat := newChatHarness(t)
+	private := h.seedConv(store.PlatformPanel, conloomapi.ConvPrivate, "panel_1")
+	chat.setRegenerateTask("task_x")
+	path := convPath(private.Key, "messages", "7", "regenerate")
+
+	w := h.write(http.MethodPost, path, nil)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("regenerate = %d %s, want 202", w.Code, w.Body)
+	}
+	var resp struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.TaskID != "task_x" {
+		t.Fatalf("body %s (%v), want task_x", w.Body, err)
+	}
+	if _, regenerated := chat.messageCalls(); len(regenerated) != 1 || regenerated[0] != private.Key+"|7" {
+		t.Fatalf("regenerate calls = %q, want one at seq 7", regenerated)
+	}
+	events := h.audits("panel.message.regenerate")
+	checkChatAudit(t, events, private.Key, "第一句")
+	if !strings.Contains(events[0].Detail, `"seq":7`) || !strings.Contains(events[0].Detail, `"task_id":"task_x"`) {
+		t.Errorf("audit detail %s lacks seq and task_id", events[0].Detail)
+	}
+
+	errorBody(t, h.do(http.MethodPost, path, "", withCookie(h.cookie)), http.StatusForbidden, conloomapi.CodeForbidden)
+	if _, regenerated := chat.messageCalls(); len(regenerated) != 1 {
+		t.Errorf("a CSRF-less regenerate reached the chat service: %q", regenerated)
+	}
+}
+
+func TestChat_MessageActionsValidation(t *testing.T) {
+	h, chat := newChatHarness(t)
+	private := h.seedConv(store.PlatformPanel, conloomapi.ConvPrivate, "panel_1")
+	platform := h.seedConv("telegram", conloomapi.ConvPrivate, "20001")
+	withdraw := convPath(private.Key, "messages", "7")
+	regenerate := convPath(private.Key, "messages", "7", "regenerate")
+
+	for _, path := range []string{
+		convPath(private.Key, "messages", "0"),
+		convPath(private.Key, "messages", "x"),
+	} {
+		errorBody(t, h.write(http.MethodDelete, path, nil), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+		errorBody(t, h.write(http.MethodPost, path+"/regenerate", nil), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	}
+	missing := "qq-main:qq:private:missing"
+	errorBody(t, h.write(http.MethodDelete, convPath(missing, "messages", "7"), nil),
+		http.StatusNotFound, conloomapi.CodeNotFound)
+	errorBody(t, h.write(http.MethodPost, convPath(missing, "messages", "7", "regenerate"), nil),
+		http.StatusNotFound, conloomapi.CodeNotFound)
+	errorBody(t, h.write(http.MethodDelete, convPath(platform.Key, "messages", "7"), nil),
+		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	errorBody(t, h.write(http.MethodPost, convPath(platform.Key, "messages", "7", "regenerate"), nil),
+		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	if withdrawn, regenerated := chat.messageCalls(); len(withdrawn) != 0 || len(regenerated) != 0 {
+		t.Fatalf("rejected requests reached the chat service: withdraw %q regenerate %q", withdrawn, regenerated)
+	}
+
+	chat.setWithdrawErr(core.ErrChatNotIdle)
+	errorBody(t, h.write(http.MethodDelete, withdraw, nil), http.StatusConflict, conloomapi.CodeChatBusy)
+	chat.setRegenerateErr(core.ErrChatNotIdle)
+	errorBody(t, h.write(http.MethodPost, regenerate, nil), http.StatusConflict, conloomapi.CodeChatBusy)
+	chat.setWithdrawErr(nil)
+	chat.setRegenerateErr(core.ErrNotLatest)
+	errorBody(t, h.write(http.MethodPost, regenerate, nil), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	chat.setRegenerateErr(core.ErrCommandReply)
+	errorBody(t, h.write(http.MethodPost, regenerate, nil), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	chat.setRegenerateErr(core.ErrPaused)
+	errorBody(t, h.write(http.MethodPost, regenerate, nil), http.StatusConflict, conloomapi.CodePaused)
+	chat.setRegenerateErr(core.ErrQueueFull)
+	errorBody(t, h.write(http.MethodPost, regenerate, nil), http.StatusConflict, conloomapi.CodeChatBusy)
+	chat.setRegenerateErr(core.ErrRegenMerged)
+	errorBody(t, h.write(http.MethodPost, regenerate, nil), http.StatusConflict, conloomapi.CodeChatBusy)
+	if n := len(h.audits("panel.message.withdraw")) + len(h.audits("panel.message.regenerate")); n != 0 {
+		t.Errorf("rejected actions wrote %d audits, want none", n)
+	}
 }

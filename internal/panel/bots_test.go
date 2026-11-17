@@ -508,9 +508,14 @@ func TestBotsAPI_EditConfigBot(t *testing.T) {
 		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
 
 	// Empty templates are default; a save changing one setting names only it.
+	// Audit IDs use real time, not the harness clock, so leave the previous
+	// save's millisecond before the next one; otherwise the two IDs can sort
+	// either way.
 	h.advance(time.Minute) // audits are listed newest first
+	time.Sleep(time.Millisecond)
 	decodeBot(t, put(configBotBody(func(b map[string]any) { b["private_template"] = "" })), http.StatusOK)
 	h.advance(time.Minute)
+	time.Sleep(time.Millisecond)
 	decodeBot(t, put(configBotBody(func(b map[string]any) { b["private_template"], b["groups"] = "", []string{"10003"} })), http.StatusOK)
 	events := h.audits("panel.bot.update")
 	if len(events) != 3 || !strings.Contains(events[0].Detail, `"changed":["groups"]`) ||

@@ -596,6 +596,9 @@ var (
 	errPaused      = errors.New("core: conversation is paused")
 )
 
+// ErrPaused is errPaused for callers outside core, such as the panel API.
+var ErrPaused = errPaused
+
 // submitTurn admits a session participant's message into their turn: their
 // pending task absorbs it, or else a continuation task starts whose merge
 // window is the policy's turn gap, capped at its turn maximum wait. The turn

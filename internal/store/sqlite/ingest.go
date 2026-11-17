@@ -40,6 +40,11 @@ func (db *DB) Ingest(ctx context.Context, in store.Ingest) (*store.EventRecord, 
 				return err
 			}
 		}
+		if in.DeleteMessages != nil {
+			if _, err := deleteMessagesFrom(ctx, tx, *in.DeleteMessages); err != nil {
+				return err
+			}
+		}
 		if err := insertEvent(ctx, tx, in.Event); err != nil {
 			return err
 		}

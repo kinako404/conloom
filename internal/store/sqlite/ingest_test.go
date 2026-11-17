@@ -604,3 +604,29 @@ func TestIngest_MessageChannelRoundTrip(t *testing.T) {
 		t.Fatalf("channels = %q, %q; want empty, panel", msgs[0].Channel, msgs[1].Channel)
 	}
 }
+
+func TestIngest_DeleteMessagesAndNewTaskAreAtomic(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	seedQueuedTask(t, db, "k1", "m1", "task_1")
+	before := countRows(t, db, "messages")
+
+	in := testIngest("k2", "m2", "p2")
+	in.Message = nil
+	in.Conversation = nil
+	in.User = nil
+	in.NewTask = &store.TaskRecord{
+		ID: "task_1", BotInstanceID: testBot, ConversationKey: testConvKey,
+		Status: conloomapi.TaskQueued, TriggerMessageIDs: []string{"m1"},
+	}
+	in.DeleteMessages = &store.MessageDelete{ConversationKey: testConvKey, FromSeq: 1}
+	if _, err := db.Ingest(ctx, in); err == nil {
+		t.Fatal("Ingest succeeded, want the duplicate task's error")
+	}
+	if n := countRows(t, db, "messages"); n != before {
+		t.Errorf("messages = %d, want %d after the rollback", n, before)
+	}
+	if _, err := db.GetEvent(ctx, testBot, "k2"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("event k2 err = %v, want ErrNotFound", err)
+	}
+}

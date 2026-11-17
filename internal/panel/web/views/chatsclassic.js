@@ -7,6 +7,7 @@ import { get, convPath, isAbort } from '../lib/api.js';
 import { go, href } from '../lib/router.js';
 import { fmtTime, fmtClock } from '../lib/format.js';
 import { PANEL, PANEL_HINT, newChatDialog, botDialog, configBotDialog, deleteBotDialog } from './chats.js';
+import { deleteChatConfirmed } from './chat.js';
 import { chatPane } from './chatclassic.js';
 
 // NARROW is the media query under which style.css puts the chat list above
@@ -68,6 +69,59 @@ function chatPage() {
       if (!isAbort(err)) mount(listMsg, errorBox(err));
     }
   };
+
+  const chatMenu = h('div', { class: 'chat-ctx', hidden: true, role: 'menu' });
+  let menuKey = '';
+  const closeMenu = () => {
+    chatMenu.hidden = true;
+    menuKey = '';
+  };
+  const openChatMenu = (e, c) => {
+    menuKey = c.key;
+    mount(chatMenu, h('button', {
+      type: 'button', class: 'chat-ctx-item danger', role: 'menuitem',
+      onclick: () => {
+        const key = menuKey;
+        closeMenu();
+        removeChat(key);
+      },
+    }, '删除聊天'));
+    const left = Math.max(0, Math.min(e.clientX, window.innerWidth - 160));
+    const top = Math.max(0, Math.min(e.clientY, window.innerHeight - 48));
+    chatMenu.style.left = `${left}px`;
+    chatMenu.style.top = `${top}px`;
+    chatMenu.hidden = false;
+  };
+  const removeChat = async (key) => {
+    mount(listMsg);
+    try {
+      if (!(await deleteChatConfirmed(key))) return;
+      if (current === key) go('#/chat');
+      await refresh();
+    } catch (err) {
+      if (!isAbort(err)) mount(listMsg, errorBox(err));
+    }
+  };
+  list.addEventListener('contextmenu', (e) => {
+    let key = '';
+    for (const [k, a] of links) {
+      if (a === e.target || a.contains(e.target)) {
+        key = k;
+        break;
+      }
+    }
+    const shown = key ? find(key) : null;
+    if (!shown) return;
+    e.preventDefault();
+    openChatMenu(e, shown.chat);
+  });
+  document.addEventListener('click', closeMenu);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeMenu();
+  });
+  document.addEventListener('scroll', closeMenu, true);
+  window.addEventListener('resize', closeMenu);
+  window.addEventListener('hashchange', closeMenu);
 
   const chatDialog = newChatDialog((key) => {
     refresh().then(() => go(href('chat', key)));
@@ -132,7 +186,10 @@ function chatPage() {
   }, '删除');
 
   const chatItem = (c) => {
-    const a = h('a', { href: href('chat', c.key), title: c.last_message_at ? `最后消息 ${fmtTime(c.last_message_at)}` : '还没有消息' },
+    const a = h('a', {
+      href: href('chat', c.key),
+      title: c.last_message_at ? `最后消息 ${fmtTime(c.last_message_at)}` : '还没有消息',
+    },
       h('span', { class: 'chat-title' }, c.title || c.key),
       h('span', { class: 'chat-time muted' }, fmtClock(c.last_message_at)));
     links.set(c.key, a);
@@ -181,7 +238,16 @@ function chatPage() {
       return;
     }
     const shown = find(key);
-    let head = shown ? chatHead(key, shown.chat.title || key, shown.group.name || shown.group.id) : null;
+    const headWithDelete = (el) => {
+      if (el) {
+        el.appendChild(h('button', {
+          type: 'button', class: 'link danger',
+          onclick: () => removeChat(key),
+        }, '删除'));
+      }
+      return el;
+    };
+    let head = shown ? headWithDelete(chatHead(key, shown.chat.title || key, shown.group.name || shown.group.id)) : null;
     mount(pane, head, loading());
     reveal();
     try {
@@ -192,7 +258,7 @@ function chatPage() {
             h('p', null, h('a', { href: href('conversations', key) }, '打开会话详情')));
           return;
         }
-        head = chatHead(key, conv.platform_conversation_id, conv.bot_name || conv.bot_instance_id);
+        head = headWithDelete(chatHead(key, conv.platform_conversation_id, conv.bot_name || conv.bot_instance_id));
       }
       const nodes = await chatPane({ key, signal, hint: PANEL_HINT });
       if (!signal.aborted) {
@@ -229,7 +295,7 @@ function chatPage() {
         listMsg,
         list),
       pane),
-    chatDialog.dialog, botForm.dialog, configForm.dialog, deleteForm.dialog);
+    chatMenu, chatDialog.dialog, botForm.dialog, configForm.dialog, deleteForm.dialog);
 
   return { layout, load, select };
 }

@@ -3,17 +3,21 @@
 // constants and helpers it shares.
 
 import { h, mount, errorBox } from '../lib/dom.js';
-import { get, post, convPath, isAbort } from '../lib/api.js';
+import { get, post, del, convPath, isAbort } from '../lib/api.js';
+import { go, href } from '../lib/router.js';
 import { fmtTime } from '../lib/format.js';
 import { POLL_MS, HISTORY, PAGE, TOUCH, GONE, suggestionsOn, saveSuggestionsOn, suppressedNote } from './chat.js';
 
-function bubble(m) {
-  return h('li', { class: m.from_bot ? 'bubble bot' : 'bubble user' },
+function bubble(m, actions) {
+  return h('li', { class: m.from_bot ? 'bubble bot' : 'bubble user', dataset: { seq: String(m.seq) } },
     h('div', { class: 'meta' },
       h('strong', null, m.sender_name || m.sender_id),
       h('span', null, fmtTime(m.at)),
       m.channel === 'panel' ? h('span', { class: 'badge' }, '面板') : null),
-    h('div', { class: 'body' }, m.text));
+    h('div', { class: 'body' }, m.text),
+    h('div', { class: 'chat-actions' },
+      h('button', { type: 'button', class: 'chat-action danger', onclick: () => actions.withdraw(m) }, '撤回'),
+      m.from_bot ? h('button', { type: 'button', class: 'chat-action', 'data-regenerate': '1', onclick: () => actions.regenerate(m) }, '重新生成') : null));
 }
 
 // chatPane talks to the bot in the panel chat key, as the panel user. It
@@ -44,12 +48,60 @@ export async function chatPane({ key, signal, hint }) {
   let botTyping = true;
   let asked = 0;
   let sentAfter = 0;
+  let gone = false;
 
   const nearBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   const clearSuggestions = () => {
     mount(chips);
     chips.remove();
   };
+
+  const refreshActions = () => {
+    for (const row of log.querySelectorAll('.bubble')) {
+      const m = { seq: Number(row.dataset.seq) };
+      const regen = row.querySelector('[data-regenerate]');
+      if (regen) regen.hidden = !(last && last.from_bot && m.seq === last.seq);
+      for (const b of row.querySelectorAll('.chat-action')) b.disabled = botTyping || gone;
+    }
+  };
+  const actionError = (err) => {
+    if (isAbort(err)) return;
+    if (err.status === 404) {
+      markGone();
+      return;
+    }
+    if (err.status === 409) {
+      const text = err.code === 'PAUSED' ? '这个聊天暂停中，不能重新生成。' : '对方正在回复，等它说完再试。';
+      mount(sendError, h('p', { class: 'hint warn', role: 'status' }, text));
+      return;
+    }
+    mount(sendError, errorBox(err));
+  };
+  const withdraw = async (seq) => {
+    if (botTyping || gone || send.disabled) return;
+    const count = [...log.querySelectorAll('.bubble')].filter((row) => Number(row.dataset.seq) >= seq).length;
+    if (!confirm(`撤回这条消息及其后的 ${count} 条消息？不能恢复；已经整理进摘要/笔记的内容不会跟着撤回，要彻底清掉用 /忘记我。`)) return;
+    try {
+      await del(convPath(key, 'messages', seq));
+      go(href('chat', key));
+    } catch (err) {
+      actionError(err);
+    }
+  };
+  const regenerate = async (seq) => {
+    if (botTyping || gone || send.disabled) return;
+    if (!last || !last.from_bot || last.seq !== seq) {
+      mount(sendError, h('p', { class: 'hint warn', role: 'status' }, '只能重新生成最新一条回复。'));
+      return;
+    }
+    try {
+      await post(convPath(key, 'messages', seq, 'regenerate'));
+      go(href('chat', key));
+    } catch (err) {
+      actionError(err);
+    }
+  };
+  const actions = { withdraw: (m) => withdraw(m.seq), regenerate: (m) => regenerate(m.seq) };
 
   // add appends the rows not shown yet, in place of any suggestions, and
   // reports whether there were any; stick scrolls them into view even when
@@ -60,11 +112,12 @@ export async function chatPane({ key, signal, hint }) {
     for (const m of rows) {
       if (m.seq <= after) continue;
       if (!added) clearSuggestions();
-      log.appendChild(bubble(m));
+      log.appendChild(bubble(m, actions));
       after = m.seq;
       last = m;
       added = true;
     }
+    if (added) refreshActions();
     if (added && (stick || atBottom)) log.scrollTop = log.scrollHeight;
     return added;
   };
@@ -76,7 +129,6 @@ export async function chatPane({ key, signal, hint }) {
   let running = false;
   let again = false;
   let stick = false;
-  let gone = false;
   const schedule = (ms) => {
     clearTimeout(timer);
     if (!signal.aborted && !gone) timer = setTimeout(poll, ms);
@@ -88,6 +140,7 @@ export async function chatPane({ key, signal, hint }) {
     typing.hidden = true;
     input.disabled = true;
     send.disabled = true;
+    refreshActions();
     mount(sendError);
     mount(pollError, errorBox({ message: GONE }));
   };
@@ -131,6 +184,7 @@ export async function chatPane({ key, signal, hint }) {
       if (add(rows, stick)) stick = false;
       botTyping = !!res.typing;
       typing.hidden = !botTyping;
+      refreshActions();
       mount(pollError);
       if (rows.length >= PAGE) next = 0;
       else suggest();

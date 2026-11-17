@@ -584,6 +584,44 @@ function chatPage() {
     return true;
   };
 
+  const ctxMenu = h('div', { class: 'tg-ctx-menu', role: 'menu', hidden: true });
+  let ctxKey = '';
+  const closeCtx = () => {
+    ctxMenu.hidden = true;
+    ctxKey = '';
+  };
+  const openCtx = (e, c) => {
+    ctxKey = c.key;
+    mount(ctxMenu, h('button', {
+      type: 'button', class: 'tg-bar-item danger', role: 'menuitem',
+      onclick: () => {
+        const key = ctxKey;
+        closeCtx();
+        removeChat(key);
+      },
+    }, '删除聊天'));
+    const left = Math.max(0, Math.min(e.clientX, window.innerWidth - 160));
+    const top = Math.max(0, Math.min(e.clientY, window.innerHeight - 48));
+    ctxMenu.style.left = `${left}px`;
+    ctxMenu.style.top = `${top}px`;
+    ctxMenu.hidden = false;
+  };
+  list.addEventListener('contextmenu', (e) => {
+    const a = e.target.closest('a.tg-chat');
+    if (!a) return;
+    const found = find(a.dataset.key);
+    if (!found) return;
+    e.preventDefault();
+    openCtx(e, found.chat);
+  });
+  document.addEventListener('click', closeCtx);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeCtx();
+  });
+  document.addEventListener('scroll', closeCtx, true);
+  window.addEventListener('resize', closeCtx);
+  window.addEventListener('hashchange', closeCtx);
+
   // loadSkills reads the skills a panel bot and those a config bot may
   // enable, once.
   const loadSkills = () => {
@@ -744,6 +782,7 @@ function chatPage() {
   const chatRow = (g, c, several) => h('li', null, h('a', {
     class: c.key === current ? 'tg-chat active' : 'tg-chat',
     href: chatHref(c.key),
+    dataset: { key: c.key },
     title: c.last_message_at ? `最后消息 ${fmtTime(c.last_message_at)}` : '还没有消息',
   },
   avatarEl(g, 48),
@@ -937,6 +976,9 @@ function chatPage() {
     const onMessages = (messages) => {
       if (!signal.aborted) noteArrived(key, messages);
     };
+    const onReset = () => {
+      delete arrived[key];
+    };
     const bar = (b, t) => chatBar({ key, bot: b, title: t, onBack, signal });
     mount(pane, bar(bot, title), loading());
     if (!fetched) {
@@ -956,7 +998,7 @@ function chatPage() {
         bot = { id: conv.bot_instance_id, name: conv.bot_name || conv.bot_instance_id, avatar: g ? g.avatar || '' : '' };
         title = conv.platform_conversation_id;
       }
-      const [head, ...body] = await chatPane({ key, signal, hint: PANEL_HINT, bot, title, onBack, onDelete, onMessages });
+      const [head, ...body] = await chatPane({ key, signal, hint: PANEL_HINT, bot, title, onBack, onDelete, onMessages, onReset });
       if (!signal.aborted) mount(pane, head, paneMsg, body);
     } catch (err) {
       if (!isAbort(err) && !signal.aborted) mount(pane, bar(bot, title), errorBox(err));
@@ -983,6 +1025,7 @@ function chatPage() {
         },
       }, '✎')),
     pane,
+    ctxMenu,
     chatDialog.dialog, botForm.dialog, configForm.dialog, deleteForm.dialog);
 
   // A click outside the ≡ menu, or Escape, closes it.

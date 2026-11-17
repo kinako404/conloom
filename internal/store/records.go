@@ -332,6 +332,14 @@ type MemberVersion struct {
 	Version        int64
 }
 
+// MessageDelete removes the messages of ConversationKey from FromSeq onward,
+// with their keyword index rows, the chunks that reach into the range, and the
+// timers anchored at or after FromSeq.
+type MessageDelete struct {
+	ConversationKey string
+	FromSeq         int64
+}
+
 // Ingest is everything written for one incoming event. Nil parts are skipped.
 // MergeIntoTaskID, when set, appends Message.ID to that task's trigger messages.
 //
@@ -342,7 +350,8 @@ type MemberVersion struct {
 // any of its actions was handed out (leased or acked), nothing is written and
 // Ingest returns ErrReplyHandedOut. FireTimer, when set, deletes that timer;
 // if it was cancelled, re-armed or postponed meanwhile, nothing is written and
-// Ingest returns ErrTimerGone.
+// Ingest returns ErrTimerGone. DeleteMessages, when set, deletes that range in
+// the same transaction, before the event and task are written.
 type Ingest struct {
 	Event           EventRecord
 	Conversation    *ConversationRecord
@@ -353,6 +362,7 @@ type Ingest struct {
 	CancelTaskID    string
 	AbandonReplyOf  string
 	FireTimer       *TimerRef
+	DeleteMessages  *MessageDelete
 }
 
 // TimerKind is the kind of a conversation timer. A conversation has at most

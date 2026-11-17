@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kinako404/conloom/internal/admission"
 	"github.com/kinako404/conloom/internal/ids"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -206,6 +207,202 @@ func (o *Orchestrator) DeletePanelChat(ctx context.Context, convKey string) erro
 	o.suggestions.forget(convKey)
 	o.log.Info("panel chat deleted", "conversation", convKey)
 	return nil
+}
+
+// panelBusy reports whether the panel chat cannot be changed right now: a
+// queued or running task, or a panel action neither delivered nor expired.
+// A read error is logged and counts as busy, so nothing is deleted on a
+// guess.
+func (o *Orchestrator) panelBusy(ctx context.Context, convKey string) bool {
+	if o.Busy(convKey) {
+		return true
+	}
+	n, err := o.st.PendingPanelActions(ctx, convKey, o.now())
+	if err != nil {
+		o.log.Warn("load pending panel actions failed", "conversation", convKey, "error", err)
+		return true
+	}
+	return n > 0
+}
+
+// WithdrawPanel deletes the messages of panel chat convKey from seq onward,
+// with their search index, chunks and timers. It holds the chat's panel lock,
+// refuses a busy chat with ErrChatNotIdle, and returns how many messages it
+// deleted. A conversation not on store.PlatformPanel is ErrNotPanelChat, an
+// unknown one or one without the message store.ErrNotFound.
+func (o *Orchestrator) WithdrawPanel(ctx context.Context, convKey string, seq int64) (int, error) {
+	botID, _, _ := strings.Cut(convKey, ":")
+	if err := o.panelBots.notDeleting(botID); err != nil {
+		return 0, err
+	}
+	unlock := o.panelLocks.lock(convKey)
+	defer unlock()
+	if err := o.panelBots.notDeleting(botID); err != nil {
+		return 0, err
+	}
+	conv, err := o.panelConversation(ctx, convKey)
+	if err != nil {
+		return 0, err
+	}
+	if conv.Platform != store.PlatformPanel {
+		return 0, ErrNotPanelChat
+	}
+	if conv.Type != conloomapi.ConvPrivate {
+		return 0, ErrNotPrivate
+	}
+	if o.panelBusy(ctx, convKey) {
+		return 0, ErrChatNotIdle
+	}
+	found, err := o.st.MessagesBySeq(ctx, convKey, []int64{seq})
+	if err != nil {
+		return 0, err
+	}
+	target, ok := found[seq]
+	if !ok {
+		return 0, store.ErrNotFound
+	}
+	actor := target.PlatformUserID
+	if actor == "" {
+		older, err := o.st.MessagesBefore(ctx, convKey, seq, 50)
+		if err != nil {
+			return 0, err
+		}
+		for _, m := range older {
+			if !m.FromBot {
+				actor = m.PlatformUserID
+				break
+			}
+		}
+	}
+	if actor != "" {
+		o.sched.EndTurn(convKey, actor)
+	}
+	deleted, err := o.st.DeleteMessagesFrom(ctx, convKey, seq)
+	if err != nil {
+		return 0, err
+	}
+	o.suggestions.forget(convKey)
+	o.replanInitiate(ctx, convKey)
+	return deleted, nil
+}
+
+// RegeneratePanel deletes the newest bot reply of panel chat convKey and
+// queues a new reply task for the user message before it, without storing a
+// duplicate user message. It holds the chat's panel lock and refuses a busy
+// chat with ErrChatNotIdle. The target must be the chat's newest message and
+// from the bot, or it is ErrNotLatest. The old reply's messages, chunks and
+// timers go in the same transaction that stores the task.
+func (o *Orchestrator) RegeneratePanel(ctx context.Context, convKey string, seq int64) (string, error) {
+	botID, _, _ := strings.Cut(convKey, ":")
+	if err := o.panelBots.notDeleting(botID); err != nil {
+		return "", err
+	}
+	unlock := o.panelLocks.lock(convKey)
+	defer unlock()
+	if err := o.panelBots.notDeleting(botID); err != nil {
+		return "", err
+	}
+	conv, err := o.panelConversation(ctx, convKey)
+	if err != nil {
+		return "", err
+	}
+	if conv.Platform != store.PlatformPanel {
+		return "", ErrNotPanelChat
+	}
+	if conv.Type != conloomapi.ConvPrivate {
+		return "", ErrNotPrivate
+	}
+	if o.panelBusy(ctx, convKey) {
+		return "", ErrChatNotIdle
+	}
+	found, err := o.st.MessagesBySeq(ctx, convKey, []int64{seq})
+	if err != nil {
+		return "", err
+	}
+	target, ok := found[seq]
+	if !ok {
+		return "", store.ErrNotFound
+	}
+	if !target.FromBot {
+		return "", ErrNotLatest
+	}
+	after, err := o.st.MessagesAfter(ctx, convKey, seq, 1)
+	if err != nil {
+		return "", err
+	}
+	if len(after) != 0 {
+		return "", ErrNotLatest
+	}
+	older, err := o.st.MessagesBefore(ctx, convKey, seq, 50)
+	if err != nil {
+		return "", err
+	}
+	var user store.MessageRecord
+	for _, m := range older {
+		if !m.FromBot {
+			user = m
+			break
+		}
+	}
+	if user.ID == "" {
+		return "", ErrNotLatest
+	}
+	o.sched.EndTurn(convKey, user.PlatformUserID)
+	closed := MergeOptions{Debounce: time.Nanosecond, MaxMergeWindow: time.Nanosecond}
+	now := o.now()
+	var taskID string
+	_, err = o.sched.AdmitWith(convKey, user.PlatformUserID, user.ID, AdmitNew, closed, func(ap AdmitPlan) error {
+		if ap.NewTaskID == "" {
+			return ErrRegenMerged
+		}
+		if ap.Supersedes != "" {
+			return ErrSupersedeRefused
+		}
+		pv, err := o.policies.Current(ctx, convKey)
+		if err != nil {
+			return err
+		}
+		if pv.Policy.Concurrency.MaxInteractiveRequests == 0 {
+			return errPaused
+		}
+		if _, _, ok := ParseCommand(user.Text, pv.Policy.Reply.CommandPrefix); ok {
+			return ErrCommandReply
+		}
+		id := ap.NewTaskID
+		task := store.TaskRecord{
+			ID: id, BotInstanceID: target.BotInstanceID, ConversationKey: convKey, Status: conloomapi.TaskQueued,
+			ActorPlatformUserID: user.PlatformUserID, TriggerMessageIDs: []string{user.ID},
+			Priority: int(admission.PriorityInteractive), Meta: conloomapi.TaskMeta{Trigger: conloomapi.TriggerPrivate},
+			EventOccurredAt: now.UTC(), CreatedAt: now, UpdatedAt: now,
+		}
+		resp, err := json.Marshal(conloomapi.EventAccepted{
+			Disposition: conloomapi.DispositionReply, TaskID: id, Status: conloomapi.TaskQueued,
+		})
+		if err != nil {
+			return err
+		}
+		ev := store.EventRecord{
+			BotInstanceID: target.BotInstanceID, IdempotencyKey: "conloom:regen:" + id, EventID: "regen_" + id,
+			Response: resp, CreatedAt: now,
+		}
+		if err := o.ingest(ctx, store.Ingest{
+			Event: ev, NewTask: &task,
+			DeleteMessages: &store.MessageDelete{ConversationKey: convKey, FromSeq: user.Seq + 1},
+		}); err != nil {
+			return err
+		}
+		taskID = id
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if taskID == "" {
+		return "", ErrRegenMerged
+	}
+	o.suggestions.forget(convKey)
+	o.replanInitiate(ctx, convKey)
+	return taskID, nil
 }
 
 // awaitStopped waits up to panelDeleteWait in all for the cancelled tasks'

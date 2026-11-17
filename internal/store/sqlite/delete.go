@@ -67,6 +67,57 @@ func (db *DB) DeleteConversation(ctx context.Context, convKey string) error {
 	})
 }
 
+// DeleteMessagesFrom deletes the conversation's messages from fromSeq onward,
+// their keyword index rows, the chunks that reach into the range and the
+// timers anchored there. Straddling chunks are queued for rebuild from the
+// messages that remain.
+func (db *DB) DeleteMessagesFrom(ctx context.Context, convKey string, fromSeq int64) (int, error) {
+	var n int
+	err := db.inTx(ctx, func(tx *sql.Tx) error {
+		if _, err := scanConversation(tx.QueryRowContext(ctx, `SELECT `+conversationCols+` FROM conversations
+			WHERE key = ?`, convKey)); err != nil {
+			return err
+		}
+		var err error
+		n, err = deleteMessagesFrom(ctx, tx, store.MessageDelete{ConversationKey: convKey, FromSeq: fromSeq})
+		return err
+	})
+	return n, err
+}
+
+// deleteMessagesFrom is DeleteMessagesFrom's work in an existing transaction.
+func deleteMessagesFrom(ctx context.Context, tx *sql.Tx, del store.MessageDelete) (int, error) {
+	if del.FromSeq < 1 {
+		return 0, fmt.Errorf("delete messages: from seq must be positive, got %d", del.FromSeq)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM message_fts
+		WHERE rowid IN (SELECT seq FROM messages WHERE conversation_key = ? AND seq >= ?)`,
+		del.ConversationKey, del.FromSeq); err != nil {
+		return 0, err
+	}
+	if err := dropChunks(ctx, tx,
+		`c.conversation_key = ? AND c.end_seq >= ?`, []any{del.ConversationKey, del.FromSeq},
+		`c.conversation_key = ? AND c.start_seq < ? AND c.end_seq >= ?`,
+		[]any{del.ConversationKey, del.FromSeq, del.FromSeq}); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_chunk_rebuild
+		WHERE conversation_key = ? AND start_seq >= ?`, del.ConversationKey, del.FromSeq); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM conversation_timers
+		WHERE conversation_key = ? AND anchor_seq >= ?`, del.ConversationKey, del.FromSeq); err != nil {
+		return 0, err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE conversation_key = ? AND seq >= ?`,
+		del.ConversationKey, del.FromSeq)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
+
 // scopeTables are the tables holding rows of a shared panel memory scope by
 // their conversation_key.
 var scopeTables = []string{

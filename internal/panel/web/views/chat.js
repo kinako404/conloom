@@ -1,6 +1,6 @@
 import { h, mount, errorBox } from '../lib/dom.js';
 import { get, post, del, convPath, isAbort } from '../lib/api.js';
-import { href } from '../lib/router.js';
+import { go, href } from '../lib/router.js';
 import { fmtTime } from '../lib/format.js';
 import { avatarEl } from './avatar.js';
 
@@ -66,13 +66,16 @@ function clock(v) {
 // bubble shows message m: the bot's on the left, the user's on the right,
 // with its time in the corner, its sender and full time on hover, and its
 // channel only when it is not the panel.
-function bubble(m) {
+function bubble(m, actions) {
   const when = fmtTime(m.at);
-  return h('li', { class: m.from_bot ? 'tg-msg in' : 'tg-msg out' },
+  return h('li', { class: m.from_bot ? 'tg-msg in' : 'tg-msg out', dataset: { seq: String(m.seq) } },
     h('div', { class: 'tg-bubble' },
       m.channel && m.channel !== 'panel' ? h('div', null, h('span', { class: 'badge' }, m.channel)) : null,
       h('span', { class: 'tg-text' }, m.text),
-      h('span', { class: 'tg-time', title: m.sender_name ? `${m.sender_name} · ${when}` : when }, clock(m.at))));
+      h('span', { class: 'tg-time', title: m.sender_name ? `${m.sender_name} · ${when}` : when }, clock(m.at)),
+      h('div', { class: 'tg-actions' },
+        h('button', { type: 'button', class: 'tg-action danger', onclick: () => actions.withdraw(m) }, '撤回'),
+        m.from_bot ? h('button', { type: 'button', class: 'tg-action', 'data-regenerate': '1', onclick: () => actions.regenerate(m) }, '重新生成') : null)));
 }
 
 // listen adds fn as a listener of type on target until signal fires.
@@ -162,7 +165,7 @@ export function chatBar({ key, bot, title, status, items, onBack, onDelete, sign
 // onDelete() deletes the chat after confirmation. onMessages(messages), when
 // given, gets the messages each time some are shown: the latest at first,
 // then each one new.
-export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete, onMessages }) {
+export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete, onMessages, onReset }) {
   const log = h('ul', { class: 'tg-log' }, hint ? h('li', { class: 'tg-note' }, hint) : null);
   // typing is 正在输入 with three blinking dots, always in the status line,
   // which keeps its height, and shown by showTyping, which fades it.
@@ -200,12 +203,61 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
   let botTyping = true;
   let asked = 0;
   let sentAfter = 0;
+  let gone = false;
 
   const nearBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   const clearSuggestions = () => {
     mount(chips);
     chips.remove();
   };
+  const refreshActions = () => {
+    for (const row of log.querySelectorAll('.tg-msg')) {
+      const m = { seq: Number(row.dataset.seq) };
+      const regen = row.querySelector('[data-regenerate]');
+      if (regen) regen.hidden = !(last && last.from_bot && m.seq === last.seq);
+      for (const b of row.querySelectorAll('.tg-action')) b.disabled = botTyping || gone;
+    }
+  };
+  const actionError = (err) => {
+    if (isAbort(err)) return;
+    if (err.status === 404) {
+      markGone();
+      return;
+    }
+    if (err.status === 409) {
+      const text = err.code === 'PAUSED' ? '这个聊天暂停中，不能重新生成。' : '对方正在回复，等它说完再试。';
+      mount(sendError, h('p', { class: 'tg-warn', role: 'status' }, text));
+      return;
+    }
+    mount(sendError, errorBox(err));
+  };
+  const withdraw = async (seq) => {
+    if (botTyping || gone || send.disabled) return;
+    const count = [...log.querySelectorAll('.tg-msg')].filter((row) => Number(row.dataset.seq) >= seq).length;
+    if (!confirm(`撤回这条消息及其后的 ${count} 条消息？不能恢复；已经整理进摘要/笔记的内容不会跟着撤回，要彻底清掉用 /忘记我。`)) return;
+    try {
+      await del(convPath(key, 'messages', seq));
+      if (onReset) onReset();
+      go(href('im', key));
+    } catch (err) {
+      actionError(err);
+    }
+  };
+  const regenerate = async (seq) => {
+    if (botTyping || gone || send.disabled) return;
+    if (!last || !last.from_bot || last.seq !== seq) {
+      mount(sendError, h('p', { class: 'tg-warn', role: 'status' }, '只能重新生成最新一条回复。'));
+      return;
+    }
+    try {
+      await post(convPath(key, 'messages', seq, 'regenerate'));
+      if (onReset) onReset();
+      go(href('im', key));
+    } catch (err) {
+      actionError(err);
+    }
+  };
+  const actions = { withdraw: (m) => withdraw(m.seq), regenerate: (m) => regenerate(m.seq) };
 
   // place appends message m after the newest: under a date pill when its day
   // differs from the newest message's, otherwise, from the same sender, on
@@ -218,7 +270,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
       log.appendChild(h('li', { class: 'tg-day' }, h('span', null, dayLabel(m.at))));
       lastDay = day;
     }
-    const el = bubble(m);
+    const el = bubble(m, actions);
     if (lastEl && !newDay && last.from_bot === m.from_bot && last.sender_id === m.sender_id) {
       lastEl.classList.remove('tail');
       el.classList.add('cont');
@@ -250,6 +302,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
       added.push(m);
     }
     if (!added.length) return false;
+    refreshActions();
     if (stick || atBottom) log.scrollTop = log.scrollHeight;
     if (onMessages && !signal.aborted) onMessages(added);
     return true;
@@ -262,7 +315,6 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
   let running = false;
   let again = false;
   let stick = false;
-  let gone = false;
   const schedule = (ms) => {
     clearTimeout(timer);
     if (!signal.aborted && !gone) timer = setTimeout(poll, ms);
@@ -274,6 +326,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     showTyping(false);
     input.disabled = true;
     send.disabled = true;
+    refreshActions();
     mount(sendError);
     mount(pollError, errorBox({ message: GONE }));
   };
@@ -319,6 +372,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
       if (add(rows, stick, rows.length < PAGE)) stick = false;
       botTyping = !!res.typing;
       showTyping(botTyping);
+      refreshActions();
       mount(pollError);
       if (rows.length >= PAGE) next = 0;
       else suggest();

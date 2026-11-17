@@ -16,6 +16,8 @@ type ChatService interface {
 	SubmitPanel(ctx context.Context, convKey, panelUser, text string) (messageID, suppressed string, err error)
 	CreatePanelChat(ctx context.Context, botID, panelUser, displayName string) (string, error)
 	DeletePanelChat(ctx context.Context, convKey string) error
+	WithdrawPanel(ctx context.Context, convKey string, seq int64) (deleted int, err error)
+	RegeneratePanel(ctx context.Context, convKey string, seq int64) (taskID string, err error)
 	Busy(convKey string) bool
 	Suggest(ctx context.Context, convKey string, afterSeq int64) ([]string, error)
 }
@@ -35,12 +37,28 @@ func (s *Server) chatService(w http.ResponseWriter, r *http.Request) (ChatServic
 // chatFail is fail for the chat service: a request it refuses is 400 with
 // the reason.
 func (s *Server) chatFail(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, core.ErrNotLatest) {
+		s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "只能重新生成最新一条回复", err)
+		return
+	}
+	if errors.Is(err, core.ErrCommandReply) {
+		s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "命令的回复不能重新生成", err)
+		return
+	}
 	for _, refused := range []error{core.ErrNotPrivate, core.ErrNotPanelChat, core.ErrBadText} {
 		if errors.Is(err, refused) {
 			s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
 				strings.TrimPrefix(refused.Error(), "core: "), err)
 			return
 		}
+	}
+	if errors.Is(err, core.ErrPaused) {
+		s.respondError(w, r, http.StatusConflict, conloomapi.CodePaused, "这个聊天暂停中，不能重新生成。", err)
+		return
+	}
+	if errors.Is(err, core.ErrQueueFull) || errors.Is(err, core.ErrRegenMerged) {
+		s.respondError(w, r, http.StatusConflict, conloomapi.CodeChatBusy, "这个聊天正在变化，稍后再试。", err)
+		return
 	}
 	s.fail(w, r, err)
 }
@@ -77,6 +95,63 @@ func (s *Server) postChatMessage(w http.ResponseWriter, r *http.Request, sess *S
 		MessageID        string `json:"message_id"`
 		SuppressedReason string `json:"suppressed_reason,omitempty"`
 	}{id, suppressed})
+}
+
+// withdrawChatMessage deletes a panel chat's messages from seq onward.
+func (s *Server) withdrawChatMessage(w http.ResponseWriter, r *http.Request, sess *Session) {
+	chat, ok := s.chatService(w, r)
+	if !ok {
+		return
+	}
+	conv, ok := s.conversation(w, r)
+	if !ok {
+		return
+	}
+	seq, err := strconv.ParseInt(r.PathValue("seq"), 10, 64)
+	if err != nil || seq < 1 {
+		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "seq must be a positive message seq")
+		return
+	}
+	deleted, err := chat.WithdrawPanel(r.Context(), conv.Key, seq)
+	if err != nil {
+		s.chatFail(w, r, err)
+		return
+	}
+	s.audit(r, sess, conv.BotInstanceID, "panel.message.withdraw", conv.Key, struct {
+		Seq     int64 `json:"seq"`
+		Deleted int   `json:"deleted"`
+	}{seq, deleted})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// regenerateChatMessage replaces a panel chat's newest bot reply with a new
+// reply task for the user message before it.
+func (s *Server) regenerateChatMessage(w http.ResponseWriter, r *http.Request, sess *Session) {
+	chat, ok := s.chatService(w, r)
+	if !ok {
+		return
+	}
+	conv, ok := s.conversation(w, r)
+	if !ok {
+		return
+	}
+	seq, err := strconv.ParseInt(r.PathValue("seq"), 10, 64)
+	if err != nil || seq < 1 {
+		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "seq must be a positive message seq")
+		return
+	}
+	taskID, err := chat.RegeneratePanel(r.Context(), conv.Key, seq)
+	if err != nil {
+		s.chatFail(w, r, err)
+		return
+	}
+	s.audit(r, sess, conv.BotInstanceID, "panel.message.regenerate", conv.Key, struct {
+		Seq    int64  `json:"seq"`
+		TaskID string `json:"task_id"`
+	}{seq, taskID})
+	s.writeJSON(w, http.StatusAccepted, struct {
+		TaskID string `json:"task_id"`
+	}{taskID})
 }
 
 // getChat lists the conversation's messages after the seq cursor after,

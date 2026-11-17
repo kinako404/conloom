@@ -114,6 +114,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		s.respond(w, r, http.StatusServiceUnavailable, conloomapi.CodeModelUnavailable, "未配置识图模型", err, false, nil)
 	case errors.Is(err, core.ErrChatBusy):
 		s.respondError(w, r, http.StatusConflict, conloomapi.CodeChatBusy, strings.TrimPrefix(core.ErrChatBusy.Error(), "core: "), err)
+	case errors.Is(err, core.ErrChatNotIdle):
+		s.respondError(w, r, http.StatusConflict, conloomapi.CodeChatBusy, strings.TrimPrefix(core.ErrChatNotIdle.Error(), "core: "), err)
 	case errors.Is(err, core.ErrBotDeleting):
 		s.respondError(w, r, http.StatusConflict, conloomapi.CodeChatBusy, strings.TrimPrefix(core.ErrBotDeleting.Error(), "core: "), err)
 	case errors.Is(err, core.ErrNotPrivate):

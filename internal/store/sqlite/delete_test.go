@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"strconv"
@@ -457,5 +458,146 @@ func TestDeleteConversation_UserRows(t *testing.T) {
 	}
 	if !userExists(t, db, testPlatform, "20005") {
 		t.Error("platform user who also wrote in another conversation was deleted")
+	}
+}
+
+func TestDeleteMessagesFrom_CleansMessagesFTSChunksAndTimers(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	target := store.ConversationKey(testBot, store.PlatformPanel, conloomapi.ConvPrivate, "panel_del")
+	other := store.ConversationKey(testBot, store.PlatformPanel, conloomapi.ConvPrivate, "panel_keep")
+
+	ingest := func(convKey, convID, msgID, text string) {
+		in := store.Ingest{
+			Event: store.EventRecord{
+				BotInstanceID: testBot, IdempotencyKey: "k_" + msgID, RequestHash: "h_" + msgID,
+				EventID: "evt_" + msgID, Response: []byte(`{}`), RawEvent: []byte(`{}`), CreatedAt: now,
+			},
+			Conversation: &store.ConversationRecord{
+				BotInstanceID: testBot, ID: convID, Key: convKey, Type: conloomapi.ConvPrivate,
+				Platform: store.PlatformPanel, PlatformConversationID: convID,
+			},
+			User: &store.UserRecord{BotInstanceID: testBot, Platform: store.PlatformPanel,
+				PlatformUserID: "panel_admin", DisplayName: "admin"},
+			Message: &store.MessageRecord{
+				ID: msgID, BotInstanceID: testBot, ConversationKey: convKey, Platform: store.PlatformPanel,
+				PlatformMessageID: "p_" + msgID, ActorID: "panel_admin", PlatformUserID: "panel_admin",
+				DisplayName: "admin", Text: text, Channel: store.ChannelPanel, OccurredAt: now, CreatedAt: now,
+			},
+		}
+		if _, err := db.Ingest(ctx, in); err != nil {
+			t.Fatalf("Ingest %s: %v", msgID, err)
+		}
+	}
+	for i := 1; i <= 6; i++ {
+		ingest(target, "panel_del", fmt.Sprintf("m%d", i), fmt.Sprintf("爬山 %d", i))
+	}
+	ingest(other, "panel_keep", "m7", "爬山 7")
+	ingest(other, "panel_keep", "m8", "爬山 8")
+
+	at := fmtTime(now)
+	for _, r := range [][2]int64{{1, 3}, {2, 5}, {4, 6}} {
+		if _, err := db.w.ExecContext(ctx, `INSERT INTO memory_chunks
+			(conversation_key, start_seq, end_seq, start_at, end_at, text_hash, model, dims, vector, created_at)
+			VALUES (?, ?, ?, ?, ?, 'hash', 'embed-test', 2, x'0000803f00000040', ?)`,
+			target, r[0], r[1], at, at, at); err != nil {
+			t.Fatalf("seed chunk %v: %v", r, err)
+		}
+	}
+	if _, err := db.w.ExecContext(ctx, `INSERT INTO memory_chunk_rebuild (conversation_key, start_seq, end_seq)
+		VALUES (?, 4, 6)`, target); err != nil {
+		t.Fatal(err)
+	}
+	for i, anchor := range []int64{3, 5} {
+		kind := []string{"status_return", "initiate"}[i]
+		if _, err := db.w.ExecContext(ctx, `INSERT INTO conversation_timers
+			(conversation_key, kind, bot_instance_id, platform_user_id, due_at, anchor_seq, lease_until, created_at)
+			VALUES (?, ?, ?, 'panel_admin', ?, ?, '', ?)`,
+			target, kind, testBot, at, anchor, at); err != nil {
+			t.Fatalf("seed timer %s: %v", kind, err)
+		}
+	}
+
+	n, err := db.DeleteMessagesFrom(ctx, target, 4)
+	if err != nil || n != 3 {
+		t.Fatalf("DeleteMessagesFrom = %d, %v; want 3, nil", n, err)
+	}
+
+	seqs := func(key string) []int64 {
+		rows, err := db.r.QueryContext(ctx, `SELECT seq FROM messages WHERE conversation_key = ? ORDER BY seq`, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out []int64
+		for rows.Next() {
+			var seq int64
+			if err := rows.Scan(&seq); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, seq)
+		}
+		return out
+	}
+	if got := seqs(target); !slices.Equal(got, []int64{1, 2, 3}) {
+		t.Errorf("target seqs = %v, want [1 2 3]", got)
+	}
+	if got := seqs(other); !slices.Equal(got, []int64{7, 8}) {
+		t.Errorf("other seqs = %v, want [7 8]", got)
+	}
+	if got := indexedRows(t, db, []int64{1, 2, 3}); got != 3 {
+		t.Errorf("target index rows = %d, want 3", got)
+	}
+	if got := indexedRows(t, db, []int64{4, 5, 6}); got != 0 {
+		t.Errorf("deleted index rows = %d, want 0", got)
+	}
+	if got := indexedRows(t, db, []int64{7, 8}); got != 2 {
+		t.Errorf("other index rows = %d, want 2", got)
+	}
+	if got := searchHits(t, db, target); got != 3 {
+		t.Errorf("target search hits = %d, want 3", got)
+	}
+
+	chunkRanges := func(table string) [][2]int64 {
+		rows, err := db.r.QueryContext(ctx, `SELECT start_seq, end_seq FROM `+table+
+			` WHERE conversation_key = ? ORDER BY start_seq, end_seq`, target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out [][2]int64
+		for rows.Next() {
+			var r [2]int64
+			if err := rows.Scan(&r[0], &r[1]); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, r)
+		}
+		return out
+	}
+	if got := chunkRanges("memory_chunks"); !slices.Equal(got, [][2]int64{{1, 3}}) {
+		t.Errorf("chunks = %v, want [[1 3]]", got)
+	}
+	if got := chunkRanges("memory_chunk_rebuild"); !slices.Equal(got, [][2]int64{{2, 5}}) {
+		t.Errorf("rebuild = %v, want [[2 5]]", got)
+	}
+
+	rows, err := db.r.QueryContext(ctx, `SELECT anchor_seq FROM conversation_timers
+		WHERE conversation_key = ? ORDER BY anchor_seq`, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var anchors []int64
+	for rows.Next() {
+		var anchor int64
+		if err := rows.Scan(&anchor); err != nil {
+			t.Fatal(err)
+		}
+		anchors = append(anchors, anchor)
+	}
+	if !slices.Equal(anchors, []int64{3}) {
+		t.Errorf("timer anchors = %v, want [3]", anchors)
 	}
 }

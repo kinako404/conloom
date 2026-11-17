@@ -955,7 +955,7 @@ func TestChatsView_UnreadFollowsTheOpenChat(t *testing.T) {
 	files := assets(t, ".js")
 	chat, chats := files["views/chat.js"], files["views/chats.js"]
 	for _, want := range []string{
-		"export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete, onMessages })",
+		"export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete, onMessages, onReset })",
 		"if (onMessages && !signal.aborted) onMessages(added);",
 	} {
 		if !strings.Contains(chat, want) {
@@ -963,8 +963,9 @@ func TestChatsView_UnreadFollowsTheOpenChat(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"chatPane({ key, signal, hint: PANEL_HINT, bot, title, onBack, onDelete, onMessages })",
+		"chatPane({ key, signal, hint: PANEL_HINT, bot, title, onBack, onDelete, onMessages, onReset })",
 		"if (!signal.aborted) noteArrived(key, messages);",
+		"delete arrived[key];",
 		"(arrived[c.key] || []).filter((m) => !c.last || m.seq > c.last.seq)",
 		"seen = noteSeen(allChats(), current);",
 	} {
@@ -1080,7 +1081,7 @@ func TestChatPane_SenderWarnAndKeys(t *testing.T) {
 var classicClasses = []string{
 	"chat", "chat-log", "bubble", "chat-typing", "chat-form", "chat-input", "chat-suggestions", "chat-options",
 	"chat-page", "chat-side", "chat-groups", "chat-group", "chat-group-head", "chat-items", "chat-title", "chat-time",
-	"chat-main", "chat-head", "chat-empty", "chat-classic-title",
+	"chat-main", "chat-head", "chat-empty", "chat-classic-title", "chat-actions", "chat-action", "chat-ctx", "chat-ctx-item",
 }
 
 // classNames returns the classes js gives elements through class: '...'.
@@ -1284,6 +1285,87 @@ func TestChatPages_StylesScoped(t *testing.T) {
 	for c := range classNames(files["views/chats.js"] + files["views/chat.js"] + files["views/avatar.js"]) {
 		if slices.Contains(classicClasses, c) || c == "chat-classic" {
 			t.Errorf("the Telegram-style chat page uses the class %q of the classic page", c)
+		}
+	}
+}
+
+func TestChatClassic_MessageActions(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js := files["views/chatclassic.js"]
+	for _, want := range []string{
+		"'撤回'", "'重新生成'",
+		"del(convPath(key, 'messages', seq))",
+		"post(convPath(key, 'messages', seq, 'regenerate'))",
+		"go(href('chat', key))",
+		"last.from_bot && m.seq === last.seq",
+		"'对方正在回复，等它说完再试。'",
+		"dataset: { seq: String(m.seq) }",
+		"refreshActions",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chatclassic.js lacks %q", want)
+		}
+	}
+	if !strings.Contains(files["style.css"], ".chat-classic .chat-action") {
+		t.Error("style.css has no .chat-classic .chat-action rule")
+	}
+}
+
+func TestChatsClassic_ContextMenu(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js := files["views/chatsclassic.js"]
+	for _, want := range []string{
+		"import { deleteChatConfirmed } from './chat.js';",
+		"'contextmenu'", "e.preventDefault()", "class: 'chat-ctx'", "'删除聊天'",
+		"removeChat", "go('#/chat')", "refresh()",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chatsclassic.js lacks %q", want)
+		}
+	}
+	for _, want := range []string{".chat-classic .chat-ctx {", ".chat-classic .chat-ctx-item"} {
+		if !strings.Contains(files["style.css"], want) {
+			t.Errorf("style.css lacks %q", want)
+		}
+	}
+}
+
+func TestChatTG_MessageActions(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js := files["views/chat.js"]
+	for _, want := range []string{
+		"'撤回'", "'重新生成'",
+		"del(convPath(key, 'messages', seq))",
+		"post(convPath(key, 'messages', seq, 'regenerate'))",
+		"go(href('im', key))",
+		"last.from_bot && m.seq === last.seq",
+		"refreshActions",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chat.js lacks %q", want)
+		}
+	}
+	for _, want := range []string{".chat-app .tg-action", ".chat-app .tg-actions"} {
+		if !strings.Contains(files["style.css"], want) {
+			t.Errorf("style.css lacks %q", want)
+		}
+	}
+}
+
+func TestChatsTG_ContextMenu(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js := files["views/chats.js"]
+	for _, want := range []string{
+		"'contextmenu'", "e.preventDefault()", "class: 'tg-ctx-menu'", "'删除聊天'",
+		"removeChat", "dataset: { key: c.key }",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chats.js lacks %q", want)
+		}
+	}
+	for _, want := range []string{".chat-app .tg-ctx-menu", ".chat-app .tg-warn"} {
+		if !strings.Contains(files["style.css"], want) {
+			t.Errorf("style.css lacks %q", want)
 		}
 	}
 }
