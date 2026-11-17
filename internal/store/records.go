@@ -203,6 +203,21 @@ type PolicyVersion struct {
 	Reason          string
 	UpdatedBy       string
 	CreatedAt       time.Time
+	// FollowsDefaults marks a version that returns the conversation to the
+	// default policy of its kind (see PolicyDefaults).
+	FollowsDefaults bool
+}
+
+// PolicyDefaults is a version of the default policy of conversations of Kind
+// (conloomapi.ConvGroup or conloomapi.ConvPrivate) that have no policy of
+// their own.
+type PolicyDefaults struct {
+	Kind      string
+	Version   int
+	Policy    conloomapi.GroupPolicy
+	Reason    string
+	UpdatedBy string
+	CreatedAt time.Time
 }
 
 type AuditEvent struct {

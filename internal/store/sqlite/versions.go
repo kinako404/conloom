@@ -70,12 +70,12 @@ func (db *DB) AppendPersonaVersion(ctx context.Context, pv store.PersonaVersion)
 	return pv, nil
 }
 
-const policyVersionCols = `conversation_key, version, policy, reason, updated_by, created_at`
+const policyVersionCols = `conversation_key, version, policy, reason, updated_by, created_at, follows_defaults`
 
 func scanPolicyVersion(row scanner) (store.PolicyVersion, error) {
 	var pv store.PolicyVersion
 	var policy, created string
-	err := row.Scan(&pv.ConversationKey, &pv.Version, &policy, &pv.Reason, &pv.UpdatedBy, &created)
+	err := row.Scan(&pv.ConversationKey, &pv.Version, &policy, &pv.Reason, &pv.UpdatedBy, &created, &pv.FollowsDefaults)
 	if err != nil {
 		return pv, notFound(err)
 	}
@@ -123,8 +123,8 @@ func (db *DB) AppendPolicyVersion(ctx context.Context, pv store.PolicyVersion) (
 		}
 		pv.Version = version
 		_, err = tx.ExecContext(ctx, `INSERT INTO group_policies
-			(conversation_key, version, policy, reason, updated_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			pv.ConversationKey, pv.Version, string(policy), pv.Reason, pv.UpdatedBy, fmtTime(pv.CreatedAt))
+			(`+policyVersionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			pv.ConversationKey, pv.Version, string(policy), pv.Reason, pv.UpdatedBy, fmtTime(pv.CreatedAt), pv.FollowsDefaults)
 		return err
 	})
 	if err != nil {

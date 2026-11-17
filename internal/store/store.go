@@ -43,7 +43,8 @@ var (
 	ErrBotHasData = errors.New("store: bot still has conversations")
 	// ErrAlreadyMigrated refuses a migration of the config file's persona
 	// templates or bot settings into a database they were already migrated
-	// into.
+	// into, and an import of its default policies into a database that already
+	// has default policies of the same kind.
 	ErrAlreadyMigrated = errors.New("store: already migrated from the config file")
 )
 
@@ -55,6 +56,11 @@ const MetaConfigTemplatesMigrated = "config_templates_migrated"
 // when the settings of the config file's bots were migrated into the
 // database (see BotSettings).
 const MetaConfigBotSettingsMigrated = "config_bot_settings_migrated"
+
+// MetaConfigPolicyDefaultsMigrated is the database fact (app_meta key)
+// holding when the config file's default policies were migrated into the
+// database (see PolicyDefaults).
+const MetaConfigPolicyDefaultsMigrated = "config_policy_defaults_migrated"
 
 // MetaPanelMemoryScoped is the database fact (app_meta key) holding when the
 // memory of panel chats, kept per chat by older versions, was merged into
@@ -208,6 +214,19 @@ type Store interface {
 	// ListPolicyVersions returns versions newest first.
 	ListPolicyVersions(ctx context.Context, convKey string) ([]PolicyVersion, error)
 	AppendPolicyVersion(ctx context.Context, pv PolicyVersion) (PolicyVersion, error)
+	// LatestPolicyDefaults returns the newest default policy of kind,
+	// ErrNotFound without any.
+	LatestPolicyDefaults(ctx context.Context, kind string) (PolicyDefaults, error)
+	// ListPolicyDefaults returns up to limit default policies of kind newest
+	// first, all of them when limit <= 0.
+	ListPolicyDefaults(ctx context.Context, kind string, limit int) ([]PolicyDefaults, error)
+	// AppendPolicyDefaults stores d as the next version of its kind's default
+	// policy, a zero CreatedAt as now.
+	AppendPolicyDefaults(ctx context.Context, d PolicyDefaults) (PolicyDefaults, error)
+	// PolicyFollowers returns the keys, sorted, of the conversations of type
+	// convType that follow the default policy: those without a stored policy
+	// and those whose latest policy version has FollowsDefaults.
+	PolicyFollowers(ctx context.Context, convType string) ([]string, error)
 	InsertAudit(ctx context.Context, a AuditEvent) error
 	GetMember(ctx context.Context, convKey, userID string) (MemberRecord, error)
 	// PutMember inserts m or replaces the stored row with the same conversation and user.

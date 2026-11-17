@@ -133,6 +133,35 @@ func TestPolicyVersions_ListNewestFirst(t *testing.T) {
 	}
 }
 
+func TestPolicyVersions_FollowsDefaultsRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	if _, err := db.AppendPolicyVersion(ctx, store.PolicyVersion{
+		ConversationKey: testConvKey, Policy: conloomapi.DefaultGroupPolicy(), Reason: "edit", UpdatedBy: "29999",
+	}); err != nil {
+		t.Fatalf("AppendPolicyVersion: %v", err)
+	}
+	follow, err := db.AppendPolicyVersion(ctx, store.PolicyVersion{
+		ConversationKey: testConvKey, Policy: conloomapi.DefaultGroupPolicy(), Reason: "follow", UpdatedBy: "29999",
+		FollowsDefaults: true,
+	})
+	if err != nil || follow.Version != 2 || !follow.FollowsDefaults {
+		t.Fatalf("follow append = %+v, %v; want version 2 following the defaults", follow, err)
+	}
+
+	latest, err := db.LatestPolicy(ctx, testConvKey)
+	if err != nil || latest.Version != 2 || !latest.FollowsDefaults {
+		t.Fatalf("LatestPolicy = %+v, %v; want version 2 following the defaults", latest, err)
+	}
+	list, err := db.ListPolicyVersions(ctx, testConvKey)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("ListPolicyVersions = %+v, %v; want 2 versions", list, err)
+	}
+	if !list[0].FollowsDefaults || list[1].FollowsDefaults {
+		t.Fatalf("listed follows_defaults = %v, %v; want true, false", list[0].FollowsDefaults, list[1].FollowsDefaults)
+	}
+}
+
 func TestInsertAudit(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
