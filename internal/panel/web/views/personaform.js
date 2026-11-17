@@ -353,6 +353,7 @@ export function personaForm(doc, { save, saveText = '保存人设' }) {
   syncAdult();
   const intimacy = intimacyEditor(base, { minor, adult });
   const contentRules = h('textarea', { value: base.content_rules || '' });
+  const adultAppearance = h('textarea', { value: base.adult_appearance || '' });
   const memoryRules = h('textarea', { value: base.memory_rules || '' });
 
   const examples = h('div');
@@ -391,6 +392,7 @@ export function personaForm(doc, { save, saveText = '保存人设' }) {
     if (look.error) return { error: look.error };
     const side = intimacy.read();
     if (side.error) return { error: side.error };
+    if (minor.checked && adultAppearance.value.trim() !== '') return { error: '未成年人设不能填写成年外观描述，请先清空' };
     const persona = JSON.parse(JSON.stringify(base));
     persona.persona_name = name.value;
     persona.template_version = tv;
@@ -415,6 +417,7 @@ export function personaForm(doc, { save, saveText = '保存人设' }) {
     persona.minor = minor.checked;
     persona.adult = adult.checked;
     persona.content_rules = contentRules.value;
+    persona.adult_appearance = adultAppearance.value;
     persona.memory_rules = memoryRules.value;
     persona.examples = [...examples.children].map((row) => {
       const ex = exampleInputs.get(row);
@@ -456,11 +459,12 @@ export function personaForm(doc, { save, saveText = '保存人设' }) {
     field('技术解释', technical),
     h('label', { class: 'field inline' }, memes, '允许玩梗')),
   h('h3', null, '内容尺度'),
-  h('p', { class: 'hint' }, '只有成年、非未成年的人设在私聊里是开放模式，下面两项规则只在开放模式生效；其余情况都是保护模式，使用内置的保护规则，不能通过配置去掉。'),
+  h('p', { class: 'hint' }, '只有成年、非未成年的人设在私聊里是开放模式，下面的内容规则、成年外观描述和记忆规则只在开放模式生效；其余情况都是保护模式，使用内置的保护规则，不能通过配置去掉。'),
   h('div', { class: 'form-grid' },
     h('label', { class: 'field inline' }, minor, '未成年角色'),
     h('label', { class: 'field inline' }, adult, '成年人设', adultNote)),
   field('内容规则（仅成年人设、私聊生效）', contentRules, '可选，最多 2000 字；开放模式下加入回复提示词，为空则不加'),
+  field('成年外观描述（仅成年人设、私聊生效）', adultAppearance, '可选，最多 1000 字；开放模式下接在外貌描述后加入回复提示词，为空则不加'),
   field('记忆规则（仅成年人设、私聊生效）', memoryRules, '可选，最多 1000 字；开放模式下替换记忆整理的第 6 条，为空则省略该条'),
   h('h3', null, '亲密面'),
   intimacy.el,

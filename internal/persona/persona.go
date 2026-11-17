@@ -529,10 +529,11 @@ func PlatformNameNote(name, botName string) string {
 // SystemPrompt returns CorePrompt of the bot's name under the current persona
 // (see BotName), the content rules of the conversation's content mode (see
 // contentRules), the PlatformNameNote when that name is not the configured
-// botName, and the rendered persona, separated by blank lines. Version,
-// content mode and configured bot name determine the prompt, so one version
-// always yields byte-identical output; it is cached per conversation for the
-// maxCachedPrompts conversations most recently asked for. Only in
+// botName, and the persona rendered for that mode (see RenderFor), separated
+// by blank lines. Version, content mode and configured bot name determine the
+// prompt, so one version always yields byte-identical output; it is cached
+// per conversation for the maxCachedPrompts conversations most recently asked
+// for. Only in
 // ContentOpen does the result carry the persona's intimacy side (see
 // Prompt.Intimacy); the caller gets its own copy of it.
 func (s *Service) SystemPrompt(ctx context.Context, convKey, templateName, botName string) (Prompt, error) {
@@ -557,7 +558,7 @@ func (s *Service) SystemPrompt(ctx context.Context, convKey, templateName, botNa
 	if note := PlatformNameNote(name, botName); note != "" {
 		text += note + "\n\n"
 	}
-	p := Prompt{Text: text + Render(pv.Persona), Version: pv.Version, BotName: name, Mode: mode}
+	p := Prompt{Text: text + RenderFor(pv.Persona, mode), Version: pv.Version, BotName: name, Mode: mode}
 	if mode == conloomapi.ContentOpen && !pv.Persona.Intimacy.Empty() {
 		p.Intimacy = pv.Persona.Intimacy
 	}

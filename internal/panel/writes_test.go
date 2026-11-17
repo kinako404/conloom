@@ -453,6 +453,12 @@ func TestPutPersona_TemplateAndRollback(t *testing.T) {
 	if body.Message != "persona: invalid: a minor persona cannot have an intimacy side" {
 		t.Errorf("message = %q", body.Message)
 	}
+	looks := own
+	looks.Minor, looks.AdultAppearance = true, "占位的成年外观文字。"
+	body = errorBody(t, h.write(http.MethodPut, path, conloomapi.PersonaPut{Persona: &looks}), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+	if body.Message != "persona: invalid: a minor persona cannot have an adult appearance" {
+		t.Errorf("message = %q", body.Message)
+	}
 	nine := 9
 	errorBody(t, h.write(http.MethodPut, path, conloomapi.PersonaPut{RollbackTo: &nine}), http.StatusNotFound, conloomapi.CodeNotFound)
 

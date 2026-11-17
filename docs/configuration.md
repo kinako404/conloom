@@ -175,11 +175,12 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `adult` | 布尔，默认 `false` | 成年人设。与 `minor` 同时为 `true` 时报错 |
 | `minor` | 布尔，默认 `false` | 未成年角色。未成年或孩童化的角色要标上，标了就始终是保护模式 |
 | `content_rules` | ≤2000 字 | 内容规则，只在开放模式下生效：原文加入回复提示词；为空则不加 |
+| `adult_appearance` | ≤1000 字 | 成年外观描述，只在开放模式下生效：渲染为“私密场景下的外貌（只在这段私聊里用）：”一段，紧跟在“外貌”之后（没有 `appearance` 时就在“外貌”原本的位置）；为空则不加。保护模式的系统提示和没有这个字段时逐字节相同。`minor: true` 的人设不能填写 |
 | `intimacy` | 三段合计 ≤800 字；`levels` 正好 5 项、不递减；`bounds` 正好 5 项、每项 ≤150 字、单行 | 亲密面，好感度越高混进回复越多，还可以逐档替换【关系提示】的边界，只在开放模式下生效，见下面的“亲密面” |
 | `memory_rules` | ≤1000 字 | 记忆规则，只在开放模式下生效：替换记忆整理提示词的第 6 条；为空则省略这一条 |
 | `bars` | ≤4 条 | 私聊的隐藏状态条，见下面的“状态条” |
 
-`character_name`、`gender`、`description`、`appearance`、`speaking_style`、`examples`，`appearance_image`、`appearance_image_skip`，以及 `content_rules`、`intimacy`、`memory_rules`、`bars`，都可以省略。字数按字符计（去掉首尾空白后），超出时面板、`PUT …/persona` 和旧配置的启动校验都会拒绝并指出字段；`appearance_image` 不为空又不是 64 位小写十六进制时、`gender` 不为空又不是 `female` 或 `male` 时同样拒绝。
+`character_name`、`gender`、`description`、`appearance`、`speaking_style`、`examples`，`appearance_image`、`appearance_image_skip`，以及 `content_rules`、`adult_appearance`、`intimacy`、`memory_rules`、`bars`，都可以省略。字数按字符计（去掉首尾空白后），超出时面板、`PUT …/persona` 和旧配置的启动校验都会拒绝并指出字段；`appearance_image` 不为空又不是 64 位小写十六进制时、`gender` 不为空又不是 `female` 或 `male` 时同样拒绝。
 
 模板引用的 `appearance_image` 在保存时必须是已上传的图片。从旧配置文件导入的模板原样保留图片 ID，不检查图片是否存在：图还没上传时新会话照样复制这个 ID，回复时读不到图就记一条警告、不带图照常回复；`/persona use` 和面板、API 里的套用模板会因为图片不存在而失败（接口返回 400）。先在面板里上传这张图（同一张图得到同一个 ID）。
 
@@ -207,14 +208,14 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 
 每次回复和记忆整理都按会话当前的人设和会话类型判定内容模式（同一个 bot 的面板聊天共用一份记忆，整理时用其中最近有消息的那个聊天的人设，见 [使用指南：记忆与好感度](usage.md#记忆与好感度)）：
 
-- **开放模式**：`adult: true`、`minor` 不为 `true`、而且是私聊，三个条件缺一不可。这时具体的内容尺度由人设决定：`content_rules` 加入回复提示词，`memory_rules` 作为记忆整理的第 6 条；两者为空时，对应位置什么都不加。代码只在好感度的【关系提示】里按档位给出亲密推进的上限（人设可以用 `intimacy.bounds` 逐档替换），具体尺度仍交给 `content_rules`；【亲密面】的文字是人设自己写的 `intimacy`（见下面的“亲密面”）。
+- **开放模式**：`adult: true`、`minor` 不为 `true`、而且是私聊，三个条件缺一不可。这时具体的内容尺度由人设决定：`content_rules` 加入回复提示词，`adult_appearance` 接在人设的“外貌”一段之后，`memory_rules` 作为记忆整理的第 6 条；为空时，对应位置什么都不加。代码只在好感度的【关系提示】里按档位给出亲密推进的上限（人设可以用 `intimacy.bounds` 逐档替换），具体尺度仍交给 `content_rules`；【亲密面】的文字是人设自己写的 `intimacy`（见下面的“亲密面”）。
 - **保护模式**：其余所有情况，包括群聊（群聊永远是保护模式）、缺省的人设、标了 `minor` 的人设。保护模式的约束是代码里的固定底线，配置去不掉：
   - 回复提示词加入内置的保护规则：不参与色情、性暗示、露骨内容和恋爱暧昧，被往这些方向引时用角色的方式岔开，对方反复这样引时温和但明确地说这类话题不合适；
   - 记忆整理使用内置的第 6 条；
   - 回复发出前过一道内置的露骨词表，命中就整条拦截并写审计，不受 `review` 段任何开关影响。
-  - `content_rules`、`memory_rules`、`intimacy` 不生效。
+  - `content_rules`、`adult_appearance`、`memory_rules`、`intimacy` 不生效。
 
-`minor` 和 `adult` 不能同时为 `true`：`PUT …/persona` 的整份替换、套模板、回滚，面板的修改，以及旧配置模板的启动校验都会拒绝，报错 “a minor persona cannot be adult”。即使库里存着同时为 `true` 的旧数据，运行时也按保护模式处理。代码里没有任何角色名单，是否未成年完全由部署者在人设里用 `minor` 标出。`content_rules` 由部署者自己编写，本项目不提供示例规则。
+`minor` 和 `adult` 不能同时为 `true`：`PUT …/persona` 的整份替换、套模板、回滚，面板的修改，以及旧配置模板的启动校验都会拒绝，报错 “a minor persona cannot be adult”。同样，`minor: true` 的人设不能有非空的 `adult_appearance`，报错 “a minor persona cannot have an adult appearance”。即使库里存着这样的旧数据，运行时也按保护模式处理。代码里没有任何角色名单，是否未成年完全由部署者在人设里用 `minor` 标出。`content_rules` 由部署者自己编写，本项目不提供示例规则。
 
 好感度通过【关系提示】影响回复：保护模式只调整态度和情感，不涉及恋爱或性；开放模式按档位逐步放开亲密推进，具体尺度由 `content_rules` 决定。关系提示不改 system prompt，计入上下文预算。
 

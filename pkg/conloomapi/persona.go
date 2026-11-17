@@ -17,8 +17,10 @@ import (
 // image; it never enters the system prompt. A reply
 // request carries the image only when AppearanceImageSkip is not set and the
 // model it is routed to declares image support. Adult, unless Minor is also set,
-// makes ContentOpen possible (see ModeFor); ContentRules and MemoryRules only
-// take effect in it. Intimacy, also optional, is the intimacy side (see
+// makes ContentOpen possible (see ModeFor); ContentRules, AdultAppearance and
+// MemoryRules only take effect in it. AdultAppearance enters the system
+// prompt right after the appearance, and a minor persona cannot have one (see
+// ValidateContent). Intimacy, also optional, is the intimacy side (see
 // PersonaIntimacy): it too only takes effect in ContentOpen, it never enters
 // the system prompt, and a minor persona cannot have one (see
 // ValidateContent). Bars, also optional, define the hidden bars of private
@@ -39,6 +41,7 @@ type PersonaDoc struct {
 	Adult               bool             `json:"adult,omitempty" yaml:"adult,omitempty"`
 	Minor               bool             `json:"minor,omitempty" yaml:"minor,omitempty"`
 	ContentRules        string           `json:"content_rules,omitempty" yaml:"content_rules,omitempty"`
+	AdultAppearance     string           `json:"adult_appearance,omitempty" yaml:"adult_appearance,omitempty"`
 	Intimacy            *PersonaIntimacy `json:"intimacy,omitempty" yaml:"intimacy,omitempty"`
 	MemoryRules         string           `json:"memory_rules,omitempty" yaml:"memory_rules,omitempty"`
 	Bars                []PersonaBar     `json:"bars,omitempty" yaml:"bars,omitempty"`
@@ -143,19 +146,20 @@ func (in *PersonaIntimacy) LevelAt(tier int) string {
 // texts of an intimacy side together, MaxIntimacyBoundRunes each of its
 // bounds.
 const (
-	MaxCharacterNameRunes  = 20
-	MaxDescriptionRunes    = 2000
-	MaxAppearanceRunes     = 800
-	MaxSpeakingStyleRunes  = 1000
-	MaxPersonaExamples     = 8
-	MaxExampleRunes        = 200
-	MaxContentRulesRunes   = 2000
-	MaxIntimacyRunes       = 800
-	MaxIntimacyBoundRunes  = 150
-	MaxMemoryRulesRunes    = 1000
-	MaxPersonaBars         = 4
-	MaxBarNameRunes        = 6
-	MaxBarDescriptionRunes = 40
+	MaxCharacterNameRunes   = 20
+	MaxDescriptionRunes     = 2000
+	MaxAppearanceRunes      = 800
+	MaxSpeakingStyleRunes   = 1000
+	MaxPersonaExamples      = 8
+	MaxExampleRunes         = 200
+	MaxContentRulesRunes    = 2000
+	MaxAdultAppearanceRunes = 1000
+	MaxIntimacyRunes        = 800
+	MaxIntimacyBoundRunes   = 150
+	MaxMemoryRulesRunes     = 1000
+	MaxPersonaBars          = 4
+	MaxBarNameRunes         = 6
+	MaxBarDescriptionRunes  = 40
 )
 
 // Bounds of PersonaBar.HalfLife.
@@ -339,6 +343,7 @@ func (p PersonaDoc) Validate() error {
 	}
 	maxRunes("speaking_style", p.SpeakingStyle, MaxSpeakingStyleRunes)
 	maxRunes("content_rules", p.ContentRules, MaxContentRulesRunes)
+	maxRunes("adult_appearance", p.AdultAppearance, MaxAdultAppearanceRunes)
 	maxRunes("memory_rules", p.MemoryRules, MaxMemoryRulesRunes)
 	if in := p.Intimacy; in != nil {
 		total := 0

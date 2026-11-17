@@ -784,6 +784,27 @@ func TestPersonaForm_IntimacyBounds(t *testing.T) {
 	}
 }
 
+// The 内容尺度 section has an adult appearance between the content and memory
+// rules, saved as adult_appearance, whose hint states the server's limit;
+// saving refuses one a minor persona has, as the server would.
+func TestPersonaForm_AdultAppearance(t *testing.T) {
+	js := assets(t, ".js")["views/personaform.js"]
+	limit := strconv.Itoa(conloomapi.MaxAdultAppearanceRunes)
+	for _, want := range []string{
+		"const adultAppearance = h('textarea', { value: base.adult_appearance || '' });",
+		"persona.adult_appearance = adultAppearance.value;",
+		"field('内容规则（仅成年人设、私聊生效）', contentRules, '可选，最多 2000 字；开放模式下加入回复提示词，为空则不加'),\n" +
+			"  field('成年外观描述（仅成年人设、私聊生效）', adultAppearance, '可选，最多 " + limit + " 字；开放模式下接在外貌描述后加入回复提示词，为空则不加'),\n" +
+			"  field('记忆规则（仅成年人设、私聊生效）', memoryRules,",
+		"if (minor.checked && adultAppearance.value.trim() !== '') return { error: '未成年人设不能填写成年外观描述，请先清空' };",
+		"下面的内容规则、成年外观描述和记忆规则只在开放模式生效",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/personaform.js lacks %q", want)
+		}
+	}
+}
+
 // A config bot's form offers exactly the private ranges the core knows, sends
 // every setting PUT bots/{id} requires of a config bot, one platform ID a
 // line, and only shows the identity, which is changed in the config file.

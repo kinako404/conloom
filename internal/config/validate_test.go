@@ -163,6 +163,24 @@ func TestValidateConfig_MinorTemplateIntimacy(t *testing.T) {
 	}
 }
 
+func TestValidateConfig_MinorTemplateAdultAppearance(t *testing.T) {
+	const minorLook = "persona_templates.child: a minor persona cannot have an adult appearance"
+	cfg := mustLoad(t, "testdata/valid.yaml")
+	adult := conloomapi.DefaultPersona()
+	adult.Adult, adult.AdultAppearance = true, "占位的成年外观文字。"
+	minor := conloomapi.DefaultPersona()
+	minor.Minor, minor.AdultAppearance = true, " \n"
+	cfg.LegacyPersonaTemplates = map[string]conloomapi.PersonaDoc{"grownup": adult, "child": minor}
+	if err := cfg.ValidateServe(); err != nil {
+		t.Fatalf("adult template with an adult appearance and minor template with a blank one: %v", err)
+	}
+	minor.AdultAppearance = adult.AdultAppearance
+	cfg.LegacyPersonaTemplates["child"] = minor
+	if err := cfg.ValidateServe(); !hasProblem(err, minorLook) || strings.Contains(err.Error(), "persona_templates.grownup") {
+		t.Errorf("err = %v, want only the problem %q", err, minorLook)
+	}
+}
+
 func TestValidate_ConfigBotTemplateNotChecked(t *testing.T) {
 	cfg := mustLoad(t, "testdata/valid.yaml")
 	if cfg.LegacyPersonaTemplates != nil {

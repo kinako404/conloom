@@ -788,6 +788,160 @@ func TestService_SystemPromptContentByMode(t *testing.T) {
 	}
 }
 
+const testAdultAppearance = "这里是部署者写的成年外观占位文字。"
+
+const adultAppearanceHeading = "\n\n私密场景下的外貌（只在这段私聊里用）：\n"
+
+func TestRenderFor_AdultAppearance(t *testing.T) {
+	p := testCharacter()
+	p.Adult, p.Gender, p.Appearance = true, conloomapi.GenderFemale, "短发，常穿一件蓝色雨衣。"
+	without := p
+	p.AdultAppearance = " \n" + testAdultAppearance + "\n\n"
+
+	if got, want := RenderFor(p, conloomapi.ContentProtected), Render(without); got != want {
+		t.Errorf("RenderFor protected =\n%q\nwant the render without an adult appearance\n%q", got, want)
+	}
+	if got, want := Render(p), Render(without); got != want {
+		t.Errorf("Render =\n%q\nwant the render without an adult appearance\n%q", got, want)
+	}
+	if got := RenderFor(without, conloomapi.ContentOpen); got != Render(without) {
+		t.Errorf("RenderFor open without an adult appearance =\n%q\nwant\n%q", got, Render(without))
+	}
+	blank := without
+	blank.AdultAppearance = " \n\t"
+	if got := RenderFor(blank, conloomapi.ContentOpen); got != Render(without) {
+		t.Errorf("RenderFor open with a blank adult appearance =\n%q\nwant\n%q", got, Render(without))
+	}
+
+	want := "人格：灯塔看守\n" +
+		"说话风格：语气温暖亲切，乐于回应大家。偶尔可以轻松幽默一下。表达清楚，不绕弯子也不生硬。通常一两句话，尽量简短。不使用表情符号。只回应别人说的，不主动展开话题。\n" +
+		"行为习惯：默认回复简短，一两句话就好。可以适当使用网络梗。只在确实需要澄清时偶尔追问。技术问题讲清楚、讲实用，给出能直接用的做法。\n" +
+		"\n角色设定：\n苔灯是海边小镇的灯塔看守，十几岁，做事认真，喜欢收集贝壳。\n她把群友当成镇上的邻居。\n" +
+		"\n性别：女。\n" +
+		"\n外貌：\n短发，常穿一件蓝色雨衣。\n" +
+		"\n私密场景下的外貌（只在这段私聊里用）：\n" + testAdultAppearance + "\n" +
+		"\n说话方式：\n说话轻快，句子短，偶尔用“呐”结尾。\n" +
+		"\n示例对话（只示范语气和分寸，不要照搬内容）：\n" +
+		"群友：今天好累\n你：辛苦啦，喝口热水歇一会儿吧。\n" +
+		"群友：你会修电脑吗\n你：唔，这个我不太在行呐，你先说说是哪里不对劲？"
+	if got := RenderFor(p, conloomapi.ContentOpen); got != want {
+		t.Errorf("RenderFor open =\n%s\nwant\n%s", got, want)
+	}
+
+	noLook := p
+	noLook.Appearance = " "
+	if got, want := RenderFor(noLook, conloomapi.ContentOpen),
+		strings.Replace(want, "\n外貌：\n短发，常穿一件蓝色雨衣。\n", "", 1); got != want {
+		t.Errorf("RenderFor open without an appearance =\n%s\nwant\n%s", got, want)
+	}
+	only := conloomapi.DefaultPersona()
+	only.Adult, only.AdultAppearance = true, testAdultAppearance
+	if got, want := RenderFor(only, conloomapi.ContentOpen), legacyDefaultRender+adultAppearanceHeading+testAdultAppearance; got != want {
+		t.Errorf("RenderFor open with only an adult appearance = %q, want %q", got, want)
+	}
+	if got := RenderFor(only, conloomapi.ContentProtected); got != legacyDefaultRender {
+		t.Errorf("RenderFor protected with only an adult appearance = %q, want the legacy render", got)
+	}
+}
+
+func TestSystemPrompt_AdultAppearanceOnlyOpen(t *testing.T) {
+	ctx := context.Background()
+	privateKey := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "20001")
+	adult := testCharacter()
+	adult.Description = "苔灯是海边小镇的灯塔看守，已经成年，做事认真。"
+	adult.Adult, adult.ContentRules, adult.Appearance = true, testContentRules, "短发，常穿一件蓝色雨衣。"
+	look := adult
+	look.AdultAppearance = "\n" + testAdultAppearance + " "
+	plain := testCharacter()
+	plain.Appearance = adult.Appearance
+	plainLook := plain
+	plainLook.AdultAppearance = testAdultAppearance
+	get := func(svc *Service, key string) Prompt {
+		t.Helper()
+		p, err := svc.SystemPrompt(ctx, key, "t", "织语")
+		if err != nil {
+			t.Fatalf("SystemPrompt: %v", err)
+		}
+		return p
+	}
+	service := func(doc conloomapi.PersonaDoc) *Service {
+		return newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": doc})
+	}
+
+	for _, c := range []struct {
+		name          string
+		key           string
+		with, without conloomapi.PersonaDoc
+	}{
+		{"adult in a group", testConvKey, look, adult},
+		{"not adult in private", privateKey, plainLook, plain},
+		{"not adult in a group", testConvKey, plainLook, plain},
+	} {
+		got, want := get(service(c.with), c.key), get(service(c.without), c.key)
+		if got.Mode != conloomapi.ContentProtected || got != want {
+			t.Errorf("%s: prompt with an adult appearance =\n%+v\nwant the one without\n%+v", c.name, got, want)
+		}
+		if strings.Contains(got.Text, testAdultAppearance) || strings.Contains(got.Text, "私密场景") {
+			t.Errorf("%s: protected prompt carries the adult appearance:\n%s", c.name, got.Text)
+		}
+	}
+
+	open := get(service(look), privateKey)
+	base := get(service(adult), privateKey).Text
+	section := "\n\n外貌：\n" + adult.Appearance
+	if open.Mode != conloomapi.ContentOpen ||
+		open.Text != strings.Replace(base, section, section+adultAppearanceHeading+testAdultAppearance, 1) {
+		t.Errorf("adult in private: mode %q, prompt =\n%s\nwant the adult appearance right after the appearance of\n%s", open.Mode, open.Text, base)
+	}
+
+	st := newTestStore(t)
+	minor := testCharacter()
+	minor.Minor, minor.Adult, minor.AdultAppearance = true, true, testAdultAppearance
+	if _, err := st.AppendPersonaVersion(ctx, store.PersonaVersion{
+		ConversationKey: privateKey, TemplateName: "default", Persona: minor,
+		Reason: "edited in the database", UpdatedBy: "system",
+	}); err != nil {
+		t.Fatalf("AppendPersonaVersion: %v", err)
+	}
+	p, err := NewService(st).SystemPrompt(ctx, privateKey, "default", "织语")
+	if err != nil {
+		t.Fatalf("SystemPrompt: %v", err)
+	}
+	if p.Mode != conloomapi.ContentProtected || strings.Contains(p.Text, testAdultAppearance) {
+		t.Errorf("stored minor with an adult appearance in private: mode %q, prompt %q; want protected without it", p.Mode, p.Text)
+	}
+}
+
+func TestService_SystemPromptCacheFollowsAdultAppearance(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newTestStore(t))
+	privateKey := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "20001")
+	get := func() Prompt {
+		t.Helper()
+		p, err := svc.SystemPrompt(ctx, privateKey, "default", "织语")
+		if err != nil {
+			t.Fatalf("SystemPrompt: %v", err)
+		}
+		return p
+	}
+	get()
+	adult := conloomapi.DefaultPersona()
+	adult.Adult, adult.AdultAppearance = true, testAdultAppearance
+	if _, err := svc.Update(ctx, privateKey, "default", conloomapi.PersonaPut{Persona: &adult}, "29999"); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if p := get(); !strings.HasSuffix(p.Text, adultAppearanceHeading+testAdultAppearance) {
+		t.Fatalf("after adult update: prompt %q", p.Text)
+	}
+	one := 1
+	if _, err := svc.Update(ctx, privateKey, "default", conloomapi.PersonaPut{RollbackTo: &one}, "29999"); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if p := get(); strings.Contains(p.Text, testAdultAppearance) {
+		t.Fatalf("after rollback: prompt %q", p.Text)
+	}
+}
+
 func TestSystemPrompt_BarsNotRendered(t *testing.T) {
 	ctx := context.Background()
 	privateKey := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "20001")
@@ -1151,6 +1305,33 @@ func TestUpdate_RejectsMinorIntimacy(t *testing.T) {
 	}
 	if latest, err := st.LatestPersona(ctx, testConvKey); err != nil || !reflect.DeepEqual(latest.Persona.Intimacy, neither.Intimacy) {
 		t.Errorf("stored intimacy side = %+v, %v; want %+v", latest.Persona.Intimacy, err, neither.Intimacy)
+	}
+}
+
+func TestUpdate_RejectsMinorAdultAppearance(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := newServiceWith(t, st, nil)
+	before, err := svc.Current(ctx, testConvKey, "default")
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	minor := conloomapi.DefaultPersona()
+	minor.Minor, minor.AdultAppearance = true, testAdultAppearance
+	const want = "a minor persona cannot have an adult appearance"
+	if _, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Persona: &minor}, "29999"); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), want) {
+		t.Errorf("Update: err = %v, want ErrInvalid containing %q", err, want)
+	}
+	if after, _ := st.LatestPersona(ctx, testConvKey); after.Version != before.Version {
+		t.Errorf("rejected update appended a version: latest = %d, want %d", after.Version, before.Version)
+	}
+	if err := svc.PutTemplate(ctx, "young", minor, "panel:admin"); !errors.Is(err, ErrInvalidTemplate) || !strings.Contains(err.Error(), want) {
+		t.Errorf("PutTemplate: err = %v, want ErrInvalidTemplate containing %q", err, want)
+	}
+	adult := minor
+	adult.Minor, adult.Adult = false, true
+	if pv, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Persona: &adult}, "29999"); err != nil || pv.Persona.AdultAppearance != testAdultAppearance {
+		t.Errorf("adult persona with an adult appearance = %+v, %v; want accepted", pv, err)
 	}
 }
 

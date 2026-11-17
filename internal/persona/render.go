@@ -49,12 +49,20 @@ var (
 	}
 )
 
-// Render describes p in natural Chinese: the style and behavior lines, then
-// the character description, gender line, appearance, speaking style and
-// example exchanges when set, each section after a blank line. The output
-// depends only on p; a persona without those renders as the three lines
-// alone. The appearance image never enters the output.
+// Render describes p in natural Chinese as RenderFor does under
+// ContentProtected, so without the adult appearance.
 func Render(p conloomapi.PersonaDoc) string {
+	return RenderFor(p, conloomapi.ContentProtected)
+}
+
+// RenderFor describes p in natural Chinese: the style and behavior lines,
+// then the character description, gender line, appearance, speaking style and
+// example exchanges when set, each section after a blank line. Only under
+// ContentOpen does p's adult appearance, when not blank, follow the
+// appearance (or take its place when the appearance is blank). The output
+// depends only on p and mode; a persona without those renders as the three
+// lines alone. The appearance image never enters the output.
+func RenderFor(p conloomapi.PersonaDoc, mode conloomapi.ContentMode) string {
 	var b strings.Builder
 	b.WriteString(renderLines(p))
 	if d := strings.TrimSpace(p.Description); d != "" {
@@ -65,6 +73,9 @@ func Render(p conloomapi.PersonaDoc) string {
 	}
 	if a := strings.TrimSpace(p.Appearance); a != "" {
 		b.WriteString("\n\n外貌：\n" + a)
+	}
+	if a := strings.TrimSpace(p.AdultAppearance); a != "" && mode == conloomapi.ContentOpen {
+		b.WriteString("\n\n私密场景下的外貌（只在这段私聊里用）：\n" + a)
 	}
 	if s := strings.TrimSpace(p.SpeakingStyle); s != "" {
 		b.WriteString("\n\n说话方式：\n" + s)

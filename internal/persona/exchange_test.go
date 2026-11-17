@@ -748,6 +748,50 @@ func TestImport_MinorIntimacy(t *testing.T) {
 	}
 }
 
+func TestExchange_AdultAppearance(t *testing.T) {
+	ctx := context.Background()
+	svc := newServiceWith(t, newTestStore(t), nil)
+	grownup := tagged("乙")
+	grownup.Adult, grownup.AdultAppearance = true, "占位的成年外观文字。"
+	if err := svc.PutTemplate(ctx, "grownup", grownup, "panel:admin"); err != nil {
+		t.Fatalf("PutTemplate: %v", err)
+	}
+	f, err := svc.Export(ctx, []string{"grownup"})
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	raw, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"adult_appearance":"占位的成年外观文字。"`)) {
+		t.Fatalf("exchange file %s does not carry the adult appearance", raw)
+	}
+	var back ExchangeFile
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	st := newTestStore(t)
+	other := newServiceWith(t, st, nil)
+	if _, err := other.Import(ctx, back, ConflictFail, "panel:other"); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if got, _ := other.Template("grownup"); !reflect.DeepEqual(got, grownup) {
+		t.Errorf("imported grownup = %+v, want %+v", got, grownup)
+	}
+
+	young := tagged("甲")
+	young.Minor, young.AdultAppearance = true, grownup.AdultAppearance
+	for _, mode := range []ConflictMode{ConflictFail, ConflictOverwrite, ConflictRename} {
+		_, err := other.Import(ctx, exchangeFile(exchangeTemplate("young", young, nil)), mode, "panel:admin")
+		if !errors.Is(err, ErrInvalidTemplate) ||
+			!strings.Contains(err.Error(), "a minor persona cannot have an adult appearance") || !strings.Contains(err.Error(), `"young"`) {
+			t.Errorf("Import (%s) of a minor persona with an adult appearance err = %v, want ErrInvalidTemplate", mode, err)
+		}
+		checkUnchanged(t, st, other, []string{"grownup"})
+	}
+}
+
 func TestImport_AppearanceImageID(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
