@@ -508,7 +508,7 @@ func approxGap(d time.Duration) string {
 func privateAllowed(bot config.BotConfig, platform, userID string) bool {
 	return !privateDenied(DecideInput{
 		Platform: platform, PlatformUserID: userID, PrivateChat: bot.PrivateChat,
-		IsAdmin: isAdmin(bot, platform, userID), PrivateListed: privateListed(bot, userID),
+		IsAdmin: IsAdmin(bot, platform, userID), PrivateListed: privateListed(bot, userID),
 	})
 }
 

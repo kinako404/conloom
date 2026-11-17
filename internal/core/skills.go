@@ -138,7 +138,7 @@ func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, 
 		PlatformUserID:    task.ActorPlatformUserID,
 		DisplayName:       name,
 		TriggerMessageIDs: ids,
-		IsAdmin:           isAdmin(bot, conv.Platform, task.ActorPlatformUserID),
+		IsAdmin:           IsAdmin(bot, conv.Platform, task.ActorPlatformUserID),
 		Location:          o.loc,
 	}
 	return run

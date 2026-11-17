@@ -8,8 +8,10 @@ import (
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
+// CopyHelp introduces botName and lists the commands from the command
+// registry (see helpCommands), so /help and the command menu agree.
 func CopyHelp(botName string) string {
-	return "我是" + botName + "。在群里 @我 或回复我的消息就能和我聊天。\n命令：/help 帮助，/stop 停止当前回复，/persona 查看人格，/主动 查看或设置主动搭话，/好感度 查看好感度，/记忆 查看我记得的你，/记住 <内容> 让我记住一件事，/忘记我 清空你的记忆；管理员：/pause 暂停，/resume 恢复，/persona list 列出人格模板，/persona use <模板名> 切换人格模板，/记忆 整理 立即整理记忆，/记忆 群 查看群聊摘要。"
+	return "我是" + botName + "。在群里 @我 或回复我的消息就能和我聊天。\n" + helpCommands()
 }
 
 // CopyPersonaInfo describes the current persona: its name and version, and

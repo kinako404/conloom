@@ -55,7 +55,7 @@ func (o *Orchestrator) execCommand(ctx context.Context, task store.TaskRecord, t
 	if !ok {
 		return "", fmt.Errorf("core: unknown bot %q", task.BotInstanceID)
 	}
-	isAdmin := isAdmin(bot, convPlatform(task.ConversationKey), task.ActorPlatformUserID)
+	isAdmin := IsAdmin(bot, convPlatform(task.ConversationKey), task.ActorPlatformUserID)
 	by := "command:" + task.ActorPlatformUserID
 	switch task.Command {
 	case "help":
