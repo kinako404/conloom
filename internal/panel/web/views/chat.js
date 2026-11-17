@@ -33,6 +33,12 @@ const FOLLOW_MS = 500;
 const MENU_MARGIN = 4;
 // TOAST_MS is how long a note such as 已复制 shows.
 const TOAST_MS = 1500;
+// CLICK_FOLLOW_MS is how long after a right-click opens the message menu a
+// click is taken for the one some platforms send with it (macOS Ctrl+click)
+// and does not close the menu.
+const CLICK_FOLLOW_MS = 300;
+// BUBBLE_KEYS move the focus between bubbles.
+const BUBBLE_KEYS = new Set(['ArrowUp', 'ArrowDown', 'Home', 'End']);
 // SCROLL_KEYS are the keys that scroll the page or the messages.
 const SCROLL_KEYS = new Set(['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', ' ']);
 
@@ -81,11 +87,12 @@ function clock(v) {
 // with its time in the corner, its sender and full time on hover, and its
 // channel only when it is not the panel. It holds no buttons: its actions are
 // in the message menu (see chatPane), which the keyboard opens on the bubble
-// once it has the focus.
+// once it has the focus. It is out of the Tab order until chatPane makes it
+// the Tab stop.
 function bubble(m) {
   const when = fmtTime(m.at);
   return h('li', { class: m.from_bot ? 'tg-msg in' : 'tg-msg out', dataset: { seq: String(m.seq) } },
-    h('div', { class: 'tg-bubble', tabindex: '0', 'aria-haspopup': 'menu' },
+    h('div', { class: 'tg-bubble', tabindex: '-1', 'aria-haspopup': 'menu' },
       m.channel && m.channel !== 'panel' ? h('div', null, h('span', { class: 'badge' }, m.channel)) : null,
       h('span', { class: 'tg-text' }, m.text),
       h('span', { class: 'tg-time', title: m.sender_name ? `${m.sender_name} · ${when}` : when }, clock(m.at))));
@@ -297,10 +304,11 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
   // menuMsg, whose bubble, menuBubble, is marked tg-selected while it is
   // open. menuVia tells what opened it, at menuAt: 'mouse' (a right-click),
   // 'touch' (a long press, which leaves the focus where it was, so an
-  // on-screen keyboard stays) or 'key' (the menu key or Shift+F10). press is
-  // the finger resting on a bubble, until it lifts, moves or the list
-  // scrolls; clicks before followUntil, those a long press ends with, do not
-  // close the menu.
+  // on-screen keyboard stays) or 'key' (the menu key or Shift+F10), and
+  // menuBack where the focus goes back when it closes (see closeMenu). press
+  // is the finger resting on a bubble, until it lifts, moves or the list
+  // scrolls; clicks before followUntil, those a long press ends with or a
+  // right-click may bring, do not close the menu.
   const messages = new Map();
   const copyItem = h('button', { type: 'button', class: 'tg-bar-item', role: 'menuitem', onclick: () => choose((m) => copyMessage(m)) }, '复制');
   const regenItem = h('button', { type: 'button', class: 'tg-bar-item', role: 'menuitem', onclick: () => choose((m) => actions.regenerate(m)) }, '重新生成');
@@ -310,9 +318,20 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
   let menuMsg = null;
   let menuVia = '';
   let menuAt = 0;
+  let menuBack = null;
   let press = null;
   let followUntil = 0;
   let toastEl = null;
+  // Of the bubbles, only tabStop is in the Tab order (roving tabindex): the
+  // one last focused, chosen, or else the newest.
+  let tabStop = null;
+  let chosenStop = false;
+  const setTabStop = (b) => {
+    if (tabStop === b) return;
+    if (tabStop) tabStop.tabIndex = -1;
+    tabStop = b;
+    b.tabIndex = 0;
+  };
 
   // refreshActions shows, in the open message menu, 重新生成 only on the
   // message regenSeq names, and turns 重新生成 and 撤回 off while they cannot
@@ -340,28 +359,36 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     msgMenu.style.top = `${top}px`;
     msgMenu.style.transformOrigin = `${Math.min(Math.max(x - left, 0), w)}px ${Math.min(Math.max(y - top, 0), ht)}px`;
   };
-  // closeMenu closes the message menu, with the focus back on its bubble when
-  // refocus is true.
-  const closeMenu = (refocus) => {
+  // closeMenu closes the message menu. When the focus was in it, or nowhere,
+  // it goes back to menuBack: the bubble when the keyboard opened the menu,
+  // else what had it before, such as the message box; a click that put it
+  // somewhere else leaves it there.
+  const closeMenu = () => {
     if (!menuBubble) return;
     const b = menuBubble;
+    const back = menuBack;
+    const active = document.activeElement;
+    const lost = !active || active === document.body || msgMenu.contains(active);
     menuBubble = null;
     menuMsg = null;
+    menuBack = null;
     b.classList.remove('tg-selected');
     msgMenu.remove();
     menuClosed(closeMenu);
-    if (refocus === true && b.isConnected) b.focus({ preventScroll: true });
+    if (lost && !signal.aborted && back && back.isConnected && back !== document.activeElement) back.focus({ preventScroll: true });
   };
   // openMenu opens the message menu of bubble b, opened via via, at x, y (see
   // placeMenu), closing any other menu on the page.
   const openMenu = (b, via, x, y, above = y, fromRight = false) => {
     const m = messages.get(Number(b.parentNode.dataset.seq));
     if (!m) return;
+    const back = via === 'key' ? b : menuBubble ? menuBack : document.activeElement;
     closeMenu();
     menuBubble = b;
     menuMsg = m;
     menuVia = via;
     menuAt = Date.now();
+    menuBack = back;
     b.classList.add('tg-selected');
     refreshActions();
     document.body.appendChild(msgMenu);
@@ -369,11 +396,11 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     menuOpened(closeMenu);
     if (via !== 'touch') copyItem.focus({ preventScroll: true });
   };
-  // choose closes the menu, the focus back on the bubble unless a finger
-  // opened it, and runs run with its message.
+  // choose closes the menu, the focus back where it was (see closeMenu), and
+  // runs run with its message.
   const choose = (run) => {
     const m = menuMsg;
-    closeMenu(menuVia !== 'touch');
+    closeMenu();
     if (m) run(m);
   };
   const cancelPress = () => {
@@ -419,6 +446,12 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     }
     if (menuBubble === b && menuVia !== 'mouse' && (Date.now() - menuAt < FOLLOW_MS || Date.now() < followUntil)) return;
     openMenu(b, 'mouse', e.clientX, e.clientY);
+    followUntil = Date.now() + CLICK_FOLLOW_MS;
+  });
+  // A right-click, or the Ctrl+click macOS takes for one, leaves the focus
+  // where it is, so that closing the menu can give it back.
+  log.addEventListener('mousedown', (e) => {
+    if ((e.button === 2 || (e.button === 0 && e.ctrlKey)) && e.target.closest('.tg-bubble')) e.preventDefault();
   });
   // A finger resting LONG_PRESS_MS on a bubble opens its menu there; one
   // that lifts, moves more than LONG_PRESS_SLOP or is joined by another does
@@ -437,6 +470,8 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     }, LONG_PRESS_MS);
     press = p;
   }, { passive: true });
+  // Not passive: once the menu is open, preventDefault keeps the finger that
+  // opened it from dragging the messages under it.
   log.addEventListener('touchmove', (e) => {
     if (!press) return;
     if (press.opened) {
@@ -454,11 +489,28 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     cancelPress();
   }, { passive: false });
   log.addEventListener('touchcancel', cancelPress);
-  // The menu key or Shift+F10 on a bubble opens its menu under it, on the
-  // side of the bubble, with the focus on its first item.
+  // A bubble focused becomes the Tab stop. On a focused bubble, ↑ and ↓ move
+  // to the one before and after, Home and End to the first and the newest,
+  // and the menu key or Shift+F10 opens its menu under it, on the side of the
+  // bubble, with the focus on its first item.
+  log.addEventListener('focusin', (e) => {
+    if (e.target.classList && e.target.classList.contains('tg-bubble')) {
+      chosenStop = true;
+      setTabStop(e.target);
+    }
+  });
   log.addEventListener('keydown', (e) => {
     const b = e.target.classList && e.target.classList.contains('tg-bubble') ? e.target : null;
-    if (!b || !(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;
+    if (!b) return;
+    const all = BUBBLE_KEYS.has(e.key) ? [...log.querySelectorAll('.tg-bubble')] : null;
+    if (all) {
+      const i = all.indexOf(b);
+      const to = { ArrowUp: all[i - 1], ArrowDown: all[i + 1], Home: all[0], End: all[all.length - 1] }[e.key];
+      e.preventDefault();
+      if (to) to.focus();
+      return;
+    }
+    if (!(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;
     e.preventDefault();
     const r = b.getBoundingClientRect();
     const out = b.parentNode.classList.contains('out');
@@ -477,7 +529,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     else if (e.key === 'End') next = items[n - 1];
     else if (e.key === 'Tab') {
       e.preventDefault();
-      closeMenu(true);
+      closeMenu();
       return;
     }
     if (next) {
@@ -518,7 +570,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     if (menuBubble && !msgMenu.contains(t) && !(log.contains(t) && t.closest('.tg-bubble'))) closeMenu();
   }, signal, true);
   listen(document, 'keydown', (e) => {
-    if (e.key === 'Escape' && menuBubble) closeMenu(true);
+    if (e.key === 'Escape' && menuBubble) closeMenu();
   }, signal);
   listen(document, 'scroll', cancelPress, signal, true);
   listen(window, 'resize', closeMenu, signal);
@@ -608,6 +660,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     }
     log.appendChild(el);
     lastEl = el;
+    if (!chosenStop) setTabStop(el.firstChild);
   };
 
   // add appends the rows not shown yet, in place of any suggestions, hands

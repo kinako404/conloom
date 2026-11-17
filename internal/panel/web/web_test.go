@@ -1366,9 +1366,26 @@ func TestChatTG_MessageMenu(t *testing.T) {
 		"log.addEventListener('touchend', (e) => {", "log.addEventListener('touchcancel', cancelPress);",
 		"export const LONG_PRESS_MS = 450;", "const LONG_PRESS_SLOP = 10;", "}, LONG_PRESS_MS);",
 		"e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')",
-		"'ArrowDown'", "'ArrowUp'", "e.key === 'Escape' && menuBubble) closeMenu(true);",
+		"'ArrowDown'", "'ArrowUp'", "e.key === 'Escape' && menuBubble) closeMenu();",
 		"b.classList.add('tg-selected');", "b.classList.remove('tg-selected');",
-		"h('div', { class: 'tg-bubble', tabindex: '0', 'aria-haspopup': 'menu' },",
+		// Focus goes back to where it was: the bubble when the keyboard opened
+		// the menu, else what had it before, such as the message box.
+		"const back = via === 'key' ? b : menuBubble ? menuBack : document.activeElement;",
+		"const lost = !active || active === document.body || msgMenu.contains(active);",
+		"back.focus({ preventScroll: true });",
+		"if ((e.button === 2 || (e.button === 0 && e.ctrlKey)) && e.target.closest('.tg-bubble')) e.preventDefault();",
+		// One Tab stop among the bubbles (roving tabindex), the newest until
+		// one is focused; arrows, Home and End move between them.
+		"h('div', { class: 'tg-bubble', tabindex: '-1', 'aria-haspopup': 'menu' },",
+		"if (tabStop) tabStop.tabIndex = -1;", "b.tabIndex = 0;", "if (!chosenStop) setTabStop(el.firstChild);",
+		"log.addEventListener('focusin', (e) => {",
+		"const BUBBLE_KEYS = new Set(['ArrowUp', 'ArrowDown', 'Home', 'End']);",
+		"const to = { ArrowUp: all[i - 1], ArrowDown: all[i + 1], Home: all[0], End: all[all.length - 1] }[e.key];",
+		// A click that comes with the right-click (macOS Ctrl+click) does not
+		// close the menu it opened.
+		"const CLICK_FOLLOW_MS = 300;", "followUntil = Date.now() + CLICK_FOLLOW_MS;",
+		"if (menuBubble && !msgMenu.contains(e.target) && Date.now() >= followUntil) closeMenu();",
+		"// Not passive: once the menu is open, preventDefault keeps the finger that",
 		"document.body.appendChild(msgMenu);", "msgMenu.remove();",
 		"choose((m) => actions.regenerate(m))", "choose((m) => actions.withdraw(m))",
 		"await navigator.clipboard.writeText(text);", "document.execCommand('copy')", "'已复制'",
