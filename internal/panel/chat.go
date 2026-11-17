@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/kinako404/conloom/internal/core"
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -272,6 +273,49 @@ func (s *Server) postSuggestions(w http.ResponseWriter, r *http.Request, _ *Sess
 	s.writeJSON(w, http.StatusOK, struct {
 		Suggestions []string `json:"suggestions"`
 	}{items})
+}
+
+// commandView is a command of a panel chat's command menu (core.MenuCommand).
+type commandView struct {
+	Name        string   `json:"name"`
+	Aliases     []string `json:"aliases"`
+	Usage       string   `json:"usage"`
+	Description string   `json:"description"`
+	Args        bool     `json:"args"`
+}
+
+// getCommands answers {prefix, commands}: the conversation's command prefix
+// (its policy's reply.command_prefix) and the commands the session's user may
+// send in it, for the command menu of the chat pages (see core.MenuCommands),
+// filtered by the conversation's type and by whether the user counts as an
+// admin there (core.IsAdmin; every panel chat user does). The pages send only
+// in panel chats, so other conversations are refused with 400 as by POST
+// messages. An empty prefix turns commands off: the list is empty.
+func (s *Server) getCommands(w http.ResponseWriter, r *http.Request, sess *Session) {
+	conv, ok := s.conversation(w, r)
+	if !ok {
+		return
+	}
+	if conv.Platform != store.PlatformPanel {
+		s.chatFail(w, r, core.ErrNotPanelChat)
+		return
+	}
+	pv, err := s.d.Policies.Current(r.Context(), conv.Key)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	bot, _ := s.d.Bots.Bot(conv.BotInstanceID)
+	prefix := pv.Policy.Reply.CommandPrefix
+	admin := core.IsAdmin(bot, conv.Platform, core.PanelActorID(sess.User))
+	out := []commandView{}
+	for _, c := range core.MenuCommands(prefix, conv.Type, admin) {
+		out = append(out, commandView{Name: c.Name, Aliases: c.Aliases, Usage: c.Usage, Description: c.Description, Args: c.Args})
+	}
+	s.writeJSON(w, http.StatusOK, struct {
+		Prefix   string        `json:"prefix"`
+		Commands []commandView `json:"commands"`
+	}{prefix, out})
 }
 
 // createChat starts a panel chat of the session's user with a bot.

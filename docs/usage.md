@@ -82,6 +82,8 @@ conloom version                                                 显示版本与�
 
 命令前缀默认为 `/`（群策略 `reply.command_prefix`）。管理员只认 bot 设置里的管理员（平台用户 ID，在 Web 管理面板里设置）。命令不调用模型。
 
+能识别的命令、`/help` 里的命令列表和面板聊天的命令菜单来自同一张命令表（`internal/core/command_registry.go`），新增命令时三处一起更新。在 Web 管理面板的聊天页里输入 `/` 会弹出这个聊天能用的命令，点一下或用方向键加回车选择，见 [Web 管理面板：在面板里聊天](panel.md#在面板里聊天)。
+
 - 非管理员的命令和普通回复共用每用户限流（`reply.user_rate_limit_per_minute`），超出后命令只落库、不回应（`suppressed_reason` 为 `rate_limited`）；群暂停期间非管理员的命令同样不回应（`paused`）。管理员的命令（包括 `/pause`、`/resume`、`/stop`）不受限流和暂停影响。
 - 通过 `/pause` 或 `PUT /api/v1/conversations/{id}/policy` 把群并发设为 0 时，正在生成和排队的回复都会被静默取消（不发“已停止”提示），`/resume` 之后不会补发暂停前积压的回复。
 - 事件发生时间（`occurred_at`）距今已超过 `runtime.stale_task_after`（默认 2 分钟）的需要回复的消息（@ 机器人、回复机器人、私聊、命令、在聊轮次）只落库、不回复，`suppressed_reason` 为 `stale`。例如核心停机期间 NapCat 适配器缓存的消息，在核心恢复后才提交时就这样处理，不会在恢复后集中回复一批旧消息。消息时间来自平台（NapCat 所在机器的时钟），所以 NapCat 和核心所在机器的时钟要保持同步（如启用 NTP）；如果 NapCat 的时钟比核心慢超过这个阈值，所有消息都会被当作过时而不回复。

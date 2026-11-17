@@ -3,6 +3,7 @@ import { get, post, del, convPath, isAbort } from '../lib/api.js';
 import { go, href } from '../lib/router.js';
 import { fmtTime } from '../lib/format.js';
 import { avatarEl } from './avatar.js';
+import { commandMenu } from './commandmenu.js';
 
 // POLL_MS is how often the chat asks for new messages.
 export const POLL_MS = 1500;
@@ -237,7 +238,8 @@ export function chatBar({ key, bot, title, status, items, onBack, onDelete, sign
 // with, title who the bot talks with; onBack() returns to the chat list and
 // onDelete() deletes the chat after confirmation. onMessages(messages), when
 // given, gets the messages each time some are shown: the latest at first,
-// then each one new.
+// then each one new. Typing the command prefix in the box opens the command
+// menu (see commandMenu).
 // A right-click, a long press or the menu key on a message opens its menu,
 // where it can be copied (复制), withdrawn (撤回, with what follows it) and,
 // the one GET chat names in regenerate_seq, regenerated (重新生成); the last
@@ -830,6 +832,14 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
       if (!gone) input.focus();
     }
   };
+  // The command menu comes before Return sends, which it stops while open;
+  // the suggestions under the messages hide behind it meanwhile.
+  const commands = commandMenu({
+    key, input, signal, send: submit,
+    onToggle: (open) => {
+      chips.hidden = open;
+    },
+  });
   if (!touch) {
     input.addEventListener('keydown', (e) => {
       // Safari ends an IME composition before the keydown of the Enter that
@@ -857,7 +867,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
       e.preventDefault();
       submit(input.value);
     },
-  }, input, send);
+  }, commands, input, send);
 
   const conv = h('section', { class: 'tg-conv' }, log, pollError, sendError, form);
 

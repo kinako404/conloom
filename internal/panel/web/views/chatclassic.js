@@ -9,6 +9,7 @@ import { fmtTime } from '../lib/format.js';
 import {
   POLL_MS, HISTORY, PAGE, TOUCH, GONE, MESSAGE_GONE, MESSAGE_GONE_NOTE, ACTION_BUSY, suggestionsOn, saveSuggestionsOn, suppressedNote,
 } from './chat.js';
+import { commandMenu } from './commandmenu.js';
 
 // bubble shows message m with 撤回 and, for the bot's, 重新生成 (hidden until
 // refreshActions shows it), which call actions.withdraw(m) and
@@ -30,7 +31,8 @@ function bubble(m, actions) {
 // has seen until signal fires or the chat is gone (404), which stops the
 // polling and the sending. With the 建议回复 switch on, once the bot's turn is
 // done it offers reply suggestions under the newest message, which send
-// themselves when clicked. hint, when given, is shown above the chat.
+// themselves when clicked. hint, when given, is shown above the chat. Typing
+// the command prefix in the box opens the command menu (see commandMenu).
 // Each message can be withdrawn (撤回, with what follows it), and the one GET
 // chat names in regenerate_seq regenerated (重新生成); both are off while the
 // bot is busy or a message is being sent. Polling stops before either is
@@ -281,6 +283,14 @@ export async function chatPane({ key, signal, hint, reload = () => go(href('chat
       if (!gone) input.focus();
     }
   };
+  // The command menu comes before Return sends, which it stops while open;
+  // the suggestions under the messages hide behind it meanwhile.
+  const commands = commandMenu({
+    key, input, signal, send: submit,
+    onToggle: (open) => {
+      chips.hidden = open;
+    },
+  });
   if (!touch) {
     input.addEventListener('keydown', (e) => {
       // Safari ends an IME composition before the keydown of the Enter that
@@ -304,7 +314,7 @@ export async function chatPane({ key, signal, hint, reload = () => go(href('chat
       e.preventDefault();
       submit(input.value);
     },
-  }, input, send);
+  }, commands, input, send);
 
   poll();
   requestAnimationFrame(() => {

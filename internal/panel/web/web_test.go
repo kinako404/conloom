@@ -1576,3 +1576,72 @@ func TestChatsTG_ListDeleteReportsInTheList(t *testing.T) {
 		}
 	}
 }
+
+// Both chat panes share the command menu of views/commandmenu.js: it asks GET
+// commands, is a listbox the box points at, comes before Return sends and
+// stops it while open, and its listeners end with the pane. The Telegram-style
+// page's popup opens like its other menus; the classic page's does not move.
+func TestChatPanes_CommandMenu(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js, ok := files["views/commandmenu.js"]
+	if !ok {
+		t.Fatal("views/commandmenu.js is not embedded")
+	}
+	for _, want := range []string{
+		"export function commandMenu({ key, input, signal, send, onToggle = () => {} }) {",
+		"export function matchCommands(commands, query) {",
+		"get(convPath(key, 'commands'))", "role: 'listbox'", "role: 'option'", "'aria-selected'",
+		"input.setAttribute('aria-expanded', 'true');", "input.setAttribute('aria-expanded', 'false');",
+		"input.setAttribute('aria-activedescendant', row.id);", "input.removeAttribute('aria-activedescendant');",
+		"e.key === 'ArrowDown'", "e.key === 'ArrowUp'", "(e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey", "e.key === 'Escape'",
+		"e.stopImmediatePropagation();", "}, signal, true);", "listen(document, 'pointerdown', (e) => {",
+		"onmousedown: (e) => e.preventDefault(),", "if (!c.args) send(text);", "input.value = c.args ? `${text} ` : text;",
+		"import { listen } from './chat.js';",
+		// Only a lone command word opens it: a pick never replaces arguments.
+		"!text.startsWith(prefix) || /\\s/.test(text)) return null;", "return text.slice(prefix.length);",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/commandmenu.js lacks %q", want)
+		}
+	}
+	for _, bad := range []string{"document.addEventListener(", "window.addEventListener(", "textContent ="} {
+		if strings.Contains(js, bad) {
+			t.Errorf("views/commandmenu.js has %q", bad)
+		}
+	}
+	for _, file := range []string{"views/chat.js", "views/chatclassic.js"} {
+		pane := files[file]
+		for _, want := range []string{
+			"import { commandMenu } from './commandmenu.js';",
+			"const commands = commandMenu({\n    key, input, signal, send: submit,", "chips.hidden = open;", "}, commands, input, send);",
+		} {
+			if !strings.Contains(pane, want) {
+				t.Errorf("%s lacks %q", file, want)
+			}
+		}
+		menu, enter := strings.Index(pane, "commandMenu({"), strings.Index(pane, "if (!touch) {\n    input.addEventListener('keydown'")
+		if menu < 0 || enter < 0 || menu > enter {
+			t.Errorf("%s does not add the command menu before Return sends", file)
+		}
+	}
+	css := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(files["style.css"], "")
+	for _, c := range []struct{ name, re string }{
+		{"a popup over the TG box that opens like a menu", `\.chat-app \.cmd-menu\s*\{[^}]*position:\s*absolute;[^}]*bottom:\s*100%;[^}]*overflow-y:\s*auto;[^}]*animation:\s*tg-menu-in `},
+		{"the TG box holding the popup", `\.chat-app \.tg-compose\s*\{\s*position:\s*relative;`},
+		{"a popup over the classic box", `\.chat-classic \.cmd-menu\s*\{[^}]*position:\s*absolute;[^}]*bottom:\s*100%;[^}]*overflow-y:\s*auto;`},
+		{"the classic box holding the popup", `\.chat-classic \.chat-form\s*\{\s*position:\s*relative;`},
+		{"the highlighted row marked", `\.chat-app \.cmd-item\[aria-selected="true"\]`},
+	} {
+		if !regexp.MustCompile(c.re).MatchString(css) {
+			t.Errorf("style.css lacks %s (%s)", c.name, c.re)
+		}
+	}
+	for _, m := range cssRule.FindAllStringSubmatch(css, -1) {
+		if strings.Contains(m[1], ".chat-classic .cmd-") && regexp.MustCompile(`animation|transition`).MatchString(m[2]) {
+			t.Errorf("style.css: %q moves the classic command menu", strings.TrimSpace(m[1]))
+		}
+	}
+	if !regexp.MustCompile(`\.chat-classic \.cmd-item\s*\{[^}]*min-height:\s*44px;`).MatchString(mediaBlock(t, css, "(pointer: coarse)")) {
+		t.Error("style.css @media (pointer: coarse) does not give command rows 44px")
+	}
+}

@@ -457,7 +457,7 @@ func (o *Orchestrator) submitOn(ctx context.Context, botID, idemKey string, body
 	s := &submission{
 		botID: botID, key: idemKey, hash: hash, body: body, ev: ev, channel: channel, bot: bot,
 		convKey: store.ConversationKey(botID, ev.Platform, ev.Conversation.Type, ev.Conversation.ID),
-		isAdmin: isAdmin(bot, ev.Platform, ev.Actor.PlatformUserID),
+		isAdmin: IsAdmin(bot, ev.Platform, ev.Actor.PlatformUserID),
 		now:     o.now(),
 	}
 	resp, err = o.submit(ctx, s)
@@ -869,9 +869,9 @@ func (o *Orchestrator) decide(ctx context.Context, s *submission) (Decision, con
 	return Decide(in), pol, nil
 }
 
-// isAdmin reports whether the user of platform is one of the bot's admins;
+// IsAdmin reports whether the user of platform is one of the bot's admins;
 // every user of a panel chat (store.PlatformPanel) is.
-func isAdmin(bot config.BotConfig, platform, platformUserID string) bool {
+func IsAdmin(bot config.BotConfig, platform, platformUserID string) bool {
 	return platform == store.PlatformPanel || slices.Contains(bot.Admins, platformUserID)
 }
 
