@@ -1373,7 +1373,9 @@ func TestChatTG_MessageMenu(t *testing.T) {
 		"choose((m) => actions.regenerate(m))", "choose((m) => actions.withdraw(m))",
 		"await navigator.clipboard.writeText(text);", "document.execCommand('copy')", "'已复制'",
 		"listen(document, 'click', (e) => {", "listen(document, 'contextmenu', (e) => {",
-		"listen(document, 'scroll', () => {", "listen(window, 'resize', closeMenu, signal);",
+		"listen(document, 'scroll', cancelPress, signal, true);", "listen(window, 'resize', closeMenu, signal);",
+		"listen(document, 'wheel', userScroll, signal, true);", "listen(document, 'touchmove', (e) => {",
+		"listen(document, 'pointerdown', (e) => {", "if (SCROLL_KEYS.has(e.key) && !typing) userScroll(e);",
 		"menuOpened(closeMenu);", "menuClosed(closeMenu);",
 	} {
 		if !strings.Contains(js, want) {
@@ -1387,6 +1389,11 @@ func TestChatTG_MessageMenu(t *testing.T) {
 	}
 	if strings.Contains(css, ".tg-action") {
 		t.Error("style.css still styles the in-bubble actions (.tg-action)")
+	}
+	// Only the user's scrolling closes the menu: no scroll event does, since
+	// the pane's own scrolling to a new message fires them too.
+	if n := strings.Count(js, "'scroll'"); n != 1 || !strings.Contains(js, "listen(document, 'scroll', cancelPress, signal, true);") {
+		t.Errorf("views/chat.js listens to scroll events %d times; want only listen(document, 'scroll', cancelPress, signal, true), which leaves the menu open", n)
 	}
 	for _, c := range []struct{ name, re string }{
 		{"a floating menu that opens from where it is asked for", `\.chat-app \.tg-ctx-menu\s*\{[^}]*position:\s*fixed;[^}]*animation:\s*tg-menu-in `},

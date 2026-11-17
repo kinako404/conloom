@@ -33,6 +33,8 @@ const FOLLOW_MS = 500;
 const MENU_MARGIN = 4;
 // TOAST_MS is how long a note such as 已复制 shows.
 const TOAST_MS = 1500;
+// SCROLL_KEYS are the keys that scroll the page or the messages.
+const SCROLL_KEYS = new Set(['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', ' ']);
 
 // suggestionsOn reads the 建议回复 switch; a browser that refuses storage
 // gets it on.
@@ -484,8 +486,30 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     }
   });
   msgMenu.addEventListener('contextmenu', (e) => e.preventDefault());
-  // A click or a right-click elsewhere, Escape, a scroll, a resized window or
-  // the end of the pane closes the menu, and a scroll drops a long press.
+  // A click or a right-click elsewhere, Escape, the user scrolling, a resized
+  // window or the end of the pane closes the menu, and any scroll drops a long
+  // press. Scrolling is told by what the user does, a wheel, a finger moving
+  // (not the one that opened the menu), a scroll key or a press on a
+  // scrollbar, and not by scroll events: the pane's own scrolling, as to a
+  // new message, and a list drawn afresh fire those too, and leave the menu
+  // open.
+  const userScroll = (e) => {
+    if (menuBubble && !msgMenu.contains(e.target)) closeMenu();
+  };
+  listen(document, 'wheel', userScroll, signal, true);
+  listen(document, 'touchmove', (e) => {
+    if (!(press && press.opened)) userScroll(e);
+  }, signal, true);
+  listen(document, 'keydown', (e) => {
+    const t = e.target;
+    const typing = t instanceof Element && (t.closest('input, textarea, select') || t.isContentEditable);
+    if (SCROLL_KEYS.has(e.key) && !typing) userScroll(e);
+  }, signal, true);
+  listen(document, 'pointerdown', (e) => {
+    const t = e.target;
+    const scrolls = t instanceof Element && (t.scrollHeight > t.clientHeight || t.scrollWidth > t.clientWidth);
+    if (scrolls && (e.offsetX >= t.clientWidth || e.offsetY >= t.clientHeight)) userScroll(e);
+  }, signal, true);
   listen(document, 'click', (e) => {
     if (menuBubble && !msgMenu.contains(e.target) && Date.now() >= followUntil) closeMenu();
   }, signal);
@@ -496,10 +520,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
   listen(document, 'keydown', (e) => {
     if (e.key === 'Escape' && menuBubble) closeMenu(true);
   }, signal);
-  listen(document, 'scroll', () => {
-    cancelPress();
-    closeMenu();
-  }, signal, true);
+  listen(document, 'scroll', cancelPress, signal, true);
   listen(window, 'resize', closeMenu, signal);
   signal.addEventListener('abort', () => {
     cancelPress();
