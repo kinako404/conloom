@@ -72,9 +72,11 @@ type Service struct {
 	onTransition []func(convKey string, before, after conloomapi.GroupPolicy)
 	// saves counts the default policy changes made by SetDefaults.
 	saves uint64
-	// joined holds, for a conversation that FollowDefaults returned to the default policy, the
-	// saves count then: the changes up to it are already in the transition change notified, so
-	// notifying their following conversations skips it.
+	// joined holds, for a conversation following the default policy, the last saves count whose
+	// default policy it was notified of: set when FollowDefaults returns it to the default policy,
+	// and when a default policy change notified to it delivered a later change's default policy
+	// as after. The changes up to that count are already in a transition it saw, so notifying
+	// their following conversations skips it.
 	joined map[string]uint64
 
 	// ctx is cancelled by Close, which stops notifying conversations of default policy changes.
@@ -192,10 +194,12 @@ func (s *Service) checkContextCap(p conloomapi.GroupPolicy) error {
 // in Update is ErrInvalid and stores nothing. It records a settings.policy.update audit event with
 // action, and notifies the following conversations (see PolicyFollowers) in the background, in
 // batches and in the order of the changes, after it returns (see Wait and Close): each that still
-// follows the default policy when its turn comes, and was not returned to it by FollowDefaults
-// after this change, gets the OnChange callbacks, then the OnTransition callbacks with the
-// previous default policy and its effective policy re-read then. An audit failure is returned
-// together with the already stored version.
+// follows the default policy when its turn comes, and has not yet been notified of this change's
+// default policy or a later one (by FollowDefaults after this change, or by an earlier change's
+// notification that re-read a later default policy), gets the OnChange callbacks, then the
+// OnTransition callbacks with the previous default policy and its effective policy re-read then.
+// So the default policy changes notified to a conversation form one chain, each before being the
+// default policy of the previous after. An audit failure is returned together with the already stored version.
 func (s *Service) SetDefaults(ctx context.Context, kind string, p conloomapi.GroupPolicy, reason, by, action string) (store.PolicyDefaults, error) {
 	if kind != KindGroup && kind != KindPrivate {
 		return store.PolicyDefaults{}, fmt.Errorf("%w: unknown default policy kind %q", ErrInvalid, kind)
@@ -300,9 +304,11 @@ func (s *Service) notifyFollowers(c defaultsChange) {
 
 // followingAfter re-reads the conversation listed as following c's kind's default policy and
 // returns its effective policy now. It reports false, so c is not notified to it, when it no
-// longer follows the default policy (a change of its own already notified that), when
-// FollowDefaults returned it to the default policy after c was made (that notified the change
-// into c's default policy), or when it cannot be read.
+// longer follows the default policy (a change of its own already notified that), when it was
+// already notified of c's default policy or a later one (by FollowDefaults after c was made, or
+// by an earlier change's notification that re-read a later default policy), or when it cannot be
+// read. When the policy re-read is a later change's, it records that change in joined, so the
+// later changes' notifications skip it and its transitions form one chain.
 func (s *Service) followingAfter(c defaultsChange, key string) (conloomapi.GroupPolicy, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -320,7 +326,13 @@ func (s *Service) followingAfter(c defaultsChange, key string) (conloomapi.Group
 		}
 		return conloomapi.GroupPolicy{}, false
 	}
-	return pv.Policy, pv.FollowsDefaults
+	if !pv.FollowsDefaults {
+		return conloomapi.GroupPolicy{}, false
+	}
+	if s.saves > c.save {
+		s.joined[key] = s.saves
+	}
+	return pv.Policy, true
 }
 
 // Wait waits until the conversations of every default policy change made so far are notified.

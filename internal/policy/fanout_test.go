@@ -113,6 +113,56 @@ func TestPolicy_FanOutSkipsConversationFollowingAfterSave(t *testing.T) {
 	}
 }
 
+// memories returns whether memory is on before and after each transition.
+func memories(trs []transition) [][2]bool {
+	out := [][2]bool{}
+	for _, tr := range trs {
+		out = append(out, [2]bool{tr.before.Memory.Enabled, tr.after.Memory.Enabled})
+	}
+	return out
+}
+
+// savesWhileListing makes the first change of start's default policy to first, holds its
+// notification before it lists the followers of the one seeded conversation, makes the second
+// change to second, and returns the memory transitions notified once both are done.
+func savesWhileListing(t *testing.T, start, first, second conloomapi.GroupPolicy) [][2]bool {
+	t.Helper()
+	ctx := context.Background()
+	st := newTestStore(t)
+	seedConversation(t, st, conloomapi.ConvGroup, "10001")
+	paused := newPausedFollowers(st, false)
+	s := NewService(paused, start)
+	t.Cleanup(s.Close)
+	calls := recordCalls(s)
+	if _, err := s.SetDefaults(ctx, KindGroup, first, "", "panel:admin", "update"); err != nil {
+		t.Fatalf("SetDefaults first: %v", err)
+	}
+	paused.waitEntered(t)
+	if _, err := s.SetDefaults(ctx, KindGroup, second, "", "panel:admin", "update"); err != nil {
+		t.Fatalf("SetDefaults second: %v", err)
+	}
+	close(paused.release)
+	s.Wait()
+	return memories(calls.transitioned())
+}
+
+func TestPolicy_FanOutOffBetweenTwoSavesIsNotATurnOn(t *testing.T) {
+	on := withMemory(conloomapi.DefaultGroupPolicy(), true)
+	off := withMemory(conloomapi.DefaultGroupPolicy(), false)
+	got := savesWhileListing(t, on, off, on)
+	if want := [][2]bool{{true, true}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("memory transitions = %v, want %v: memory never looked off to the conversation", got, want)
+	}
+}
+
+func TestPolicy_FanOutTurnOnAfterUnrelatedSaveOnce(t *testing.T) {
+	off := withMemory(conloomapi.DefaultGroupPolicy(), false)
+	got := savesWhileListing(t, off, withRecent(off, 33), withMemory(withRecent(off, 33), true))
+	if want := [][2]bool{{false, true}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("memory transitions = %v, want exactly one off -> on %v", got, want)
+	}
+}
+
 func TestPolicy_CloseDuringFanOut(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)

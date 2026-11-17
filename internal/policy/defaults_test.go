@@ -406,24 +406,31 @@ func TestPolicy_SetDefaultsFanOutInBatches(t *testing.T) {
 		t.Fatalf("SetDefaults: %v", err)
 	}
 	s.Wait()
-	trs := calls.transitioned()
-	if len(trs) != 2*len(want) {
-		t.Fatalf("transitions = %d, want %d", len(trs), 2*len(want))
-	}
-	// Each change is notified in order with the default it replaced as before, and the effective
-	// policy re-read when notified as after: the second change's 44, or the first's 33 when the
-	// first change reached the conversation before the second was saved.
-	befores, afters := map[string][]int{}, map[string][]int{}
-	for _, tr := range trs {
-		befores[tr.key] = append(befores[tr.key], tr.before.Context.MaxRecentMessages)
-		afters[tr.key] = append(afters[tr.key], tr.after.Context.MaxRecentMessages)
+	// Each conversation sees one chain from 50 to 44: 50 -> 33 -> 44, or 50 -> 44 when the first
+	// change reached it after the second was saved.
+	chains := map[string][]transition{}
+	for _, tr := range calls.transitioned() {
+		chains[tr.key] = append(chains[tr.key], tr)
 	}
 	for _, key := range want {
-		if !slices.Equal(befores[key], []int{50, 33}) {
-			t.Fatalf("befores of %s = %v, want [50 33] in order", key, befores[key])
+		chain := chains[key]
+		if len(chain) == 0 || chain[0].before.Context.MaxRecentMessages != 50 ||
+			chain[len(chain)-1].after.Context.MaxRecentMessages != 44 {
+			t.Fatalf("transitions of %s = %v, want a chain from 50 to 44", key, recents(chain))
 		}
-		if a := afters[key]; len(a) != 2 || (a[0] != 33 && a[0] != 44) || a[1] != 44 {
-			t.Fatalf("afters of %s = %v, want [33|44 44]", key, a)
+		for i := 1; i < len(chain); i++ {
+			if chain[i].before.Context.MaxRecentMessages != chain[i-1].after.Context.MaxRecentMessages {
+				t.Fatalf("transitions of %s = %v, want each before to be the previous after", key, recents(chain))
+			}
 		}
 	}
+}
+
+// recents returns the max_recent_messages before and after of each transition.
+func recents(trs []transition) [][2]int {
+	out := [][2]int{}
+	for _, tr := range trs {
+		out = append(out, [2]int{tr.before.Context.MaxRecentMessages, tr.after.Context.MaxRecentMessages})
+	}
+	return out
 }
