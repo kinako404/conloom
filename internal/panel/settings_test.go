@@ -222,12 +222,20 @@ func TestSettingsPolicies_PutWarnings(t *testing.T) {
 
 	resp = h.save(http.MethodPut, settingsPath+"/group",
 		map[string]any{"policy": map[string]any{"review": map[string]any{"level": "strict"}}})
-	var review bool
-	for _, w := range resp.Warnings {
-		review = review || strings.Contains(w, "审查级别") && strings.Contains(w, `"strict"`)
+	if len(resp.Warnings) != 1 || !strings.Contains(resp.Warnings[0], "审查级别") || !strings.Contains(resp.Warnings[0], `"strict"`) {
+		t.Errorf("group save with an unimplemented review level while private memory lacks sensitive content: warnings %q, want only the one about 审查级别", resp.Warnings)
 	}
-	if !review {
-		t.Errorf("unimplemented review level: warnings %q, want one about 审查级别", resp.Warnings)
+	resp = h.save(http.MethodPut, settingsPath+"/group", map[string]any{"policy": map[string]any{}})
+	if len(resp.Warnings) != 0 {
+		t.Errorf("group save while private memory lacks sensitive content: warnings %q, want none", resp.Warnings)
+	}
+	resp = h.save(http.MethodPut, settingsPath+"/private", map[string]any{"policy": map[string]any{}})
+	if len(resp.Warnings) != 0 {
+		t.Errorf("private save with memory off: warnings %q, want none", resp.Warnings)
+	}
+	resp = h.save(http.MethodPost, settingsPath+"/private/restore", map[string]any{"version": 1})
+	if len(resp.Warnings) != 1 || !strings.Contains(resp.Warnings[0], "敏感内容") {
+		t.Errorf("private restore to memory on without sensitive content: warnings %q, want one about 敏感内容", resp.Warnings)
 	}
 
 	h.cfg.ModelProfiles = map[string]config.ModelProfile{"long_context": {

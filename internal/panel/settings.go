@@ -158,10 +158,10 @@ func (s *Server) setDefaults(w http.ResponseWriter, r *http.Request, sess *Sessi
 
 // policyWarnings re-checks, after p was saved as kind's default policy, what
 // the service warns about at startup: memory settings the long model cannot
-// serve (memory.WarnOutputReservation and WarnPrivateMemoryNotSensitive,
-// under both default policies) and a review level of p that is not
-// implemented yet. Each warning is logged and returned in Chinese; none is an
-// empty list.
+// serve (memory.WarnOutputReservation under both default policies and, when p
+// is the private one, WarnPrivateMemoryNotSensitive) and a review level of p
+// that is not implemented yet. Each warning is logged and returned in
+// Chinese; none is an empty list.
 func (s *Server) policyWarnings(kind string, p conloomapi.GroupPolicy) []string {
 	group, private := s.d.Policies.Defaults(policy.KindGroup).Policy, s.d.Policies.Defaults(policy.KindPrivate).Policy
 	if kind == policy.KindPrivate {
@@ -169,11 +169,12 @@ func (s *Server) policyWarnings(kind string, p conloomapi.GroupPolicy) []string 
 	} else {
 		group = p
 	}
+	notices := []string{memory.WarnOutputReservation(s.d.Config, group, private, s.log)}
+	if kind == policy.KindPrivate {
+		notices = append(notices, memory.WarnPrivateMemoryNotSensitive(s.d.Config, private, s.log))
+	}
 	out := []string{}
-	for _, notice := range []string{
-		memory.WarnOutputReservation(s.d.Config, group, private, s.log),
-		memory.WarnPrivateMemoryNotSensitive(s.d.Config, private, s.log),
-	} {
+	for _, notice := range notices {
 		if notice != "" {
 			out = append(out, notice)
 		}
