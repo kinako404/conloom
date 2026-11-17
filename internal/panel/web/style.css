@@ -240,7 +240,25 @@ ul.plain { list-style: none; margin: 0; padding: 0; }
 .chat-classic .bubble.user .meta { justify-content: flex-end; }
 .chat-classic .bubble .body { white-space: pre-wrap; word-break: break-word; }
 .chat-classic .chat-typing { color: var(--muted); font-size: 12px; padding: 4px; }
-.chat-classic .chat-form { display: flex; gap: 8px; align-items: flex-end; margin-top: 8px; }
+.chat-classic .chat-form { position: relative; display: flex; gap: 8px; align-items: flex-end; margin-top: 8px; }
+.chat-classic .cmd-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  z-index: 20;
+  max-height: min(288px, 40vh);
+  overflow-y: auto;
+  margin-bottom: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .15);
+}
+.chat-classic .cmd-item { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; padding: 6px 10px; cursor: pointer; }
+.chat-classic .cmd-item[aria-selected="true"] { background: var(--code-bg); }
+.chat-classic .cmd-args, .chat-classic .cmd-desc { color: var(--muted); }
+.chat-classic .cmd-desc { margin-left: auto; font-size: 12px; }
 .chat-classic .chat-form .chat-input { flex: 1; min-height: 60px; }
 .chat-classic .chat-suggestions { display: flex; flex-wrap: wrap; gap: 6px; max-width: 100%; }
 .chat-classic .chat-suggestions button { white-space: normal; text-align: left; border-color: var(--accent); color: var(--accent); }
@@ -696,6 +714,9 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
 }
 @media (pointer: coarse) {
   .chat-app .tg-bubble { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  /* A finger picks a command from a row at least 44px high. */
+  .chat-app .cmd-item,
+  .chat-classic .cmd-item { min-height: 44px; align-items: center; align-content: center; }
 }
 
 .chat-app .tg-conv { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; animation: tg-fade-in 150ms ease-out; }
@@ -833,6 +854,38 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   transition: opacity 150ms ease-out, transform 150ms ease-out;
 }
 .chat-app .tg-send:active:not(:disabled) { transform: scale(.92); }
+/* The command menu (views/commandmenu.js) rises from the box, over the
+   newest messages, about eight rows high before it scrolls. */
+.chat-app .tg-compose { position: relative; }
+.chat-app .cmd-menu {
+  position: absolute;
+  left: var(--tg-side);
+  right: var(--tg-side);
+  bottom: 100%;
+  z-index: 20;
+  max-height: min(320px, 40vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .25);
+  transform-origin: left bottom;
+  animation: tg-menu-in 150ms cubic-bezier(.2,.8,.2,1);
+}
+.chat-app .cmd-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+  padding: 8px 16px;
+  cursor: pointer;
+}
+.chat-app .cmd-item[aria-selected="true"] { background: var(--code-bg); }
+.chat-app .cmd-name { font-weight: 600; white-space: nowrap; }
+.chat-app .cmd-args { color: var(--muted); white-space: nowrap; }
+.chat-app .cmd-desc { margin-left: auto; color: var(--muted); font-size: 13px; }
 
 /* The page's motion: what arrives eases in, from below for a message, from
    its corner for a menu, from the side it comes from for a page on a narrow
