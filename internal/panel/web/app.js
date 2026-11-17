@@ -12,6 +12,7 @@ import { conversationView } from './views/conversation.js';
 import { templatesView, templateView } from './views/templates.js';
 import { tasksView, taskDetailView } from './views/tasks.js';
 import { auditView } from './views/audit.js';
+import { settingsView } from './views/settings.js';
 import { configView } from './views/config.js';
 
 route('/', overviewView);
@@ -29,6 +30,7 @@ route('/templates/:name', templateView);
 route('/tasks', tasksView);
 route('/tasks/:id', taskDetailView);
 route('/audit', auditView);
+route('/settings', settingsView);
 route('/config', configView);
 
 const topbar = document.getElementById('topbar');

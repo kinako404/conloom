@@ -48,7 +48,7 @@ func TestAssets_PlannedFilesPresent(t *testing.T) {
 		"lib/api.js", "lib/router.js", "lib/dom.js", "lib/chart.js", "lib/format.js", "lib/sections.js",
 		"views/login.js", "views/overview.js", "views/usage.js", "views/conversations.js",
 		"views/conversation.js", "views/chat.js", "views/chats.js", "views/chatclassic.js", "views/chatsclassic.js", "views/avatar.js", "views/autonomy.js", "views/tasks.js", "views/audit.js", "views/config.js",
-		"views/personaform.js", "views/templates.js",
+		"views/personaform.js", "views/templates.js", "views/policyform.js", "views/settings.js",
 	} {
 		if _, err := fs.Stat(FS, name); err != nil {
 			t.Errorf("%s: %v", name, err)
@@ -306,19 +306,8 @@ func TestChatsView_TelegramShell(t *testing.T) {
 			t.Errorf("app.js lacks %q", want)
 		}
 	}
-	// The top bar and the ≡ menu list the same sections, from lib/sections.js,
-	// in the panel's order; neither has its own copy.
-	m := regexp.MustCompile(`(?s)export const SECTIONS = \[(.*?)\];`).FindStringSubmatch(files["lib/sections.js"])
-	if m == nil {
-		t.Fatal("lib/sections.js has no SECTIONS")
-	}
-	var sections []string
-	for _, s := range regexp.MustCompile(`\['([^']*)', '([^']*)'\]`).FindAllStringSubmatch(m[1], -1) {
-		sections = append(sections, s[1]+"="+s[2])
-	}
-	if want := []string{"=概览", "usage=用量", "chat=聊天", "conversations=会话", "templates=人设模板", "tasks=任务", "audit=审计", "config=配置"}; !slices.Equal(sections, want) {
-		t.Errorf("SECTIONS = %q, want %q", sections, want)
-	}
+	// The top bar and the ≡ menu list the same sections, from lib/sections.js
+	// (in the order TestSections_Order checks); neither has its own copy.
 	if !strings.Contains(js, "import { SECTIONS } from '../lib/sections.js';") {
 		t.Error("views/chats.js does not take its menu links from lib/sections.js")
 	}
@@ -1643,5 +1632,94 @@ func TestChatPanes_CommandMenu(t *testing.T) {
 	}
 	if !regexp.MustCompile(`\.chat-classic \.cmd-item\s*\{[^}]*min-height:\s*44px;`).MatchString(mediaBlock(t, css, "(pointer: coarse)")) {
 		t.Error("style.css @media (pointer: coarse) does not give command rows 44px")
+	}
+}
+
+// containsAll reports, as test errors, each of wants that file's text lacks.
+func containsAll(t *testing.T, file, text string, wants ...string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(text, want) {
+			t.Errorf("%s lacks %q", file, want)
+		}
+	}
+}
+
+// The top bar and the ≡ menu of #/im list the sections in the panel's order,
+// with 设置 before 配置.
+func TestSections_Order(t *testing.T) {
+	m := regexp.MustCompile(`(?s)export const SECTIONS = \[(.*?)\];`).FindStringSubmatch(assets(t, ".js")["lib/sections.js"])
+	if m == nil {
+		t.Fatal("lib/sections.js has no SECTIONS")
+	}
+	var sections []string
+	for _, s := range regexp.MustCompile(`\['([^']*)', '([^']*)'\]`).FindAllStringSubmatch(m[1], -1) {
+		sections = append(sections, s[1]+"="+s[2])
+	}
+	want := []string{"=概览", "usage=用量", "chat=聊天", "conversations=会话", "templates=人设模板", "tasks=任务", "audit=审计", "settings=设置", "config=配置"}
+	if !slices.Equal(sections, want) {
+		t.Errorf("SECTIONS = %q, want %q", sections, want)
+	}
+}
+
+// The settings page edits the group and private default policies with the
+// shared policy form, JSON editor and version list, and shows how many
+// conversations follow each and the warnings a save returns.
+func TestSettingsView(t *testing.T) {
+	files := assets(t, ".js")
+	js := files["views/settings.js"]
+	containsAll(t, "views/settings.js", js,
+		"from './policyform.js'", "export async function settingsView(", "'设置'",
+		"默认策略保存后立即生效，不用重启。", "settings/policies",
+		"个会话跟随这个默认值；单独改过策略的会话不受影响。", "policyVersions(", "高级：JSON 编辑",
+		"整份替换默认策略；没写的字段按内置默认值补齐。", "warnings", "'hint warn'", "已保存",
+		"群聊默认策略", "私聊默认策略", "/restore")
+	containsAll(t, "app.js", files["app.js"],
+		"import { settingsView } from './views/settings.js';", "route('/settings', settingsView)")
+}
+
+// The policy form lives in views/policyform.js, used by the conversation's
+// policy tab and the settings page; neither has its own copy.
+func TestPolicyForm_Shared(t *testing.T) {
+	files := assets(t, ".js")
+	form := files["views/policyform.js"]
+	containsAll(t, "views/policyform.js", form,
+		"export function policyForm(", "export function policyJSONForm(", "export function policyVersions(",
+		"field('分条上限'", "field('免打扰开始'", "field('私聊等待'", "field('主动找人档位'", "恢复此版本",
+		"'分条上限必须是整数'", "'免打扰时段写成 23:00 这样的两位数时间'", "'JSON 格式错误：'")
+	conv := files["views/conversation.js"]
+	containsAll(t, "views/conversation.js", conv, "from './policyform.js'", "policyForm(", "policyJSONForm(", "policyVersions(",
+		"整份替换当前策略。含 proactive 或 memory 段时，该段必须完整；不含时保留当前设置。")
+	for name, text := range map[string]string{"views/conversation.js": conv, "views/settings.js": files["views/settings.js"]} {
+		for _, copied := range []string{"field('分条上限'", "field('免打扰开始'", "JSON.parse(json.value)", "'恢复此版本'"} {
+			if strings.Contains(text, copied) {
+				t.Errorf("%s has its own copy of %q", name, copied)
+			}
+		}
+	}
+}
+
+// The conversation's policy tab tells whether the conversation follows its
+// type's default policy, and offers to return to it, warning that a paused
+// conversation is resumed.
+func TestConversationPolicy_FollowDefaults(t *testing.T) {
+	js := assets(t, ".js")["views/conversation.js"]
+	containsAll(t, "views/conversation.js", js,
+		"res.defaults", "follows_defaults", "跟随默认（", "默认 第 ${", "单独设置（第 ${", "改回跟随默认",
+		"修改下面的设置会让这个会话改为单独设置。",
+		"改回后，这个会话改用${", "默认策略，单独设置的内容不再生效（历史版本保留）。",
+		"当前是暂停状态，改回后会按默认值取消暂停。", "确定改回？",
+		"'policy', 'follow-defaults'", "{ reason: '改回跟随默认' }", "'已改回跟随默认'", "（跟随默认）")
+}
+
+// The config page sends the default policies, which come from the database,
+// to the settings page; only the rest of the config needs a restart.
+func TestConfigView_SettingsHint(t *testing.T) {
+	js := assets(t, ".js")["views/config.js"]
+	containsAll(t, "views/config.js", js,
+		"当前生效的配置，只读。密钥类字段只显示是否已设置；默认策略（default_group_policy、default_private_policy）来自数据库，在设置页修改；其余配置需要改文件后重启。",
+		"在设置页修改", "'#/settings'", "'default_group_policy'", "'default_private_policy'")
+	if strings.Contains(js, "修改配置需要改文件后重启。") {
+		t.Error("views/config.js still says every config change needs a restart")
 	}
 }

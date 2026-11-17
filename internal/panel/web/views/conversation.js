@@ -1,11 +1,12 @@
-import { h, mount, errorBox, loading, empty, table, kv, field, paged, select } from '../lib/dom.js';
+import { h, mount, errorBox, loading, empty, table, kv, field, paged } from '../lib/dom.js';
 import { get, post, put, del, convPath, isAbort } from '../lib/api.js';
 import { go, href, withQuery } from '../lib/router.js';
-import { fmtTime, fmtInt, pretty, label, CONV_TYPE, PRIVATE_LEVEL } from '../lib/format.js';
+import { fmtTime, fmtInt, label, CONV_TYPE } from '../lib/format.js';
 import { statusBadges, personaLabel } from './conversations.js';
 import { taskList } from './tasks.js';
 import { autonomyTab } from './autonomy.js';
 import { personaForm } from './personaform.js';
+import { policyForm, policyJSONForm, policyVersions, submit, fail, jsonDetails } from './policyform.js';
 import { deleteChatConfirmed } from './chat.js';
 
 const TABS = [
@@ -33,28 +34,17 @@ function scopeNote(c, tab) {
 // flash is a success message shown once after a write reloads the page.
 let flash = '';
 
+// saved runs a change and reloads the page with done as the success message.
+async function saved(fn, done) {
+  await fn();
+  flash = done;
+  go(location.hash);
+}
+
 // write runs a change, showing its error in box, and reloads the page with
 // done as the success message.
-async function write(box, button, fn, done) {
-  if (button) button.disabled = true;
-  mount(box);
-  try {
-    await fn();
-    flash = done;
-    go(location.hash);
-  } catch (err) {
-    if (!isAbort(err)) mount(box, errorBox(err));
-  } finally {
-    if (button) button.disabled = false;
-  }
-}
-
-function fail(box, message) {
-  mount(box, errorBox({ message }));
-}
-
-function jsonDetails(v) {
-  return h('details', null, h('summary', null, '查看'), h('pre', { class: 'code' }, pretty(v)));
+function write(box, button, fn, done) {
+  return submit(box, button, () => saved(fn, done));
 }
 
 // ---- messages ----
@@ -118,20 +108,45 @@ function messagesTab({ key, query, signal }) {
 
 // ---- policy ----
 
-// PRIVATE_LEVEL_CHOICES are proactive.private.level's choices; empty is mid.
-const PRIVATE_LEVEL_CHOICES = { '': '留空（按中）', ...PRIVATE_LEVEL };
-
-// CLOCK is the HH:MM form of quiet hours.
-const CLOCK = /^\d{2}:\d{2}$/;
+// followState tells whether the conversation follows the default policy of
+// its type (res.defaults) and, when it has its own, offers to return to it;
+// paused is whether the conversation is paused, which returning undoes.
+function followState(key, res, paused) {
+  const cur = res.current;
+  const defaults = res.defaults || {};
+  const kind = label(CONV_TYPE, defaults.kind);
+  if (cur.follows_defaults) {
+    return [
+      h('p', null, h('span', { class: 'badge on' }, `跟随默认（${kind}默认 第 ${defaults.version} 版）`)),
+      h('p', { class: 'hint' }, '修改下面的设置会让这个会话改为单独设置。'),
+    ];
+  }
+  const msg = h('div');
+  const button = h('button', {
+    type: 'button',
+    onclick: () => {
+      const question = `改回后，这个会话改用${kind}默认策略，单独设置的内容不再生效（历史版本保留）。` +
+        (paused ? '当前是暂停状态，改回后会按默认值取消暂停。' : '') + '确定改回？';
+      if (!confirm(question)) return undefined;
+      return write(msg, button, () => post(convPath(key, 'policy', 'follow-defaults'), { reason: '改回跟随默认' }), '已改回跟随默认');
+    },
+  }, '改回跟随默认');
+  return [
+    h('p', null, h('span', { class: 'badge' }, `单独设置（第 ${cur.version} 版）`)),
+    h('div', { class: 'toolbar' }, button),
+    msg,
+  ];
+}
 
 async function policyTab({ key, conv, signal }) {
   const res = await get(convPath(key, 'policy'), null, signal);
   const cur = res.current;
   if (!cur) return [empty('尚无策略')];
   const p = cur.policy || {};
+  const paused = (p.concurrency || {}).max_interactive_requests === 0;
 
   const pauseMsg = h('div');
-  const pause = h('input', { type: 'checkbox', checked: (p.concurrency || {}).max_interactive_requests === 0 });
+  const pause = h('input', { type: 'checkbox', checked: paused });
   pause.addEventListener('change', async () => {
     const want = pause.checked;
     const question = want
@@ -155,105 +170,18 @@ async function policyTab({ key, conv, signal }) {
     }
   });
 
-  const proactive = h('input', { type: 'checkbox', checked: !!(p.proactive || {}).enabled });
-  const memory = h('input', { type: 'checkbox', checked: !!(p.memory || {}).enabled });
-  const summaryMax = h('input', { type: 'number', min: 0, max: 8000, step: 1, value: (p.memory || {}).summary_max_chars ?? 0 });
-  const noteMax = h('input', { type: 'number', min: 0, max: 2000, step: 1, value: (p.memory || {}).note_max_chars ?? 0 });
-  const recent = h('input', { type: 'number', min: 0, max: 500, step: 1, value: (p.context || {}).max_recent_messages ?? '' });
-  const reply = p.reply || {};
-  const maxParts = h('input', { type: 'number', min: 1, max: 5, step: 1, value: reply.max_parts ?? '' });
-  const isPrivate = conv.type === 'private';
-  const limits = res.memory_limits || {};
-  const limitHint = (range, def, cur) => `${range}；0 表示用本会话类型的默认值（${def ?? '—'}），当前生效 ${cur ?? '—'}`;
-  const privateWait = h('input', { value: reply.private_wait || '', placeholder: '6s' });
-  const privateMaxWait = h('input', { value: reply.private_max_wait || '', placeholder: '20s' });
-  const initiative = (p.proactive || {}).private || {};
-  const level = select(PRIVATE_LEVEL_CHOICES, initiative.level || '');
-  const quietStart = h('input', { value: initiative.quiet_start || '', placeholder: '23:00' });
-  const quietEnd = h('input', { value: initiative.quiet_end || '', placeholder: '07:00' });
-  const reason = h('input', { placeholder: '修改原因' });
-  const msg = h('div');
-  const save = h('button', { type: 'submit', class: 'primary' }, '保存');
-  const form = h('form', {
-    onsubmit: (e) => {
-      e.preventDefault();
-      const n = Number(recent.value);
-      if (recent.value.trim() === '' || !Number.isInteger(n)) return fail(msg, '历史条数必须是整数');
-      const parts = Number(maxParts.value);
-      if (maxParts.value.trim() === '' || !Number.isInteger(parts)) return fail(msg, '分条上限必须是整数');
-      const summaryChars = Number(summaryMax.value);
-      if (summaryMax.value.trim() === '' || !Number.isInteger(summaryChars)) return fail(msg, '摘要字数上限必须是整数');
-      const noteChars = Number(noteMax.value);
-      if (noteMax.value.trim() === '' || !Number.isInteger(noteChars)) return fail(msg, '笔记字数上限必须是整数');
-      const policy = JSON.parse(JSON.stringify(p));
-      policy.proactive = { ...policy.proactive, enabled: proactive.checked };
-      policy.memory = { ...policy.memory, enabled: memory.checked, summary_max_chars: summaryChars, note_max_chars: noteChars };
-      policy.context = { ...policy.context, max_recent_messages: n };
-      policy.reply = { ...policy.reply, max_parts: parts };
-      if (isPrivate) {
-        const wait = privateWait.value.trim();
-        const maxWait = privateMaxWait.value.trim();
-        if (wait === '' || maxWait === '') return fail(msg, '私聊等待时间不能为空，写成 6s、500ms、1m 这样的时长');
-        policy.reply.private_wait = wait;
-        policy.reply.private_max_wait = maxWait;
-        const start = quietStart.value.trim();
-        const end = quietEnd.value.trim();
-        if ((start === '') !== (end === '')) return fail(msg, '免打扰时段的开始和结束要么都填，要么都留空');
-        if (start !== '' && !(CLOCK.test(start) && CLOCK.test(end))) return fail(msg, '免打扰时段写成 23:00 这样的两位数时间');
-        policy.proactive.private = { ...policy.proactive.private, level: level.value, quiet_start: start, quiet_end: end };
-      }
-      return write(msg, save, () => put(convPath(key, 'policy'), { policy, reason: reason.value.trim() }), '策略已保存');
-    },
-  },
-  h('div', { class: 'form-grid' },
-    h('label', { class: 'field inline' }, proactive, '主动发言'),
-    h('label', { class: 'field inline' }, memory, '记忆'),
-    field('历史条数', recent, '每次回复带上的最近消息数，0–500'),
-    field('分条上限', maxParts, '一次回复最多分成几条消息发出，1–5；1 表示不分条')),
-  h('div', { class: 'form-grid' },
-    field('摘要字数上限', summaryMax, limitHint('记忆摘要最多多少字，200–8000', limits.default_summary_max_chars, limits.summary_max_chars)),
-    field('笔记字数上限', noteMax, limitHint('每人的记忆笔记最多多少字，50–2000', limits.default_note_max_chars, limits.note_max_chars))),
-  isPrivate ? h('div', { class: 'form-grid' },
-    field('私聊等待', privateWait, '对方停顿多久才开始回复，0–60s'),
-    field('私聊最长等待', privateMaxWait, '从开始等待起最多等多久，打断重来时重新计算，私聊等待–2m；两项都填 0 表示用默认值')) : null,
-  isPrivate ? h('div', { class: 'form-grid' },
-    field('主动找人档位', level, '关：不主动找人；低、中、高：每天最多发起 1、2、4 条，距上一条消息至少 8、4、2 小时。要打开“主动发言”才会发'),
-    field('免打扰开始', quietStart, 'HH:MM，按服务器时区，可以跨午夜'),
-    field('免打扰结束', quietEnd, '两项都留空时按对方的作息推算，消息不够时用 00:30–08:00')) : null,
-  field('原因', reason),
-  msg, save);
-
-  const json = h('textarea', { class: 'json', spellcheck: 'false', value: pretty(p) });
-  const jsonReason = h('input', { placeholder: '修改原因' });
-  const jsonMsg = h('div');
-  const jsonSave = h('button', { type: 'submit', class: 'primary' }, '保存 JSON');
-  const jsonForm = h('form', {
-    onsubmit: (e) => {
-      e.preventDefault();
-      let policy;
-      try {
-        policy = JSON.parse(json.value);
-      } catch (err) {
-        return fail(jsonMsg, 'JSON 格式错误：' + err.message);
-      }
-      if (!policy || typeof policy !== 'object' || Array.isArray(policy)) return fail(jsonMsg, '策略必须是一个 JSON 对象');
-      return write(jsonMsg, jsonSave, () => put(convPath(key, 'policy'), { policy, reason: jsonReason.value.trim() }), '策略已保存');
-    },
-  },
-  h('p', { class: 'hint' }, '整份替换当前策略。含 proactive 或 memory 段时，该段必须完整；不含时保留当前设置。'),
-  json, field('原因', jsonReason), jsonMsg, jsonSave);
-
-  const verMsg = h('div');
-  const restore = async (version, button) => {
-    const why = prompt(`把第 ${version} 版的策略作为新版本写入。原因：`, `恢复到第 ${version} 版`);
-    if (why === null) return;
-    await write(verMsg, button, () => post(convPath(key, 'policy', 'restore'), { version, reason: why }), `已恢复第 ${version} 版`);
-  };
-  const versions = res.versions || [];
+  const store = (policy, reason) => saved(() => put(convPath(key, 'policy'), { policy, reason }), '策略已保存');
+  const form = policyForm({ policy: p, isPrivate: conv.type === 'private', limits: res.memory_limits, onSave: store });
+  const jsonForm = policyJSONForm({
+    policy: p,
+    hint: '整份替换当前策略。含 proactive 或 memory 段时，该段必须完整；不含时保留当前设置。',
+    onSave: store,
+  });
 
   return [
     h('section', { class: 'card' },
       h('h2', null, `当前策略：第 ${cur.version} 版`),
+      followState(key, res, paused),
       kv([['修改人', cur.updated_by || '—'], ['原因', cur.reason || '—'], ['时间', fmtTime(cur.created_at)]]),
       h('h3', null, '暂停'),
       h('label', { class: 'field inline' }, pause, '暂停回复（把并发上限设为 0）'),
@@ -262,21 +190,12 @@ async function policyTab({ key, conv, signal }) {
     h('details', { class: 'card' }, h('summary', null, '高级：JSON 编辑'), jsonForm),
     h('section', { class: 'card' },
       h('h2', null, '历史版本'),
-      verMsg,
-      versions.length ? table([
-        { title: '版本', class: 'nowrap', cell: (v) => `第 ${v.version} 版${v.version === cur.version ? '（当前）' : ''}` },
-        { title: '时间', class: 'nowrap', cell: (v) => fmtTime(v.created_at) },
-        { title: '修改人', cell: (v) => v.updated_by },
-        { title: '原因', class: 'text', cell: (v) => v.reason || '—' },
-        { title: '内容', cell: (v) => jsonDetails(v.policy) },
-        {
-          title: '',
-          cell: (v) => (v.version === cur.version ? '' : h('button', {
-            type: 'button',
-            onclick: (e) => restore(v.version, e.currentTarget),
-          }, '恢复此版本')),
-        },
-      ], versions) : empty('没有历史版本')),
+      policyVersions({
+        versions: res.versions || [],
+        current: cur.version,
+        label: (v) => (v.follows_defaults ? '（跟随默认）' : ''),
+        onRestore: (version, reason) => saved(() => post(convPath(key, 'policy', 'restore'), { version, reason }), `已恢复第 ${version} 版`),
+      })),
   ];
 }
 

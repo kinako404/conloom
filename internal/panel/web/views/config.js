@@ -1,13 +1,21 @@
 import { h, mount, empty, table } from '../lib/dom.js';
 import { get } from '../lib/api.js';
+import { jsonDetails } from './policyform.js';
 
 const SET = '(已设置)';
 const UNSET = '(未设置)';
 
+// SETTINGS are the config entries the settings page edits, read from the
+// database as {source, version, policy}; each is one row.
+const SETTINGS = ['default_group_policy', 'default_private_policy'];
+
 // flatten lists the leaves of a nested value as {path, value}, with array
-// items as path[i]; empty objects and arrays are leaves.
+// items as path[i]; empty objects and arrays and SETTINGS (marked settings)
+// are leaves.
 function flatten(v, path, out) {
-  if (Array.isArray(v)) {
+  if (SETTINGS.includes(path) && v !== null && typeof v === 'object') {
+    out.push({ path, value: v, settings: true });
+  } else if (Array.isArray(v)) {
     if (!v.length) out.push({ path, value: v });
     v.forEach((x, i) => flatten(x, `${path}[${i}]`, out));
   } else if (v !== null && typeof v === 'object') {
@@ -29,6 +37,13 @@ function valueNode(v) {
   return String(v);
 }
 
+function settingsNode(v) {
+  return [
+    h('div', null, `source: ${v.source}，第 ${v.version} 版 `, h('a', { href: '#/settings' }, '在设置页修改')),
+    jsonDetails(v.policy),
+  ];
+}
+
 export async function configView(ctx) {
   const res = await get('config', null, ctx.signal);
   const rows = flatten(res.config || {}, '', []);
@@ -39,14 +54,14 @@ export async function configView(ctx) {
     const shown = needle ? rows.filter((r) => r.path.toLowerCase().includes(needle)) : rows;
     mount(list, shown.length ? table([
       { title: '配置项', cell: (r) => h('span', { class: 'mono' }, r.path) },
-      { title: '值', class: 'text', cell: (r) => valueNode(r.value) },
+      { title: '值', class: 'text', cell: (r) => (r.settings ? settingsNode(r.value) : valueNode(r.value)) },
     ], shown) : empty('没有匹配的配置项'));
   };
   filter.addEventListener('input', show);
   show();
   ctx.show(
     h('h1', null, '配置'),
-    h('p', { class: 'hint' }, '当前生效的配置，只读。密钥类字段只显示是否已设置；修改配置需要改文件后重启。'),
+    h('p', { class: 'hint' }, '当前生效的配置，只读。密钥类字段只显示是否已设置；默认策略（default_group_policy、default_private_policy）来自数据库，在设置页修改；其余配置需要改文件后重启。'),
     h('div', { class: 'toolbar' }, filter),
     list,
   );

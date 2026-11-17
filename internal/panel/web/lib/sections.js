@@ -9,5 +9,6 @@ export const SECTIONS = [
   ['templates', '人设模板'],
   ['tasks', '任务'],
   ['audit', '审计'],
+  ['settings', '设置'],
   ['config', '配置'],
 ];
