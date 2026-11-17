@@ -452,6 +452,14 @@ function chatPage() {
   let fullPending = 0;
   let botReads = 0;
   let ticks = 0;
+  // shownUnread holds, by badge ('c:' and a chat key, 'f:' and a folder),
+  // the unread count it showed last, once the list was first shown
+  // (unreadPrimed): a badge showing another count bumps. entered tells
+  // whether a chat or the list was shown yet: from then on the layout marks
+  // which one comes in, which slides in on a narrow screen.
+  const shownUnread = {};
+  let unreadPrimed = false;
+  let entered = false;
   const listMsg = h('div');
   const pollMsg = h('div');
   const paneMsg = h('div', { class: 'tg-pane-msg' });
@@ -482,6 +490,14 @@ function chatPage() {
   const unreadOf = (c) => Math.max(0, (c.message_count || 0) - (seen[c.key] === undefined ? c.message_count || 0 : seen[c.key]));
 
   const allChats = () => groups.flatMap((g) => g.chats || []);
+
+  // badge is unreadBadge for the badge id, bumping when its count changed.
+  const badge = (id, n, cls) => {
+    const el = unreadBadge(n, cls);
+    if (el && unreadPrimed && shownUnread[id] !== n) el.classList.add('bump');
+    shownUnread[id] = n;
+    return el;
+  };
 
   // choose shows the folder of bot id, all chats when empty, keeping the
   // chat open: the address changes without a new render.
@@ -658,7 +674,7 @@ function chatPage() {
       e.preventDefault();
       choose(id);
     },
-  }, h('span', { class: 'tg-folder-pic' }, icon, unreadBadge(unread, 'tg-unread tg-folder-unread'), warnDot(problems)),
+  }, h('span', { class: 'tg-folder-pic' }, icon, badge('f:' + id, unread, 'tg-unread tg-folder-unread'), warnDot(problems)),
   h('span', { class: 'tg-folder-name' }, name));
 
   const renderFolders = () => {
@@ -713,7 +729,7 @@ function chatPage() {
       h('span', { class: 'tg-chat-time' }, fmtClock(c.last_message_at))),
     h('span', { class: 'tg-chat-line' },
       preview(c),
-      unreadBadge(unreadOf(c), 'tg-unread')))));
+      badge('c:' + c.key, unreadOf(c), 'tg-unread')))));
 
   // renderList lists the chats of the folder chosen that match the search,
   // by bot name, who the bot talks with or the last message.
@@ -749,6 +765,7 @@ function chatPage() {
     renderFolders();
     renderBotBar();
     renderList();
+    if (fetched) unreadPrimed = true;
   }
 
   // renderChanged renders the folders and the list again only when what
@@ -877,6 +894,12 @@ function chatPage() {
     current = key;
     pending = null;
     classicLink.href = key ? href('chat', key) : '#/chat';
+    const open = !!key;
+    if (entered && layout.classList.contains('open') !== open) {
+      layout.classList.toggle('tg-enter-chat', open);
+      layout.classList.toggle('tg-enter-list', !open);
+    }
+    entered = true;
     layout.classList.toggle('open', !!key);
     if (key && fetched) seen = noteSeen(allChats(), key);
     renderLists();

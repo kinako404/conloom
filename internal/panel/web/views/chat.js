@@ -153,7 +153,8 @@ export function chatBar({ key, bot, title, status, items, onBack, onDelete, sign
 // with the latest messages, then polls GET chat with the newest seq it has
 // seen until signal fires or the chat is gone (404), which stops the polling
 // and the sending. Messages are bubbles grouped by sender, with a date pill
-// where the day changes. With the 建议回复 switch on, once the bot's turn is
+// where the day changes; those that arrive after the opening ones float in,
+// and 正在输入 shows under the name while the bot is busy. With the 建议回复 switch on, once the bot's turn is
 // done it offers reply suggestions under the newest message, which send
 // themselves when clicked. hint, when given, is shown above the messages.
 // bot ({id, name, avatar}) is who the chat is with, title who the bot talks
@@ -162,7 +163,15 @@ export function chatBar({ key, bot, title, status, items, onBack, onDelete, sign
 // each time some are shown: the latest at first, then each one new.
 export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete, onMessages }) {
   const log = h('ul', { class: 'tg-log' }, hint ? h('li', { class: 'tg-note' }, hint) : null);
-  const status = h('span', { class: 'tg-bar-status' });
+  // typing is 正在输入 with three blinking dots, always in the status line,
+  // which keeps its height, and shown by showTyping, which fades it.
+  const typing = h('span', { class: 'tg-typing', 'aria-hidden': 'true' }, '正在输入',
+    h('span', { class: 'tg-typing-dot' }), h('span', { class: 'tg-typing-dot' }), h('span', { class: 'tg-typing-dot' }));
+  const status = h('span', { class: 'tg-bar-status' }, typing);
+  const showTyping = (on) => {
+    typing.classList.toggle('on', on);
+    typing.setAttribute('aria-hidden', String(!on));
+  };
   const pollError = h('div', { class: 'tg-status' });
   const sendError = h('div', { class: 'tg-status' });
   const touch = matchMedia(TOUCH).matches;
@@ -200,8 +209,8 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
   // place appends message m after the newest: under a date pill when its day
   // differs from the newest message's, otherwise, from the same sender, on
   // the same side, in the newest message's group, which only its last
-  // message has a tail of.
-  const place = (m) => {
+  // message has a tail of. A fresh message floats in.
+  const place = (m, fresh) => {
     const day = dayOf(m.at);
     const newDay = day !== '' && day !== lastDay;
     if (newDay) {
@@ -214,20 +223,27 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
       el.classList.add('cont');
     }
     el.classList.add('tail');
+    if (fresh) {
+      el.classList.add('is-new');
+      el.addEventListener('animationend', (e) => {
+        if (e.target === el) el.classList.remove('is-new');
+      });
+    }
     log.appendChild(el);
     lastEl = el;
   };
 
   // add appends the rows not shown yet, in place of any suggestions, hands
   // them to onMessages and reports whether there were any; stick scrolls them
-  // into view even when the user has scrolled up.
-  const add = (rows, stick) => {
+  // into view even when the user has scrolled up, and fresh, for rows that
+  // just arrived, has them float in. A row is shown once, by its seq.
+  const add = (rows, stick, fresh) => {
     const atBottom = nearBottom();
     const added = [];
     for (const m of rows) {
       if (m.seq <= after) continue;
       if (!added.length) clearSuggestions();
-      place(m);
+      place(m, fresh);
       after = m.seq;
       last = m;
       added.push(m);
@@ -239,7 +255,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
   };
 
   const first = await get(convPath(key, 'messages'), { limit: HISTORY }, signal);
-  add((first.messages || []).slice().reverse(), true);
+  add((first.messages || []).slice().reverse(), true, false);
 
   let timer = 0;
   let running = false;
@@ -254,7 +270,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     gone = true;
     clearTimeout(timer);
     clearSuggestions();
-    status.textContent = '';
+    showTyping(false);
     input.disabled = true;
     send.disabled = true;
     mount(sendError);
@@ -297,9 +313,11 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     try {
       const res = await get(convPath(key, 'chat'), { after }, signal);
       const rows = res.messages || [];
-      if (add(rows, stick)) stick = false;
+      // A full page catches up on a backlog rather than brings news: it
+      // does not float in.
+      if (add(rows, stick, rows.length < PAGE)) stick = false;
       botTyping = !!res.typing;
-      status.textContent = botTyping ? '正在输入…' : '';
+      showTyping(botTyping);
       mount(pollError);
       if (rows.length >= PAGE) next = 0;
       else suggest();

@@ -340,6 +340,7 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   color: var(--muted);
   font-size: 11px;
   text-align: center;
+  transition: background-color 120ms ease-out;
 }
 .chat-app .tg-folder:hover { background: var(--panel); text-decoration: none; }
 .chat-app .tg-folder.active { background: var(--panel); color: var(--accent); }
@@ -388,6 +389,8 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, .25);
+  transform-origin: left top;
+  animation: tg-menu-in 150ms cubic-bezier(.2,.8,.2,1);
 }
 .chat-app .tg-menu nav { display: flex; flex-direction: column; }
 .chat-app .tg-menu nav a,
@@ -450,6 +453,7 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   padding: 7px 8px;
   border-radius: 10px;
   color: var(--text);
+  transition: background-color 120ms ease-out;
 }
 .chat-app .tg-chat:hover { background: var(--code-bg); text-decoration: none; }
 .chat-app .tg-chat.active { background: var(--accent); color: var(--accent-text); }
@@ -478,6 +482,7 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   line-height: 20px;
   text-align: center;
 }
+.chat-app .tg-unread.bump { animation: tg-bump 200ms ease-out backwards; }
 .chat-app .tg-chat.active .tg-unread { background: var(--accent-text); color: var(--accent); }
 .chat-app .tg-list-empty { padding: 24px 12px; text-align: center; }
 .chat-app .tg-fab {
@@ -569,6 +574,21 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
 .chat-app .tg-bar-name { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.35; }
 .chat-app .tg-bar-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-app .tg-bar-status { min-height: 1.35em; color: var(--accent); font-size: 13px; }
+.chat-app .tg-typing { opacity: 0; transition: opacity 150ms ease-out; }
+.chat-app .tg-typing.on { opacity: 1; }
+.chat-app .tg-typing-dot {
+  display: inline-block;
+  width: 3px;
+  height: 3px;
+  margin-left: 2px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: tg-typing-dot 1.2s ease-out infinite;
+}
+.chat-app .tg-typing-dot:first-child { margin-left: 3px; }
+.chat-app .tg-typing-dot:nth-child(2) { animation-delay: 200ms; }
+.chat-app .tg-typing-dot:nth-child(3) { animation-delay: 400ms; }
+.chat-app .tg-typing:not(.on) .tg-typing-dot { animation-play-state: paused; }
 .chat-app .tg-bar-actions { position: relative; flex: none; }
 .chat-app .tg-bar-menu {
   position: absolute;
@@ -581,6 +601,8 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, .25);
+  transform-origin: right top;
+  animation: tg-menu-in 150ms cubic-bezier(.2,.8,.2,1);
 }
 .chat-app .tg-bar-item {
   display: block;
@@ -595,7 +617,7 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
 .chat-app .tg-bar-item:hover { background: var(--code-bg); text-decoration: none; }
 .chat-app .tg-bar-item.danger { color: var(--danger); }
 
-.chat-app .tg-conv { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.chat-app .tg-conv { flex: 1; min-height: 0; display: flex; flex-direction: column; animation: tg-fade-in 150ms ease-out; }
 .chat-app .tg-log {
   flex: 1;
   min-height: 0;
@@ -621,6 +643,9 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
 .chat-app .tg-msg.cont { margin-top: 2px; }
 .chat-app .tg-msg.in { align-self: flex-start; }
 .chat-app .tg-msg.out { align-self: flex-end; }
+.chat-app .tg-msg.is-new { animation: tg-msg-in 200ms cubic-bezier(.2,.8,.2,1) backwards; }
+.chat-app .tg-msg.in.is-new { transform-origin: left bottom; }
+.chat-app .tg-msg.out.is-new { transform-origin: right bottom; }
 .chat-app .tg-bubble {
   position: relative;
   display: flow-root;
@@ -683,8 +708,14 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   color: var(--tg-key-text);
   white-space: normal;
   text-align: center;
+  transition: background-color 150ms ease-out, transform 150ms ease-out;
+  animation: tg-fade-in 180ms ease-out backwards;
 }
+.chat-app .tg-keys button:nth-child(2) { animation-delay: 40ms; }
+.chat-app .tg-keys button:nth-child(3) { animation-delay: 80ms; }
+.chat-app .tg-keys button:nth-child(4) { animation-delay: 120ms; }
 .chat-app .tg-keys button:hover { background: var(--tg-key-hover); }
+.chat-app .tg-keys button:active { transform: scale(.97); }
 .chat-app .tg-status { padding: 0 var(--tg-side); }
 .chat-app .tg-status:empty { display: none; }
 .chat-app .tg-status .hint { margin: 4px 0; }
@@ -718,6 +749,36 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   color: #ffffff;
   font-size: 18px;
   line-height: 1;
+  transition: opacity 150ms ease-out, transform 150ms ease-out;
+}
+.chat-app .tg-send:active:not(:disabled) { transform: scale(.92); }
+
+/* The page's motion: what arrives eases in, from below for a message, from
+   its corner for a menu, from the side it comes from for a page on a narrow
+   screen. With reduced motion asked for, nothing moves (see the end). */
+@keyframes tg-fade-in {
+  from { opacity: 0; }
+}
+@keyframes tg-msg-in {
+  from { opacity: 0; transform: translateY(8px) scale(.98); }
+}
+@keyframes tg-menu-in {
+  from { opacity: 0; transform: scale(.95); }
+}
+@keyframes tg-bump {
+  0% { transform: scale(.6); }
+  60% { transform: scale(1.12); }
+  100% { transform: scale(1); }
+}
+@keyframes tg-typing-dot {
+  0%, 60%, 100% { opacity: .3; transform: none; }
+  30% { opacity: 1; transform: translateY(-2px); }
+}
+@keyframes tg-slide-left {
+  from { opacity: 0; transform: translateX(40px); }
+}
+@keyframes tg-slide-right {
+  from { opacity: 0; transform: translateX(-40px); }
 }
 
 .hint.warn { color: var(--warn); }
@@ -792,10 +853,22 @@ details > summary { cursor: pointer; color: var(--accent); white-space: nowrap; 
   .chat-app .tg:not(.open) .tg-pane { display: none; }
   .chat-app .tg.open .tg-rail,
   .chat-app .tg.open .tg-list { display: none; }
+  .chat-app .tg.tg-enter-chat .tg-pane { animation: tg-slide-left 200ms cubic-bezier(.2,.8,.2,1); }
+  .chat-app .tg.tg-enter-list .tg-rail,
+  .chat-app .tg.tg-enter-list .tg-list { animation: tg-slide-right 200ms cubic-bezier(.2,.8,.2,1); }
   .chat-app .tg-pane { --tg-side: 8px; }
   .chat-app .tg-bar { gap: 8px; padding-left: 4px; }
   .chat-app .tg-bar-back { display: inline-flex; }
   .chat-app .tg-msg { max-width: 85%; }
   .chat-app .tg-keys { width: 85%; }
   input, select, textarea, textarea.json { font-size: 16px; }
+}
+
+/* With reduced motion asked for, the Telegram-style page does not move:
+   正在输入's dots stand still, shown. */
+@media (prefers-reduced-motion: reduce) {
+  .chat-app *,
+  .chat-app *::before,
+  .chat-app *::after { animation: none !important; transition: none !important; }
+  .chat-app .tg-typing-dot { opacity: 1; transform: none; }
 }

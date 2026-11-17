@@ -367,7 +367,7 @@ func TestAssets_ChatEnterSendsOnlyWithKeyboard(t *testing.T) {
 }
 
 // The chat pane looks like Telegram: a top bar with ← back on a narrow
-// screen, the bot, 正在输入… and a ⋮ menu holding 会话详情, the 建议回复
+// screen, the bot, 正在输入 and a ⋮ menu holding 会话详情, the 建议回复
 // switch and 删除这个聊天; bubbles left and right with the time inside, a
 // tail on the last of a group and no 面板 tag; date pills between days; and a
 // growing box with a round ➤ button. The pane's own top bar replaces the one
@@ -376,7 +376,7 @@ func TestChatPane_TelegramStyle(t *testing.T) {
 	files := assets(t, ".js", ".css")
 	js := files["views/chat.js"]
 	for _, want := range []string{
-		"'正在输入…'", "'会话详情'", "'建议回复：开'", "'建议回复：关'", "'删除这个聊天'", "'➤'", "title: '发送'",
+		"'正在输入'", "'会话详情'", "'建议回复：开'", "'建议回复：关'", "'删除这个聊天'", "'➤'", "title: '发送'",
 		"onBack", "onDelete", "avatarEl(bot, 40)", "import { avatarEl } from './avatar.js';",
 		"m.channel && m.channel !== 'panel'", "`${d.getMonth() + 1}月${d.getDate()}日`", "`${d.getFullYear()}年${",
 		"const MAX_LINES = 6;", "send.disabled = true;",
@@ -419,6 +419,152 @@ func TestChatPane_TelegramStyle(t *testing.T) {
 	}
 	if !regexp.MustCompile(`\.chat-app \.tg-bar-back\s*\{[^}]*display:\s*inline-flex;`).MatchString(mediaBlock(t, css, m[1])) {
 		t.Errorf("style.css @media %s does not show ← back to the list", m[1])
+	}
+}
+
+// The Telegram-style page moves: messages that arrive float in, 正在输入's
+// three dots blink, the menus open from their corner, an unread count bumps
+// when it changes and, on a narrow screen, the chat and the list slide in.
+// Every animation and transition is the page's own, short and eased, and none
+// runs when the system asks for reduced motion, though the dots still show;
+// the classic chat page does not move.
+func TestIM_Motion(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	css := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(files["style.css"], "")
+	frames := map[string]bool{}
+	for _, m := range regexp.MustCompile(`@keyframes\s+([\w-]+)\s*\{`).FindAllStringSubmatch(css, -1) {
+		if !strings.HasPrefix(m[1], "tg-") {
+			t.Errorf("style.css: @keyframes %s is not named for the Telegram-style page (tg-)", m[1])
+		}
+		frames[m[1]] = true
+	}
+	moving := regexp.MustCompile(`(?:^|[;\s])(?:animation|transition)(?:-[\w-]+)?\s*:`)
+	used := map[string]bool{}
+	for _, m := range cssRule.FindAllStringSubmatch(css, -1) {
+		if !moving.MatchString(m[2]) {
+			continue
+		}
+		for _, sel := range strings.Split(m[1], ",") {
+			sel = strings.TrimSpace(sel)
+			if !strings.HasPrefix(sel, ".chat-app ") {
+				t.Errorf("style.css: %q animates but is not scoped to .chat-app", sel)
+			}
+		}
+		for _, d := range regexp.MustCompile(`(?:^|[;\s])(animation|transition)\s*:\s*([^;]+)`).FindAllStringSubmatch(m[2], -1) {
+			value := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(d[2]), "!important"))
+			if value == "none" {
+				continue
+			}
+			for _, item := range strings.Split(value, ", ") {
+				if d[1] == "animation" {
+					name := strings.Fields(item)[0]
+					used[name] = true
+					if !frames[name] {
+						t.Errorf("style.css: %q uses animation %s, which has no @keyframes", m[1], name)
+					}
+				}
+				dur := regexp.MustCompile(`\b(\d*\.?\d+)(ms|s)\b`).FindStringSubmatch(item)
+				if dur == nil {
+					t.Errorf("style.css: %s %q has no duration", d[1], item)
+					continue
+				}
+				ms, _ := strconv.ParseFloat(dur[1], 64)
+				if dur[2] == "s" {
+					ms *= 1000
+				}
+				loop := strings.Contains(item, "infinite")
+				if (loop && ms != 1200) || (!loop && (ms < 120 || ms > 250)) {
+					t.Errorf("style.css: %s %q lasts %gms, want 120–250ms (a loop 1.2s)", d[1], item, ms)
+				}
+				if !strings.Contains(item, "ease-out") && !strings.Contains(item, "cubic-bezier(.2,.8,.2,1)") {
+					t.Errorf("style.css: %s %q is not eased out", d[1], item)
+				}
+			}
+		}
+	}
+	for name := range frames {
+		if !used[name] {
+			t.Errorf("style.css: @keyframes %s is not used", name)
+		}
+	}
+	classic := regexp.MustCompile(`(?:^|[;\s])(?:animation|transition)`)
+	for _, m := range cssRule.FindAllStringSubmatch(css, -1) {
+		if strings.Contains(m[1], "chat-classic") && classic.MatchString(m[2]) {
+			t.Errorf("style.css: %q animates the classic chat page", strings.TrimSpace(m[1]))
+		}
+	}
+	for _, c := range []struct{ name, re string }{
+		{"new messages float in", `\.chat-app \.tg-msg\.is-new\s*\{[^}]*animation:\s*tg-msg-in `},
+		{"own bubbles grow from the bottom right", `\.chat-app \.tg-msg\.out\.is-new\s*\{[^}]*transform-origin:\s*right bottom;`},
+		{"the bot's bubbles grow from the bottom left", `\.chat-app \.tg-msg\.in\.is-new\s*\{[^}]*transform-origin:\s*left bottom;`},
+		{"blinking typing dots", `\.chat-app \.tg-typing-dot\s*\{[^}]*animation:\s*tg-typing-dot 1\.2s [^;]*infinite`},
+		{"typing fades", `\.chat-app \.tg-typing\s*\{[^}]*transition:\s*opacity `},
+		{"a staggered second suggestion", `\.chat-app \.tg-keys button:nth-child\(2\)\s*\{\s*animation-delay:\s*40ms;`},
+		{"a pressed suggestion shrinks", `\.chat-app \.tg-keys button:active\s*\{[^}]*transform:\s*scale\(\.97\);`},
+		{"the ≡ menu opens from the top left", `\.chat-app \.tg-menu\s*\{[^}]*transform-origin:\s*left top;[^}]*animation:\s*tg-menu-in `},
+		{"the ⋮ menu opens from the top right", `\.chat-app \.tg-bar-menu\s*\{[^}]*transform-origin:\s*right top;[^}]*animation:\s*tg-menu-in `},
+		{"rows fade their background", `\.chat-app \.tg-chat\s*\{[^}]*transition:\s*background-color 120ms`},
+		{"folders fade their background", `\.chat-app \.tg-folder\s*\{[^}]*transition:\s*background-color 120ms`},
+		{"an unread count bumps", `\.chat-app \.tg-unread\.bump\s*\{[^}]*animation:\s*tg-bump `},
+		{"the conversation fades in", `\.chat-app \.tg-conv\s*\{[^}]*animation:\s*tg-fade-in `},
+		{"a pressed send button shrinks", `\.chat-app \.tg-send:active:not\(:disabled\)\s*\{[^}]*transform:\s*scale\(\.92\);`},
+		{"the send button fades when disabled", `\.chat-app \.tg-send\s*\{[^}]*transition:\s*opacity `},
+	} {
+		if !regexp.MustCompile(c.re).MatchString(css) {
+			t.Errorf("style.css lacks %s (%s)", c.name, c.re)
+		}
+	}
+	for _, f := range []string{"tg-msg-in", "tg-typing-dot", "tg-menu-in", "tg-bump", "tg-slide-left", "tg-slide-right"} {
+		if !frames[f] {
+			t.Errorf("style.css has no @keyframes %s", f)
+		}
+	}
+	chats := files["views/chats.js"]
+	m := regexp.MustCompile(`const NARROW = '([^']+)';`).FindStringSubmatch(chats)
+	if m == nil {
+		t.Fatal("views/chats.js has no NARROW media query")
+	}
+	narrow := mediaBlock(t, css, m[1])
+	for _, c := range []struct{ name, re string }{
+		{"the chat slides in from the right", `\.chat-app \.tg\.tg-enter-chat \.tg-pane\s*\{[^}]*animation:\s*tg-slide-left `},
+		{"the list slides in from the left", `\.chat-app \.tg\.tg-enter-list \.tg-rail,\s*\.chat-app \.tg\.tg-enter-list \.tg-list\s*\{[^}]*animation:\s*tg-slide-right `},
+	} {
+		if !regexp.MustCompile(c.re).MatchString(narrow) {
+			t.Errorf("style.css @media %s lacks %s (%s)", m[1], c.name, c.re)
+		}
+	}
+	still := mediaBlock(t, css, "(prefers-reduced-motion: reduce)")
+	for _, c := range []struct{ name, re string }{
+		{"no motion on the page", `\.chat-app \*,\s*\.chat-app \*::before,\s*\.chat-app \*::after\s*\{[^}]*animation:\s*none !important;[^}]*transition:\s*none !important;`},
+		{"the typing dots still shown", `\.chat-app \.tg-typing-dot\s*\{[^}]*opacity:\s*1;`},
+	} {
+		if !regexp.MustCompile(c.re).MatchString(still) {
+			t.Errorf("style.css @media (prefers-reduced-motion: reduce) lacks %s (%s)", c.name, c.re)
+		}
+	}
+	if regexp.MustCompile(`tg-typing[^{]*\{[^}]*(?:display:\s*none|visibility:\s*hidden)`).MatchString(still) {
+		t.Error("style.css hides 正在输入 when motion is reduced")
+	}
+
+	chat := files["views/chat.js"]
+	for _, want := range []string{
+		"'正在输入'", "h('span', { class: 'tg-typing-dot' })", "typing.classList.toggle('on', on);",
+		"el.classList.add('is-new');", "el.classList.remove('is-new');", "'animationend'",
+		"add((first.messages || []).slice().reverse(), true, false);", "add(rows, stick, rows.length < PAGE)",
+	} {
+		if !strings.Contains(chat, want) {
+			t.Errorf("views/chat.js lacks %q", want)
+		}
+	}
+	if strings.Contains(chat, "正在输入…") || strings.Contains(chat, "status.textContent") {
+		t.Error("views/chat.js still writes 正在输入… as text")
+	}
+	for _, want := range []string{
+		"el.classList.add('bump');", "layout.classList.toggle('tg-enter-chat', open);", "layout.classList.toggle('tg-enter-list', !open);",
+	} {
+		if !strings.Contains(chats, want) {
+			t.Errorf("views/chats.js lacks %q", want)
+		}
 	}
 }
 
