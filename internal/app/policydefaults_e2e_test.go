@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kinako404/conloom/internal/adapter/mock"
 	"github.com/kinako404/conloom/internal/config"
@@ -30,7 +31,68 @@ default_private_policy:
 	privatePolicySection = `default_private_policy:
   reply: {max_parts: 5}
 `
+	// productionPolicySections are both sections as a deployment upgrading
+	// from a config-file release has them, with many fields off their
+	// built-in values.
+	productionPolicySections = `default_group_policy:
+  concurrency: {max_interactive_requests: 2, max_queued_requests: 20}
+  reply:
+    continuation_window: 2m
+    debounce: 2s
+    min_reply_interval: 3s
+    turn_gap: 8s
+    max_parts: 3
+  context: {max_recent_messages: 80}
+  proactive: {enabled: false, group_hourly_limit: 2}
+  memory:
+    enabled: true
+    consolidate_every: 60
+    consolidate_interval: 3h
+    summary_max_chars: 2000
+    note_max_chars: 400
+default_private_policy:
+  reply:
+    max_parts: 5
+    private_wait: 4s
+    private_max_wait: 30s
+  context: {max_recent_messages: 120}
+  proactive:
+    private: {level: high, quiet_start: "23:30", quiet_end: "07:30"}
+  memory:
+    enabled: true
+    consolidate_every: 40
+    consolidate_interval: 2h
+    consolidate_min: 10
+`
 )
+
+// productionPolicies are the group and private default policies the
+// config-file release ran with productionPolicySections: each section decoded
+// over the built-in group defaults.
+func productionPolicies() (group, private conloomapi.GroupPolicy) {
+	group = conloomapi.DefaultGroupPolicy()
+	group.Concurrency.MaxInteractiveRequests, group.Concurrency.MaxQueuedRequests = 2, 20
+	group.Reply.ContinuationWindow = conloomapi.Duration{Duration: 2 * time.Minute}
+	group.Reply.Debounce = conloomapi.Duration{Duration: 2 * time.Second}
+	group.Reply.MinReplyInterval = conloomapi.Duration{Duration: 3 * time.Second}
+	group.Reply.TurnGap = conloomapi.Duration{Duration: 8 * time.Second}
+	group.Reply.MaxParts = 3
+	group.Context.MaxRecentMessages = 80
+	group.Proactive.Enabled, group.Proactive.GroupHourlyLimit = false, 2
+	group.Memory.Enabled, group.Memory.ConsolidateEvery = true, 60
+	group.Memory.ConsolidateInterval = conloomapi.Duration{Duration: 3 * time.Hour}
+	group.Memory.SummaryMaxChars, group.Memory.NoteMaxChars = 2000, 400
+
+	private = conloomapi.DefaultGroupPolicy()
+	private.Reply.MaxParts = 5
+	private.Reply.PrivateWait = conloomapi.Duration{Duration: 4 * time.Second}
+	private.Reply.PrivateMaxWait = conloomapi.Duration{Duration: 30 * time.Second}
+	private.Context.MaxRecentMessages = 120
+	private.Proactive.Private = conloomapi.PrivateProactivePolicy{Level: conloomapi.PrivateLevelHigh, QuietStart: "23:30", QuietEnd: "07:30"}
+	private.Memory.Enabled, private.Memory.ConsolidateEvery, private.Memory.ConsolidateMin = true, 40, 10
+	private.Memory.ConsolidateInterval = conloomapi.Duration{Duration: 2 * time.Hour}
+	return group, private
+}
 
 // policyDefaultsConfig loads configTemplate for the data directory dataDir
 // followed by sections, without the test default policies of testConfig.
@@ -83,23 +145,39 @@ func policyMigrateAudits(t *testing.T, db *sqlite.DB) [][]string {
 	return out
 }
 
+// An upgrade with both sections stores each, every field as the config-file
+// release ran it, and a later start with the sections still there is refused,
+// naming both and when they were imported.
 func TestPolicyDefaults_ImportOnFirstStart(t *testing.T) {
-	cfg := policyDefaultsConfig(t, t.TempDir(), bothPolicySections)
+	cfg := policyDefaultsConfig(t, t.TempDir(), productionPolicySections)
+	wantGroup, wantPrivate := productionPolicies()
+	if !reflect.DeepEqual(cfg.DefaultGroupPolicy, wantGroup) || !reflect.DeepEqual(cfg.PrivatePolicy(), wantPrivate) {
+		t.Fatalf("the fixture loads as group %+v, private %+v; want group %+v, private %+v",
+			cfg.DefaultGroupPolicy, cfg.PrivatePolicy(), wantGroup, wantPrivate)
+	}
+	if reflect.DeepEqual(wantGroup, conloomapi.DefaultGroupPolicy()) || reflect.DeepEqual(wantPrivate, conloomapi.DefaultPrivatePolicy()) {
+		t.Fatal("the fixture equals the built-in default policies")
+	}
 	logs, err := startAndClose(t, cfg)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	var importedAt time.Time
 	withDB(t, cfg, func(db *sqlite.DB) {
 		group := latestDefaults(t, db, conloomapi.ConvGroup)
-		if group.Version != 1 || group.UpdatedBy != "system" || group.Reason != "从配置文件导入" || !group.Policy.Memory.Enabled {
-			t.Errorf("group defaults = %+v; want the file's section imported as version 1 by system", group)
+		if group.Version != 1 || group.UpdatedBy != "system" || group.Reason != "从配置文件导入" || !reflect.DeepEqual(group.Policy, wantGroup) {
+			t.Errorf("group defaults = %+v; want the file's section %+v imported as version 1 by system", group, wantGroup)
 		}
 		private := latestDefaults(t, db, conloomapi.ConvPrivate)
-		if private.Version != 1 || private.UpdatedBy != "system" || private.Reason != "从配置文件导入" || private.Policy.Reply.MaxParts != 5 {
-			t.Errorf("private defaults = %+v; want the file's section imported as version 1 by system", private)
+		if private.Version != 1 || private.UpdatedBy != "system" || private.Reason != "从配置文件导入" || !reflect.DeepEqual(private.Policy, wantPrivate) {
+			t.Errorf("private defaults = %+v; want the file's section %+v imported as version 1 by system", private, wantPrivate)
 		}
-		if _, ok, err := db.GetMeta(context.Background(), store.MetaConfigPolicyDefaultsMigrated); err != nil || !ok {
-			t.Errorf("import marker = %v, %v; want it recorded", ok, err)
+		v, ok, err := db.GetMeta(context.Background(), store.MetaConfigPolicyDefaultsMigrated)
+		if err != nil || !ok {
+			t.Fatalf("import marker = %v, %v; want it recorded", ok, err)
+		}
+		if importedAt, err = time.Parse(time.RFC3339Nano, v); err != nil {
+			t.Fatalf("import marker %q: %v", v, err)
 		}
 		if got := policyMigrateAudits(t, db); len(got) != 1 || !slices.Equal(got[0], []string{"group", "private"}) {
 			t.Errorf("migrate audits = %v, want one importing [group private]", got)
@@ -112,6 +190,33 @@ func TestPolicyDefaults_ImportOnFirstStart(t *testing.T) {
 	if n := strings.Count(out, "default policy imported from the config file"); n != 2 {
 		t.Errorf("import log lines = %d, want 2:\n%s", n, out)
 	}
+
+	_, err = startAndClose(t, cfg)
+	if !errors.Is(err, store.ErrAlreadyMigrated) {
+		t.Fatalf("second app.New with both sections = %v, want ErrAlreadyMigrated", err)
+	}
+	loc, lerr := time.LoadLocation("Asia/Shanghai")
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	for _, want := range []string{
+		"已在 " + importedAt.In(loc).Format("2006-01-02 15:04:05") + " 从配置文件导入",
+		"请删除配置文件里的 default_group_policy、default_private_policy", "设置页",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+	withDB(t, cfg, func(db *sqlite.DB) {
+		for kind, want := range map[string]conloomapi.GroupPolicy{conloomapi.ConvGroup: wantGroup, conloomapi.ConvPrivate: wantPrivate} {
+			if d := latestDefaults(t, db, kind); d.Version != 1 || !reflect.DeepEqual(d.Policy, want) {
+				t.Errorf("%s defaults after the refused start = %+v, want version 1 unchanged", kind, d)
+			}
+		}
+		if got := policyMigrateAudits(t, db); len(got) != 1 {
+			t.Errorf("migrate audits after the refused start = %v, want the first one only", got)
+		}
+	})
 }
 
 func TestPolicyDefaults_FreshInstallSeedsBuiltins(t *testing.T) {

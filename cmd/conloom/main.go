@@ -45,7 +45,8 @@ const (
 	exitUsage = 2
 	// exitConfig is EX_CONFIG from sysexits.h: the configuration cannot be
 	// loaded or is invalid, a credential in it was refused, or it still has
-	// persona templates or bot settings already migrated into the database.
+	// persona templates, bot settings or default policies already migrated
+	// into the database.
 	// Restarting does not help, so the systemd units do not restart on it. It
 	// differs from 2, the status of a Go panic, which must still be restarted.
 	exitConfig = 78
