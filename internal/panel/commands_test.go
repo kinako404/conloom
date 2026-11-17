@@ -13,14 +13,8 @@ import (
 )
 
 type commandsResp struct {
-	Prefix   string `json:"prefix"`
-	Commands []struct {
-		Name        string   `json:"name"`
-		Aliases     []string `json:"aliases"`
-		Usage       string   `json:"usage"`
-		Description string   `json:"description"`
-		Args        bool     `json:"args"`
-	} `json:"commands"`
+	Prefix   string        `json:"prefix"`
+	Commands []commandView `json:"commands"`
 }
 
 func (r commandsResp) names() []string {
@@ -62,7 +56,8 @@ func TestCommands_PanelChat(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.getJSON(path, &got)
-	if got.Prefix != "!" || len(got.Commands) != len(want) || got.Commands[7].Usage != "!记住 <内容>" {
+	i := slices.IndexFunc(got.Commands, func(c commandView) bool { return c.Name == "记住" })
+	if got.Prefix != "!" || len(got.Commands) != len(want) || i < 0 || got.Commands[i].Usage != "!记住 <内容>" {
 		t.Errorf("with prefix ! = %+v", got)
 	}
 

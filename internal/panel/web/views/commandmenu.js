@@ -48,9 +48,9 @@ export function matchCommands(commands, query) {
 
 // commandMenu adds the command menu to input, the message box of the chat
 // key, and returns its popup, which the pane puts in the box's form, above
-// the box. While the text starts with the chat's prefix and the caret is
-// still in its first word, the popup lists the commands that match that
-// word (see matchCommands). ↑ and ↓ move the highlight, Return or Tab picks
+// the box. While the whole text is the chat's prefix and one word, with no
+// whitespace anywhere, the popup lists the commands that match that word
+// (see matchCommands). ↑ and ↓ move the highlight, Return or Tab picks
 // the highlighted command, as does a click or a tap; Escape, or a click
 // elsewhere, closes it and keeps the text, and it opens again once the text
 // changes. A command without arguments is sent at once through send(text),
@@ -97,14 +97,15 @@ export function commandMenu({ key, input, signal, send, onToggle = () => {} }) {
       box.scrollTop = row.offsetTop + row.offsetHeight - box.clientHeight;
     }
   };
-  // word is the first word of the text after the prefix while the caret is
-  // in it, else null.
+  // word is the text after the prefix when the whole text is the prefix and
+  // one word, with the caret after the prefix, else null. Text with any
+  // whitespace, such as a command and its arguments, gets no menu, so a pick
+  // never replaces arguments already typed.
   const word = () => {
     const text = input.value;
-    if (!commands || !prefix || input.disabled || !text.startsWith(prefix)) return null;
-    const caret = input.selectionStart;
-    if (caret < prefix.length || /\s/.test(text.slice(prefix.length, caret))) return null;
-    return /^\S*/.exec(text.slice(prefix.length))[0];
+    if (!commands || !prefix || input.disabled || !text.startsWith(prefix) || /\s/.test(text)) return null;
+    if (input.selectionStart < prefix.length) return null;
+    return text.slice(prefix.length);
   };
   const pick = (c) => {
     if (!c || input.disabled) return;

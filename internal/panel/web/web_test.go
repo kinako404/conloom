@@ -1597,6 +1597,8 @@ func TestChatPanes_CommandMenu(t *testing.T) {
 		"e.stopImmediatePropagation();", "}, signal, true);", "listen(document, 'pointerdown', (e) => {",
 		"onmousedown: (e) => e.preventDefault(),", "if (!c.args) send(text);", "input.value = c.args ? `${text} ` : text;",
 		"import { listen } from './chat.js';",
+		// Only a lone command word opens it: a pick never replaces arguments.
+		"!text.startsWith(prefix) || /\\s/.test(text)) return null;", "return text.slice(prefix.length);",
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("views/commandmenu.js lacks %q", want)

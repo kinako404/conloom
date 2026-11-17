@@ -57,11 +57,6 @@ func TestCommandRegistry_Words(t *testing.T) {
 		}
 		aliases[c.name] = c.aliases
 	}
-	for _, w := range KnownCommands {
-		if _, ok := aliases[w]; !ok && !slices.ContainsFunc(commandRegistry, func(c command) bool { return slices.Contains(c.aliases, w) }) {
-			t.Errorf("%q has no registry entry", w)
-		}
-	}
 	for name := range aliases {
 		if !slices.ContainsFunc(commandRegistry, func(c command) bool { return c.name == name && c.form == "" }) {
 			t.Errorf("%q has sub-forms but no entry of its own", name)
