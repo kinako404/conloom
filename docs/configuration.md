@@ -319,7 +319,7 @@ default_group_policy:
 ```yaml
 default_private_policy:
   reply:
-    max_parts: 3
+    max_parts: 5
     private_wait: 6s
     private_max_wait: 20s
   context:

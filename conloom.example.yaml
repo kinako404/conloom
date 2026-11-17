@@ -226,7 +226,7 @@ default_group_policy:
 # 需要在这里再写一遍。整段省略时，私聊沿用 default_group_policy。已有策略版本的会话以库里的版本为准。
 default_private_policy:
   reply:
-    max_parts: 3                  # 私聊像聊天那样把回复分成最多 3 条，按每条的长度隔 1~4 秒发出
+    max_parts: 5                  # 私聊像聊天那样把回复分成最多 5 条（基本每行一条），按每条的长度隔 1~4 秒发出
     private_wait: 6s              # 等对方停顿 6 秒再回，连发几句只回一次
     private_max_wait: 20s
   context:
