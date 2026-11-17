@@ -560,7 +560,15 @@ func TestIM_Motion(t *testing.T) {
 		t.Error("views/chat.js still writes 正在输入… as text")
 	}
 	for _, want := range []string{
-		"el.classList.add('bump');", "layout.classList.toggle('tg-enter-chat', open);", "layout.classList.toggle('tg-enter-list', !open);",
+		// A badge bumps when its count went up and shows so, not for 99+ that
+		// stays 99+ or a count that went down.
+		"if (el && unreadPrimed && n > was && unreadText(n) !== unreadText(was)) el.classList.add('bump');",
+		// The narrow-screen slide is marked only on a narrow screen and only
+		// until it ends, so crossing the breakpoint later replays nothing.
+		"if (entered && layout.classList.contains('open') !== open) enter(open);",
+		"if (!matchMedia(NARROW).matches) return;", "layout.classList.add(open ? 'tg-enter-chat' : 'tg-enter-list');",
+		"enterTimer = setTimeout(endEnter, ENTER_MS);", "layout.classList.remove('tg-enter-chat', 'tg-enter-list');",
+		"if (/^tg-slide-/.test(e.animationName)) endEnter();",
 	} {
 		if !strings.Contains(chats, want) {
 			t.Errorf("views/chats.js lacks %q", want)

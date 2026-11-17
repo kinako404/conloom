@@ -154,13 +154,14 @@ export function chatBar({ key, bot, title, status, items, onBack, onDelete, sign
 // seen until signal fires or the chat is gone (404), which stops the polling
 // and the sending. Messages are bubbles grouped by sender, with a date pill
 // where the day changes; those that arrive after the opening ones float in,
-// and 正在输入 shows under the name while the bot is busy. With the 建议回复 switch on, once the bot's turn is
-// done it offers reply suggestions under the newest message, which send
-// themselves when clicked. hint, when given, is shown above the messages.
-// bot ({id, name, avatar}) is who the chat is with, title who the bot talks
-// with; onBack() returns to the chat list and onDelete() deletes the chat
-// after confirmation. onMessages(messages), when given, gets the messages
-// each time some are shown: the latest at first, then each one new.
+// and 正在输入 shows under the name while the bot is busy. With the 建议回复
+// switch on, once the bot's turn is done it offers reply suggestions under
+// the newest message, which send themselves when clicked. hint, when given,
+// is shown above the messages. bot ({id, name, avatar}) is who the chat is
+// with, title who the bot talks with; onBack() returns to the chat list and
+// onDelete() deletes the chat after confirmation. onMessages(messages), when
+// given, gets the messages each time some are shown: the latest at first,
+// then each one new.
 export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete, onMessages }) {
   const log = h('ul', { class: 'tg-log' }, hint ? h('li', { class: 'tg-note' }, hint) : null);
   // typing is 正在输入 with three blinking dots, always in the status line,

@@ -16,6 +16,10 @@ export const PANEL = 'panel';
 // page marks its layout open while a chat is.
 const NARROW = '(max-width: 699px)';
 
+// ENTER_MS is how long, at most, the page keeps the mark of what slides in on
+// a narrow screen, longer than the slide.
+const ENTER_MS = 1000;
+
 // MAX_DISPLAY_NAME is the longest name a panel chat calls its user by.
 const MAX_DISPLAY_NAME = 32;
 
@@ -372,11 +376,14 @@ function noteSeen(chats, current) {
   return seen;
 }
 
+// unreadText is how a badge shows n unread messages.
+const unreadText = (n) => (n > 99 ? '99+' : String(n));
+
 // unreadBadge is the round count of unread messages, none when there are
 // none.
 function unreadBadge(n, cls) {
   if (n <= 0) return null;
-  return h('span', { class: cls }, n > 99 ? '99+' : String(n));
+  return h('span', { class: cls }, unreadText(n));
 }
 
 // PREVIEW_RUNES is how many characters of the last message GET chats
@@ -454,12 +461,13 @@ function chatPage() {
   let ticks = 0;
   // shownUnread holds, by badge ('c:' and a chat key, 'f:' and a folder),
   // the unread count it showed last, once the list was first shown
-  // (unreadPrimed): a badge showing another count bumps. entered tells
-  // whether a chat or the list was shown yet: from then on the layout marks
-  // which one comes in, which slides in on a narrow screen.
+  // (unreadPrimed): a badge whose count went up, and shows so, bumps.
+  // entered tells whether a chat or the list was shown yet: from then on, on
+  // a narrow screen, the layout marks which one comes in (see enter).
   const shownUnread = {};
   let unreadPrimed = false;
   let entered = false;
+  let enterTimer = 0;
   const listMsg = h('div');
   const pollMsg = h('div');
   const paneMsg = h('div', { class: 'tg-pane-msg' });
@@ -491,12 +499,29 @@ function chatPage() {
 
   const allChats = () => groups.flatMap((g) => g.chats || []);
 
-  // badge is unreadBadge for the badge id, bumping when its count changed.
+  // badge is unreadBadge for the badge id, bumping when its count went up
+  // and what it shows changed.
   const badge = (id, n, cls) => {
     const el = unreadBadge(n, cls);
-    if (el && unreadPrimed && shownUnread[id] !== n) el.classList.add('bump');
+    const was = shownUnread[id] || 0;
+    if (el && unreadPrimed && n > was && unreadText(n) !== unreadText(was)) el.classList.add('bump');
     shownUnread[id] = n;
     return el;
+  };
+
+  // enter marks, on a narrow screen, that the chat (open) or the list comes
+  // in, which style.css slides in. The mark goes when the slide ends, or
+  // after ENTER_MS when none runs, so that crossing the breakpoint later,
+  // as a tablet turns, slides nothing.
+  const endEnter = () => {
+    clearTimeout(enterTimer);
+    layout.classList.remove('tg-enter-chat', 'tg-enter-list');
+  };
+  const enter = (open) => {
+    endEnter();
+    if (!matchMedia(NARROW).matches) return;
+    layout.classList.add(open ? 'tg-enter-chat' : 'tg-enter-list');
+    enterTimer = setTimeout(endEnter, ENTER_MS);
   };
 
   // choose shows the folder of bot id, all chats when empty, keeping the
@@ -895,10 +920,7 @@ function chatPage() {
     pending = null;
     classicLink.href = key ? href('chat', key) : '#/chat';
     const open = !!key;
-    if (entered && layout.classList.contains('open') !== open) {
-      layout.classList.toggle('tg-enter-chat', open);
-      layout.classList.toggle('tg-enter-list', !open);
-    }
+    if (entered && layout.classList.contains('open') !== open) enter(open);
     entered = true;
     layout.classList.toggle('open', !!key);
     if (key && fetched) seen = noteSeen(allChats(), key);
@@ -972,6 +994,9 @@ function chatPage() {
       menu.hidden = true;
       menuButton.focus();
     }
+  });
+  layout.addEventListener('animationend', (e) => {
+    if (/^tg-slide-/.test(e.animationName)) endEnter();
   });
 
   return { layout, select, setFolder, watch };
