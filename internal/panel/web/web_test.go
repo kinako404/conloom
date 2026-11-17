@@ -959,7 +959,7 @@ func TestChatsClassic_Page(t *testing.T) {
 		"'新建 Bot'", "'刷新'", "'新建聊天'", "'会话详情'", "'还没有聊天'", "function chatHead(key, title, botName) {",
 		"import { PANEL, PANEL_HINT, newChatDialog, botDialog, configBotDialog, deleteBotDialog } from './chats.js';",
 		"import { chatPane } from './chatclassic.js';", "chatPane({ key, signal, hint: PANEL_HINT })",
-		"h('a', { class: 'button small', href: '#/im',", "'TG 风格界面 ↗'", "tgLink.href = key ? href('im', key) : '#/im';",
+		"h('a', { class: 'button', href: '#/im',", "'TG 风格界面 ↗'", "tgLink.href = key ? href('im', key) : '#/im';",
 		"h('h1', null, '聊天'),\n      tgLink),", "go(href('chat', key))", "go('#/chat')",
 		"if (matchMedia(NARROW).matches) pane.scrollIntoView();",
 	} {
@@ -988,6 +988,9 @@ func TestChatsClassic_Page(t *testing.T) {
 	block := mediaBlock(t, files["style.css"], m[1])
 	if !regexp.MustCompile(`\.chat-classic \.chat-page\s*\{\s*grid-template-columns:\s*1fr;`).MatchString(block) {
 		t.Errorf("style.css @media %s does not stack the classic chat page", m[1])
+	}
+	if !regexp.MustCompile(`\.chat-classic \.chat-classic-title a\.button\s*\{[^}]*font-size:\s*12px;`).MatchString(files["style.css"]) {
+		t.Error("style.css does not make the TG 风格界面 link a small button")
 	}
 }
 

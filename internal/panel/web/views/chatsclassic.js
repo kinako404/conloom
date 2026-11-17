@@ -40,7 +40,7 @@ function chatPage() {
   const listMsg = h('div');
   const list = h('div', { class: 'chat-groups' });
   const pane = h('section', { class: 'chat-main' });
-  const tgLink = h('a', { class: 'button small', href: '#/im', title: '在 Telegram 风格的聊天页打开' }, 'TG 风格界面 ↗');
+  const tgLink = h('a', { class: 'button', href: '#/im', title: '在 Telegram 风格的聊天页打开' }, 'TG 风格界面 ↗');
 
   const note = (text) => mount(listMsg, h('div', { class: 'notice' }, text));
 
