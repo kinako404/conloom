@@ -5,15 +5,16 @@ import { fmtTime } from '../lib/format.js';
 import { avatarEl } from './avatar.js';
 
 // POLL_MS is how often the chat asks for new messages.
-const POLL_MS = 1500;
+export const POLL_MS = 1500;
 // HISTORY is how many recent messages the chat opens with.
-const HISTORY = 50;
+export const HISTORY = 50;
 // PAGE is the most messages one GET chat returns (maxChatMessages); a full
 // page is followed by another poll right away.
-const PAGE = 200;
+export const PAGE = 200;
 // TOUCH matches a device whose main pointer is a finger. Its on-screen
-// keyboard has no Shift+Return, so Return types a newline and ➤ sends.
-const TOUCH = '(pointer: coarse)';
+// keyboard has no Shift+Return, so Return types a newline and the send
+// button (➤ here, 发送 on the classic chat page) sends.
+export const TOUCH = '(pointer: coarse)';
 // SUGGEST_KEY is where the browser keeps the 建议回复 switch, which is on
 // unless set to SUGGEST_OFF.
 const SUGGEST_KEY = 'conloom.chat.suggestions';
@@ -23,7 +24,7 @@ const MAX_LINES = 6;
 
 // suggestionsOn reads the 建议回复 switch; a browser that refuses storage
 // gets it on.
-function suggestionsOn() {
+export function suggestionsOn() {
   try {
     return localStorage.getItem(SUGGEST_KEY) !== SUGGEST_OFF;
   } catch {
@@ -31,7 +32,7 @@ function suggestionsOn() {
   }
 }
 
-function saveSuggestionsOn(on) {
+export function saveSuggestionsOn(on) {
   try {
     if (on) localStorage.removeItem(SUGGEST_KEY);
     else localStorage.setItem(SUGGEST_KEY, SUGGEST_OFF);
@@ -81,7 +82,7 @@ function listen(target, type, fn, signal) {
 }
 
 // GONE is shown, once, when the chat no longer exists.
-const GONE = '这个聊天已不存在，可能已经被删除。';
+export const GONE = '这个聊天已不存在，可能已经被删除。';
 
 // SUPPRESSED says why a sent message, stored all the same, gets no reply, by
 // the suppressed_reason of the 202 to POST messages.
@@ -92,7 +93,7 @@ const SUPPRESSED = {
   stale: '这条消息到得太晚，bot 不会回复。',
 };
 
-function suppressedNote(reason) {
+export function suppressedNote(reason) {
   const text = Object.prototype.hasOwnProperty.call(SUPPRESSED, reason)
     ? SUPPRESSED[reason] : `bot 不会回复这条消息（${reason}）。`;
   return h('p', { class: 'hint warn', role: 'status' }, text);

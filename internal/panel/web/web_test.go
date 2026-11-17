@@ -47,7 +47,7 @@ func TestAssets_PlannedFilesPresent(t *testing.T) {
 		"index.html", "style.css", "app.js",
 		"lib/api.js", "lib/router.js", "lib/dom.js", "lib/chart.js", "lib/format.js", "lib/sections.js",
 		"views/login.js", "views/overview.js", "views/usage.js", "views/conversations.js",
-		"views/conversation.js", "views/chat.js", "views/chats.js", "views/avatar.js", "views/autonomy.js", "views/tasks.js", "views/audit.js", "views/config.js",
+		"views/conversation.js", "views/chat.js", "views/chats.js", "views/chatclassic.js", "views/chatsclassic.js", "views/avatar.js", "views/autonomy.js", "views/tasks.js", "views/audit.js", "views/config.js",
 		"views/personaform.js", "views/templates.js",
 	} {
 		if _, err := fs.Stat(FS, name); err != nil {
@@ -249,7 +249,7 @@ func TestAssets_ChatPageOneColumnOnNarrowScreens(t *testing.T) {
 	if !strings.Contains(js, "layout.classList.toggle('open', !!key);") {
 		t.Error("views/chats.js does not mark the layout open with a chat")
 	}
-	if !regexp.MustCompile(`onBack[^\n]*go\(withQuery\('#/chat', \{ bot: folder \}\)\)`).MatchString(js) {
+	if !regexp.MustCompile(`onBack[^\n]*go\(withQuery\('#/im', \{ bot: folder \}\)\)`).MatchString(js) {
 		t.Error("views/chats.js has no onBack to the list that keeps ?bot=")
 	}
 	if strings.Contains(js, "从左边") {
@@ -267,7 +267,7 @@ func TestChatsView_TelegramShell(t *testing.T) {
 	for _, want := range []string{
 		"'选择一个对话开始聊天'", "'还没有聊天，点右下角的 ✎ 开始'", "const SEEN_KEY = 'conloom.chat.seen';",
 		"'你：'", "'99+'", "title: '新建聊天'", "placeholder: '搜索'", "const REFRESH_MS = 5000;",
-		"SECTIONS.filter(", "'新建 Bot'", "currentUser()", "'退出'",
+		"SECTIONS.map(", "'新建 Bot'", "currentUser()", "'退出'",
 		// A light poll never drops a full reload, bots changed elsewhere
 		// show, and the bot forms open with the bot read afresh.
 		"if (fullPending) return;", "if (fullPending || n !== fullLoads) return;", "if (n === fullLoads) showChats(chats);",
@@ -298,7 +298,10 @@ func TestChatsView_TelegramShell(t *testing.T) {
 		}
 	}
 	app := files["app.js"]
-	for _, want := range []string{"document.body.classList.toggle('chat-app', chat);", "topbar.hidden = section === 'login' || chat;", "import { SECTIONS } from './lib/sections.js';"} {
+	for _, want := range []string{
+		"const im = section === 'im';", "document.body.classList.toggle('chat-app', im);",
+		"topbar.hidden = section === 'login' || im;", "import { SECTIONS } from './lib/sections.js';",
+	} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.js lacks %q", want)
 		}
@@ -394,7 +397,7 @@ func TestChatPane_TelegramStyle(t *testing.T) {
 		}
 	}
 	css := files["style.css"]
-	for _, gone := range []string{".tg-head", ".tg-back", ".bubble", ".chat-options"} {
+	for _, gone := range []string{".tg-head", ".tg-back"} {
 		if strings.Contains(css, gone) {
 			t.Errorf("style.css still has %q", gone)
 		}
@@ -916,5 +919,214 @@ func TestChatPane_SenderWarnAndKeys(t *testing.T) {
 	}
 	if !regexp.MustCompile(`\.chat-app \.tg-folder-warn\s*\{[^}]*background:\s*var\(--warn\);`).MatchString(files["style.css"]) {
 		t.Error("style.css has no warn dot for a folder")
+	}
+}
+
+// classicClasses are the classes only the classic chat page uses.
+var classicClasses = []string{
+	"chat", "chat-log", "bubble", "chat-typing", "chat-form", "chat-input", "chat-suggestions", "chat-options",
+	"chat-page", "chat-side", "chat-groups", "chat-group", "chat-group-head", "chat-items", "chat-title", "chat-time",
+	"chat-main", "chat-head", "chat-empty", "chat-classic-title",
+}
+
+// classNames returns the classes js gives elements through class: '...'.
+func classNames(js string) map[string]bool {
+	out := map[string]bool{}
+	for _, m := range regexp.MustCompile(`class: '([^']*)'`).FindAllStringSubmatch(js, -1) {
+		for _, c := range strings.Fields(m[1]) {
+			out[c] = true
+		}
+	}
+	for _, m := range regexp.MustCompile(`'([\w-]+) (?:bot|user)'`).FindAllStringSubmatch(js, -1) {
+		out[m[1]] = true
+	}
+	return out
+}
+
+// The classic chat page stays at #/chat for debugging, under the top bar: 聊天
+// with 新建 Bot and 刷新, the bots with their chats on the left, the chat on the
+// right, scrolled into view on a narrow screen. It shares the dialogs of the
+// Telegram-style page, which moved to #/im, and links to it beside its
+// heading, on the chat open.
+func TestChatsClassic_Page(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js, ok := files["views/chatsclassic.js"]
+	if !ok {
+		t.Fatal("views/chatsclassic.js is not embedded")
+	}
+	for _, want := range []string{
+		"export async function chatsClassicView(ctx) {", "h('div', { class: 'chat-classic' },", "h('h1', null, '聊天')",
+		"'新建 Bot'", "'刷新'", "'新建聊天'", "'会话详情'", "'还没有聊天'", "function chatHead(key, title, botName) {",
+		"import { PANEL, PANEL_HINT, newChatDialog, botDialog, configBotDialog, deleteBotDialog } from './chats.js';",
+		"import { chatPane } from './chatclassic.js';", "chatPane({ key, signal, hint: PANEL_HINT })",
+		"h('a', { class: 'button small', href: '#/im',", "'TG 风格界面 ↗'", "tgLink.href = key ? href('im', key) : '#/im';",
+		"h('h1', null, '聊天'),\n      tgLink),", "go(href('chat', key))", "go('#/chat')",
+		"if (matchMedia(NARROW).matches) pane.scrollIntoView();",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chatsclassic.js lacks %q", want)
+		}
+	}
+	for _, own := range []string{"function newChatDialog(", "function botDialog(", "function configBotDialog(", "function deleteBotDialog(", "const PRIVATE_CHAT", "const PANEL_HINT"} {
+		if strings.Contains(js, own) {
+			t.Errorf("views/chatsclassic.js has its own %q", own)
+		}
+	}
+	chats := files["views/chats.js"]
+	for _, want := range []string{
+		"export const PANEL = 'panel';", "export const PANEL_HINT = ", "export function newChatDialog(created) {",
+		"export function botDialog(saved) {", "export function configBotDialog(saved) {", "export function deleteBotDialog(done) {",
+	} {
+		if !strings.Contains(chats, want) {
+			t.Errorf("views/chats.js lacks %q", want)
+		}
+	}
+	m := regexp.MustCompile(`const NARROW = '([^']+)';`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("views/chatsclassic.js has no NARROW media query")
+	}
+	block := mediaBlock(t, files["style.css"], m[1])
+	if !regexp.MustCompile(`\.chat-classic \.chat-page\s*\{\s*grid-template-columns:\s*1fr;`).MatchString(block) {
+		t.Errorf("style.css @media %s does not stack the classic chat page", m[1])
+	}
+}
+
+// The classic chat pane keeps its bubbles with sender, time and 面板 tag,
+// 对方正在输入…, a 发送 button and the 建议回复 checkbox; it shares the
+// timing, the switch's storage and the notes with views/chat.js.
+func TestChatClassic_Pane(t *testing.T) {
+	files := assets(t, ".js")
+	js, ok := files["views/chatclassic.js"]
+	if !ok {
+		t.Fatal("views/chatclassic.js is not embedded")
+	}
+	for _, want := range []string{
+		"export async function chatPane({ key, signal, hint }) {",
+		"import { POLL_MS, HISTORY, PAGE, TOUCH, GONE, suggestionsOn, saveSuggestionsOn, suppressedNote } from './chat.js';",
+		"m.from_bot ? 'bubble bot' : 'bubble user'", "h('strong', null, m.sender_name || m.sender_id)",
+		"m.channel === 'panel' ? h('span', { class: 'badge' }, '面板') : null", "'对方正在输入…'",
+		"h('button', { type: 'submit', class: 'primary' }, '发送')", "h('input', { type: 'checkbox', checked: suggestionsOn() })",
+		"toggle, '建议回复'", "saveSuggestionsOn(toggle.checked);", "toggle.checked && !gone",
+		"post(convPath(key, 'suggestions'), { after_seq: seq })", "if (!added) clearSuggestions();",
+		"if (res && res.suppressed_reason) mount(sendError, suppressedNote(res.suppressed_reason));",
+		"const touch = matchMedia(TOUCH).matches;", "e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chatclassic.js lacks %q", want)
+		}
+	}
+	if strings.Contains(js, "SUGGEST_KEY") {
+		t.Error("views/chatclassic.js keeps its own 建议回复 switch")
+	}
+	chat := files["views/chat.js"]
+	for _, want := range []string{
+		"export const POLL_MS = ", "export const HISTORY = ", "export const PAGE = ", "export const TOUCH = ", "export const GONE = ",
+		"export function suggestionsOn() {", "export function saveSuggestionsOn(on) {", "export function suppressedNote(reason) {",
+	} {
+		if !strings.Contains(chat, want) {
+			t.Errorf("views/chat.js lacks %q", want)
+		}
+	}
+}
+
+// #/chat is the classic chat page, under the top bar; #/im the Telegram-style
+// one, full window. Every link of the Telegram-style page stays on #/im but
+// the ≡ menu's 经典聊天页, which opens the classic page on the chat open. The
+// conversation page opens a panel chat on the classic page.
+func TestChatRoutes_ClassicAndIm(t *testing.T) {
+	files := assets(t, ".js")
+	app := files["app.js"]
+	for _, want := range []string{
+		"import { chatsClassicView } from './views/chatsclassic.js';", "import { chatsView } from './views/chats.js';",
+		"route('/chat', chatsClassicView);", "route('/chat/:key', chatsClassicView);",
+		"route('/im', chatsView);", "route('/im/:key', chatsView);",
+	} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	if strings.Contains(app, "route('/chat', chatsView)") || strings.Contains(app, "section === 'chat'") {
+		t.Error("app.js still gives #/chat to the Telegram-style page")
+	}
+	chats := files["views/chats.js"]
+	for _, want := range []string{
+		"const classicLink = h('a', { href: '#/chat' }, '经典聊天页');",
+		"(section === 'chat' ? classicLink : h('a', { href: '#/' + section }, title))",
+		"classicLink.href = key ? href('chat', key) : '#/chat';",
+		"withQuery(href('im', key), { bot: folder })", "withQuery(current ? href('im', current) : '#/im', { bot: id })",
+		"go(withQuery(href('im', key), { bot: folder && f ? f.group.id : folder }));",
+	} {
+		if !strings.Contains(chats, want) {
+			t.Errorf("views/chats.js lacks %q", want)
+		}
+	}
+	chatRoute := regexp.MustCompile(`'#/chat|href\('chat'`)
+	for name, text := range map[string]string{"views/chats.js": chats, "views/chat.js": files["views/chat.js"]} {
+		for i, line := range strings.Split(text, "\n") {
+			if chatRoute.MatchString(line) && !strings.Contains(line, "classicLink") {
+				t.Errorf("%s:%d links to the classic page: %s", name, i+1, strings.TrimSpace(line))
+			}
+		}
+	}
+	conv := files["views/conversation.js"]
+	if !strings.Contains(conv, "h('a', { class: 'button', href: href('chat', c.key) }, '在聊天页打开')") {
+		t.Error("views/conversation.js does not open a panel chat on the classic chat page")
+	}
+}
+
+// The two chat pages cannot restyle each other: the classic page's rules hang
+// on .chat-classic, the Telegram-style page's on .chat-app, no rule mixes
+// them, and neither page's markup uses a class only the other's rules style.
+func TestChatPages_StylesScoped(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	css := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(files["style.css"], "")
+	names := strings.Join(classicClasses, "|")
+	classic := regexp.MustCompile(`\.(?:` + names + `)(?:[^\w-]|$)`)
+	scoped := 0
+	for _, m := range cssRule.FindAllStringSubmatch(css, -1) {
+		for _, sel := range strings.Split(m[1], ",") {
+			sel = strings.TrimSpace(sel)
+			isApp := strings.HasPrefix(sel, ".chat-app ") || strings.HasPrefix(sel, "body.chat-app ")
+			isClassic := strings.HasPrefix(sel, ".chat-classic ")
+			if strings.Contains(sel, "chat-classic") && !isClassic {
+				t.Errorf("style.css: %q mentions .chat-classic but is not scoped to it", sel)
+			}
+			if isClassic {
+				scoped++
+				if strings.Contains(sel, "chat-app") || strings.Contains(sel, ".tg") {
+					t.Errorf("style.css: %q mixes the two chat pages", sel)
+				}
+			}
+			if !isApp && !isClassic && classic.MatchString(sel) {
+				t.Errorf("style.css: %q styles the classic chat page but is not scoped to .chat-classic", sel)
+			}
+		}
+	}
+	if scoped < len(classicClasses) {
+		t.Errorf("style.css has %d rules under .chat-classic, want at least %d", scoped, len(classicClasses))
+	}
+	for _, c := range classicClasses {
+		if c == "chat-groups" {
+			continue // the list's box, which has no rule of its own
+		}
+		if !regexp.MustCompile(`\.chat-classic [^{]*\.` + regexp.QuoteMeta(c) + `(?:[^\w-]|$)`).MatchString(css) {
+			t.Errorf("style.css has no .chat-classic rule for .%s", c)
+		}
+	}
+	classicJS := classNames(files["views/chatsclassic.js"] + files["views/chatclassic.js"])
+	for _, c := range append(slices.Clone(classicClasses), "chat-classic") {
+		if !classicJS[c] {
+			t.Errorf("the classic chat page does not use the class %q", c)
+		}
+	}
+	for c := range classicJS {
+		if strings.HasPrefix(c, "tg") || c == "avatar" || c == "chat-app" {
+			t.Errorf("the classic chat page uses the class %q of the Telegram-style page", c)
+		}
+	}
+	for c := range classNames(files["views/chats.js"] + files["views/chat.js"] + files["views/avatar.js"]) {
+		if slices.Contains(classicClasses, c) || c == "chat-classic" {
+			t.Errorf("the Telegram-style chat page uses the class %q of the classic page", c)
+		}
 	}
 }

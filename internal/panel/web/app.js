@@ -6,6 +6,7 @@ import { loginView } from './views/login.js';
 import { overviewView } from './views/overview.js';
 import { usageView } from './views/usage.js';
 import { chatsView } from './views/chats.js';
+import { chatsClassicView } from './views/chatsclassic.js';
 import { conversationsView } from './views/conversations.js';
 import { conversationView } from './views/conversation.js';
 import { templatesView, templateView } from './views/templates.js';
@@ -16,8 +17,10 @@ import { configView } from './views/config.js';
 route('/', overviewView);
 route('/login', loginView);
 route('/usage', usageView);
-route('/chat', chatsView);
-route('/chat/:key', chatsView);
+route('/chat', chatsClassicView);
+route('/chat/:key', chatsClassicView);
+route('/im', chatsView);
+route('/im/:key', chatsView);
 route('/conversations', conversationsView);
 route('/conversations/:key', conversationView);
 route('/conversations/:key/:tab', conversationView);
@@ -49,14 +52,15 @@ document.getElementById('logout').addEventListener('click', async () => {
   go('#/login');
 });
 
-// beforeRender marks the section on show in the top bar. The chat page fills
-// the window, with the top bar's links in its ≡ menu, so the top bar is hidden
-// there and the body has the class chat-app, which its styles hang on.
+// beforeRender marks the section on show in the top bar. The Telegram-style
+// chat page (#/im) fills the window, with the top bar's links in its ≡ menu,
+// so the top bar is hidden there and the body has the class chat-app, which
+// its styles hang on; the classic chat page (#/chat) keeps the top bar.
 function beforeRender(loc) {
   const section = loc.segments[0] || '';
-  const chat = section === 'chat';
-  topbar.hidden = section === 'login' || chat;
-  document.body.classList.toggle('chat-app', chat);
+  const im = section === 'im';
+  topbar.hidden = section === 'login' || im;
+  document.body.classList.toggle('chat-app', im);
   for (const a of links) a.classList.toggle('active', a.dataset.section === section);
   userEl.textContent = currentUser();
   document.title = 'ConLoom 管理面板';

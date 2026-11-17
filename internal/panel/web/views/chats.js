@@ -8,7 +8,7 @@ import { avatarEl } from './avatar.js';
 
 // PANEL is the source of a bot created in the panel and the platform of the
 // chats held in the panel.
-const PANEL = 'panel';
+export const PANEL = 'panel';
 
 // NARROW is the media query under which style.css shows the chat page in one
 // column, like Telegram on a phone: the folders, in a row, and the chat list
@@ -19,7 +19,7 @@ const NARROW = '(max-width: 699px)';
 // MAX_DISPLAY_NAME is the longest name a panel chat calls its user by.
 const MAX_DISPLAY_NAME = 32;
 
-const PANEL_HINT = '在面板里和 bot 私聊，你是这个聊天的管理员。bot 的回复只出现在面板里。每条最多 2000 字。';
+export const PANEL_HINT = '在面板里和 bot 私聊，你是这个聊天的管理员。bot 的回复只出现在面板里。每条最多 2000 字。';
 
 // PRIVATE_CHAT names the private ranges of a config bot by the values of
 // private_chat, from the most closed to the most open.
@@ -133,7 +133,7 @@ function skillsFieldset(boxes, none) {
 // botDialog creates a panel bot or edits one: its name, the persona template
 // its new chats start from and its skills. saved(bot, isNew) runs after a
 // save.
-function botDialog(saved) {
+export function botDialog(saved) {
   const dialog = h('dialog', { class: 'card dialog wide' });
   // open shows the form for bot, or for a new bot when bot is null, with the
   // templates and skills to choose from. bots are all the bots: a name one of
@@ -207,7 +207,7 @@ function conversationsNote(sk) {
 // name, admins, private range and allowlist, groups, the persona templates of
 // its new private chats and new groups and its skills. Its identity is only
 // shown: it is changed in the config file. saved(bot) runs after a save.
-function configBotDialog(saved) {
+export function configBotDialog(saved) {
   const dialog = h('dialog', { class: 'card dialog wide' });
   // open shows the form for bot with the templates and skills to choose
   // from; bots are all the bots, as for botDialog.
@@ -281,7 +281,7 @@ function configBotDialog(saved) {
 // deleteBotDialog deletes a panel bot once its name is typed in. done(bot, ok)
 // runs after the delete, ok false when it stopped partway and some of the
 // bot's chats may already be gone.
-function deleteBotDialog(done) {
+export function deleteBotDialog(done) {
   const dialog = h('dialog', { class: 'card dialog' });
   const open = (bot) => {
     const confirmName = h('input', { autocomplete: 'off' });
@@ -474,10 +474,10 @@ function chatPage() {
   // shownFolder is the folder chosen, all chats when its bot is gone.
   const shownFolder = () => (groups.some((g) => g.id === folder) ? folder : '');
 
-  const chatHref = (key) => withQuery(href('chat', key), { bot: folder });
-  const folderHref = (id) => withQuery(current ? href('chat', current) : '#/chat', { bot: id });
+  const chatHref = (key) => withQuery(href('im', key), { bot: folder });
+  const folderHref = (id) => withQuery(current ? href('im', current) : '#/im', { bot: id });
 
-  const onBack = () => go(withQuery('#/chat', { bot: folder }));
+  const onBack = () => go(withQuery('#/im', { bot: folder }));
 
   const unreadOf = (c) => Math.max(0, (c.message_count || 0) - (seen[c.key] === undefined ? c.message_count || 0 : seen[c.key]));
 
@@ -502,7 +502,7 @@ function chatPage() {
   const chatDialog = newChatDialog((key) => {
     refresh().then(() => {
       const f = find(key);
-      go(withQuery(href('chat', key), { bot: folder && f ? f.group.id : folder }));
+      go(withQuery(href('im', key), { bot: folder && f ? f.group.id : folder }));
     });
   });
 
@@ -623,10 +623,13 @@ function chatPage() {
     go('#/login');
   };
 
+  // classicLink opens the classic chat page on the chat open, if any; the
+  // other sections are the top bar's.
+  const classicLink = h('a', { href: '#/chat' }, '经典聊天页');
   const menuButton = h('button', { type: 'button', class: 'tg-menu-button', title: '菜单', 'aria-label': '菜单' }, '≡');
   const menu = h('div', { class: 'tg-menu', hidden: true },
-    h('nav', null, SECTIONS.filter(([section]) => section !== 'chat').map(([section, title]) =>
-      h('a', { href: '#/' + section }, title))),
+    h('nav', null, SECTIONS.map(([section, title]) =>
+      (section === 'chat' ? classicLink : h('a', { href: '#/' + section }, title)))),
     h('button', {
       type: 'button',
       class: 'tg-menu-item',
@@ -873,6 +876,7 @@ function chatPage() {
   async function select(key, signal) {
     current = key;
     pending = null;
+    classicLink.href = key ? href('chat', key) : '#/chat';
     layout.classList.toggle('open', !!key);
     if (key && fetched) seen = noteSeen(allChats(), key);
     renderLists();

@@ -381,10 +381,45 @@ func TestStatic_ServesChatsView(t *testing.T) {
 			t.Errorf("/panel/views/chats.js lacks %q", want)
 		}
 	}
+	for _, c := range []struct {
+		path string
+		want []string
+	}{
+		{"/panel/views/chatsclassic.js", []string{
+			"export async function chatsClassicView(", "from './chats.js'", "from './chatclassic.js'",
+			"class: 'chat-classic'", "'TG 风格界面 ↗'", "href: '#/im'", "href('im', key)",
+		}},
+		{"/panel/views/chatclassic.js", []string{"export async function chatPane({ key, signal, hint })", "from './chat.js'", "'建议回复'"}},
+		{"/panel/views/chats.js", []string{"'经典聊天页'", "href('chat', key)", "href('im', key)"}},
+	} {
+		w := get(c.path)
+		if ct := w.Header().Get("Content-Type"); w.Code != http.StatusOK || !strings.Contains(ct, "javascript") {
+			t.Errorf("%s: %d Content-Type %q", c.path, w.Code, ct)
+			continue
+		}
+		for _, want := range c.want {
+			if !strings.Contains(w.Body.String(), want) {
+				t.Errorf("%s lacks %q", c.path, want)
+			}
+		}
+	}
 	app := get("/panel/app.js").Body.String()
-	for _, want := range []string{"from './views/chats.js'", "route('/chat', chatsView)", "route('/chat/:key', chatsView)", "from './lib/sections.js'"} {
+	for _, want := range []string{
+		"from './views/chats.js'", "from './views/chatsclassic.js'", "from './lib/sections.js'",
+		"route('/chat', chatsClassicView)", "route('/chat/:key', chatsClassicView)", "route('/im', chatsView)", "route('/im/:key', chatsView)",
+		"document.body.classList.toggle('chat-app', im);",
+	} {
 		if !strings.Contains(app, want) {
 			t.Errorf("/panel/app.js lacks %q", want)
+		}
+	}
+	w = get("/panel/style.css")
+	if ct := w.Header().Get("Content-Type"); w.Code != http.StatusOK || !strings.Contains(ct, "css") {
+		t.Fatalf("/panel/style.css: %d Content-Type %q", w.Code, ct)
+	}
+	for _, want := range []string{".chat-classic .bubble {", ".chat-classic .chat-page {", ".chat-app .tg {"} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("/panel/style.css lacks %q", want)
 		}
 	}
 	w = get("/panel/lib/sections.js")
@@ -404,7 +439,7 @@ func TestStatic_ServesChatsView(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "location.replace(href('chat', key))") {
 		t.Error("/panel/views/conversation.js does not send old chat tab links to the chat page")
 	}
-	for _, view := range []string{"chats.js", "chat.js", "conversation.js"} {
+	for _, view := range []string{"chats.js", "chat.js", "chatsclassic.js", "chatclassic.js", "conversation.js"} {
 		if body := get("/panel/views/" + view).Body.String(); strings.Contains(body, "接管") || strings.Contains(body, "takeover") {
 			t.Errorf("/panel/views/%s still offers the takeover of platform chats", view)
 		}

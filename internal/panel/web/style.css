@@ -217,8 +217,66 @@ ul.plain { list-style: none; margin: 0; padding: 0; }
 .messages .meta { color: var(--muted); font-size: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
 .messages .body { white-space: pre-wrap; word-break: break-word; margin-top: 4px; }
 
-/* The chat page fills the window like Telegram Desktop: app.js gives the body
-   the class chat-app there, and every rule of the page hangs on it. */
+/* The classic chat page (#/chat), kept for debugging: views/chatsclassic.js
+   wraps it in .chat-classic, and every rule of the page hangs on it. */
+.chat-classic .chat-classic-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.chat-classic .chat-classic-title h1 { margin: 0; }
+.chat-classic .chat-classic-title a.button { font-size: 12px; padding: 3px 10px; }
+.chat-classic .chat { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.chat-classic .chat-log {
+  list-style: none;
+  margin: 0;
+  padding: 0 4px;
+  height: 60vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.chat-classic .bubble { max-width: 75%; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--border); }
+.chat-classic .bubble.bot { align-self: flex-start; background: var(--code-bg); border-bottom-left-radius: 2px; }
+.chat-classic .bubble.user { align-self: flex-end; background: var(--panel); border-color: var(--accent); border-bottom-right-radius: 2px; }
+.chat-classic .bubble .meta { color: var(--muted); font-size: 12px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.chat-classic .bubble.user .meta { justify-content: flex-end; }
+.chat-classic .bubble .body { white-space: pre-wrap; word-break: break-word; }
+.chat-classic .chat-typing { color: var(--muted); font-size: 12px; padding: 4px; }
+.chat-classic .chat-form { display: flex; gap: 8px; align-items: flex-end; margin-top: 8px; }
+.chat-classic .chat-form .chat-input { flex: 1; min-height: 60px; }
+.chat-classic .chat-suggestions { display: flex; flex-wrap: wrap; gap: 6px; max-width: 100%; }
+.chat-classic .chat-suggestions button { white-space: normal; text-align: left; border-color: var(--accent); color: var(--accent); }
+.chat-classic .chat-options { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; color: var(--muted); font-size: 12px; }
+
+.chat-classic .chat-page { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 16px; align-items: start; }
+.chat-classic .chat-side {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+}
+.chat-classic .chat-group { border-top: 1px solid var(--border); padding: 10px 0; }
+.chat-classic .chat-group:first-child { border-top: none; padding-top: 0; }
+.chat-classic .chat-group-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.chat-classic .chat-group-head .spacer { flex: 1; }
+.chat-classic .chat-group p { margin: 2px 0; }
+.chat-classic .chat-items { list-style: none; margin: 6px 0 8px; padding: 0; }
+.chat-classic .chat-items a { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px; color: var(--text); }
+.chat-classic .chat-items a:hover { background: var(--code-bg); text-decoration: none; }
+.chat-classic .chat-items a.active { background: var(--accent); color: var(--accent-text); }
+.chat-classic .chat-items a.active .muted, .chat-classic .chat-items a.active .badge { color: var(--accent-text); border-color: var(--accent-text); }
+.chat-classic .chat-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-classic .chat-time { font-size: 12px; white-space: nowrap; }
+.chat-classic .chat-main { min-width: 0; }
+.chat-classic .chat-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.chat-classic .chat-head h2 { margin: 0; }
+.chat-classic .chat-head .spacer { flex: 1; }
+.chat-classic .chat-empty { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 24px 16px; }
+.chat-classic .chat-empty p { margin: 4px 0; }
+
+/* The Telegram-style chat page (#/im) fills the window like Telegram Desktop:
+   app.js gives the body the class chat-app there, and every rule of the page
+   hangs on it. */
 body.chat-app main { max-width: none; margin: 0; padding: 0; }
 .chat-app .tg {
   position: relative;
@@ -701,6 +759,8 @@ details > summary { cursor: pointer; color: var(--accent); white-space: nowrap; 
   .cards { grid-template-columns: 1fr; }
   dl.kv { grid-template-columns: 1fr; }
   dl.kv dd { margin-bottom: 6px; }
+  .chat-classic .chat-page { grid-template-columns: 1fr; }
+  .chat-classic .chat-side { max-height: none; }
   .chat-app .tg { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .chat-app .tg.open { grid-template-rows: minmax(0, 1fr); }
   .chat-app .tg-rail {
