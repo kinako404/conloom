@@ -45,18 +45,22 @@ func newModelCallView(c store.ModelCall) modelCallView {
 }
 
 // policyVersionView is a policy version; CreatedAt is null for the defaults
-// of a conversation without a stored policy (version 0).
+// of a conversation without a stored policy (version 0). FollowsDefaults
+// marks a version that follows the default policy of the conversation's type,
+// as a conversation without a stored policy does.
 type policyVersionView struct {
-	Version   int                    `json:"version"`
-	Policy    conloomapi.GroupPolicy `json:"policy"`
-	Reason    string                 `json:"reason"`
-	UpdatedBy string                 `json:"updated_by"`
-	CreatedAt *time.Time             `json:"created_at"`
+	Version         int                    `json:"version"`
+	Policy          conloomapi.GroupPolicy `json:"policy"`
+	Reason          string                 `json:"reason"`
+	UpdatedBy       string                 `json:"updated_by"`
+	CreatedAt       *time.Time             `json:"created_at"`
+	FollowsDefaults bool                   `json:"follows_defaults"`
 }
 
 func newPolicyVersionView(pv store.PolicyVersion) policyVersionView {
 	return policyVersionView{
 		Version: pv.Version, Policy: pv.Policy, Reason: pv.Reason, UpdatedBy: pv.UpdatedBy, CreatedAt: nullTime(pv.CreatedAt),
+		FollowsDefaults: pv.FollowsDefaults,
 	}
 }
 

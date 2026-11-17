@@ -286,6 +286,90 @@ func TestRestorePolicy_VersionWithoutSections(t *testing.T) {
 	}
 }
 
+// policyAudit returns the action of the policy.update event of version, "" without one.
+func (h *writeHarness) policyAudit(version int) string {
+	h.t.Helper()
+	for _, e := range h.audits("policy.update") {
+		var d struct {
+			Action  string `json:"action"`
+			Version int    `json:"version"`
+		}
+		if err := json.Unmarshal([]byte(e.Detail), &d); err != nil {
+			h.t.Fatalf("audit detail %q: %v", e.Detail, err)
+		}
+		if d.Version == version {
+			return d.Action
+		}
+	}
+	return ""
+}
+
+func TestFollowDefaults_Endpoint(t *testing.T) {
+	h := newWriteHarness(t, nil)
+	h.setDefaults(policy.KindGroup, policyWith(func(p *conloomapi.GroupPolicy) { p.Context.MaxRecentMessages = 33 }))
+	own := policyWith(func(p *conloomapi.GroupPolicy) { p.Concurrency.MaxInteractiveRequests = 2 })
+	if w := h.write(http.MethodPut, convPath(writeGroup.Key, "policy"), conloomapi.PolicyPut{Policy: own}); w.Code != http.StatusOK {
+		t.Fatalf("PUT policy: %d %s", w.Code, w.Body)
+	}
+	if w := h.write(http.MethodPost, convPath(writeGroup.Key, "pause"), nil); w.Code != http.StatusOK {
+		t.Fatalf("pause: %d %s", w.Code, w.Body)
+	}
+
+	path := convPath(writeGroup.Key, "policy", "follow-defaults")
+	got := decodeCurrent[policyVersionResp](t, h.write(http.MethodPost, path, map[string]any{"reason": "跟随默认"}), http.StatusOK)
+	if got.Version != 3 || !got.FollowsDefaults || got.Policy.Concurrency.MaxInteractiveRequests != 1 ||
+		got.Policy.Context.MaxRecentMessages != 33 || got.Reason != "跟随默认" || got.UpdatedBy != "panel:"+testUser {
+		t.Errorf("follow-defaults = %+v, want v3 following the defaults (running, 33)", got)
+	}
+	if action := h.policyAudit(3); action != "follow_defaults" {
+		t.Errorf("policy.update audit of v3 = %q, want follow_defaults", action)
+	}
+
+	var pol policyResp
+	h.getJSON(convPath(writeGroup.Key, "policy"), &pol)
+	if !pol.Current.FollowsDefaults || pol.Current.Version != 3 || pol.Defaults == nil ||
+		pol.Defaults.Kind != "group" || pol.Defaults.Version != h.policies.Defaults(policy.KindGroup).Version {
+		t.Errorf("GET policy = current %+v defaults %+v, want follows_defaults and defaults {group 1}", pol.Current, pol.Defaults)
+	}
+
+	got = decodeCurrent[policyVersionResp](t, h.write(http.MethodPost, path, map[string]any{}), http.StatusOK)
+	if got.Version != 3 || !got.FollowsDefaults {
+		t.Errorf("following again = %+v, want v3 unchanged", got)
+	}
+	errorBody(t, h.write(http.MethodPost, "/panel/api/conversations/qq-main:qq:group:nope/policy/follow-defaults", map[string]any{}),
+		http.StatusNotFound, conloomapi.CodeNotFound)
+	errorBody(t, h.do(http.MethodPost, path, `{}`, withCookie(h.cookie)), http.StatusForbidden, conloomapi.CodeForbidden)
+	errorBody(t, h.write(http.MethodPost, path, `{"extra":1}`), http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+}
+
+func TestRestorePolicy_FollowsVersionFollowsAgain(t *testing.T) {
+	h := newWriteHarness(t, nil)
+	h.setDefaults(policy.KindGroup, policyWith(func(p *conloomapi.GroupPolicy) { p.Context.MaxRecentMessages = 33 }))
+	put := func(n int) {
+		p := policyWith(func(p *conloomapi.GroupPolicy) { p.Context.MaxRecentMessages = n })
+		if w := h.write(http.MethodPut, convPath(writeGroup.Key, "policy"), conloomapi.PolicyPut{Policy: p}); w.Code != http.StatusOK {
+			t.Fatalf("PUT policy: %d %s", w.Code, w.Body)
+		}
+	}
+	put(30)
+	if w := h.write(http.MethodPost, convPath(writeGroup.Key, "policy", "follow-defaults"), map[string]any{}); w.Code != http.StatusOK {
+		t.Fatalf("follow-defaults: %d %s", w.Code, w.Body)
+	}
+	put(40)
+
+	got := decodeCurrent[policyVersionResp](t, h.write(http.MethodPost, convPath(writeGroup.Key, "policy", "restore"),
+		map[string]any{"version": 2}), http.StatusOK)
+	if got.Version != 4 || !got.FollowsDefaults || got.Policy.Context.MaxRecentMessages != 33 || got.Reason != "restore v2" {
+		t.Errorf("restore of the follows version = %+v, want v4 following the defaults again", got)
+	}
+	if cur := h.currentPolicy(); !cur.FollowsDefaults || cur.Version != 4 {
+		t.Errorf("Current = v%d follows %v, want v4 following", cur.Version, cur.FollowsDefaults)
+	}
+	if action := h.policyAudit(4); action != "follow_defaults" {
+		t.Errorf("policy.update audit of v4 = %q, want follow_defaults", action)
+	}
+}
+
 func TestPauseResume(t *testing.T) {
 	h := newWriteHarness(t, nil)
 	got := decodeCurrent[policyVersionResp](t, h.write(http.MethodPost, convPath(writeGroup.Key, "pause"), nil), http.StatusOK)

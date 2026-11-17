@@ -7,14 +7,17 @@ import (
 
 	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/memory"
+	"github.com/kinako404/conloom/internal/policy"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 // getPolicy returns the current policy, the defaults as version 0 when none is
 // stored (policy.Service.Current stores nothing), the stored versions newest
-// first and the memory limits in effect, under the policy the conversation's
-// memory follows (see memoryPolicy).
+// first, the kind and version of the default policy the conversation's type
+// has, which it follows while the current policy has follows_defaults, and
+// the memory limits in effect, under the policy the conversation's memory
+// follows (see memoryPolicy).
 func (s *Server) getPolicy(w http.ResponseWriter, r *http.Request, _ *Session) {
 	conv, ok := s.conversation(w, r)
 	if !ok {
@@ -40,20 +43,30 @@ func (s *Server) getPolicy(w http.ResponseWriter, r *http.Request, _ *Session) {
 		return
 	}
 	mp := pol.Memory
+	kind := policy.KindOf(conv.Key)
 	s.writeJSON(w, http.StatusOK, struct {
 		Current      policyVersionView   `json:"current"`
 		Versions     []policyVersionView `json:"versions"`
+		Defaults     defaultsRef         `json:"defaults"`
 		MemoryLimits memoryLimitsView    `json:"memory_limits"`
-	}{newPolicyVersionView(cur), out, memoryLimitsView{
+	}{newPolicyVersionView(cur), out, defaultsRef{kind, s.d.Policies.Defaults(kind).Version}, memoryLimitsView{
 		SummaryMaxChars: memory.SummaryLimit(mp, conv.Type), NoteMaxChars: memory.NoteLimit(mp, conv.Type),
 		DefaultSummaryMaxChars: memory.SummaryLimit(conloomapi.MemoryPolicy{}, conv.Type),
 		DefaultNoteMaxChars:    memory.NoteLimit(conloomapi.MemoryPolicy{}, conv.Type),
 	}})
 }
 
+// defaultsRef names a version of the default policy of a kind (policy.KindGroup
+// or KindPrivate).
+type defaultsRef struct {
+	Kind    string `json:"kind"`
+	Version int    `json:"version"`
+}
+
 // memoryLimitsView is a conversation's summary and note limits: those in
 // effect under the policy its memory follows and its type's defaults, which a
-// policy value of 0 stands for.
+// policy value of 0 stands for. The settings page shows a default policy's the
+// same way, for the conversations of its kind.
 type memoryLimitsView struct {
 	SummaryMaxChars        int `json:"summary_max_chars"`
 	NoteMaxChars           int `json:"note_max_chars"`

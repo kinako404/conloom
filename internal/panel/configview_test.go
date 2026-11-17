@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/policy"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -138,7 +140,9 @@ func TestConfigView_NoSecrets(t *testing.T) {
 		{[]any{"panel", "listen"}, "0.0.0.0:8788"},
 		{[]any{"runtime", "action_ttl"}, "10m0s"},
 		{[]any{"runtime", "usage_retention"}, "9600h0m0s"},
-		{[]any{"default_group_policy", "memory", "enabled"}, false},
+		{[]any{"default_group_policy", "policy", "memory", "enabled"}, false},
+		{[]any{"default_group_policy", "source"}, "panel"},
+		{[]any{"default_private_policy", "source"}, "panel"},
 		{[]any{"observability", "log_level"}, "info"},
 	} {
 		if got := jsonAt(t, cfg, tc.path...); !reflect.DeepEqual(got, tc.want) {
@@ -155,13 +159,41 @@ func TestConfigView_NoSecrets(t *testing.T) {
 	}
 
 	h.cfg.Embedding = nil
-	h.cfg.DefaultPrivatePolicy = nil
 	h.getJSON("/panel/api/config", &resp)
 	if v, ok := resp.Config["embedding"]; !ok || v != nil {
 		t.Errorf("embedding without a section = %v (present %v), want null", v, ok)
 	}
-	if v, ok := resp.Config["default_private_policy"]; !ok || v != nil {
-		t.Errorf("default_private_policy unset = %v (present %v), want null", v, ok)
+}
+
+func TestConfigView_DefaultPoliciesFromDB(t *testing.T) {
+	h := newOverviewHarness(t, nil)
+	file := conloomapi.DefaultGroupPolicy()
+	file.Context.MaxRecentMessages = 77
+	h.cfg.DefaultGroupPolicy = file
+	p := conloomapi.DefaultGroupPolicy()
+	p.Context.MaxRecentMessages = 33
+	d, err := h.policies.SetDefaults(context.Background(), policy.KindGroup, p, "调小", "panel:"+testUser, "update")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var resp struct {
+		Config map[string]any `json:"config"`
+	}
+	h.getJSON("/panel/api/config", &resp)
+	for _, tc := range []struct {
+		path []any
+		want any
+	}{
+		{[]any{"default_group_policy", "source"}, "panel"},
+		{[]any{"default_group_policy", "version"}, float64(d.Version)},
+		{[]any{"default_group_policy", "policy", "context", "max_recent_messages"}, 33.0},
+		{[]any{"default_private_policy", "source"}, "panel"},
+		{[]any{"default_private_policy", "version"}, 0.0},
+	} {
+		if got := jsonAt(t, resp.Config, tc.path...); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%v = %#v, want %#v", tc.path, got, tc.want)
+		}
 	}
 }
 
@@ -256,7 +288,7 @@ func TestConfigView_ConfigBotsAsWritten(t *testing.T) {
 }
 
 // TestConfigView_PassThroughTypesHaveNoSecretFields guards the default
-// policies, which the config view shows whole.
+// policies in the database, which the config view shows whole.
 func TestConfigView_PassThroughTypesHaveNoSecretFields(t *testing.T) {
 	type inner struct{ APIKey string }
 	type outer struct{ Items []map[string]*inner }

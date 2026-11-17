@@ -69,7 +69,9 @@ func (s *Server) putPolicy(w http.ResponseWriter, r *http.Request, sess *Session
 
 // restorePolicy stores a stored policy version again as the newest version. A
 // version stored before the proactive or memory section existed has it zero;
-// such a section is left out, so the current one is kept.
+// such a section is left out, so the current one is kept. Restoring a version
+// that follows the default policy returns the conversation to it, as
+// followDefaults does.
 func (s *Server) restorePolicy(w http.ResponseWriter, r *http.Request, sess *Session) {
 	conv, ok := s.conversation(w, r)
 	if !ok {
@@ -106,11 +108,38 @@ func (s *Server) restorePolicy(w http.ResponseWriter, r *http.Request, sess *Ses
 	if reason == "" {
 		reason = fmt.Sprintf("restore v%d", req.Version)
 	}
-	pv, err := s.d.Policies.Update(r.Context(), conv.Key, conloomapi.PolicyPut{
-		Policy: old.Policy, Reason: reason,
-		ProactivePresent: old.Policy.Proactive != (conloomapi.ProactivePolicy{}),
-		MemoryPresent:    old.Policy.Memory != (conloomapi.MemoryPolicy{}),
-	}, panelActor(sess))
+	var pv store.PolicyVersion
+	if old.FollowsDefaults {
+		pv, err = s.d.Policies.FollowDefaults(r.Context(), conv.Key, reason, panelActor(sess))
+	} else {
+		pv, err = s.d.Policies.Update(r.Context(), conv.Key, conloomapi.PolicyPut{
+			Policy: old.Policy, Reason: reason,
+			ProactivePresent: old.Policy.Proactive != (conloomapi.ProactivePolicy{}),
+			MemoryPresent:    old.Policy.Memory != (conloomapi.MemoryPolicy{}),
+		}, panelActor(sess))
+	}
+	if !s.versionStored(w, r, pv.Version, err) {
+		return
+	}
+	s.writePolicy(w, pv)
+}
+
+// followDefaults returns the conversation to the default policy of its type
+// (policy.Service.FollowDefaults, which audits it as policy.update with
+// action follow_defaults); a paused conversation then runs as the default
+// policy says.
+func (s *Server) followDefaults(w http.ResponseWriter, r *http.Request, sess *Session) {
+	conv, ok := s.conversation(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if !s.decode(w, r, &req) {
+		return
+	}
+	pv, err := s.d.Policies.FollowDefaults(r.Context(), conv.Key, req.Reason, panelActor(sess))
 	if !s.versionStored(w, r, pv.Version, err) {
 		return
 	}

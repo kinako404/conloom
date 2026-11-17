@@ -182,16 +182,21 @@ func TestPersona_CurrentAndVersions(t *testing.T) {
 }
 
 type policyVersionResp struct {
-	Version   int                    `json:"version"`
-	Policy    conloomapi.GroupPolicy `json:"policy"`
-	Reason    string                 `json:"reason"`
-	UpdatedBy string                 `json:"updated_by"`
-	CreatedAt *time.Time             `json:"created_at"`
+	Version         int                    `json:"version"`
+	Policy          conloomapi.GroupPolicy `json:"policy"`
+	Reason          string                 `json:"reason"`
+	UpdatedBy       string                 `json:"updated_by"`
+	CreatedAt       *time.Time             `json:"created_at"`
+	FollowsDefaults bool                   `json:"follows_defaults"`
 }
 
 type policyResp struct {
 	Current  policyVersionResp   `json:"current"`
 	Versions []policyVersionResp `json:"versions"`
+	Defaults *struct {
+		Kind    string `json:"kind"`
+		Version int    `json:"version"`
+	} `json:"defaults"`
 }
 
 func TestPolicy_CurrentAndVersions(t *testing.T) {
@@ -204,6 +209,9 @@ func TestPolicy_CurrentAndVersions(t *testing.T) {
 	if got.Current.Version != 0 || !reflect.DeepEqual(got.Current.Policy, conloomapi.DefaultGroupPolicy()) ||
 		got.Current.CreatedAt != nil || got.Versions == nil || len(got.Versions) != 0 {
 		t.Errorf("no stored policy: %s, want the defaults as version 0 with created_at null and no versions", raw)
+	}
+	if !got.Current.FollowsDefaults || got.Defaults == nil || got.Defaults.Kind != "group" || got.Defaults.Version != 0 {
+		t.Errorf("no stored policy: %s, want follows_defaults and defaults {group 0}", raw)
 	}
 	if n, err := dh.db.ListPolicyVersions(ctx, group.Key); err != nil || len(n) != 0 {
 		t.Fatalf("GET policy wrote versions: %v, %v", n, err)
@@ -220,7 +228,7 @@ func TestPolicy_CurrentAndVersions(t *testing.T) {
 	dh.getJSON(convPath(group.Key, "policy"), &got)
 	if got.Current.Version != 2 || got.Current.Policy.Concurrency.MaxInteractiveRequests != 0 ||
 		got.Current.Policy.Context.MaxRecentMessages != 30 || got.Current.Reason != "pause" ||
-		got.Current.UpdatedBy != "panel:admin" || got.Current.CreatedAt == nil {
+		got.Current.UpdatedBy != "panel:admin" || got.Current.CreatedAt == nil || got.Current.FollowsDefaults {
 		t.Errorf("current = %+v", got.Current)
 	}
 	if len(got.Versions) != 2 || got.Versions[0].Version != 2 || got.Versions[1].Version != 1 ||

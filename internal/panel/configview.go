@@ -7,6 +7,8 @@ import (
 
 	"github.com/kinako404/conloom/internal/botdir"
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/policy"
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -19,7 +21,7 @@ const (
 )
 
 func (s *Server) configView(w http.ResponseWriter, r *http.Request, _ *Session) {
-	s.writeJSON(w, http.StatusOK, map[string]any{"config": redactedConfig(s.d.Config, s.d.Bots)})
+	s.writeJSON(w, http.StatusOK, map[string]any{"config": redactedConfig(s.d.Config, s.d.Bots, s.d.Policies.Defaults)})
 }
 
 // redactedConfig is the configuration in effect, keyed as in the YAML file,
@@ -28,13 +30,16 @@ func (s *Server) configView(w http.ResponseWriter, r *http.Request, _ *Session) 
 // is listed here; secrets only show whether they are set, and URLs go
 // through redactURL.
 //
-// The default policies are shown whole: they are behaviour settings shared
-// with the Bearer API's policy endpoints and hold no credentials.
-// TestConfigView_PassThroughTypesHaveNoSecretFields fails if their type gains
-// a field that looks like one. The persona templates of an old config file
-// are not shown: they no longer take effect (see
+// The default policies are not the config file's: they are the ones in the
+// database that take effect, as defaults returns them, each shown as
+// {"source": "panel", "version", "policy"} since the settings page edits
+// them. Their policy is shown whole: it is behaviour settings shared with the
+// Bearer API's policy endpoints and holds no credentials.
+// TestConfigView_PassThroughTypesHaveNoSecretFields fails if its type gains a
+// field that looks like one. The persona templates of an old config file are
+// not shown: they no longer take effect (see
 // config.Config.LegacyPersonaTemplates).
-func redactedConfig(c *config.Config, bots *botdir.Directory) map[string]any {
+func redactedConfig(c *config.Config, bots *botdir.Directory, defaults func(kind string) store.PolicyDefaults) map[string]any {
 	return map[string]any{
 		"server": map[string]any{
 			"listen": c.Server.Listen, "timezone": c.Server.Timezone, "metrics_enabled": c.Server.MetricsEnabled,
@@ -43,8 +48,8 @@ func redactedConfig(c *config.Config, bots *botdir.Directory) map[string]any {
 		"api_tokens":             apiTokensView(c.APITokens),
 		"bots":                   botsView(bots),
 		"model_profiles":         modelProfilesView(c.ModelProfiles),
-		"default_group_policy":   c.DefaultGroupPolicy,
-		"default_private_policy": c.DefaultPrivatePolicy,
+		"default_group_policy":   defaultPolicyView(defaults(policy.KindGroup)),
+		"default_private_policy": defaultPolicyView(defaults(policy.KindPrivate)),
 		"runtime":                runtimeView(c.Runtime),
 		"skills":                 map[string]any{"dir": c.Skills.Dir},
 		"embedding":              embeddingView(c.Embedding),
@@ -55,6 +60,10 @@ func redactedConfig(c *config.Config, bots *botdir.Directory) map[string]any {
 			"log_message_content": c.Observability.LogMessageContent,
 		},
 	}
+}
+
+func defaultPolicyView(d store.PolicyDefaults) map[string]any {
+	return map[string]any{"source": sourcePanel, "version": d.Version, "policy": d.Policy}
 }
 
 func secret(v string) string {

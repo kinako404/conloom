@@ -1,10 +1,10 @@
 package panel
 
 // dataRoutes registers the read API for bots, conversations, messages, the
-// panel chat and its command menu, policies, personas, persona templates, the built-in default
-// persona and images, the built-in boundaries of the affinity tiers, memory,
-// the hidden state of private chats, tasks and audit events, and the
-// downloads of persona templates.
+// panel chat and its command menu, policies, the default policies, personas,
+// persona templates, the built-in default persona and images, the built-in
+// boundaries of the affinity tiers, memory, the hidden state of private
+// chats, tasks and audit events, and the downloads of persona templates.
 func (s *Server) dataRoutes() {
 	s.api("GET /panel/api/persona-templates", s.listTemplates)
 	s.api("GET /panel/api/persona-templates/export", s.exportAllTemplates)
@@ -22,6 +22,7 @@ func (s *Server) dataRoutes() {
 	s.api("GET /panel/api/conversations/{key}/chat", s.getChat)
 	s.api("GET /panel/api/conversations/{key}/commands", s.getCommands)
 	s.api("GET /panel/api/conversations/{key}/policy", s.getPolicy)
+	s.api("GET /panel/api/settings/policies", s.getSettingsPolicies)
 	s.api("GET /panel/api/conversations/{key}/persona", s.getPersona)
 	s.api("GET /panel/api/conversations/{key}/memory", s.getMemory)
 	s.api("GET /panel/api/conversations/{key}/memory/revisions", s.listMemoryRevisions)

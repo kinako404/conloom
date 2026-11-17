@@ -57,6 +57,7 @@ func newStoreHarness(t *testing.T, bots []config.BotConfig, templates map[string
 	h.cfg.Bots = bots
 	sh := &storeHarness{harness: h, db: db}
 	sh.policies = policy.NewService(db, conloomapi.DefaultGroupPolicy())
+	t.Cleanup(sh.policies.Close)
 	sh.personas = persona.NewService(db)
 	if err := sh.personas.LoadTemplates(ctx); err != nil {
 		t.Fatalf("load templates: %v", err)
