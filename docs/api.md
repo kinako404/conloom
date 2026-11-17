@@ -211,10 +211,11 @@
 | 401 | `UNAUTHORIZED` | 缺少或无效的令牌 |
 | 403 | `FORBIDDEN` | 缺少 scope，或事件的机器人与令牌不一致 |
 | 404 | `NOT_FOUND` | 任务、动作、会话不存在，或要删除的自建状态条、效果不存在 |
+| 404 | `MESSAGE_NOT_FOUND` | 只由 Web 管理面板返回：撤回或重新生成的 `seq` 不是这个面板聊天里的消息（比如已经在别的窗口里撤回了），聊天本身还在；聊天不存在时是 `NOT_FOUND` |
 | 409 | `DUPLICATE_EVENT` | 幂等键重复但请求体不同，或平台消息已经提交过 |
 | 409 | `MEMORY_DISABLED` | 请求整理记忆，但本群没有开启记忆 |
 | 409 | `PAUSED` | 请求整理记忆，但本群暂停中 |
-| 409 | `CHAT_BUSY`，`retryable: true` | 只由 Web 管理面板返回，Bot Interaction API 不会返回：删除面板聊天时它的任务还没停下，或者正在处理另一张图片（上传、生成外观介绍、导入人设模板），可以稍后重试（见 [Web 管理面板：接口](panel.md#接口)） |
+| 409 | `CHAT_BUSY`，`retryable: true` | 只由 Web 管理面板返回，Bot Interaction API 不会返回：删除面板聊天时它的任务还没停下，撤回或重新生成时 bot 还在回复，或者正在处理另一张图片（上传、生成外观介绍、导入人设模板），可以稍后重试（见 [Web 管理面板：接口](panel.md#接口)） |
 | 409 | `TEMPLATE_EXISTS` | 只由 Web 管理面板返回：按 `on_conflict=fail` 导入人设模板时，文件里有数据库里已存的模板名；`error` 里另有 `names` 列出这些名字，什么都没写 |
 | 413 | `INVALID_EVENT` | 只由 Web 管理面板返回：上传的图片超过 8 MiB，或导入的人设模板文件超过 64 MiB |
 | 502、503、504 | `MODEL_UNAVAILABLE` | 只由 Web 管理面板返回：生成外观介绍时识图模型调用失败（502）、没有配置识图模型（503，`retryable: false`，要改配置）或超时（504，`retryable: true`） |
