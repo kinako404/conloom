@@ -1126,3 +1126,56 @@ func TestPanelMessageActions_UnknownMessage(t *testing.T) {
 		t.Errorf("WithdrawPanel in a missing chat err = %v, want a plain ErrNotFound", err)
 	}
 }
+
+// A wake timer due while a message is withdrawn or regenerated starts no wake
+// task in between the busy check and the change, as while a message of the
+// user is accepted.
+func TestPanelMessageActions_NoWakeStartsMeanwhile(t *testing.T) {
+	for _, action := range []string{"withdraw", "regenerate"} {
+		t.Run(action, func(t *testing.T) {
+			env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+			ctx := context.Background()
+			key := env.createChat(t, testBot)
+			d := env.startPanelDeliverer(t)
+			id := env.submitPanel(t, key, "admin", "第一句")
+			env.waitTask(t, env.panelResponse(t, id).TaskID)
+			user := env.panelMessage(t, id)
+			reply := env.waitPanelReply(t, d, key, user.Seq)
+			timer := store.ConversationTimer{ConversationKey: key, Kind: store.TimerInitiate, BotInstanceID: testBot,
+				PlatformUserID: PanelActorID("admin"), DueAt: time.Now().Add(-time.Minute), AnchorSeq: user.Seq}
+			if err := env.st.ArmTimer(ctx, timer); err != nil {
+				t.Fatal(err)
+			}
+
+			var fired atomic.Bool
+			var fireErr error
+			env.hooks.mu.Lock()
+			env.hooks.beforeMessagesBySeq = func() {
+				if fired.CompareAndSwap(false, true) {
+					fireErr = env.o.fireTimer(ctx, timer)
+				}
+			}
+			env.hooks.mu.Unlock()
+			var err error
+			if action == "withdraw" {
+				_, err = env.o.WithdrawPanel(ctx, key, reply.Seq)
+			} else {
+				_, err = env.o.RegeneratePanel(ctx, key, reply.Seq)
+			}
+			if err != nil {
+				t.Fatalf("%s: %v", action, err)
+			}
+			if !fired.Load() {
+				t.Fatal("the timer was not fired during the action")
+			}
+			if !errors.Is(fireErr, errUserSpeaking) {
+				t.Errorf("fireTimer during %s = %v, want errUserSpeaking", action, fireErr)
+			}
+			for _, qt := range env.o.sched.Active(key) {
+				if qt.ActorID == wakeActor(PanelActorID("admin")) {
+					t.Errorf("wake task %s started during %s", qt.TaskID, action)
+				}
+			}
+		})
+	}
+}

@@ -213,6 +213,18 @@ func (o *Orchestrator) DeletePanelChat(ctx context.Context, convKey string) erro
 	return nil
 }
 
+// holdWakes keeps wake tasks of the chat convKey from starting until end is
+// called, as accepting a message of its user does (see submit): fireTimer
+// starts none from now on, and one it was starting already is queued when
+// holdWakes returns, so a busy check after it sees that task. Unlike a
+// message it cancels no wake task.
+func (o *Orchestrator) holdWakes(convKey string) (end func()) {
+	end = o.speakers.begin(convKey)
+	unlock := o.proactiveLocks.lock(convKey)
+	unlock()
+	return end
+}
+
 // panelBusy reports whether the panel chat cannot be changed right now: a
 // queued or running task, or a panel action neither delivered nor expired.
 // A read error is logged and counts as busy, so nothing is deleted on a
@@ -231,7 +243,9 @@ func (o *Orchestrator) panelBusy(ctx context.Context, convKey string) bool {
 
 // WithdrawPanel deletes the messages of panel chat convKey from seq onward,
 // with their search index, chunks and timers, and returns how many it
-// deleted. It holds the chat's panel lock. A busy chat is ErrChatNotIdle; a conversation not on store.PlatformPanel
+// deleted. It holds the chat's panel lock and, like a message of the user
+// (see submit), keeps wake tasks from starting meanwhile (holdWakes). A busy
+// chat is ErrChatNotIdle; a conversation not on store.PlatformPanel
 // ErrNotPanelChat, one that is not private ErrNotPrivate, an unknown one
 // store.ErrNotFound and a seq that is not a message of the chat
 // ErrMessageNotFound; a bot being deleted is ErrBotDeleting.
@@ -255,6 +269,7 @@ func (o *Orchestrator) WithdrawPanel(ctx context.Context, convKey string, seq in
 	if conv.Type != conloomapi.ConvPrivate {
 		return 0, ErrNotPrivate
 	}
+	defer o.holdWakes(convKey)()
 	if o.panelBusy(ctx, convKey) {
 		return 0, ErrChatNotIdle
 	}
@@ -469,8 +484,9 @@ func (o *Orchestrator) RegenerableSeq(ctx context.Context, convKey string) (int6
 // everything after the last of them is deleted in the same transaction that
 // stores the task. Only the bot's ordinary reply to the user's messages can
 // be regenerated (see regenerable: ErrNotLatest, ErrNotReply, ErrCommandReply,
-// ErrForgotten, ErrMessageNotFound). It holds the chat's panel lock. A busy chat
-// is ErrChatNotIdle, a paused one errPaused (ErrPaused), a full queue
+// ErrForgotten, ErrMessageNotFound). It holds the chat's panel lock and keeps
+// wake tasks from starting meanwhile (holdWakes). A busy chat is
+// ErrChatNotIdle, a paused one errPaused (ErrPaused), a full queue
 // ErrQueueFull and a task of the same sender created meanwhile
 // ErrRegenMerged; a conversation not on store.PlatformPanel is
 // ErrNotPanelChat, one that is not private ErrNotPrivate, an unknown one or
@@ -499,6 +515,7 @@ func (o *Orchestrator) RegeneratePanel(ctx context.Context, convKey string, seq 
 	if _, ok := o.bots.Bot(conv.BotInstanceID); !ok {
 		return "", fmt.Errorf("%w: unknown bot %q", store.ErrNotFound, conv.BotInstanceID)
 	}
+	defer o.holdWakes(convKey)()
 	if o.panelBusy(ctx, convKey) {
 		return "", ErrChatNotIdle
 	}

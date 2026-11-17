@@ -179,6 +179,18 @@ type hookStore struct {
 	setStatus func(taskID, status string, set func() error) error
 	// beforeGetMessage, when set, runs before GetMessage loads a message.
 	beforeGetMessage func(id string)
+	// beforeMessagesBySeq, when set, runs before MessagesBySeq loads messages.
+	beforeMessagesBySeq func()
+}
+
+func (h *hookStore) MessagesBySeq(ctx context.Context, convKey string, seqs []int64) (map[int64]store.MessageRecord, error) {
+	h.mu.Lock()
+	fn := h.beforeMessagesBySeq
+	h.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+	return h.Store.MessagesBySeq(ctx, convKey, seqs)
 }
 
 func (h *hookStore) GetMessage(ctx context.Context, botID, id string) (store.MessageRecord, error) {
