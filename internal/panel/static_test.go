@@ -390,7 +390,7 @@ func TestStatic_ServesChatsView(t *testing.T) {
 			"class: 'chat-classic'", "'TG 风格界面 ↗'", "href: '#/im'", "href('im', key)",
 			"'contextmenu'", "'删除聊天'",
 		}},
-		{"/panel/views/chatclassic.js", []string{"export async function chatPane({ key, signal, hint })", "from './chat.js'", "'建议回复'", "'撤回'", "'重新生成'"}},
+		{"/panel/views/chatclassic.js", []string{"export async function chatPane({ key, signal, hint, reload = () => go(href('chat', key)) })", "from './chat.js'", "'建议回复'", "'撤回'", "'重新生成'"}},
 		{"/panel/views/chat.js", []string{"'撤回'", "'重新生成'"}},
 		{"/panel/views/chats.js", []string{"'经典聊天页'", "href('chat', key)", "href('im', key)", "'contextmenu'", "'删除聊天'"}},
 	} {
