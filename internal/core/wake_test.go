@@ -1146,9 +1146,9 @@ func TestWake_StopCancelsWake(t *testing.T) {
 		t.Fatalf("stop = %q, %v; want %q", got, err, CopyStopDone)
 	}
 	requireCancelledWithoutActions(t, env, wakeID)
-	if active := env.o.sched.Active(privateConvKey); slices.ContainsFunc(active, func(q QueuedTask) bool { return q.TaskID == wakeID }) {
-		t.Errorf("active tasks = %+v, want the wake task gone", active)
-	}
+	waitUntil(t, "the wake task to leave the active tasks", func() bool {
+		return !slices.ContainsFunc(env.o.sched.Active(privateConvKey), func(q QueuedTask) bool { return q.TaskID == wakeID })
+	})
 }
 
 func TestWake_Copy(t *testing.T) {

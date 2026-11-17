@@ -181,9 +181,10 @@ func TestSession_HeldTurnDroppedAtHoldLimit(t *testing.T) {
 	if _, skips, ok := env.sessionCounts(); !ok || skips != 0 {
 		t.Fatalf("session exists %v skips %d, want no skip for a dropped turn", ok, skips)
 	}
-	if logs := env.logs.String(); !strings.Contains(logs, "turn dropped") || !strings.Contains(logs, "reason=held_too_long") {
-		t.Fatalf("logs lack the held_too_long drop: %s", logs)
-	}
+	waitUntil(t, "the held_too_long drop in the logs", func() bool {
+		logs := env.logs.String()
+		return strings.Contains(logs, "turn dropped") && strings.Contains(logs, "reason=held_too_long")
+	})
 	next := env.submit(t, env.groupEvent("20001", "山上好冷"))
 	if next.Disposition != conloomapi.DispositionReply || next.Merged || next.TaskID == turn.TaskID {
 		t.Fatalf("message after the drop = %+v, want a new turn", next)

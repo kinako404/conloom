@@ -269,10 +269,11 @@ func TestSkills_SingleRound(t *testing.T) {
 	if n := env.skillCount(t, "now", "ok"); n != 1 {
 		t.Errorf("skill calls now/ok = %v, want 1", n)
 	}
+	waitUntil(t, "the skill call in the logs", func() bool {
+		logs := env.logs.String()
+		return strings.Contains(logs, `msg="skill call"`) && strings.Contains(logs, "tool=now") && strings.Contains(logs, "skill_calls=now:1")
+	})
 	logs := env.logs.String()
-	if !strings.Contains(logs, `msg="skill call"`) || !strings.Contains(logs, "tool=now") || !strings.Contains(logs, "skill_calls=now:1") {
-		t.Errorf("logs lack the skill call: %s", logs)
-	}
 	if strings.Contains(logs, "星期五 16:30") {
 		t.Error("tool result leaked into logs")
 	}

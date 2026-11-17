@@ -1087,6 +1087,7 @@ func TestCommand_StopCancelsOwnRunningTask(t *testing.T) {
 	if task.Error == nil || task.Error.Code != conloomapi.CodeTaskCancelled {
 		t.Fatalf("error = %+v", task.Error)
 	}
+	env.waitIdle(t)
 	if got := env.command(t, "20001", "/stop"); got != CopyStopNothing {
 		t.Fatalf("second stop = %q", got)
 	}
