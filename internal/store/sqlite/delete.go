@@ -70,7 +70,9 @@ func (db *DB) DeleteConversation(ctx context.Context, convKey string) error {
 // DeleteMessagesFrom deletes the conversation's messages from fromSeq onward,
 // their keyword index rows, the chunks that reach into the range and the
 // timers anchored there. Straddling chunks are queued for rebuild from the
-// messages that remain.
+// messages that remain. Deleting any message changes the conversation's
+// forget stamp, so chunks cut from the messages before they were deleted are
+// never stored (see WriteChunks).
 func (db *DB) DeleteMessagesFrom(ctx context.Context, convKey string, fromSeq int64) (int, error) {
 	var n int
 	err := db.inTx(ctx, func(tx *sql.Tx) error {
@@ -115,6 +117,10 @@ func deleteMessagesFrom(ctx context.Context, tx *sql.Tx, del store.MessageDelete
 		return 0, err
 	}
 	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return int(n), err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE conversations SET withdrawals = withdrawals + 1 WHERE key = ?`, del.ConversationKey)
 	return int(n), err
 }
 

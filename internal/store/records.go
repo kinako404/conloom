@@ -351,7 +351,10 @@ type MessageDelete struct {
 // Ingest returns ErrReplyHandedOut. FireTimer, when set, deletes that timer;
 // if it was cancelled, re-armed or postponed meanwhile, nothing is written and
 // Ingest returns ErrTimerGone. DeleteMessages, when set, deletes that range in
-// the same transaction, before the event and task are written.
+// the same transaction, before the event and task are written; NewTask and
+// Message must then be of the same conversation, or nothing is written and
+// Ingest returns an error. Like everything else, the range is not deleted
+// when the event's idempotency key is stored already.
 type Ingest struct {
 	Event           EventRecord
 	Conversation    *ConversationRecord

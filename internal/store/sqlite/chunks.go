@@ -44,8 +44,9 @@ func (db *DB) ChunkState(ctx context.Context, convKey string) (store.ChunkState,
 }
 
 // ForgetStamp identifies the forgetting done in the conversation's memory
-// scope (store.MemoryScopeKey) so far: it changes whenever a member of it is
-// forgotten.
+// scope (store.MemoryScopeKey) and the withdrawing of the conversation's
+// messages (DeleteMessagesFrom) so far: it changes whenever a member of the
+// scope is forgotten or messages of the conversation are withdrawn.
 func (db *DB) ForgetStamp(ctx context.Context, convKey string) (string, error) {
 	return forgetStamp(ctx, db.r, convKey)
 }
@@ -56,10 +57,11 @@ type queryer interface {
 
 func forgetStamp(ctx context.Context, q queryer, convKey string) (string, error) {
 	var s string
-	err := q.QueryRowContext(ctx, `SELECT COALESCE(group_concat(platform_user_id || '@' || forgotten_at, ','), '') FROM (
-		SELECT platform_user_id, forgotten_at FROM member_memory
-		WHERE conversation_key = ? AND forgotten_at > ? ORDER BY platform_user_id)`,
-		store.MemoryScopeKey(convKey), zeroTime).Scan(&s)
+	err := q.QueryRowContext(ctx, `SELECT (SELECT COALESCE(group_concat(platform_user_id || '@' || forgotten_at, ','), '') FROM (
+			SELECT platform_user_id, forgotten_at FROM member_memory
+			WHERE conversation_key = ? AND forgotten_at > ? ORDER BY platform_user_id))
+		|| COALESCE((SELECT ';withdrawn ' || withdrawals FROM conversations WHERE key = ? AND withdrawals > 0), '')`,
+		store.MemoryScopeKey(convKey), zeroTime, convKey).Scan(&s)
 	return s, err
 }
 
@@ -72,8 +74,9 @@ func conversationExists(ctx context.Context, q queryer, convKey string) (bool, e
 }
 
 // WriteChunks applies w and reports whether it did: nothing is written when
-// the conversation's forget stamp is no longer w.ForgetStamp or the
-// conversation has been deleted.
+// the conversation's forget stamp is no longer w.ForgetStamp (a member was
+// forgotten or messages were withdrawn since) or the conversation has been
+// deleted.
 func (db *DB) WriteChunks(ctx context.Context, w store.ChunkWrite) (bool, error) {
 	written := false
 	err := db.inTx(ctx, func(tx *sql.Tx) error {

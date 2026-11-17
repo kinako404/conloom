@@ -461,6 +461,33 @@ func TestDeleteConversation_UserRows(t *testing.T) {
 	}
 }
 
+// seedPanelMessage stores a message of the panel user panel_admin with text in
+// the panel chat convKey (ID convID), storing the chat too.
+func seedPanelMessage(t *testing.T, db *DB, convKey, convID, msgID, text string) {
+	t.Helper()
+	now := time.Now().UTC()
+	in := store.Ingest{
+		Event: store.EventRecord{
+			BotInstanceID: testBot, IdempotencyKey: "k_" + msgID, RequestHash: "h_" + msgID,
+			EventID: "evt_" + msgID, Response: []byte(`{}`), RawEvent: []byte(`{}`), CreatedAt: now,
+		},
+		Conversation: &store.ConversationRecord{
+			BotInstanceID: testBot, ID: convID, Key: convKey, Type: conloomapi.ConvPrivate,
+			Platform: store.PlatformPanel, PlatformConversationID: convID,
+		},
+		User: &store.UserRecord{BotInstanceID: testBot, Platform: store.PlatformPanel,
+			PlatformUserID: "panel_admin", DisplayName: "admin"},
+		Message: &store.MessageRecord{
+			ID: msgID, BotInstanceID: testBot, ConversationKey: convKey, Platform: store.PlatformPanel,
+			PlatformMessageID: "p_" + msgID, ActorID: "panel_admin", PlatformUserID: "panel_admin",
+			DisplayName: "admin", Text: text, Channel: store.ChannelPanel, OccurredAt: now, CreatedAt: now,
+		},
+	}
+	if _, err := db.Ingest(context.Background(), in); err != nil {
+		t.Fatalf("Ingest %s: %v", msgID, err)
+	}
+}
+
 func TestDeleteMessagesFrom_CleansMessagesFTSChunksAndTimers(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -468,56 +495,46 @@ func TestDeleteMessagesFrom_CleansMessagesFTSChunksAndTimers(t *testing.T) {
 	target := store.ConversationKey(testBot, store.PlatformPanel, conloomapi.ConvPrivate, "panel_del")
 	other := store.ConversationKey(testBot, store.PlatformPanel, conloomapi.ConvPrivate, "panel_keep")
 
-	ingest := func(convKey, convID, msgID, text string) {
-		in := store.Ingest{
-			Event: store.EventRecord{
-				BotInstanceID: testBot, IdempotencyKey: "k_" + msgID, RequestHash: "h_" + msgID,
-				EventID: "evt_" + msgID, Response: []byte(`{}`), RawEvent: []byte(`{}`), CreatedAt: now,
-			},
-			Conversation: &store.ConversationRecord{
-				BotInstanceID: testBot, ID: convID, Key: convKey, Type: conloomapi.ConvPrivate,
-				Platform: store.PlatformPanel, PlatformConversationID: convID,
-			},
-			User: &store.UserRecord{BotInstanceID: testBot, Platform: store.PlatformPanel,
-				PlatformUserID: "panel_admin", DisplayName: "admin"},
-			Message: &store.MessageRecord{
-				ID: msgID, BotInstanceID: testBot, ConversationKey: convKey, Platform: store.PlatformPanel,
-				PlatformMessageID: "p_" + msgID, ActorID: "panel_admin", PlatformUserID: "panel_admin",
-				DisplayName: "admin", Text: text, Channel: store.ChannelPanel, OccurredAt: now, CreatedAt: now,
-			},
-		}
-		if _, err := db.Ingest(ctx, in); err != nil {
-			t.Fatalf("Ingest %s: %v", msgID, err)
-		}
-	}
 	for i := 1; i <= 6; i++ {
-		ingest(target, "panel_del", fmt.Sprintf("m%d", i), fmt.Sprintf("爬山 %d", i))
+		seedPanelMessage(t, db, target, "panel_del", fmt.Sprintf("m%d", i), fmt.Sprintf("爬山 %d", i))
 	}
-	ingest(other, "panel_keep", "m7", "爬山 7")
-	ingest(other, "panel_keep", "m8", "爬山 8")
+	seedPanelMessage(t, db, other, "panel_keep", "m7", "爬山 7")
+	seedPanelMessage(t, db, other, "panel_keep", "m8", "爬山 8")
 
 	at := fmtTime(now)
-	for _, r := range [][2]int64{{1, 3}, {2, 5}, {4, 6}} {
+	seedChunk := func(key string, r [2]int64) {
 		if _, err := db.w.ExecContext(ctx, `INSERT INTO memory_chunks
 			(conversation_key, start_seq, end_seq, start_at, end_at, text_hash, model, dims, vector, created_at)
 			VALUES (?, ?, ?, ?, ?, 'hash', 'embed-test', 2, x'0000803f00000040', ?)`,
-			target, r[0], r[1], at, at, at); err != nil {
+			key, r[0], r[1], at, at, at); err != nil {
 			t.Fatalf("seed chunk %v: %v", r, err)
 		}
 	}
-	if _, err := db.w.ExecContext(ctx, `INSERT INTO memory_chunk_rebuild (conversation_key, start_seq, end_seq)
-		VALUES (?, 4, 6)`, target); err != nil {
-		t.Fatal(err)
+	seedRebuild := func(key string, r [2]int64) {
+		if _, err := db.w.ExecContext(ctx, `INSERT INTO memory_chunk_rebuild (conversation_key, start_seq, end_seq)
+			VALUES (?, ?, ?)`, key, r[0], r[1]); err != nil {
+			t.Fatal(err)
+		}
 	}
-	for i, anchor := range []int64{3, 5} {
-		kind := []string{"status_return", "initiate"}[i]
+	seedTimer := func(key, kind string, anchor int64) {
 		if _, err := db.w.ExecContext(ctx, `INSERT INTO conversation_timers
 			(conversation_key, kind, bot_instance_id, platform_user_id, due_at, anchor_seq, lease_until, created_at)
 			VALUES (?, ?, ?, 'panel_admin', ?, ?, '', ?)`,
-			target, kind, testBot, at, anchor, at); err != nil {
+			key, kind, testBot, at, anchor, at); err != nil {
 			t.Fatalf("seed timer %s: %v", kind, err)
 		}
 	}
+	for _, r := range [][2]int64{{1, 3}, {2, 5}, {4, 6}} {
+		seedChunk(target, r)
+	}
+	seedRebuild(target, [2]int64{4, 6})
+	seedTimer(target, "status_return", 3)
+	seedTimer(target, "initiate", 5)
+	// The other chat's rows lie past the cut too (its seqs are 7 and 8), so
+	// only the conversation key keeps them.
+	seedChunk(other, [2]int64{7, 8})
+	seedRebuild(other, [2]int64{7, 8})
+	seedTimer(other, "initiate", 7)
 
 	n, err := db.DeleteMessagesFrom(ctx, target, 4)
 	if err != nil || n != 3 {
@@ -559,9 +576,9 @@ func TestDeleteMessagesFrom_CleansMessagesFTSChunksAndTimers(t *testing.T) {
 		t.Errorf("target search hits = %d, want 3", got)
 	}
 
-	chunkRanges := func(table string) [][2]int64 {
+	chunkRanges := func(table string, key string) [][2]int64 {
 		rows, err := db.r.QueryContext(ctx, `SELECT start_seq, end_seq FROM `+table+
-			` WHERE conversation_key = ? ORDER BY start_seq, end_seq`, target)
+			` WHERE conversation_key = ? ORDER BY start_seq, end_seq`, key)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -576,15 +593,31 @@ func TestDeleteMessagesFrom_CleansMessagesFTSChunksAndTimers(t *testing.T) {
 		}
 		return out
 	}
-	if got := chunkRanges("memory_chunks"); !slices.Equal(got, [][2]int64{{1, 3}}) {
+	if got := chunkRanges("memory_chunks", target); !slices.Equal(got, [][2]int64{{1, 3}}) {
 		t.Errorf("chunks = %v, want [[1 3]]", got)
 	}
-	if got := chunkRanges("memory_chunk_rebuild"); !slices.Equal(got, [][2]int64{{2, 5}}) {
+	if got := chunkRanges("memory_chunk_rebuild", target); !slices.Equal(got, [][2]int64{{2, 5}}) {
 		t.Errorf("rebuild = %v, want [[2 5]]", got)
 	}
+	if got := chunkRanges("memory_chunks", other); !slices.Equal(got, [][2]int64{{7, 8}}) {
+		t.Errorf("other chat's chunks = %v, want [[7 8]] untouched", got)
+	}
+	if got := chunkRanges("memory_chunk_rebuild", other); !slices.Equal(got, [][2]int64{{7, 8}}) {
+		t.Errorf("other chat's rebuild = %v, want [[7 8]] untouched", got)
+	}
+	if got := timerAnchors(t, db, target); !slices.Equal(got, []int64{3}) {
+		t.Errorf("timer anchors = %v, want [3]", got)
+	}
+	if got := timerAnchors(t, db, other); !slices.Equal(got, []int64{7}) {
+		t.Errorf("other chat's timer anchors = %v, want [7] untouched", got)
+	}
+}
 
-	rows, err := db.r.QueryContext(ctx, `SELECT anchor_seq FROM conversation_timers
-		WHERE conversation_key = ? ORDER BY anchor_seq`, target)
+// timerAnchors lists the anchor seqs of the conversation's timers in order.
+func timerAnchors(t *testing.T, db *DB, convKey string) []int64 {
+	t.Helper()
+	rows, err := db.r.QueryContext(context.Background(), `SELECT anchor_seq FROM conversation_timers
+		WHERE conversation_key = ? ORDER BY anchor_seq`, convKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +630,169 @@ func TestDeleteMessagesFrom_CleansMessagesFTSChunksAndTimers(t *testing.T) {
 		}
 		anchors = append(anchors, anchor)
 	}
-	if !slices.Equal(anchors, []int64{3}) {
-		t.Errorf("timer anchors = %v, want [3]", anchors)
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return anchors
+}
+
+func TestDeleteMessagesFrom_UnknownChatAndBadSeq(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	key := store.ConversationKey(testBot, store.PlatformPanel, conloomapi.ConvPrivate, "panel_bad")
+	if _, err := db.DeleteMessagesFrom(ctx, key, 1); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("DeleteMessagesFrom of a missing chat err = %v, want ErrNotFound", err)
+	}
+	seedPanelMessage(t, db, key, "panel_bad", "b1", "爬山")
+	for _, from := range []int64{0, -1} {
+		if n, err := db.DeleteMessagesFrom(ctx, key, from); err == nil {
+			t.Errorf("DeleteMessagesFrom(%d) = %d, nil; want an error", from, n)
+		}
+	}
+	if n := countRows(t, db, "messages"); n != 1 {
+		t.Errorf("messages = %d, want 1 after refused deletes", n)
+	}
+}
+
+func TestIngest_DeleteMessagesWithNewTask(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	key := store.ConversationKey(testBot, store.PlatformPanel, conloomapi.ConvPrivate, "panel_regen")
+	for i := 1; i <= 4; i++ {
+		seedPanelMessage(t, db, key, "panel_regen", fmt.Sprintf("g%d", i), fmt.Sprintf("爬山 %d", i))
+	}
+	at := fmtTime(time.Now().UTC())
+	if _, err := db.w.ExecContext(ctx, `INSERT INTO memory_chunks
+		(conversation_key, start_seq, end_seq, start_at, end_at, text_hash, model, dims, vector, created_at)
+		VALUES (?, 3, 4, ?, ?, 'hash', 'embed-test', 2, x'0000803f00000040', ?)`, key, at, at, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.w.ExecContext(ctx, `INSERT INTO conversation_timers
+		(conversation_key, kind, bot_instance_id, platform_user_id, due_at, anchor_seq, lease_until, created_at)
+		VALUES (?, 'initiate', ?, 'panel_admin', ?, 3, '', ?)`, key, testBot, at, at); err != nil {
+		t.Fatal(err)
+	}
+	stamp, err := db.ForgetStamp(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	task := store.TaskRecord{ID: "task_regen", BotInstanceID: testBot, ConversationKey: key, Status: conloomapi.TaskQueued,
+		ActorPlatformUserID: "panel_admin", TriggerMessageIDs: []string{"g1", "g2"}, EventOccurredAt: now, CreatedAt: now, UpdatedAt: now}
+	if _, err := db.Ingest(ctx, store.Ingest{
+		Event: store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "conloom:regen:task_regen", EventID: "regen_task_regen",
+			Response: []byte(`{"task_id":"task_regen"}`), CreatedAt: now},
+		NewTask:        &task,
+		DeleteMessages: &store.MessageDelete{ConversationKey: key, FromSeq: 3},
+	}); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	msgs, err := db.MessagesAfter(ctx, key, 0, 10)
+	if err != nil || len(msgs) != 2 || msgs[0].ID != "g1" || msgs[1].ID != "g2" {
+		t.Fatalf("messages = %+v, %v; want g1 and g2", msgs, err)
+	}
+	if got := indexedRows(t, db, []int64{3, 4}); got != 0 {
+		t.Errorf("deleted index rows = %d, want 0", got)
+	}
+	if n := countRows(t, db, "memory_chunks"); n != 0 {
+		t.Errorf("chunks = %d, want the one in the range deleted", n)
+	}
+	if got := timerAnchors(t, db, key); len(got) != 0 {
+		t.Errorf("timer anchors = %v, want the one in the range deleted", got)
+	}
+	if got, err := db.GetTask(ctx, testBot, "task_regen"); err != nil || !slices.Equal(got.TriggerMessageIDs, []string{"g1", "g2"}) {
+		t.Errorf("task = %+v, %v; want it stored with its triggers", got, err)
+	}
+	if _, err := db.GetEvent(ctx, testBot, "conloom:regen:task_regen"); err != nil {
+		t.Errorf("event: %v", err)
+	}
+	if s, _ := db.ForgetStamp(ctx, key); s == stamp {
+		t.Error("forget stamp unchanged by the delete")
+	}
+}
+
+func TestIngest_DeleteMessagesOfAnotherConversationRefused(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	target := store.ConversationKey(testBot, store.PlatformPanel, conloomapi.ConvPrivate, "panel_t")
+	other := store.ConversationKey(testBot, store.PlatformPanel, conloomapi.ConvPrivate, "panel_o")
+	seedPanelMessage(t, db, target, "panel_t", "t1", "爬山")
+	seedPanelMessage(t, db, other, "panel_o", "o1", "爬山")
+	now := time.Now().UTC()
+	_, err := db.Ingest(ctx, store.Ingest{
+		Event: store.EventRecord{BotInstanceID: testBot, IdempotencyKey: "conloom:regen:task_x", EventID: "regen_task_x",
+			Response: []byte(`{}`), CreatedAt: now},
+		NewTask: &store.TaskRecord{ID: "task_x", BotInstanceID: testBot, ConversationKey: other, Status: conloomapi.TaskQueued,
+			TriggerMessageIDs: []string{"o1"}, EventOccurredAt: now, CreatedAt: now, UpdatedAt: now},
+		DeleteMessages: &store.MessageDelete{ConversationKey: target, FromSeq: 1},
+	})
+	if err == nil {
+		t.Fatal("Ingest deleting one chat's messages with another chat's task succeeded")
+	}
+	if n := countRows(t, db, "messages"); n != 2 {
+		t.Errorf("messages = %d, want both kept", n)
+	}
+	if _, err := db.GetTask(ctx, testBot, "task_x"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("task err = %v, want ErrNotFound", err)
+	}
+}
+
+// The indexer reads a chat and embeds it before it writes the chunks, so a
+// withdraw can come in between: nothing cut from the withdrawn messages may
+// be stored then, and a rebuild under way leaves the queue as the withdraw
+// left it.
+func TestWriteChunks_SkippedAfterWithdraw(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	key := store.ConversationKey(testBot, store.PlatformPanel, conloomapi.ConvPrivate, "panel_race")
+	for i := 1; i <= 6; i++ {
+		seedPanelMessage(t, db, key, "panel_race", fmt.Sprintf("r%d", i), fmt.Sprintf("爬山 %d", i))
+	}
+	if _, err := db.w.ExecContext(ctx, `INSERT INTO memory_chunk_rebuild (conversation_key, start_seq, end_seq)
+		VALUES (?, 2, 5)`, key); err != nil {
+		t.Fatal(err)
+	}
+
+	stamp, err := db.ForgetStamp(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue, err := db.ChunkRebuilds(ctx, key, 10)
+	if err != nil || len(queue) != 1 {
+		t.Fatalf("ChunkRebuilds = %+v, %v", queue, err)
+	}
+	if n, err := db.DeleteMessagesFrom(ctx, key, 4); err != nil || n != 3 {
+		t.Fatalf("DeleteMessagesFrom = %d, %v; want 3, nil", n, err)
+	}
+
+	ok, err := db.WriteChunks(ctx, store.ChunkWrite{ConversationKey: key, Model: "m1", ForgetStamp: stamp, CursorSeq: 6,
+		Chunks: []store.MemoryChunk{testChunk(key, 1, 3, chunkAt(0), chunkAt(2), "m1"), testChunk(key, 4, 6, chunkAt(3), chunkAt(5), "m1")}})
+	if err != nil || ok {
+		t.Fatalf("forward WriteChunks read before the withdraw = %v, %v; want skipped", ok, err)
+	}
+	ok, err = db.WriteChunks(ctx, store.ChunkWrite{ConversationKey: key, Model: "m1", ForgetStamp: stamp, Rebuilt: queue,
+		Chunks: []store.MemoryChunk{testChunk(key, 2, 5, chunkAt(1), chunkAt(4), "m1")}})
+	if err != nil || ok {
+		t.Fatalf("rebuild WriteChunks read before the withdraw = %v, %v; want skipped", ok, err)
+	}
+	if got := chunkRanges(t, db, key, "m1"); len(got) != 0 {
+		t.Errorf("chunks = %v, want none of the withdrawn messages", got)
+	}
+	if got := rebuildRanges(t, db, key); !slices.Equal(got, [][2]int64{{2, 5}}) {
+		t.Errorf("rebuild queue = %v, want [[2 5]] kept for the next round", got)
+	}
+	if st, _ := db.ChunkState(ctx, key); st.CursorSeq != 0 {
+		t.Errorf("cursor = %d, want unchanged", st.CursorSeq)
+	}
+
+	fresh, err := db.ForgetStamp(ctx, key)
+	if err != nil || fresh == stamp {
+		t.Fatalf("ForgetStamp after a withdraw = %q (was %q), %v; want a new stamp", fresh, stamp, err)
+	}
+	writeChunks(t, db, store.ChunkWrite{ConversationKey: key, Model: "m1", ForgetStamp: fresh, CursorSeq: 3, Rebuilt: queue,
+		Chunks: []store.MemoryChunk{testChunk(key, 1, 3, chunkAt(0), chunkAt(2), "m1")}})
+	if got := chunkRanges(t, db, key, "m1"); !slices.Equal(got, [][2]int64{{1, 3}}) {
+		t.Errorf("chunks cut after the withdraw = %v, want [[1 3]]", got)
 	}
 }

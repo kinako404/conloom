@@ -14,6 +14,10 @@ import (
 )
 
 func (db *DB) Ingest(ctx context.Context, in store.Ingest) (*store.EventRecord, error) {
+	if d := in.DeleteMessages; d != nil && (in.NewTask != nil && in.NewTask.ConversationKey != d.ConversationKey ||
+		in.Message != nil && in.Message.ConversationKey != d.ConversationKey) {
+		return nil, fmt.Errorf("ingest: deleting messages of %s along with a task or message of another conversation", d.ConversationKey)
+	}
 	var existing *store.EventRecord
 	err := db.inTx(ctx, func(tx *sql.Tx) error {
 		ev, err := scanEvent(tx.QueryRowContext(ctx, `SELECT `+eventCols+` FROM events

@@ -445,8 +445,9 @@ type Store interface {
 	// DeleteMessagesFrom deletes the conversation's messages with seq >= fromSeq,
 	// their keyword index rows, its chunks that reach into the range (queuing the
 	// ones that straddle it for rebuild), and its timers anchored at or after
-	// fromSeq. It returns how many messages it deleted and ErrNotFound if the
-	// conversation is absent.
+	// fromSeq. Deleting any message changes the conversation's forget stamp, so
+	// chunks cut before are not written (see ChunkWrite). It returns how many
+	// messages it deleted and ErrNotFound if the conversation is absent.
 	DeleteMessagesFrom(ctx context.Context, convKey string, fromSeq int64) (int, error)
 	// DeleteScope deletes everything stored under the shared panel memory scope
 	// scopeKey (summary and cursor, members with their forget times, revisions,
