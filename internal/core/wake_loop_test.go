@@ -398,6 +398,88 @@ func TestWakeLoop_StatusReturnInQuietHoursEndsSilently(t *testing.T) {
 	}
 }
 
+func TestWakeLoop_StatusReturnInQuietHoursWhileUserActive(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name string
+		// spoke is how long before the return 小明 last wrote.
+		spoke time.Duration
+		// forget forgets 小明 after his message, before the status.
+		forget bool
+		fires  bool
+	}{
+		{name: "message 10 minutes before fires it", spoke: 10 * time.Minute, fires: true},
+		{name: "message 40 minutes before ends it silently", spoke: 40 * time.Minute},
+		{name: "message before the forget cutoff ends it silently", spoke: 10 * time.Minute, forget: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env, clock := newWakeEnv(t, nil, nil, nil)
+			back := localAt(env, 1, 2, 29)
+			clock.set(back.Add(-c.spoke))
+			env.seedPrivateMessage(t, clock, "还没睡，在打游戏")
+			if c.forget {
+				clock.set(clock.now().Add(time.Minute))
+				if err := env.st.ForgetPrivate(ctx, privateConvKey, privateUser, clock.now()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			timer := env.setWakeStatus(t, "去带泡面", clock.now(), back)
+			clock.set(back)
+
+			env.o.pollWakes(ctx)
+			if !c.fires {
+				requireNoWakeTask(t, env, timer)
+				requireNoStatus(t, env)
+				if n := env.wakeCount(t, store.TimerStatusReturn, wakeDropped); n != 1 {
+					t.Errorf("wake dropped metric = %v, want 1", n)
+				}
+				if n := env.modelCalls(); n != 0 {
+					t.Errorf("model calls = %d, want 0", n)
+				}
+				if logs := env.logs.String(); !strings.Contains(logs, "reason=quiet") || strings.Contains(logs, "quiet_skipped_active") {
+					t.Errorf("logs lack the quiet drop:\n%s", logs)
+				}
+				return
+			}
+			id, ok := env.wakeTaskID(t, timer)
+			if !ok {
+				t.Fatal("the status return stored no task")
+			}
+			if task := env.waitWake(t, id); len(task.Actions) != 1 || task.Meta.Trigger != TriggerStatusReturn {
+				t.Fatalf("task = %+v, want the status return answered", task)
+			}
+			requireNoStatus(t, env)
+			if n := env.wakeCount(t, store.TimerStatusReturn, wakeSent); n != 1 {
+				t.Errorf("wake sent metric = %v, want 1", n)
+			}
+			if !strings.Contains(env.logs.String(), "reason=quiet_skipped_active") {
+				t.Errorf("logs lack the skipped quiet hours:\n%s", env.logs.String())
+			}
+		})
+	}
+}
+
+func TestWakeLoop_InitiateInQuietHoursIgnoresActiveUser(t *testing.T) {
+	env, clock := newWakeEnv(t, nil, nil, nil)
+	clock.set(localAt(env, 1, 2, 19))
+	env.seedPrivateMessage(t, clock, "还没睡，在打游戏")
+	clock.set(localAt(env, 1, 2, 29))
+	timer := env.armWake(t, store.TimerInitiate, clock.now())
+
+	env.o.pollWakes(context.Background())
+	requireNoWakeTask(t, env, timer)
+	requireInitiatePlanned(t, env, clock.now(), 0, autonomy.DefaultQuiet)
+	if n := env.wakeCount(t, store.TimerInitiate, wakePostponed); n != 1 {
+		t.Errorf("wake postponed metric = %v, want 1", n)
+	}
+	if logs := env.logs.String(); !strings.Contains(logs, "reason=quiet") || strings.Contains(logs, "quiet_skipped_active") {
+		t.Errorf("logs lack the quiet re-plan:\n%s", logs)
+	}
+	if n := env.modelCalls(); n != 0 {
+		t.Errorf("model calls = %d, want 0", n)
+	}
+}
+
 func TestWakeLoop_StatusReturnSwitchOffClearsStatus(t *testing.T) {
 	for _, c := range []struct {
 		name      string

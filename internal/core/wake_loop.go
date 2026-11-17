@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/kinako404/conloom/internal/autonomy"
@@ -24,6 +25,9 @@ const (
 	// the end of its status.
 	wakeBusyDelay     = 2 * time.Minute
 	statusReturnDelay = time.Minute
+	// statusReturnActiveWindow is how recently the chat's user must have
+	// written for a status return to ignore the chat's quiet hours.
+	statusReturnActiveWindow = 30 * time.Minute
 	// wakeClaimLimit is the most timers one poll claims.
 	wakeClaimLimit = 100
 	// followUpJitterMinutes bounds the random minutes added to a follow-up
@@ -243,9 +247,11 @@ func (o *Orchestrator) checkStart(ctx context.Context, t store.ConversationTimer
 // message, when it ended more than wakeMissedGrace ago, when the chat is
 // gone, proactive replies are off, the chat is paused, its user may no longer
 // chat privately or now is in the chat's quiet hours (quietFor), when the
-// user is asleep. While the chat is busy (chatBusy, or fireTimer refusing) t
-// is postponed by statusReturnDelay, and the status ends once that would take
-// it past wakeMissedGrace after the status ended.
+// user is asleep — unless the user wrote in the chat, since they were last
+// forgotten, less than statusReturnActiveWindow ago, and so is awake (logged
+// with reason quiet_skipped_active). While the chat is busy (chatBusy, or
+// fireTimer refusing) t is postponed by statusReturnDelay, and the status
+// ends once that would take it past wakeMissedGrace after the status ended.
 func (o *Orchestrator) dueStatusReturn(ctx context.Context, t store.ConversationTimer) error {
 	now, key := o.now(), t.ConversationKey
 	scope := memory.ScopeKeyOf(key)
@@ -299,8 +305,20 @@ func (o *Orchestrator) dueStatusReturn(ctx context.Context, t store.Conversation
 	if err != nil {
 		return err
 	}
-	if o.quietFor(ctx, key, rows[t.PlatformUserID].ForgottenAt).Contains(now, o.loc) {
-		return end(wakeDropped, "quiet")
+	forgotten := rows[t.PlatformUserID].ForgottenAt
+	msgs, err := o.st.RecentMessages(ctx, key, wakeRecentScan)
+	if err != nil {
+		return err
+	}
+	if o.quietFor(ctx, key, forgotten).Contains(now, o.loc) {
+		// A panel chat's status is shared by the bot's panel chats, but only
+		// the chat it was set in, key, shows whether its user is awake.
+		last, active := userActiveSince(msgs, t.PlatformUserID, forgotten, now.Add(-statusReturnActiveWindow))
+		if !active {
+			return end(wakeDropped, "quiet")
+		}
+		o.log.Info("wake timer ignores quiet hours: user active", "conversation", key, "kind", string(t.Kind),
+			"due_at", t.DueAt.UTC(), "reason", "quiet_skipped_active", "user_message_at", last.UTC())
 	}
 	postpone := func() error {
 		at := now.Add(statusReturnDelay)
@@ -309,10 +327,6 @@ func (o *Orchestrator) dueStatusReturn(ctx context.Context, t store.Conversation
 		}
 		o.wakeOutcome(t, wakePostponed, "busy", "until", at.UTC())
 		return o.moveTimer(ctx, t, at)
-	}
-	msgs, err := o.st.RecentMessages(ctx, key, wakeRecentScan)
-	if err != nil {
-		return err
 	}
 	if o.chatBusy(key, msgs, pol, now) {
 		return postpone()
@@ -337,6 +351,18 @@ func (o *Orchestrator) chatBusy(convKey string, msgs []store.MessageRecord, pol 
 		}
 	}
 	return false
+}
+
+// userActiveSince returns when the newest of userID's messages among msgs
+// (oldest first) that was received after since and not before the user's
+// forget cutoff forgotten was received, and false without one.
+func userActiveSince(msgs []store.MessageRecord, userID string, forgotten, since time.Time) (time.Time, bool) {
+	for _, m := range slices.Backward(msgs) {
+		if !m.FromBot && m.PlatformUserID == userID && !m.CreatedAt.Before(forgotten) && m.CreatedAt.After(since) {
+			return m.CreatedAt, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // followUpAgain is when a follow-up due now in quiet hours q, or on a day the
