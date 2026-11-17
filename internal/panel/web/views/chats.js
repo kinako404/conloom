@@ -3,7 +3,7 @@ import { get, post, put, request, convPath, isAbort, currentUser, logout } from 
 import { go, href, withQuery } from '../lib/router.js';
 import { fmtTime, fmtClock } from '../lib/format.js';
 import { SECTIONS } from '../lib/sections.js';
-import { chatBar, chatPane, deleteChatConfirmed } from './chat.js';
+import { chatBar, chatPane, deleteChatConfirmed, listen } from './chat.js';
 import { avatarEl } from './avatar.js';
 
 // PANEL is the source of a bot created in the panel and the platform of the
@@ -570,13 +570,15 @@ function chatPage() {
   });
 
   // removeChat deletes the chat key once confirmed, then reads the list
-  // again and returns to it; it reports whether the chat was deleted.
-  const removeChat = async (key) => {
-    mount(paneMsg);
+  // again and returns to it; it reports whether the chat was deleted. A
+  // failure is shown in box: the open chat's paneMsg, or listMsg when the
+  // delete was asked for from the list, where no chat may be open.
+  const removeChat = async (key, box = paneMsg) => {
+    mount(box);
     try {
       if (!(await deleteChatConfirmed(key))) return false;
     } catch (err) {
-      if (!isAbort(err)) mount(paneMsg, errorBox(err));
+      if (!isAbort(err)) mount(box, errorBox(err));
       return false;
     }
     await refresh();
@@ -597,7 +599,7 @@ function chatPage() {
       onclick: () => {
         const key = ctxKey;
         closeCtx();
-        removeChat(key);
+        removeChat(key, listMsg);
       },
     }, '删除聊天'));
     const left = Math.max(0, Math.min(e.clientX, window.innerWidth - 160));
@@ -614,13 +616,17 @@ function chatPage() {
     e.preventDefault();
     openCtx(e, found.chat);
   });
-  document.addEventListener('click', closeCtx);
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeCtx();
-  });
-  document.addEventListener('scroll', closeCtx, true);
-  window.addEventListener('resize', closeCtx);
-  window.addEventListener('hashchange', closeCtx);
+  // listenMenu closes the context menu on a click, Escape, a scroll or a
+  // resized window until signal, the route's, fires, which closes it too.
+  const listenMenu = (signal) => {
+    listen(document, 'click', closeCtx, signal);
+    listen(document, 'keydown', (e) => {
+      if (e.key === 'Escape') closeCtx();
+    }, signal);
+    listen(document, 'scroll', closeCtx, signal, true);
+    listen(window, 'resize', closeCtx, signal);
+    signal.addEventListener('abort', closeCtx);
+  };
 
   // loadSkills reads the skills a panel bot and those a config bot may
   // enable, once.
@@ -976,8 +982,14 @@ function chatPage() {
     const onMessages = (messages) => {
       if (!signal.aborted) noteArrived(key, messages);
     };
-    const onReset = () => {
+    // reload opens the chat afresh, in the same folder, after a withdraw or
+    // regenerate, with note, when given, above it; the messages counted as
+    // arrived go once the old pane has stopped, and the list is read again.
+    const reload = (note) => {
+      go(chatHref(key));
       delete arrived[key];
+      if (note) mount(paneMsg, note);
+      refresh();
     };
     const bar = (b, t) => chatBar({ key, bot: b, title: t, onBack, signal });
     mount(pane, bar(bot, title), loading());
@@ -998,7 +1010,7 @@ function chatPage() {
         bot = { id: conv.bot_instance_id, name: conv.bot_name || conv.bot_instance_id, avatar: g ? g.avatar || '' : '' };
         title = conv.platform_conversation_id;
       }
-      const [head, ...body] = await chatPane({ key, signal, hint: PANEL_HINT, bot, title, onBack, onDelete, onMessages, onReset });
+      const [head, ...body] = await chatPane({ key, signal, hint: PANEL_HINT, bot, title, onBack, onDelete, onMessages, reload });
       if (!signal.aborted) mount(pane, head, paneMsg, body);
     } catch (err) {
       if (!isAbort(err) && !signal.aborted) mount(pane, bar(bot, title), errorBox(err));
@@ -1042,7 +1054,7 @@ function chatPage() {
     if (/^tg-slide-/.test(e.animationName)) endEnter();
   });
 
-  return { layout, select, setFolder, watch };
+  return { layout, select, setFolder, watch, listenMenu };
 }
 
 // page is the chat page on screen. Switching chats reuses it, rebuilding only
@@ -1060,4 +1072,5 @@ export function chatsView(ctx) {
   page.setFolder(ctx.query.get('bot') || '');
   page.select(ctx.params.key || '', ctx.signal);
   page.watch(ctx.signal);
+  page.listenMenu(ctx.signal);
 }

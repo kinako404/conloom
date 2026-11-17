@@ -955,7 +955,7 @@ func TestChatsView_UnreadFollowsTheOpenChat(t *testing.T) {
 	files := assets(t, ".js")
 	chat, chats := files["views/chat.js"], files["views/chats.js"]
 	for _, want := range []string{
-		"export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete, onMessages, onReset })",
+		"export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete, onMessages, reload = () => go(href('im', key)) })",
 		"if (onMessages && !signal.aborted) onMessages(added);",
 	} {
 		if !strings.Contains(chat, want) {
@@ -963,7 +963,7 @@ func TestChatsView_UnreadFollowsTheOpenChat(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"chatPane({ key, signal, hint: PANEL_HINT, bot, title, onBack, onDelete, onMessages, onReset })",
+		"chatPane({ key, signal, hint: PANEL_HINT, bot, title, onBack, onDelete, onMessages, reload })",
 		"if (!signal.aborted) noteArrived(key, messages);",
 		"delete arrived[key];",
 		"(arrived[c.key] || []).filter((m) => !c.last || m.seq > c.last.seq)",
@@ -1049,7 +1049,7 @@ func TestChatPane_SenderWarnAndKeys(t *testing.T) {
 		"title: m.sender_name ? `${m.sender_name} · ${when}` : when",
 		"last.from_bot === m.from_bot && last.sender_id === m.sender_id",
 		"listen(document, 'keydown', (e) => {", "listen(window, 'resize', grow, signal);",
-		"signal.addEventListener('abort', () => target.removeEventListener(type, fn));",
+		"signal.addEventListener('abort', () => target.removeEventListener(type, fn, capture));",
 	} {
 		if !strings.Contains(chat, want) {
 			t.Errorf("views/chat.js lacks %q", want)
@@ -1113,7 +1113,7 @@ func TestChatsClassic_Page(t *testing.T) {
 		"export async function chatsClassicView(ctx) {", "h('div', { class: 'chat-classic' },", "h('h1', null, '聊天')",
 		"'新建 Bot'", "'刷新'", "'新建聊天'", "'会话详情'", "'还没有聊天'", "function chatHead(key, title, botName) {",
 		"import { PANEL, PANEL_HINT, newChatDialog, botDialog, configBotDialog, deleteBotDialog } from './chats.js';",
-		"import { chatPane } from './chatclassic.js';", "chatPane({ key, signal, hint: PANEL_HINT })",
+		"import { chatPane } from './chatclassic.js';", "chatPane({ key, signal, hint: PANEL_HINT, reload })",
 		"h('a', { class: 'button', href: '#/im',", "'TG 风格界面 ↗'", "tgLink.href = key ? href('im', key) : '#/im';",
 		"h('h1', null, '聊天'),\n      tgLink),", "go(href('chat', key))", "go('#/chat')",
 		"if (matchMedia(NARROW).matches) pane.scrollIntoView();",
@@ -1159,8 +1159,8 @@ func TestChatClassic_Pane(t *testing.T) {
 		t.Fatal("views/chatclassic.js is not embedded")
 	}
 	for _, want := range []string{
-		"export async function chatPane({ key, signal, hint }) {",
-		"import { POLL_MS, HISTORY, PAGE, TOUCH, GONE, suggestionsOn, saveSuggestionsOn, suppressedNote } from './chat.js';",
+		"export async function chatPane({ key, signal, hint, reload = () => go(href('chat', key)) }) {",
+		"  POLL_MS, HISTORY, PAGE, TOUCH, GONE, MESSAGE_GONE, MESSAGE_GONE_NOTE, ACTION_BUSY, suggestionsOn, saveSuggestionsOn, suppressedNote,\n} from './chat.js';",
 		"m.from_bot ? 'bubble bot' : 'bubble user'", "h('strong', null, m.sender_name || m.sender_id)",
 		"m.channel === 'panel' ? h('span', { class: 'badge' }, '面板') : null", "'对方正在输入…'",
 		"h('button', { type: 'submit', class: 'primary' }, '发送')", "h('input', { type: 'checkbox', checked: suggestionsOn() })",
@@ -1296,9 +1296,10 @@ func TestChatClassic_MessageActions(t *testing.T) {
 		"'撤回'", "'重新生成'",
 		"del(convPath(key, 'messages', seq))",
 		"post(convPath(key, 'messages', seq, 'regenerate'))",
-		"go(href('chat', key))",
-		"last.from_bot && m.seq === last.seq",
-		"'对方正在回复，等它说完再试。'",
+		"reload = () => go(href('chat', key))",
+		"regen.hidden = !regenSeq || Number(row.dataset.seq) !== regenSeq;",
+		"regenSeq = res.regenerate_seq || 0;",
+		"ACTION_BUSY",
 		"dataset: { seq: String(m.seq) }",
 		"refreshActions",
 	} {
@@ -1315,7 +1316,7 @@ func TestChatsClassic_ContextMenu(t *testing.T) {
 	files := assets(t, ".js", ".css")
 	js := files["views/chatsclassic.js"]
 	for _, want := range []string{
-		"import { deleteChatConfirmed } from './chat.js';",
+		"import { deleteChatConfirmed, listen } from './chat.js';",
 		"'contextmenu'", "e.preventDefault()", "class: 'chat-ctx'", "'删除聊天'",
 		"removeChat", "go('#/chat')", "refresh()",
 	} {
@@ -1337,8 +1338,10 @@ func TestChatTG_MessageActions(t *testing.T) {
 		"'撤回'", "'重新生成'",
 		"del(convPath(key, 'messages', seq))",
 		"post(convPath(key, 'messages', seq, 'regenerate'))",
-		"go(href('im', key))",
-		"last.from_bot && m.seq === last.seq",
+		"reload = () => go(href('im', key))",
+		"regen.hidden = !regenSeq || Number(row.dataset.seq) !== regenSeq;",
+		"regenSeq = res.regenerate_seq || 0;",
+		"export const ACTION_BUSY = '对方正在回复，等它说完再试。';",
 		"refreshActions",
 	} {
 		if !strings.Contains(js, want) {
@@ -1366,6 +1369,100 @@ func TestChatsTG_ContextMenu(t *testing.T) {
 	for _, want := range []string{".chat-app .tg-ctx-menu", ".chat-app .tg-warn"} {
 		if !strings.Contains(files["style.css"], want) {
 			t.Errorf("style.css lacks %q", want)
+		}
+	}
+}
+
+// The context menus' listeners on document and window end with the route's
+// signal, so a page built again on every visit leaves none behind, and a route
+// change closes the menu.
+func TestChatPages_ContextMenuListenersEndWithTheRoute(t *testing.T) {
+	files := assets(t, ".js")
+	for file, menu := range map[string]string{"views/chats.js": "closeCtx", "views/chatsclassic.js": "closeMenu"} {
+		js := files[file]
+		for _, want := range []string{
+			"listen(document, 'click', " + menu + ", signal);",
+			"listen(document, 'scroll', " + menu + ", signal, true);",
+			"listen(window, 'resize', " + menu + ", signal);",
+			"signal.addEventListener('abort', " + menu + ");",
+			"page.listenMenu(ctx.signal);",
+		} {
+			if !strings.Contains(js, want) {
+				t.Errorf("%s lacks %q", file, want)
+			}
+		}
+		for _, bad := range []string{
+			"document.addEventListener('click'", "document.addEventListener('keydown'", "document.addEventListener('scroll'",
+			"window.addEventListener('resize'", "window.addEventListener('hashchange'",
+		} {
+			if strings.Contains(js, bad) {
+				t.Errorf("%s adds a listener that outlives the page: %q", file, bad)
+			}
+		}
+	}
+	if !strings.Contains(files["views/chat.js"], "export function listen(target, type, fn, signal, capture = false) {") {
+		t.Error("views/chat.js does not export listen with a capture flag")
+	}
+}
+
+// A withdraw or regenerate of a message that is gone already (404
+// MESSAGE_NOT_FOUND) reloads the chat with a note; only a 404 of the chat
+// itself marks it gone.
+func TestChatPanes_MessageGoneIsNotChatGone(t *testing.T) {
+	files := assets(t, ".js")
+	if !strings.Contains(files["views/chat.js"], "export const MESSAGE_GONE = '"+conloomapi.CodeMessageNotFound+"';") {
+		t.Errorf("views/chat.js lacks MESSAGE_GONE = %q", conloomapi.CodeMessageNotFound)
+	}
+	for _, file := range []string{"views/chat.js", "views/chatclassic.js"} {
+		js := files[file]
+		gone := strings.Index(js, "if (err.status === 404 && err.code === MESSAGE_GONE) {\n        reload(warn(MESSAGE_GONE_NOTE));")
+		if gone < 0 {
+			t.Errorf("%s does not reload the chat when the message is gone", file)
+			continue
+		}
+		if !strings.Contains(js, "acting = false;\n      refreshActions();\n      actionError(err);") {
+			t.Errorf("%s does not hand other failures to actionError", file)
+		}
+	}
+}
+
+// Polling stops before a withdraw or regenerate and a poll under way is
+// dropped, so no deleted message is shown again; the TG page reloads in the
+// same folder and only then forgets the messages counted as arrived.
+func TestChatPanes_NoStalePollAfterAnAction(t *testing.T) {
+	files := assets(t, ".js")
+	for _, file := range []string{"views/chat.js", "views/chatclassic.js"} {
+		js := files[file]
+		for _, want := range []string{
+			"if (gone || acting) return;", "const at = epoch;", "if (at !== epoch) {",
+			"acting = true;\n    epoch++;\n    clearTimeout(timer);", "if (acting) return;",
+			"if (!text.trim() || send.disabled || gone || acting) return;",
+			"const off = botTyping || gone || acting || send.disabled;",
+		} {
+			if !strings.Contains(js, want) {
+				t.Errorf("%s lacks %q", file, want)
+			}
+		}
+	}
+	chats := files["views/chats.js"]
+	if !strings.Contains(chats, "go(chatHref(key));\n      delete arrived[key];") {
+		t.Error("views/chats.js does not reload in the folder (chatHref) before forgetting the arrived messages")
+	}
+	if strings.Contains(chats, "onReset") || strings.Contains(files["views/chat.js"], "onReset") {
+		t.Error("onReset is still used")
+	}
+	if !strings.Contains(files["views/chatsclassic.js"], "chatPane({ key, signal, hint: PANEL_HINT, reload })") {
+		t.Error("views/chatsclassic.js does not pass reload to the pane")
+	}
+}
+
+// A chat deleted from the TG list's context menu reports a failure in the
+// list, where it is seen even with no chat open.
+func TestChatsTG_ListDeleteReportsInTheList(t *testing.T) {
+	js := assets(t, ".js")["views/chats.js"]
+	for _, want := range []string{"const removeChat = async (key, box = paneMsg) => {", "removeChat(key, listMsg);", "mount(box, errorBox(err));"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chats.js lacks %q", want)
 		}
 	}
 }

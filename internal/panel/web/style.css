@@ -665,6 +665,8 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, .25);
+  transform-origin: left top;
+  animation: tg-menu-in 150ms cubic-bezier(.2,.8,.2,1);
 }
 .chat-app .tg-ctx-menu[hidden] { display: none; }
 .chat-app .tg-warn { margin: 4px 0; color: var(--warn); font-size: 13px; }

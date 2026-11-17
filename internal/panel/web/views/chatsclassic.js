@@ -7,7 +7,7 @@ import { get, convPath, isAbort } from '../lib/api.js';
 import { go, href } from '../lib/router.js';
 import { fmtTime, fmtClock } from '../lib/format.js';
 import { PANEL, PANEL_HINT, newChatDialog, botDialog, configBotDialog, deleteBotDialog } from './chats.js';
-import { deleteChatConfirmed } from './chat.js';
+import { deleteChatConfirmed, listen } from './chat.js';
 import { chatPane } from './chatclassic.js';
 
 // NARROW is the media query under which style.css puts the chat list above
@@ -39,6 +39,8 @@ function chatPage() {
   let loads = 0;
   const links = new Map();
   const listMsg = h('div');
+  // paneMsg holds a note above the open chat, such as why it was reloaded.
+  const paneMsg = h('div');
   const list = h('div', { class: 'chat-groups' });
   const pane = h('section', { class: 'chat-main' });
   const tgLink = h('a', { class: 'button', href: '#/im', title: '在 Telegram 风格的聊天页打开' }, 'TG 风格界面 ↗');
@@ -115,13 +117,17 @@ function chatPage() {
     e.preventDefault();
     openChatMenu(e, shown.chat);
   });
-  document.addEventListener('click', closeMenu);
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeMenu();
-  });
-  document.addEventListener('scroll', closeMenu, true);
-  window.addEventListener('resize', closeMenu);
-  window.addEventListener('hashchange', closeMenu);
+  // listenMenu closes the context menu on a click, Escape, a scroll or a
+  // resized window until signal, the route's, fires, which closes it too.
+  const listenMenu = (signal) => {
+    listen(document, 'click', closeMenu, signal);
+    listen(document, 'keydown', (e) => {
+      if (e.key === 'Escape') closeMenu();
+    }, signal);
+    listen(document, 'scroll', closeMenu, signal, true);
+    listen(window, 'resize', closeMenu, signal);
+    signal.addEventListener('abort', closeMenu);
+  };
 
   const chatDialog = newChatDialog((key) => {
     refresh().then(() => go(href('chat', key)));
@@ -248,6 +254,7 @@ function chatPage() {
       return el;
     };
     let head = shown ? headWithDelete(chatHead(key, shown.chat.title || key, shown.group.name || shown.group.id)) : null;
+    mount(paneMsg);
     mount(pane, head, loading());
     reveal();
     try {
@@ -260,9 +267,15 @@ function chatPage() {
         }
         head = headWithDelete(chatHead(key, conv.platform_conversation_id, conv.bot_name || conv.bot_instance_id));
       }
-      const nodes = await chatPane({ key, signal, hint: PANEL_HINT });
+      // reload opens the chat afresh after a withdraw or regenerate, with
+      // note, when given, above it.
+      const reload = (note) => {
+        go(href('chat', key));
+        if (note) mount(paneMsg, note);
+      };
+      const nodes = await chatPane({ key, signal, hint: PANEL_HINT, reload });
       if (!signal.aborted) {
-        mount(pane, head, nodes);
+        mount(pane, head, paneMsg, nodes);
         reveal();
       }
     } catch (err) {
@@ -297,7 +310,7 @@ function chatPage() {
       pane),
     chatMenu, chatDialog.dialog, botForm.dialog, configForm.dialog, deleteForm.dialog);
 
-  return { layout, load, select };
+  return { layout, load, select, listenMenu };
 }
 
 // page is the chat page on screen. Switching chats reuses it, rebuilding only
@@ -314,4 +327,5 @@ export async function chatsClassicView(ctx) {
     ctx.show(page.layout);
   }
   page.select(ctx.params.key || '', ctx.signal);
+  page.listenMenu(ctx.signal);
 }

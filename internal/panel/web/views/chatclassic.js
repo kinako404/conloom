@@ -6,8 +6,13 @@ import { h, mount, errorBox } from '../lib/dom.js';
 import { get, post, del, convPath, isAbort } from '../lib/api.js';
 import { go, href } from '../lib/router.js';
 import { fmtTime } from '../lib/format.js';
-import { POLL_MS, HISTORY, PAGE, TOUCH, GONE, suggestionsOn, saveSuggestionsOn, suppressedNote } from './chat.js';
+import {
+  POLL_MS, HISTORY, PAGE, TOUCH, GONE, MESSAGE_GONE, MESSAGE_GONE_NOTE, ACTION_BUSY, suggestionsOn, saveSuggestionsOn, suppressedNote,
+} from './chat.js';
 
+// bubble shows message m with 撤回 and, for the bot's, 重新生成 (hidden until
+// refreshActions shows it), which call actions.withdraw(m) and
+// actions.regenerate(m).
 function bubble(m, actions) {
   return h('li', { class: m.from_bot ? 'bubble bot' : 'bubble user', dataset: { seq: String(m.seq) } },
     h('div', { class: 'meta' },
@@ -26,7 +31,15 @@ function bubble(m, actions) {
 // polling and the sending. With the 建议回复 switch on, once the bot's turn is
 // done it offers reply suggestions under the newest message, which send
 // themselves when clicked. hint, when given, is shown above the chat.
-export async function chatPane({ key, signal, hint }) {
+// Each message can be withdrawn (撤回, with what follows it), and the one GET
+// chat names in regenerate_seq regenerated (重新生成); both are off while the
+// bot is busy or a message is being sent. Polling stops before either is
+// asked for and a poll already under way is dropped, so no message they
+// delete is shown again; once done, reload(note) opens the chat afresh (by
+// default the route of key), with note, when given, shown there: a message
+// that is gone already reloads with MESSAGE_GONE_NOTE, a chat that is gone
+// stops the pane as a 404 of the polling does.
+export async function chatPane({ key, signal, hint, reload = () => go(href('chat', key)) }) {
   const log = h('ul', { class: 'chat-log' });
   const typing = h('div', { class: 'chat-typing', hidden: true }, '对方正在输入…');
   const pollError = h('div');
@@ -41,14 +54,19 @@ export async function chatPane({ key, signal, hint }) {
   // only while it shows some.
   const chips = h('li', { class: 'chat-suggestions' });
   let after = 0;
-  // last is the newest message shown, botTyping what the last poll said,
-  // asked the seq suggestions were last asked for and sentAfter the seq of
-  // the newest message when the user last sent one.
+  // last is the newest message shown, botTyping and regenSeq what the last
+  // poll said, asked the seq suggestions were last asked for and sentAfter
+  // the seq of the newest message when the user last sent one. acting is set
+  // while a withdraw or regenerate is under way, and epoch counts those
+  // started: a poll that began before one is dropped.
   let last = null;
   let botTyping = true;
+  let regenSeq = 0;
   let asked = 0;
   let sentAfter = 0;
   let gone = false;
+  let acting = false;
+  let epoch = 0;
 
   const nearBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   const clearSuggestions = () => {
@@ -57,13 +75,14 @@ export async function chatPane({ key, signal, hint }) {
   };
 
   const refreshActions = () => {
+    const off = botTyping || gone || acting || send.disabled;
     for (const row of log.querySelectorAll('.bubble')) {
-      const m = { seq: Number(row.dataset.seq) };
       const regen = row.querySelector('[data-regenerate]');
-      if (regen) regen.hidden = !(last && last.from_bot && m.seq === last.seq);
-      for (const b of row.querySelectorAll('.chat-action')) b.disabled = botTyping || gone;
+      if (regen) regen.hidden = !regenSeq || Number(row.dataset.seq) !== regenSeq;
+      for (const b of row.querySelectorAll('.chat-action')) b.disabled = off;
     }
   };
+  const warn = (text) => h('p', { class: 'hint warn', role: 'status' }, text);
   const actionError = (err) => {
     if (isAbort(err)) return;
     if (err.status === 404) {
@@ -71,35 +90,50 @@ export async function chatPane({ key, signal, hint }) {
       return;
     }
     if (err.status === 409) {
-      const text = err.code === 'PAUSED' ? '这个聊天暂停中，不能重新生成。' : '对方正在回复，等它说完再试。';
-      mount(sendError, h('p', { class: 'hint warn', role: 'status' }, text));
+      mount(sendError, warn(err.code === 'PAUSED' ? err.message : ACTION_BUSY));
       return;
     }
     mount(sendError, errorBox(err));
   };
-  const withdraw = async (seq) => {
-    if (botTyping || gone || send.disabled) return;
-    const count = [...log.querySelectorAll('.bubble')].filter((row) => Number(row.dataset.seq) >= seq).length;
-    if (!confirm(`撤回这条消息及其后的 ${count} 条消息？不能恢复；已经整理进摘要/笔记的内容不会跟着撤回，要彻底清掉用 /忘记我。`)) return;
+  // act runs call, a withdraw or regenerate: polling stops first and a poll
+  // under way is dropped, then the chat is opened afresh, also when the
+  // message was gone already (a 404 MESSAGE_GONE, unlike a 404 of the chat);
+  // when call fails otherwise, polling goes on.
+  const act = async (call) => {
+    acting = true;
+    epoch++;
+    clearTimeout(timer);
+    clearSuggestions();
+    mount(sendError);
+    refreshActions();
     try {
-      await del(convPath(key, 'messages', seq));
-      go(href('chat', key));
+      await call();
     } catch (err) {
+      if (err.status === 404 && err.code === MESSAGE_GONE) {
+        reload(warn(MESSAGE_GONE_NOTE));
+        return;
+      }
+      acting = false;
+      refreshActions();
       actionError(err);
-    }
-  };
-  const regenerate = async (seq) => {
-    if (botTyping || gone || send.disabled) return;
-    if (!last || !last.from_bot || last.seq !== seq) {
-      mount(sendError, h('p', { class: 'hint warn', role: 'status' }, '只能重新生成最新一条回复。'));
+      if (!gone && !signal.aborted) poll();
       return;
     }
-    try {
-      await post(convPath(key, 'messages', seq, 'regenerate'));
-      go(href('chat', key));
-    } catch (err) {
-      actionError(err);
+    reload();
+  };
+  const withdraw = async (seq) => {
+    if (botTyping || gone || acting || send.disabled) return;
+    const count = [...log.querySelectorAll('.bubble')].filter((row) => Number(row.dataset.seq) >= seq).length;
+    if (!confirm(`撤回这条及之后共 ${count} 条消息？不能恢复；已经整理进摘要/笔记的内容不会跟着撤回，要彻底清掉用 /忘记我。`)) return;
+    await act(() => del(convPath(key, 'messages', seq)));
+  };
+  const regenerate = async (seq) => {
+    if (botTyping || gone || acting || send.disabled) return;
+    if (seq !== regenSeq) {
+      mount(sendError, warn('这条消息现在不能重新生成。'));
+      return;
     }
+    await act(() => post(convPath(key, 'messages', seq, 'regenerate')));
   };
   const actions = { withdraw: (m) => withdraw(m.seq), regenerate: (m) => regenerate(m.seq) };
 
@@ -135,6 +169,7 @@ export async function chatPane({ key, signal, hint }) {
   };
   const markGone = () => {
     gone = true;
+    regenSeq = 0;
     clearTimeout(timer);
     clearSuggestions();
     typing.hidden = true;
@@ -170,7 +205,7 @@ export async function chatPane({ key, signal, hint }) {
     if (atBottom) log.scrollTop = log.scrollHeight;
   };
   async function poll() {
-    if (gone) return;
+    if (gone || acting) return;
     if (running) {
       again = true;
       return;
@@ -178,16 +213,25 @@ export async function chatPane({ key, signal, hint }) {
     running = true;
     clearTimeout(timer);
     let next = POLL_MS;
+    const at = epoch;
+    let stale = false;
     try {
       const res = await get(convPath(key, 'chat'), { after }, signal);
-      const rows = res.messages || [];
-      if (add(rows, stick)) stick = false;
-      botTyping = !!res.typing;
-      typing.hidden = !botTyping;
-      refreshActions();
-      mount(pollError);
-      if (rows.length >= PAGE) next = 0;
-      else suggest();
+      if (at !== epoch) {
+        // A withdraw or regenerate started meanwhile: what this poll read
+        // may be deleted by now.
+        stale = true;
+      } else {
+        const rows = res.messages || [];
+        if (add(rows, stick)) stick = false;
+        botTyping = !!res.typing;
+        regenSeq = res.regenerate_seq || 0;
+        typing.hidden = !botTyping;
+        refreshActions();
+        mount(pollError);
+        if (rows.length >= PAGE) next = 0;
+        else suggest();
+      }
     } catch (err) {
       if (isAbort(err) || signal.aborted) return;
       if (err.status === 404) {
@@ -198,7 +242,8 @@ export async function chatPane({ key, signal, hint }) {
     } finally {
       running = false;
     }
-    if (again) {
+    if (acting) return;
+    if (again || stale) {
       again = false;
       next = 0;
     }
@@ -210,10 +255,11 @@ export async function chatPane({ key, signal, hint }) {
   // the message it answers are no longer shown. Text that fails to send is
   // left in the box, a suggestion's too, unless the box has other text.
   const submit = async (text) => {
-    if (!text.trim() || send.disabled || gone) return;
+    if (!text.trim() || send.disabled || gone || acting) return;
     if (last !== null) sentAfter = last.seq;
     clearSuggestions();
     send.disabled = true;
+    refreshActions();
     mount(sendError);
     try {
       const res = await post(convPath(key, 'messages'), { text });
@@ -231,6 +277,7 @@ export async function chatPane({ key, signal, hint }) {
       }
     } finally {
       send.disabled = gone;
+      refreshActions();
       if (!gone) input.focus();
     }
   };
