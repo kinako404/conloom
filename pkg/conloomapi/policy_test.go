@@ -10,6 +10,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestDefaultPrivatePolicy(t *testing.T) {
+	want := DefaultGroupPolicy()
+	want.Memory.SummaryMaxChars, want.Memory.NoteMaxChars = 0, 0
+	got := DefaultPrivatePolicy()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("DefaultPrivatePolicy() = %+v, want the group defaults without memory limits %+v", got, want)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("DefaultPrivatePolicy().Validate() = %v", err)
+	}
+}
+
 func TestDefaultGroupPolicyProactive(t *testing.T) {
 	want := ProactivePolicy{
 		Enabled:                true,

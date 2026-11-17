@@ -612,6 +612,36 @@ func TestPolicy_OnChangeCalled(t *testing.T) {
 	}
 }
 
+func TestPolicy_TransitionOnUpdate(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newTestStore(t), conloomapi.DefaultGroupPolicy())
+	type call struct {
+		key           string
+		before, after conloomapi.GroupPolicy
+	}
+	var calls []call
+	var order []string
+	svc.OnChange(func(string) { order = append(order, "change") })
+	svc.OnTransition(func(key string, before, after conloomapi.GroupPolicy) {
+		order = append(order, "transition")
+		calls = append(calls, call{key, before, after})
+	})
+	on := conloomapi.DefaultGroupPolicy()
+	on.Memory.Enabled = true
+	if _, err := svc.Update(ctx, testConvKey, conloomapi.PolicyPut{Policy: on}, "29999"); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if len(calls) != 1 || calls[0].key != testConvKey || calls[0].before.Memory.Enabled || !calls[0].after.Memory.Enabled {
+		t.Fatalf("OnTransition calls = %+v, want memory off -> on", calls)
+	}
+	if !reflect.DeepEqual(calls[0].after, on) {
+		t.Fatalf("after = %+v, want the effective policy %+v", calls[0].after, on)
+	}
+	if !reflect.DeepEqual(order, []string{"change", "transition"}) {
+		t.Fatalf("callback order = %v, want OnChange before OnTransition", order)
+	}
+}
+
 func TestPolicy_SetProactiveEnabledKeepsConcurrentPause(t *testing.T) {
 	ctx := context.Background()
 	rec := &auditRecorder{Store: newTestStore(t)}

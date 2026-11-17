@@ -363,6 +363,15 @@ func DefaultGroupPolicy() GroupPolicy {
 	}
 }
 
+// DefaultPrivatePolicy is the built-in default policy of private conversations:
+// DefaultGroupPolicy without summary and note limits, so they take the private
+// type's own.
+func DefaultPrivatePolicy() GroupPolicy {
+	p := DefaultGroupPolicy()
+	p.Memory.SummaryMaxChars, p.Memory.NoteMaxChars = 0, 0
+	return p
+}
+
 // WithDefaults returns p with a missing (zero) Proactive or Memory section replaced by def's,
 // and each turn-taking, quote, max_parts and join setting that is zero (missing from policies
 // stored before it existed; zero is never valid for them) taken from def. Zero is a valid
