@@ -1,6 +1,6 @@
 # Web 管理面板
 
-面板是核心自带的网页管理界面，给部署者本人用：看模型用量和运行状态，浏览和修改各个会话的策略、人设和记忆，新建和管理只在面板里聊天的 bot，查看任务、审计记录和当前配置。页面和脚本用 `go:embed` 打包进 `conloom` 二进制，不需要另装任何东西，也不引用外部资源。设计见 `docs/superpowers/specs/2026-11-13-web-panel-design.md`。
+面板是核心自带的网页管理界面，给部署者本人用：看模型用量和运行状态，浏览和修改各个会话的策略、人设和记忆，修改群聊、私聊的默认策略，新建和管理只在面板里聊天的 bot，查看任务、审计记录和当前配置。页面和脚本用 `go:embed` 打包进 `conloom` 二进制，不需要另装任何东西，也不引用外部资源。设计见 `docs/superpowers/specs/2026-11-13-web-panel-design.md`。
 
 ## 启用
 
@@ -65,6 +65,8 @@ panel:
 
 界面是中文，跟随系统的深浅色，窄屏（手机）上单列显示。未登录时任何页面都会跳到登录页；使用中途会话过期时，登录后回到原来的页面。
 
+顶部导航栏依次是：概览、用量、聊天、会话、人设模板、任务、审计、设置、配置。TG 风格界面不在导航栏里，它 ≡ 菜单里的页面链接和导航栏是同一份列表、同样的顺序。
+
 - **概览**：今天（`server.timezone` 的当地日）的调用数、失败数和各类 token，最近 7 天按模型的 token 柱状图，版本和启动时间，实时状态，以及各 bot 的适配器最近一次调用核心的时间。每 10 秒刷新一次。
   - 实时状态包括准入队列深度、发件箱待发数、向量积压、关键词索引补建剩余、熔断中的角色。没有配置 `embedding` 段时向量积压显示“未启用”（接口里是 `null`）。
   - “最近调用”是绑定这个 bot 的 API 令牌最近一次通过鉴权的时间（通常就是它的适配器），只记在内存里，从本次进程启动起算：核心刚重启、适配器还没来得及调用时显示“自本次启动未调用”。
@@ -94,7 +96,10 @@ panel:
   - **动画**：TG 风格界面带简短的动画：新到的消息和自己刚发的消息从下方淡入（打开聊天时的历史消息直接显示），建议回复按钮依次淡入，菜单从角上展开，未读数出现或变化时弹一下，窄屏上对话区从右侧、列表从左侧滑入。系统开启“减少动态效果”时全部关闭，“正在输入”的小点静止显示。经典聊天页没有动画。设计见 `docs/superpowers/specs/2026-11-17-im-motion-design.md`。
 - **会话**：所有 bot 的全部群聊和私聊，带消息数、最后一条消息的时间、是否暂停、主动发言和记忆开关（面板里新建的聊天的记忆开关按最近有消息的那个面板聊天的策略，同记忆页）、人设模板和版本。私聊的主动发言徽章显示主动找人的档位，如“主动：中”；总开关或档位关闭时显示“主动关”。右上角的“新建聊天”在面板里和 bot 开一个私聊，建好后在聊天页打开，见下文 [在面板里聊天](#在面板里聊天)。点进一个会话默认打开“消息”标签；面板里新建的聊天的详情里有“在聊天页打开”和“删除这个聊天”。有以下标签页：
   - **消息**：按时间倒序浏览，从面板发出或送到面板的消息带“面板”标记（以前的版本能从面板接管平台私聊，那时发的消息留在平台私聊的记录里，同样带这个标记）；也可以输入关键词检索，规则和 `recall` 的关键词检索相同（任一词命中，按相关度排序，同分时新的在前），可以限定日期。
-  - **策略**：常用字段做成了表单（主动发言、记忆、历史条数、分条上限 `reply.max_parts`，记忆的摘要和笔记字数上限 `memory.summary_max_chars`、`note_max_chars`（0 表示按会话类型的默认值，提示里写出本会话的默认值和当前生效的值）；私聊会话还有“私聊等待” `reply.private_wait` 和“私聊最长等待” `reply.private_max_wait`，写成 `6s`、`500ms`、`1m` 这样的时长，两项都填 0 表示用默认值；以及“主动找人档位” `proactive.private.level`（留空按“中”）和“免打扰开始”“免打扰结束” `proactive.private.quiet_start`、`quiet_end`，写成 `23:00` 这样的两位数时间，按 `server.timezone`，两项要么都填、要么都留空，都留空时按对方的作息推算，见 [配置：私聊主动找人](configuration.md#群策略)），另有“高级：JSON 编辑”可以整份替换；保存时服务端校验，不合法的值会在表单下方显示服务端给出的错误；暂停、恢复；历史版本列表，可以把任一版本恢复为新版本。字段含义见 [使用指南：私聊的节奏](usage.md#私聊的节奏)。
+  - **策略**：常用字段做成了表单（主动发言、记忆、历史条数、分条上限 `reply.max_parts`，记忆的摘要和笔记字数上限 `memory.summary_max_chars`、`note_max_chars`（0 表示按会话类型的默认值，提示里写出本会话的默认值和当前生效的值）；私聊会话还有“私聊等待” `reply.private_wait` 和“私聊最长等待” `reply.private_max_wait`，写成 `6s`、`500ms`、`1m` 这样的时长，两项都填 0 表示用默认值；以及“主动找人档位” `proactive.private.level`（留空按“中”）和“免打扰开始”“免打扰结束” `proactive.private.quiet_start`、`quiet_end`，写成 `23:00` 这样的两位数时间，按 `server.timezone`，两项要么都填、要么都留空，都留空时按对方的作息推算，见 [配置：私聊主动找人](configuration.md#群策略)），另有“高级：JSON 编辑”可以整份替换；保存时服务端校验，不合法的值会在表单下方显示服务端给出的错误；暂停、恢复；历史版本列表，可以把任一版本恢复为新版本。表单和设置页共用同一个模块（`views/policyform.js`）。字段含义见 [使用指南：私聊的节奏](usage.md#私聊的节奏)。
+    - **跟随默认还是单独设置**：当前版本下面写明这个会话现在是哪种状态。没有单独设置过策略（或已改回跟随默认）时是“跟随默认（群聊默认 第 N 版）”或“跟随默认（私聊默认 第 N 版）”，N 是设置页里当前默认策略的版本，下面提示“修改下面的设置会让这个会话改为单独设置。”；这时显示的就是默认策略，设置页改了默认策略，这里跟着变。单独设置过时是“单独设置（第 N 版）”，N 是会话自己的策略版本。
+    - 保存表单或 JSON、暂停、恢复、开关主动发言或改主动找人的档位（包括聊天命令 `/pause`、`/resume`、`/主动` 和 API 的修改），以及恢复一个单独设置的历史版本，都会让跟随默认的会话改为单独设置，之后默认策略再改也不影响它。
+    - **改回跟随默认**：单独设置时显示这个按钮，确认框写明“改回后，这个会话改用群聊（或私聊）默认策略，单独设置的内容不再生效（历史版本保留）。”；当前是暂停状态时还会提示“当前是暂停状态，改回后会按默认值取消暂停。”。确认后追加一个跟随默认的新版本（原因“改回跟随默认”，版本号接着往下数），会话从此和没设置过的一样跟随默认策略，并按新的策略立即处理暂停或恢复、主动找人和唤醒的排期、记忆的开关，和改了它自己的策略一样。历史版本列表里这种版本标“（跟随默认）”，存的是改回当时的默认策略快照，恢复它等于再改回跟随默认。审计写 `policy.update`，内容 `action` 为 `follow_defaults`。
   - **人设**：编辑人设的各个字段、套用模板（人设模板目录里的，见 [人设模板和外观参考图](#人设模板和外观参考图)）、回滚到历史版本。会话还没有人设时只显示“尚未生成”和将要使用的模板，查看不会生成第 1 版。
     - “性别”下拉框对应 `gender`：不指定（空）、女（`female`）、男（`male`）。选了女或男时，系统提示在“角色设定”之后写一行“性别：女。”或“性别：男。”。
     - “内容尺度”一栏有“未成年角色”和“成年人设”两个开关，以及“内容规则”“记忆规则”两个文本框，对应人设的 `minor`、`adult`、`content_rules`、`memory_rules`。勾选“未成年角色”后，“成年人设”会被取消并且不可用；服务端同样拒绝两者同时为真。两段规则只在开放模式（成年、非未成年、私聊）下生效，规则见 [配置：内容模式](configuration.md#内容模式)。
@@ -127,7 +132,8 @@ panel:
   - 页面提示：改模板不影响已经在用它的会话（会话第一次回复时复制一份模板，之后各自独立）；要更新已有会话，到会话的“人设”页点“套用模板”。
 - **任务**：全部任务，可以按状态、bot、会话筛选；任务详情里有 meta、生成的动作，以及这个任务的每次模型调用。任务受 `runtime.ops_retention`（默认 30 天）清理，更早的查不到。
 - **审计**：审计记录，可以按种类和 bot 筛选，受 `runtime.audit_retention`（默认 90 天）清理。
-- **配置**：当前生效的配置（环境变量展开以后），只读。见下文 [配置页打码](#配置页打码)。
+- **设置**：群聊、私聊两份默认策略，没有单独设置过策略的会话都跟随它们；保存后立即生效，不用重启。地址是 `#/settings`。见下文 [默认策略](#默认策略)。
+- **配置**：当前生效的配置（环境变量展开以后），只读。页面提示写明：默认策略（`default_group_policy`、`default_private_policy`）来自数据库，在设置页修改；其余配置要改文件后重启。这两项显示的是数据库里当前的默认策略，标着 `source: panel` 和版本号，旁边有“在设置页修改”的链接，下面的“查看”展开整份策略。见下文 [配置页打码](#配置页打码)。
 
 所有用户数据（消息、昵称、人设、审计内容等）都按纯文本显示，里面的 HTML 不会被执行。
 
@@ -217,6 +223,18 @@ panel:
 - **清理**：没有被任何模板或会话人设版本（包括历史版本）引用的图片，上传满 7 天后由每小时的维护任务删除。刚上传、还没保存进人设的图片有这 7 天的余地；同一张图再上传一次重新计时。
 - **审计**：模板写入、恢复、删除分别写 `persona.template.put`、`persona.template.reset`、`persona.template.delete`，目标是模板名，`put` 的内容是写入后的来源 `source`、是否新建 `created` 和原因 `reason`（新建空白模板时是“从内置默认人设新建”，复制时是“复制自 <模板名>”），`delete` 的内容是改用 `default` 的 bot `affected_bots`。导出写 `persona.template.export`，目标是模板名（导出全部时为空），内容是导出的模板名 `templates`。导入成功时写 `persona.template.import`，目标为空，内容是冲突方式 `on_conflict`、新建的 `created` 和覆盖的 `overwritten`（都是最后用的名字），改过名时另有 `renamed`（文件里的名字对应最后用的名字）；人设内容和图片不进审计。上传写 `persona.image.upload`，目标是图片 ID，内容是类型、宽高、字节数和 `reply_tokens`。生成外观介绍成功时写 `persona.appearance.describe`，目标是图片 ID，内容只有生成文字的字数 `chars`。都不属于某个 bot（`bot_instance_id` 为空），图片内容和生成的文字都不进审计和日志。
 
+### 默认策略
+
+“设置”页（`#/settings`）修改群聊、私聊两份默认策略：没有单独设置过策略的会话（以及在会话页改回跟随默认的会话）用它们，群聊用群聊默认策略，私聊和面板里新建的聊天用私聊默认策略。默认策略存在数据库里，有版本和审计；以前写在配置文件的 `default_group_policy`、`default_private_policy` 里，升级后第一次启动时导入（见 [配置：群策略](configuration.md#群策略)）。字段含义见 [配置：群策略](configuration.md#群策略)。
+
+- **布局**：页头提示“默认策略保存后立即生效，不用重启。”，下面是“群聊默认策略”“私聊默认策略”两块。每块最上面写“当前有 N 个会话跟随这个默认值；单独改过策略的会话不受影响。”，然后是当前版本（第几版、修改人、原因、时间），“常用设置”表单（和会话“策略”页相同：主动发言、记忆、历史条数、分条上限、摘要和笔记字数上限；私聊块另有私聊等待、私聊最长等待、主动找人档位和免打扰时段），可以展开的“高级：JSON 编辑”（整份替换默认策略，没写的字段按内置默认值补齐），以及“历史版本”列表，每个旧版本有“恢复此版本”。表单和 JSON 编辑都有原因输入框和保存按钮。
+- **版本**：全新的数据库第一次启动时写入第 1 版，修改人 `system`，原因“内置默认值”，从旧配置文件导入的是“从配置文件导入”。每次保存追加一个新版本；“恢复此版本”把那个版本的内容复制成一个新版本（原因留空时为“恢复到第 N 版”）。列表最多显示最近 50 个版本。两块各自保存，保存一块会重新载入页面，另一块里没保存的修改会丢失。
+- **校验**：和会话策略相同的规则（取值范围、`context.max_context_tokens` 的上限检查），不合法时在表单下方显示服务端的错误（带字段路径），什么都不存，原来的默认策略照常生效。
+- **生效**：保存后立即替换这一类的默认策略，跟随它的会话下一次回复就用新值，不用重启；同时在后台按批（每批 100 个会话）通知这些会话，按新的策略处理暂停或恢复（取消排队的回复）、主动找人和唤醒的重新排期、记忆刚打开时开始整理，和改了它们自己的策略一样。所以会话很多时保存请求也立即返回，通知稍后完成。单独设置过策略的会话不受影响。
+- **提示**：保存成功后在这一块显示“已保存”（恢复时是“已恢复第 N 版”），并再检查一遍启动时会警告的几项：审查级别还没实现（目前按 `basic` 处理）、`long_context` 给输出预留的令牌数低于建议的 8192 而默认策略开了记忆、私聊默认策略开了记忆而 `long_context` 不允许敏感内容。有问题时逐条显示在“已保存”下面，同时写日志；这些提示不阻止保存。
+- **审计**：保存写 `settings.policy.update`，恢复也是这一种，`actor` 为 `panel:<用户名>`，目标是 `group` 或 `private`，内容 `{kind, version, action}`，`action` 为 `update` 或 `restore`；`bot_instance_id` 为空。从配置文件导入写 `settings.policy.migrate`（`actor` 为 `system`）。
+- 默认策略只能在面板里改，Bearer API（`/api/v1`）没有修改它的接口；没有启用面板时默认策略不能修改。
+
 ### 面板上的修改
 
 面板上的修改和 Bearer API、聊天命令走同一套代码，校验规则、字数上限、好感度范围完全一致，校验失败时原样显示服务端返回的错误。
@@ -225,7 +243,8 @@ panel:
 - 面板聊天的审计：发消息写 `panel.message`（内容只有消息 ID，不含正文），撤回写 `panel.message.withdraw`（内容 `seq`、删掉的条数 `deleted`），重新生成写 `panel.message.regenerate`（内容 `seq`、`task_id`），新建聊天写 `panel.chat.create`，删除聊天写 `panel.chat.delete`；目标都是会话键，都不含消息正文。
 - 面板 bot 的新建、编辑、删除写 `panel.bot.create`、`panel.bot.update`、`panel.bot.delete`，目标是 bot 的 ID，见 [面板 bot](#面板-bot)；保存配置 bot 的设置也写 `panel.bot.update`，见 [平台 bot 的设置](#平台-bot-的设置)。
 - 人设模板的写入、恢复、删除写 `persona.template.put`、`persona.template.reset`、`persona.template.delete`，目标是模板名；导出和导入写 `persona.template.export`、`persona.template.import`；上传参考图写 `persona.image.upload`，生成外观介绍写 `persona.appearance.describe`，目标是图片 ID；这几种的 `bot_instance_id` 为空，见 [人设模板和外观参考图](#人设模板和外观参考图)。
-- 策略和人设的新版本里 `updated_by` 为 `panel:<用户名>`；成员记忆的修订记录、状态条和效果的变化记录来源为 `panel`。
+- 修改和恢复默认策略写 `settings.policy.update`（内容 `kind`、`version`、`action`），`bot_instance_id` 为空；会话改回跟随默认写 `policy.update`，内容的 `action` 为 `follow_defaults`。见 [默认策略](#默认策略)。
+- 策略、默认策略和人设的新版本里 `updated_by` 为 `panel:<用户名>`；成员记忆的修订记录、状态条和效果的变化记录来源为 `panel`。
 - 忘记成员等同于这个人在会话里发 `/忘记我`；暂停、恢复和 `/pause`、`/resume` 写入同样的策略版本（恢复时并发回到暂停前最近一个非 0 的值）。
 
 ## 登录与安全
@@ -246,7 +265,7 @@ panel:
 - `api_tokens` 只显示名字、所属 bot 和 scope。
 - `model_profiles.*.extra_body` 只显示键名；布尔值和数字照常显示，字符串、列表、对象等其他值一律显示为 `(已设置)` 或 `(未设置)`，因为它们可能藏着凭据。
 - 接口地址（模型和向量服务的 `endpoint`，适配器的 `ws_url`、`core_url`、`api_base`）显示主机和路径，但地址里可能带凭据：`user:password@` 部分去掉，查询参数只保留参数名、值一律显示为 `(已隐藏)`，`#` 后面的部分也显示为 `(已隐藏)`；解析不了的地址只显示 `(已设置)`。
-- 默认群策略、私聊策略整段原样显示，它们只有行为设置，不含凭据。人设模板不在配置里，不显示。
+- `default_group_policy`、`default_private_policy` 显示的不是配置文件里的，而是数据库里当前生效的默认策略：`{"source": "panel", "version", "policy"}`，`policy` 整段原样显示，它只有行为设置，不含凭据。配置文件里残留的这两段（只在升级后第一次启动时导入）不显示。人设模板不在配置里，不显示。
 - `bots` 先列配置文件里的 bot，按文件里写的显示，也就是只有 `id`、`platform`、`platform_self_id`（其余设置存在数据库里，见 `GET bots`）；再列面板 bot（`source` 为 `panel`），按生效的设置显示。
 - 没有配置 `embedding` 段时，`embedding` 显示为 `null`。
 
@@ -307,7 +326,7 @@ panel:
 | `GET conversations/{key}/messages?q=&from=&to=&offset=&limit=` | 检索消息，按 `offset` 翻页，响应里的 `next_offset` 是下一页 |
 | `GET conversations/{key}/chat?after=` | 面板聊天的增量拉取：`seq` 大于 `after`（默认 0）的消息，从旧到新，每次最多 200 条，格式同消息浏览；`typing` 为 true 表示会话有排队中或运行中的任务，或面板通道还有没送达、也没过期的分条；`next_after` 是下一次的 `after`（没有新消息时等于本次的 `after`）；`regenerate_seq` 是现在能重新生成的消息的 `seq`（只可能是最新一条，规则见下面的 `…/regenerate`），没有或 `typing` 为 true 时为 0 |
 | `GET conversations/{key}/commands` | 面板聊天的命令菜单用：`{"prefix", "commands":[{"name", "aliases":[…], "usage", "description", "args"}]}`。`prefix` 是会话策略的 `reply.command_prefix`；`commands` 按命令表的顺序，先列所有人能用的，再列管理员的，只列适用于这个会话类型、面板用户有权限的（面板聊天的用户是管理员）。`name` 是命令词（有中文的用中文），常用的子命令单独一项，如 `记忆 整理`、`persona list`；`aliases` 是命令词的其他写法（如 `memory`，没有时为空列表）；`usage` 是带前缀的用法（如 `/记住 <内容>`）；`description` 是一句话说明，和 `/help` 相同；`args` 为 true 表示后面还要输入参数。前缀为空（关闭命令）时 `commands` 为空列表。只限 `panel` 平台的会话，其他会话返回 400。什么都不改，不写审计 |
-| `GET conversations/{key}/policy` | 当前策略、历史版本和 `memory_limits`（`summary_max_chars`、`note_max_chars` 是当前生效的记忆字数上限，面板里新建的聊天按最近有消息的那个面板聊天的策略，同记忆页；`default_summary_max_chars`、`default_note_max_chars` 是本会话类型的默认值，策略里写 0 时用它们） |
+| `GET conversations/{key}/policy` | 当前策略 `current`、历史版本 `versions`、`defaults` 和 `memory_limits`。`current` 和每个版本带 `follows_defaults`：为 true 表示这个会话跟随默认策略（没有存过策略时 `current` 是第 0 版，`created_at` 为 `null`），这时 `current.policy` 就是当前的默认策略；`defaults` 是 `{"kind","version"}`，这个会话跟随的默认策略（`group` 或 `private`）和它现在的版本。`memory_limits`（`summary_max_chars`、`note_max_chars` 是当前生效的记忆字数上限，面板里新建的聊天按最近有消息的那个面板聊天的策略，同记忆页；`default_summary_max_chars`、`default_note_max_chars` 是本会话类型的默认值，策略里写 0 时用它们） |
 | `GET conversations/{key}/persona` | 当前人设、历史版本、可用模板；还没有人设时给出将要使用的模板，不写库。`minor` 是当前人设（没有时是该模板）的 `minor`，`content_mode` 是它在私聊里的内容模式（`open` 或 `protected`），与会话本身是群聊还是私聊无关 |
 | `GET conversations/{key}/memory` | 与 `GET /api/v1/conversations/{id}/memory` 相同；面板里新建的聊天返回 bot 共享范围的数据 |
 | `GET conversations/{key}/memory/revisions?user_id=` | 某成员的修订记录，不传 `user_id` 时是摘要的；按会话的记忆范围 |
@@ -322,7 +341,8 @@ panel:
 | `GET tasks?status=&bot=&conversation=&before=&limit=` | 任务列表 |
 | `GET tasks/{id}` | 任务详情：任务、meta、动作、模型调用 |
 | `GET audit?kind=&bot=&before=&limit=` | 审计记录 |
-| `GET config` | 打码后的当前配置 |
+| `GET config` | 打码后的当前配置；两份默认策略是数据库里的，见 [配置页打码](#配置页打码) |
+| `GET settings/policies` | 设置页用：`{"group":{…},"private":{…}}`，每类有 `current`（当前版本 `{version, policy, reason, updated_by, created_at}`）、`versions`（最近 50 个版本，新的在前）、`followers`（现在跟随这一类默认策略的会话数）和 `memory_limits`（同 `GET conversations/{key}/policy`，按这份默认策略算） |
 
 **写接口**（都要带 `X-CSRF-Token`，除了建议回复都写审计）
 
@@ -332,7 +352,8 @@ panel:
 | `PUT bots/{id}` | 编辑面板 bot，请求同上，三个字段都必填，返回改后的 bot，格式同 `GET bots` 的一项；不存在返回 404，正在删除返回 409 `CHAT_BUSY`。`{id}` 是配置 bot 时改它的设置，请求 `{"name","admins","private_chat","private_allowlist","groups","private_template","group_template","skills"}`，8 项都必填，其他字段（包括 `id`、`platform`、`platform_self_id`、`persona_template`）返回 400；校验不通过返回 400，见 [平台 bot 的设置](#平台-bot-的设置) |
 | `DELETE bots/{id}` | 删除面板 bot 和它的全部聊天，请求 `{"confirm_name"}`，返回 204；名字不一致返回 400，配置 bot 返回 403，不存在返回 404，正在删除或有聊天的任务没停下返回 409 `CHAT_BUSY`，可以重试。见 [面板 bot](#面板-bot) |
 | `PUT conversations/{key}/policy` | 请求体同 API 的 `PolicyPut`，返回新的当前版本 |
-| `POST conversations/{key}/policy/restore` | 请求 `{"version","reason"}`，把该历史版本的策略写成新版本；该版本在主动发言（`proactive`）或记忆（`memory`）一段出现之前保存、没有这一段时，保留当前的这一段 |
+| `POST conversations/{key}/policy/restore` | 请求 `{"version","reason"}`，把该历史版本的策略写成新版本；该版本在主动发言（`proactive`）或记忆（`memory`）一段出现之前保存、没有这一段时，保留当前的这一段。恢复一个跟随默认的版本（`follows_defaults`）等于 `…/policy/follow-defaults` |
+| `POST conversations/{key}/policy/follow-defaults` | 请求 `{"reason"}`（留空时为“改回跟随默认”），把会话改回跟随默认策略：追加一个 `follows_defaults` 的新版本，返回 200 和新的当前版本，格式同 `PUT conversations/{key}/policy`；已经跟随默认时什么都不写，返回当前版本。审计 `policy.update`，`action` 为 `follow_defaults`。见上文会话的“策略”标签 |
 | `POST conversations/{key}/pause`、`POST conversations/{key}/resume` | 暂停、恢复 |
 | `PUT conversations/{key}/persona` | 请求体同 API 的 `PersonaPut`（整份替换、回滚到版本、套用模板） |
 | `PUT conversations/{key}/memory/members/{user_id}` | 改备注或好感度，规则同 API |
@@ -349,6 +370,8 @@ panel:
 | `POST chats` | 新建面板聊天，请求 `{"bot_instance_id","display_name"}`，返回 201 `{"key"}`；bot 不存在时返回 404，正在删除时返回 409 `CHAT_BUSY` |
 | `DELETE conversations/{key}` | 删除面板聊天，返回 204；不是 `panel` 平台的会话返回 400；聊天里被取消的任务 5 秒内没停下时返回 409 `CHAT_BUSY`，可以重试 |
 | `PUT persona-templates/{name}` | 请求 `{"persona","reason"}`（`persona` 必填，是整份人设，`reason` 只进审计），覆盖同名模板或新建模板；返回模板，格式同 `GET persona-templates/{name}`，新建时 201，否则 200。名字或内容不合规则、图片不存在返回 400 |
+| `PUT settings/policies/{kind}` | `{kind}` 为 `group` 或 `private`（其他值返回 404）。请求 `{"policy","reason"}`，`policy` 里没写的字段取内置默认值，存成这一类默认策略的新版本，立即生效；返回 200 `{"current","warnings"}`，`current` 格式同 `GET settings/policies`，`warnings` 是保存后检查出的问题（中文，没有时为空列表）。校验不通过返回 400，错误信息带字段路径，什么都不存。审计 `settings.policy.update`，`action` 为 `update`。见 [默认策略](#默认策略) |
+| `POST settings/policies/{kind}/restore` | 请求 `{"version","reason"}`（`reason` 留空时为“恢复到第 N 版”），把这一类默认策略的某个版本复制成新版本，返回同 `PUT settings/policies/{kind}`；`version` 不是正整数返回 400，没有这个版本返回 404。审计 `settings.policy.update`，`action` 为 `restore` |
 | `POST persona-templates/{name}/reset` | 只对 `default` 有效：删掉数据库里的 `default`，返回内置的默认人设；没有保存过时照样返回 200。其他名字返回 400 |
 | `DELETE persona-templates/{name}` | 删除模板，还有 bot 在用也照常删除，返回 200 `{"name","affected_bots"}`：`affected_bots` 是把它当默认模板的 bot，每项 `id`、`name`、`source`（同 `users`，没有时为空列表），它们随即改用 `default` 并标出问题；`default` 返回 403 `FORBIDDEN`，不存在返回 404 |
 | `POST persona-templates/import?on_conflict=` | 请求体是导出的文件本身，最多 64 MiB；`on_conflict` 为 `fail`（默认）、`overwrite` 或 `rename`。返回 `{"templates":[{"name","requested","created"}]}`；超过 64 MiB 返回 413，超过 200 个模板或文件有任何问题返回 400、一项都不写，`fail` 时有同名模板返回 409 `TEMPLATE_EXISTS`（`names` 列出它们），正在处理另一张图片时返回 409 `CHAT_BUSY`。见 [人设模板和外观参考图](#人设模板和外观参考图) |

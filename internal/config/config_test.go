@@ -828,22 +828,22 @@ func TestLoad_PrivatePolicyUnknownFieldRejected(t *testing.T) {
 	}
 }
 
-func TestLoad_ExampleConfigPrivatePolicy(t *testing.T) {
+// TestLoad_ExampleConfigHasNoPolicySections checks that the example leaves the
+// default policies to the panel's settings page: it has neither legacy
+// section, so a first start stores the built-in default policies.
+func TestLoad_ExampleConfigHasNoPolicySections(t *testing.T) {
 	for k, v := range exampleEnv {
 		t.Setenv(k, v)
 	}
 	cfg := mustLoad(t, "../../conloom.example.yaml")
-	if cfg.DefaultPrivatePolicy == nil {
-		t.Fatal("example has no default_private_policy")
+	if group, private := cfg.PolicySections(); group || private {
+		t.Fatalf("PolicySections = %v, %v, want neither: the default policies are edited in the panel", group, private)
 	}
-	pp := *cfg.DefaultPrivatePolicy
-	m := pp.Memory
-	if !m.Enabled || pp.Context.MaxRecentMessages != 200 || m.ConsolidateEvery != 40 ||
-		m.ConsolidateInterval.Duration != time.Hour || m.ConsolidateMin != 6 {
-		t.Errorf("default_private_policy = %+v", pp)
+	if want := conloomapi.DefaultGroupPolicy(); !reflect.DeepEqual(cfg.DefaultGroupPolicy, want) {
+		t.Errorf("DefaultGroupPolicy = %+v\nwant the built-in %+v", cfg.DefaultGroupPolicy, want)
 	}
-	if cfg.DefaultGroupPolicy.Memory.ConsolidateMin != 20 {
-		t.Errorf("default_group_policy.memory.consolidate_min = %d, want 20", cfg.DefaultGroupPolicy.Memory.ConsolidateMin)
+	if want := conloomapi.DefaultPrivatePolicy(); !reflect.DeepEqual(cfg.PrivatePolicy(), want) {
+		t.Errorf("PrivatePolicy = %+v\nwant the built-in %+v", cfg.PrivatePolicy(), want)
 	}
 }
 

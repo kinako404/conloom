@@ -429,7 +429,7 @@ model_profiles:
   | 模型用量明细（每次模型调用一行） | `model_calls` | `runtime.usage_retention`（默认 400 天） |
   | Web 管理面板的登录会话 | `panel_sessions` | 超过 `panel.session_ttl` 或 `panel.idle_timeout` 后删除 |
 
-- **永远保留**：聊天消息 `messages`（长期记忆的来源）、会话和用户、记忆（`group_memory`、`member_memory`）、群策略版本、人格版本、群友的主动档位和兴趣画像（`conversation_members`）。它们会随使用增长，删除只能靠 `/忘记我` 等功能或手工处理。排队中和运行中的任务也不会被清理，重启后照常恢复。
+- **永远保留**：聊天消息 `messages`（长期记忆的来源）、会话和用户、记忆（`group_memory`、`member_memory`）、群策略版本、默认策略版本（`policy_defaults`）、人格版本、群友的主动档位和兴趣画像（`conversation_members`）。它们会随使用增长，删除只能靠 `/忘记我` 等功能或手工处理。排队中和运行中的任务也不会被清理，重启后照常恢复。
 - 清理以后，`GET /api/v1/tasks/{task_id}` 查询已删除的任务返回 404；聊天消息、引用回复的解析和记忆整理都不依赖这些表。清理只删行，不收缩数据库文件；删掉的空间会被之后的写入复用。
 
 ## 备份、迁移与升级
@@ -503,7 +503,7 @@ model_profiles:
 
 **升级到启动校验更严格的版本**（迁移 `0018_outbox_indexes.sql`；同一版本还改了 QQ 消息 ID 的格式，见下一段）：
 
-- **启动校验**：下面这些配置以前能启动，但之后每次回复都会失败，现在 `serve` 启动时直接报错（退出码 78），升级前先检查：`bots[].id` 和 `bots[].platform` 里不能有 `:`（它是会话键的分隔符）；`model_profiles.*.endpoint` 必须是 `http://` 或 `https://` 开头的完整 URL；每个模型的 `context.reserved_output_tokens` 和 `context.safety_margin_tokens` 不能为负，两者之和必须小于 `context.configured_window`；`runtime.gpu_kv_cache_tokens` 必须是 0（不限）或不小于 `configured_window`；默认策略（`default_group_policy`、`default_private_policy`）的 `context.max_context_tokens` 必须是 0 或大于 `short_context` 的 `reserved_output_tokens + safety_margin_tokens`，通过 API 和面板修改策略时也按这条校验。另外 `panel.users[].name` 首尾不能有空白。
+- **启动校验**：下面这些配置以前能启动，但之后每次回复都会失败，现在 `serve` 启动时直接报错（退出码 78），升级前先检查：`bots[].id` 和 `bots[].platform` 里不能有 `:`（它是会话键的分隔符）；`model_profiles.*.endpoint` 必须是 `http://` 或 `https://` 开头的完整 URL；每个模型的 `context.reserved_output_tokens` 和 `context.safety_margin_tokens` 不能为负，两者之和必须小于 `context.configured_window`；`runtime.gpu_kv_cache_tokens` 必须是 0（不限）或不小于 `configured_window`；默认策略（`default_group_policy`、`default_private_policy`）的 `context.max_context_tokens` 必须是 0 或大于 `short_context` 的 `reserved_output_tokens + safety_margin_tokens`，通过 API 和面板修改策略时也按这条校验（默认策略后来挪到了面板的设置页，见下面的迁移 0021，保存时同样校验）。另外 `panel.users[].name` 首尾不能有空白。
 - **迁移 0018** 只给 `outbox_actions` 加两个索引（按会话找最近一次回复、按过期时间找没送达的动作），不改表结构，启动时自动执行；动作很多的库第一次启动要多花一点时间建索引。旧二进制不认识这个迁移，会照常在升级后的库上运行。
 - **熔断指标**：`conloom_breaker_open` 改为每次抓取时按路由器的熔断状态现算，冷却过后就回到 0；以前要等这个角色的下一次模型调用才更新，面板概览会一直显示熔断。按这个指标设的告警会比以前更早恢复。
 
@@ -520,6 +520,24 @@ model_profiles:
 - `conloom mock` 不带 `-user` 时取 bot 的第一个管理员：从配置的数据目录里的数据库读（数据库不存在时不新建），没有存过设置时用配置文件里还写着的 `admins`。
 
 **回退到 bot 设置还在配置文件里的旧版本**（没有迁移 0019）：旧二进制忽略 `bot_settings` 表，只认配置文件里的设置。回退前把面板里的设置抄回 `bots[]`（旧版本一个 bot 只有一个 `persona_template`，私聊和群聊模板不同时只能选一个），否则 bot 用旧版本的默认值（显示名 `织语`，没有管理员和启用的群）。再升级回来时，配置里还写着这些键就会因为已经迁移过而启动失败，先删掉；在旧版本上改过的设置不会再导入，以数据库里的为准。
+
+**升级到默认策略存在数据库里的版本**（迁移 `0021_policy_defaults.sql`）：群聊、私聊默认策略从配置文件的 `default_group_policy`、`default_private_policy` 挪到数据库，在 Web 管理面板的“设置”页改，保存后立即生效，不用重启（见 [配置参考：群策略](configuration.md#群策略)、[Web 管理面板：默认策略](panel.md#默认策略)）。迁移新增表 `policy_defaults`，给 `group_policies` 加一列 `follows_defaults`，启动时自动执行。
+
+1. 先备份（`conloom backup`）和 `conloom.yaml`，配置文件原样保留，替换二进制后启动核心。
+2. 第一次启动时迁移执行到 0021（`schema_migrations` 里最大的版本变成 21），配置文件里的两段导入数据库，各成为第 1 版（修改人 `system`，原因“从配置文件导入”）；文件里没有的那一段写入内置默认值。整个导入在一个事务里，`app_meta` 记下 `config_policy_defaults_migrated`（导入时间），审计里有一条 `settings.policy.migrate`，日志里每段一条 `default policy imported from the config file`，最后一条警告提示删除这两段。导入前这两段照旧校验，不通过时启动失败（退出码 78），什么都不导入，改好再启动。
+3. 打开面板的“设置”页核对：两块的当前版本都是第 1 版，值和原配置一致，比如原来私聊段写了 `reply.max_parts: 5`，私聊默认策略的分条上限就是 5。配置文件只有 `default_group_policy` 时要特别看私聊这块：它现在是内置值，不再沿用群聊段的设置（见 [配置参考：群策略](configuration.md#群策略) 的“私聊不再回退到群聊”），需要的话在这里改。
+4. 从 `conloom.yaml` 删掉整段 `default_group_policy` 和 `default_private_policy`（连同段下所有缩进的行和这两段前面的注释），然后重启，确认启动成功。之后配置里还有其中任何一段时启动失败，退出码 78（systemd 不会反复重启），报错说明默认策略已经在数据库里、要删掉哪几段，例如：
+
+   ```text
+   conloom serve: app: 数据库里已经有默认策略（已在 2026-11-18 10:00:00 从配置文件导入），群聊、私聊默认策略现在只在 Web 管理面板的设置页里改；请删除配置文件里的 default_group_policy，然后再启动（store: already migrated from the config file）
+   ```
+
+5. 可以在设置页改一个值试一下：跟随默认的会话立即用上新值（会话页“策略”标签写着“跟随默认”），单独设置过的会话不变；试完再改回原值，每次修改都会生成新版本，历史版本可以恢复。
+
+- 新部署（从示例配置开始）不需要这些步骤：示例配置里已经没有这两段，第一次启动写入内置默认值。内置的私聊默认策略不开记忆、不分条，以前示例配置里的私聊建议值见 [配置参考：群策略](configuration.md#群策略)，在设置页里改。
+- 没有面板时也能照常运行，只是改不了默认策略；要改就加上 `panel` 段（见 [Web 管理面板](#web-管理面板)）。
+
+**回退到默认策略还在配置文件里的旧版本**（没有迁移 0021）：旧二进制忽略 `policy_defaults` 表和 `follows_defaults` 列，默认策略只认配置文件。回退前把设置页里两份默认策略抄回 `conloom.yaml` 的 `default_group_policy`、`default_private_policy`（“高级：JSON 编辑”里的 JSON 改写成 YAML），否则旧二进制用内置默认值，没写 `default_private_policy` 时私聊还会沿用群聊段。在会话页“改回跟随默认”过的会话，旧二进制把那一版当成会话自己的策略，值是改回当时的默认策略，不再跟着配置文件里的默认值变。再升级回来时，配置里还写着这两段就会因为数据库里已经有默认策略而启动失败，先删掉；在旧版本上对这两段的修改不会再导入，以数据库里的为准，需要的话到设置页再改一遍。旧二进制写入的会话策略版本（API、面板、`/pause` 等）都算单独设置。
 
 **回退到人设没有性别字段的旧版本**（没有表结构迁移）：旧二进制不认识人设的 `gender`。导入人设模板文件时它不接受未知字段，文件里有带 `gender` 的人设（新版本导出的、设过性别的模板）时整个文件被拒绝（400），什么都不导入；库里人设版本和模板里的 `gender` 被它悄悄忽略，系统提示里不再有“性别：…”这一行，它写入的新人设版本和保存的模板（API、面板、`/persona`）不再带这个字段，再升级回来后要在面板里重新设置性别。
 

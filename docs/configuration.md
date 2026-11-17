@@ -1,6 +1,6 @@
 # 配置参考
 
-ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带注释示例见仓库根目录的 [`conloom.example.yaml`](../conloom.example.yaml)，本文按段说明各字段、默认值和取值范围。群聊参与相关字段的行为见 [使用指南](usage.md#机器人在群里怎么说话)。
+ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带注释示例见仓库根目录的 [`conloom.example.yaml`](../conloom.example.yaml)，本文按段说明各字段、默认值和取值范围。bot 的设置、人设模板和群聊、私聊默认策略存在数据库里，在 Web 管理面板里改，不写在这个文件里。群聊参与相关字段的行为见 [使用指南](usage.md#机器人在群里怎么说话)。
 
 ## 文件、变量与校验
 
@@ -37,8 +37,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `bots` | 机器人实例的身份（ID、平台、平台自身 ID）；其余设置在面板里改 |
 | `model_profiles` | 模型配置，按角色 |
 | `persona_templates` | 旧版本的人设模板，只在升级后第一次启动时导入数据库，之后必须删除（见 [人设模板](#人设模板)） |
-| `default_group_policy` | 新会话的初始群策略 |
-| `default_private_policy` | 私聊会话的初始策略，省略时沿用 `default_group_policy` |
+| `default_group_policy`、`default_private_policy` | 旧版本的群聊、私聊默认策略，只在升级后第一次启动时导入数据库，之后必须删除；默认策略现在在 Web 管理面板的设置页修改（见 [群策略](#群策略)） |
 | `runtime` | 投递、过时判定、合并窗口等运行时参数 |
 | `skills` | 额外技能文件所在的目录 |
 | `embedding` | 语义检索用的向量服务，可选 |
@@ -122,7 +121,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `runtime.max_retries` | 2 | 网络错误、429、5xx 的重试次数，0~5 |
 | `runtime.gpu_kv_cache_tokens` | 0 | 准入控制的 token 预算，0 表示不限；设了就必须 ≥ `configured_window`，否则路由放行的大请求会被准入拒绝 |
 | `runtime.cpu_offloaded_kv_tokens`、`runtime.prefix_caching` | — | 可以写，目前不生效 |
-| `privacy.allow_sensitive_content` | false | 私聊（包括面板聊天）的回复和记忆整理只会路由到为 `true` 的模型，面板聊天的建议回复只在 `short_context` 为 `true` 时生成；`long_context` 为 `false` 时私聊不整理记忆（私聊默认策略开启了记忆时，启动日志有一条 warn） |
+| `privacy.allow_sensitive_content` | false | 私聊（包括面板聊天）的回复和记忆整理只会路由到为 `true` 的模型，面板聊天的建议回复只在 `short_context` 为 `true` 时生成；`long_context` 为 `false` 时私聊不整理记忆（私聊默认策略开启了记忆时，启动日志有一条 warn，在设置页保存私聊默认策略时也会提示） |
 | `privacy.data_location` | — | 说明性标签（如 `remote` 表示数据会离开本机），代码不读取 |
 | `extra_body` | 空 | 原样合并进请求体，例如 `enable_thinking: false`；它可以覆盖 `model`、`messages` 等字段，请谨慎使用。面板聊天的建议回复用 `short_context` 时只在那次请求里关闭思考：这里有 `chat_template_kwargs` 时把其中的 `enable_thinking` 改为 `false`，有顶层 `enable_thinking` 时也改为 `false`，见 [Web 管理面板：在面板里聊天](panel.md#在面板里聊天) |
 | `token_estimate_factor` | 1.0 | token 估算系数，≥ 0，0 视为 1 |
@@ -252,91 +251,108 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 
 ## 群策略
 
-`default_group_policy` 是新会话的初始群策略。通过 API 或聊天命令修改后，策略按会话存库并版本化，库里的版本优先；没有存库版本的会话一直使用配置里的默认值。策略分 `concurrency`、`reply`、`context`、`review`、`proactive`、`memory` 六段。
+策略决定一个会话怎么回复、带多少历史、怎么审查、主动搭话和记忆，分 `concurrency`、`reply`、`context`、`review`、`proactive`、`memory` 六段。每个会话可以单独设置策略（API、聊天命令，或 Web 管理面板会话页的“策略”），按会话存库并版本化；没有单独设置过的会话跟随它这一类会话的**默认策略**：群聊跟随群聊默认策略，私聊（包括面板里新建的聊天）跟随私聊默认策略。
+
+两份默认策略存在数据库里（迁移 `0021_policy_defaults.sql`），有版本和审计，在 Web 管理面板的“设置”页修改：保存后立即生效，不用重启，跟随默认的会话马上用上新值，单独设置过的会话不受影响（见 [Web 管理面板：默认策略](panel.md#默认策略)）。配置文件里不再写默认策略：旧版本的 `default_group_policy`、`default_private_policy` 只在升级后第一次启动时导入数据库，之后必须删除，见下文“升级：配置文件里的默认策略”。
+
+下面是群聊的内置默认策略（`conloomapi.DefaultGroupPolicy`，全新的数据库第一次启动时写入的就是它），按段列出各字段、默认值和取值范围，用 YAML 写出便于加注释。设置页的“高级：JSON 编辑”、会话策略和 API 用同样的键名写成 JSON，时长写成 `"6s"`、`"1500ms"` 这样的字符串。
 
 ```yaml
-default_group_policy:
-  concurrency:
-    max_interactive_requests: 1   # 本群同时执行的回复数，0~2；0 表示暂停
-    max_queued_requests: 10       # 本群排队上限，>= 1
-    priority: normal              # low | normal | high；会校验，目前不生效
-    allow_long_requests: true     # 是否允许使用长上下文模型
-  reply:
-    command_prefix: /
-    continuation_window: 0s       # 在聊会话保持时间，0~10m；0 表示不开启在聊模式，只回直接对话
-    debounce: 1500ms              # 直接对话合并同一人连续消息的防抖，0~1m
-    min_reply_interval: 2s        # 本群上一个回复结束到下一个开始的最短间隔，0~1m
-    user_rate_limit_per_minute: 6 # 每人每分钟最多触发几次回复，>= 1
-    turn_gap: 6s                  # 在聊时等对方停顿多久再处理这一轮，1s~60s
-    turn_max_wait: 20s            # 一轮从第一句算起最多等多久，turn_gap~2m
-    turn_cooldown: 45s            # 接话冷却，1s~10m；continuation_window 不为 0 时必须大于它
-    max_unprompted_replies: 4     # 两次被直接点名之间最多几次未点名回复，达到后会话结束，1~20
-    max_consecutive_skips: 2      # 连续几轮没回后会话结束，1~10
-    quote: auto                   # 群里回复何时引用原消息：auto（必要时）| always | never
-    max_parts: 1                  # 一次回复最多分成几条消息发出，1~5；1 表示不分条
-    private_wait: 6s              # 私聊里对方停顿多久才开始回复，0~60s；只对私聊生效
-    private_max_wait: 20s         # 私聊从任务创建起最多等多久，private_wait~2m；只对私聊生效
-  context:
-    max_recent_messages: 50       # 上下文最多带多少条历史消息，0~500
-    max_context_tokens: 0         # 本群的上下文窗口上限，0 表示不额外限制；设了就必须大于 short_context 的 reserved_output_tokens + safety_margin_tokens
-  review:
-    level: basic                  # basic | standard | strict；目前三者行为相同
-    review_input: true            # 目前不生效，基础审查始终开启
-    review_output: true           # 同上
-    action: block                 # 命中屏蔽词时：allow（只记录）| sanitize（替换为 *）| block（整条拦截）
-    blocked_words: []
-  proactive:
-    enabled: true                 # 群总开关（观望模式）
-    default_level: low            # 获得资格时的默认档位：off | low | mid | high
-    eligibility_ttl: 720h         # 多久没 @ 机器人就失去资格（30 天），1h~8760h
-    user_cooldown: 30m            # 对同一人两次主动搭话的最短间隔，0~24h
-    group_hourly_limit: 4         # 全群每小时主动发言上限，0~60
-    daily_limits: {low: 2, mid: 4, high: 8}   # 每人每天主动发言上限，各 0~100，且 low <= mid <= high
-    join_lull: 15s                # 群里安静多久算一次停顿，5s~5m
-    join_window: 5m               # 加入评估看最近多长时间的对话，1m~30m
-    join_min_messages: 4          # 窗口内至少多少条非机器人消息，2~50
-    join_evaluations_per_hour: 4  # 每群每小时最多几次加入评估（即模型调用），1~60
-    join_cooldown: 10m            # 机器人上次在本群发言后多久之内不加入，1m~24h
-    private:                      # 私聊里机器人主动找人，只对私聊生效，群聊忽略；整段可省略
-      level: ""                   # 档位：off | low | mid | high；留空 = mid
-      quiet_start: ""             # 免打扰时段的开始，"HH:MM"（按 server.timezone）
-      quiet_end: ""               # 免打扰时段的结束，"HH:MM"；两个都留空时按对方的作息推算
-  memory:
-    enabled: false                # 是否开启记忆（群聊摘要、群友笔记、好感度）；默认关闭，开启时要求 concurrency.allow_long_requests: true
-    affinity: true                # 开启记忆时是否计算好感度
-    consolidate_every: 150        # 新消息达到这么多条就整理一次，30~2000
-    consolidate_interval: 6h      # 新消息不足条数时，距上次整理超过这么久且至少有 consolidate_min 条新消息也整理一次，30m~48h
-    consolidate_min: 20           # 按时间整理时至少要有的新消息条数，1~2000
-    backlog: 1000                 # 第一次开启时往回整理多少条旧消息，0~5000
-    summary_max_chars: 0          # 摘要最多多少字，200~8000；0 表示按会话类型的默认值（群聊 1500、私聊 3000）
-    note_max_chars: 0             # 每人笔记最多多少字，50~2000；0 表示按会话类型的默认值（群聊 300、私聊 1000）
+concurrency:
+  max_interactive_requests: 1   # 本群同时执行的回复数，0~2；0 表示暂停
+  max_queued_requests: 10       # 本群排队上限，>= 1
+  priority: normal              # low | normal | high；会校验，目前不生效
+  allow_long_requests: true     # 是否允许使用长上下文模型
+reply:
+  command_prefix: /
+  continuation_window: 0s       # 在聊会话保持时间，0~10m；0 表示不开启在聊模式，只回直接对话
+  debounce: 1500ms              # 直接对话合并同一人连续消息的防抖，0~1m
+  min_reply_interval: 2s        # 本群上一个回复结束到下一个开始的最短间隔，0~1m
+  user_rate_limit_per_minute: 6 # 每人每分钟最多触发几次回复，>= 1
+  turn_gap: 6s                  # 在聊时等对方停顿多久再处理这一轮，1s~60s
+  turn_max_wait: 20s            # 一轮从第一句算起最多等多久，turn_gap~2m
+  turn_cooldown: 45s            # 接话冷却，1s~10m；continuation_window 不为 0 时必须大于它
+  max_unprompted_replies: 4     # 两次被直接点名之间最多几次未点名回复，达到后会话结束，1~20
+  max_consecutive_skips: 2      # 连续几轮没回后会话结束，1~10
+  quote: auto                   # 群里回复何时引用原消息：auto（必要时）| always | never
+  max_parts: 1                  # 一次回复最多分成几条消息发出，1~5；1 表示不分条
+  private_wait: 6s              # 私聊里对方停顿多久才开始回复，0~60s；只对私聊生效
+  private_max_wait: 20s         # 私聊从任务创建起最多等多久，private_wait~2m；只对私聊生效
+context:
+  max_recent_messages: 50       # 上下文最多带多少条历史消息，0~500
+  max_context_tokens: 0         # 本群的上下文窗口上限，0 表示不额外限制；设了就必须大于 short_context 的 reserved_output_tokens + safety_margin_tokens
+review:
+  level: basic                  # basic | standard | strict；目前三者行为相同
+  review_input: true            # 目前不生效，基础审查始终开启
+  review_output: true           # 同上
+  action: block                 # 命中屏蔽词时：allow（只记录）| sanitize（替换为 *）| block（整条拦截）
+  blocked_words: []
+proactive:
+  enabled: true                 # 群总开关（观望模式）
+  default_level: low            # 获得资格时的默认档位：off | low | mid | high
+  eligibility_ttl: 720h         # 多久没 @ 机器人就失去资格（30 天），1h~8760h
+  user_cooldown: 30m            # 对同一人两次主动搭话的最短间隔，0~24h
+  group_hourly_limit: 4         # 全群每小时主动发言上限，0~60
+  daily_limits: {low: 2, mid: 4, high: 8}   # 每人每天主动发言上限，各 0~100，且 low <= mid <= high
+  join_lull: 15s                # 群里安静多久算一次停顿，5s~5m
+  join_window: 5m               # 加入评估看最近多长时间的对话，1m~30m
+  join_min_messages: 4          # 窗口内至少多少条非机器人消息，2~50
+  join_evaluations_per_hour: 4  # 每群每小时最多几次加入评估（即模型调用），1~60
+  join_cooldown: 10m            # 机器人上次在本群发言后多久之内不加入，1m~24h
+  private:                      # 私聊里机器人主动找人，只对私聊生效，群聊忽略；整段可省略
+    level: ""                   # 档位：off | low | mid | high；留空 = mid
+    quiet_start: ""             # 免打扰时段的开始，"HH:MM"（按 server.timezone）
+    quiet_end: ""               # 免打扰时段的结束，"HH:MM"；两个都留空时按对方的作息推算
+memory:
+  enabled: false                # 是否开启记忆（群聊摘要、群友笔记、好感度）；默认关闭，开启时要求 concurrency.allow_long_requests: true
+  affinity: true                # 开启记忆时是否计算好感度
+  consolidate_every: 150        # 新消息达到这么多条就整理一次，30~2000
+  consolidate_interval: 6h      # 新消息不足条数时，距上次整理超过这么久且至少有 consolidate_min 条新消息也整理一次，30m~48h
+  consolidate_min: 20           # 按时间整理时至少要有的新消息条数，1~2000
+  backlog: 1000                 # 第一次开启时往回整理多少条旧消息，0~5000
+  summary_max_chars: 0          # 摘要最多多少字，200~8000；0 表示按会话类型的默认值（群聊 1500、私聊 3000）
+  note_max_chars: 0             # 每人笔记最多多少字，50~2000；0 表示按会话类型的默认值（群聊 300、私聊 1000）
 ```
 
 各字段的具体行为见 [使用指南](usage.md#机器人在群里怎么说话)，汇总表见 [架构 4.9 节](architecture.md#49-阈值一览)。
 
-**私聊默认策略**：`default_private_policy` 的结构和 `default_group_policy` 相同，私聊会话没有存库版本时用它，库里已有版本时仍以库里为准；整段省略时私聊沿用 `default_group_policy`。私聊只有机器人和一个人，适合开启记忆、带更长的历史。示例配置的建议值：
+**私聊默认策略**：结构和群聊默认策略相同，私聊会话（包括面板里新建的聊天）没有单独设置过策略时跟随它。内置的私聊默认策略（`conloomapi.DefaultPrivatePolicy`）就是上面的群聊内置值，只是 `memory.summary_max_chars`、`note_max_chars` 为 0，按私聊自己的 3000 / 1000 字；所以记忆默认关闭、回复不分条、带 50 条历史。私聊只有机器人和一个人，适合开启记忆、带更长的历史，建议在设置页的私聊默认策略里改成下面的值（以前示例配置里的值，只列出和内置值不同的）：分条上限、历史条数和记忆开关在表单里改，整理频率在“高级：JSON 编辑”里改。
 
 ```yaml
-default_private_policy:
-  reply:
-    max_parts: 5
-    private_wait: 6s
-    private_max_wait: 20s
-  context:
-    max_recent_messages: 200
-  memory:
-    enabled: true
-    consolidate_every: 40
-    consolidate_interval: 1h
-    consolidate_min: 6
-  # proactive:                    # 示例配置里注释掉了；省略时档位为 mid，免打扰时段按作息推算
-  #   private:
-  #     level: mid
-  #     quiet_start: "23:00"
-  #     quiet_end: "07:00"
+reply:
+  max_parts: 5
+context:
+  max_recent_messages: 200
+memory:
+  enabled: true
+  consolidate_every: 40
+  consolidate_interval: 1h
+  consolidate_min: 6
+# proactive:                    # 不改时档位为 mid，免打扰时段按作息推算
+#   private:
+#     level: mid
+#     quiet_start: "23:00"
+#     quiet_end: "07:00"
 ```
 
 私聊的记忆、`/记住` 等用法见 [使用指南：记忆与好感度](usage.md#记忆与好感度)。
+
+**在设置页修改**：保存时按和会话策略相同的规则校验（取值范围同上，`context.max_context_tokens` 的上限检查也一样），不合法时不保存，错误信息带字段路径，默认策略不变，服务照常运行。“高级：JSON 编辑”整份替换，里面省略的字段取内置默认值（不是当前默认策略里的值），和以前配置文件里省略字段一样；写出的值按原样保存，`private_wait` 和 `private_max_wait` 也不成对补齐（见下面的缺省规则）。每次保存或恢复都生成一个新版本，写一条审计 `settings.policy.update`。保存后再检查一遍启动时会警告的几项（审查级别还没实现、`long_context` 的输出预留偏低、私聊开了记忆但 `long_context` 不允许敏感内容），有的话显示在设置页并写日志，不影响保存。
+
+**升级：配置文件里的默认策略**。旧版本在配置文件的 `default_group_policy`、`default_private_policy` 里写默认策略。这两段现在是只为导入保留的旧键：照常解析和校验（取值规则同上，包括 `context.max_context_tokens` 的上限检查，不通过时启动失败，退出码 78，什么都不导入），运行时不读。启动时两段分开判断，群聊、私聊各按下表处理：
+
+| 数据库里已有这一类默认策略 | 配置文件里有这一段 | 启动时 |
+|---|---|---|
+| 没有 | 有 | 导入为第 1 版，修改人 `system`，原因“从配置文件导入” |
+| 没有 | 没有 | 写入内置默认策略作为第 1 版，修改人 `system`，原因“内置默认值” |
+| 有 | 有 | 启动失败，退出码 78，什么都不改 |
+| 有 | 没有 | 照常使用数据库里的 |
+
+- 第一次启动时两类都写好第 1 版，在一个事务里完成。导入了至少一段时，`app_meta` 记下 `config_policy_defaults_migrated`（导入时间），写一条审计 `settings.policy.migrate`（`actor` 为 `system`，内容 `imported` 列出导入的类，如 `["group","private"]`），日志里每段一条 `default policy imported from the config file`，最后一条警告提示从配置文件删掉这两段。只写了内置默认值时不记这个键，也不写审计。
+- 文件里只有一段时，另一段按“没有”处理：比如只有 `default_group_policy` 时，群聊默认策略导入它，私聊默认策略写内置值。
+- 数据库里已经有某一类默认策略（导入过，或者第一次启动时写了内置值），配置文件里却有这一段时，启动失败；中文报错写明数据库里的默认策略从哪来（“已在 <时间> 从配置文件导入”或“第一次启动时写入的内置默认值”），说明默认策略只在设置页里改，列出要删掉的段。所以导入之后要把两段都从配置文件删掉，之后也不要再加回去，改默认策略到设置页改。步骤见 [部署：升级](deployment.md#备份迁移与升级)。
+
+**私聊不再回退到群聊**：旧版本里没有 `default_private_policy` 时，私聊沿用 `default_group_policy`（只去掉摘要、笔记字数上限）。现在两份默认策略在数据库里各自独立，这条回退规则没有了：配置文件只有 `default_group_policy` 时，升级后私聊默认策略是内置值，而不是群聊这一段里写的值（比如群聊段开了记忆、改了历史条数，私聊不跟着）。靠这条回退的部署，升级后到设置页把私聊默认策略改成原来的效果。之后修改群聊默认策略也不会影响私聊。两段都没写时没有变化：旧版本的私聊默认策略本来就是内置值。
 
 **分条和私聊节奏**：
 
@@ -355,18 +371,17 @@ default_private_policy:
 
 **缺省与兼容规则**：
 
-- YAML 配置里省略的任何字段（或省略整个 `proactive` 段）都保持上面的默认值。
+- 默认策略里省略的任何字段（或省略整个 `proactive` 段）都取上面的内置默认值，包括设置页“高级：JSON 编辑”里省略的和从旧配置文件导入的段里省略的；私聊默认策略也一样，取的是内置值，不是群聊默认策略里的值。
 - 已存库的策略版本缺少 `proactive` 段时，读取时按默认值补齐，即主动搭话默认开启、档位默认为低。
-- 已存库的版本或 API 请求里缺少 `reply.turn_gap`、`turn_max_wait`、`turn_cooldown`、`max_unprompted_replies`、`max_consecutive_skips`、`quote`、`max_parts` 或 `proactive.join_*` 时，逐字段按默认值补齐（`quote` 补为 `auto`，`turn_cooldown` 补为 45s，`max_parts` 补为默认策略里的值，内置默认是 1）；这些字段的零值本身都不合法，所以不会覆盖有意的设置。补齐用的是会话类型对应的默认策略：群聊用 `default_group_policy`，私聊用 `default_private_policy`（没配置时也是 `default_group_policy`）。
-- `reply.private_wait` 的 0 是合法值，所以已存库的版本和 API 请求里 `private_wait` 和 `private_max_wait` 成对补齐：两者**都**缺少或都为 0 时，一起取会话类型对应的默认策略里的值；只要有一个不为 0，就按写的值校验。也就是说，通过 API 或面板把两者都设为 0，表示“用默认值”，存下来的是默认策略里的值（内置默认 6s 和 20s），不是 0；想让私聊收到消息立即开始，把 `private_wait` 设为 0、`private_max_wait` 设为大于 0 的值。
-- YAML 配置里不一样：和其他字段一样，省略才取内置默认值（6s 和 20s）；在 `default_group_policy` 或 `default_private_policy` 里明确写 `private_wait: 0` 和 `private_max_wait: 0`，就是不等待、收到消息立即开始回复，不会被换成默认值。这时上一条里的“取默认值”取到的也是 0 和 0。
+- 已存库的版本或 API 请求里缺少 `reply.turn_gap`、`turn_max_wait`、`turn_cooldown`、`max_unprompted_replies`、`max_consecutive_skips`、`quote`、`max_parts` 或 `proactive.join_*` 时，逐字段按默认值补齐（`quote` 补为 `auto`，`turn_cooldown` 补为 45s，`max_parts` 补为默认策略里的值，内置默认是 1）；这些字段的零值本身都不合法，所以不会覆盖有意的设置。补齐用的是会话类型对应的默认策略，也就是设置页里当前的群聊或私聊默认策略。
+- `reply.private_wait` 的 0 是合法值，所以已存库的版本和 API 请求里 `private_wait` 和 `private_max_wait` 成对补齐：两者**都**缺少或都为 0 时，一起取会话类型对应的默认策略里的值；只要有一个不为 0，就按写的值校验。也就是说，通过 API 或面板的会话策略把两者都设为 0，表示“用默认值”，存下来的是默认策略里的值（内置默认 6s 和 20s），不是 0；想让私聊收到消息立即开始，把 `private_wait` 设为 0、`private_max_wait` 设为大于 0 的值。
+- 默认策略里不一样（设置页保存的，以及从旧配置文件的 `default_group_policy`、`default_private_policy` 导入的）：和其他字段一样，省略才取内置默认值（6s 和 20s）；明确写 `private_wait` 和 `private_max_wait` 都为 0（设置页表单里填 `0s`），就是不等待、收到消息立即开始回复，不会被换成默认值。这时上一条里的“取默认值”取到的也是 0 和 0。
 - `continuation_window` 不补，旧版本里的 `0s` 仍表示不开启在聊模式；它不为 0 时必须大于 `turn_cooldown`，否则校验失败（否则挂起的一轮会在会话超时后才放行，然后被丢弃）。
-- 已存库的策略版本缺少整个 `memory` 段时，读取时用会话类型对应的默认策略里的 `memory` 补齐，即群聊记忆按配置默认关闭，私聊按 `default_private_policy.memory`。
+- 已存库的策略版本缺少整个 `memory` 段时，读取时用会话类型对应的默认策略里的 `memory` 补齐，即按设置页里当前的群聊或私聊默认策略（内置值里两者的记忆都是关闭的）。
 - `memory` 段内缺少的键取内置默认值（`affinity: true`、`consolidate_every: 150`、`consolidate_interval: 6h`、`consolidate_min: 20`、`backlog: 1000`、`summary_max_chars: 0`、`note_max_chars: 0`，`enabled` 为 `false`）；显式写出的 `0` 和 `false` 保留。加入 `consolidate_min` 之前存库的版本读出来是 20，和原来写死的条数一致。
 - `memory.summary_max_chars` 和 `note_max_chars` 是摘要和每人笔记的字数上限（按字符计）：整理提示词按它要求篇幅（素材足够时写到上限的 60%~90%，不超过上限），写入时超出的部分截掉，`/记住` 写满时从最前面腾位置，API、面板和命令修改笔记时超过上限会被拒绝。0 表示按会话类型的默认值：群聊 1500 / 300，私聊 3000 / 1000。存库的旧版本没有这两个键，读出来是 0，也就是按会话类型取默认值，不会把群聊的数字带进私聊；补齐默认策略时也不填它们。调大上限后整理的输出变长，`long_context` 的 `reserved_output_tokens` 要跟着留足（见上面模型配置表）；输出预留放不下一个人的摘要加笔记时，整理会按比例缩短提示词要求的字数（不低于 200 / 50 字，存储仍按上限截断）并记一条警告，见 [架构 5.5 节](architecture.md#55-记忆和好感度)。
 - `proactive.private` 和 `memory.summary_max_chars` 同一个思路：空值表示按私聊的默认（档位 `mid`，免打扰时段按作息推算），补齐默认策略时不填。已存库的版本有 `proactive` 段但没有 `private` 时，读出来就是空，不会从默认策略补进来；缺少整个 `proactive` 段时，才连同 `private` 一起取默认策略里的。策略的 JSON 里 `private` 为空时不出现这个键。
-- 群策略 API 对 `proactive` 和 `memory` 段的处理不同于 YAML，见 [API：群策略](api.md#群策略)。
-- `default_private_policy` 段里省略的字段同样取上面的内置默认值（不是 `default_group_policy` 的值），校验规则也一样；整段省略时，私聊会话直接沿用 `default_group_policy`。
+- 群策略 API 和面板的会话策略对 `proactive` 和 `memory` 段的处理不同于默认策略，见 [API：群策略](api.md#群策略)。
 - `proactive.contact_cooldown` 已移除：已存库的旧版本里的这个键在读取时被忽略；但配置文件不接受未知字段，升级后要从 `conloom.yaml` 里删掉这一行，否则启动时报错。
 
 ## runtime
