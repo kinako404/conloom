@@ -141,7 +141,7 @@ func TestScope_StatusSharedReturnInOrigin(t *testing.T) {
 
 	clock.set(started.Add(5 * time.Minute))
 	inB := env.panelReply(t, b, "你在干嘛")
-	block := autonomy.RenderState(&autonomy.StateStatus{Activity: "洗澡", StartedAt: started, UntilAt: until},
+	block := autonomy.RenderState(nil, &autonomy.StateStatus{Activity: "洗澡", StartedAt: started, UntilAt: until},
 		defaultStateBars(60, 70), nil, time.Time{}, env.o.loc)
 	if !strings.Contains(inB, block) {
 		t.Fatalf("B's request lacks the status set in A:\n%s\nwant\n%s", inB, block)
@@ -206,7 +206,7 @@ func TestScope_BarsShared(t *testing.T) {
 
 	env.panelReply(t, a, goodNews)
 	inB := env.panelReply(t, b, "在吗")
-	if block := autonomy.RenderState(nil, defaultStateBars(65, 70), nil, time.Time{}, env.o.loc); !strings.Contains(inB, block) {
+	if block := autonomy.RenderState(nil, nil, defaultStateBars(65, 70), nil, time.Time{}, env.o.loc); !strings.Contains(inB, block) {
 		t.Fatalf("B's request lacks the bar A's reply changed:\n%s\nwant\n%s", inB, block)
 	}
 	env.panelReply(t, b, goodNews)
@@ -266,7 +266,7 @@ func TestScope_CustomBarsAndEffectsShared(t *testing.T) {
 	env.panelReply(t, a, caughtCold)
 	clock.set(added.Add(10 * time.Minute))
 	inB := env.panelReply(t, b, "在吗")
-	block := autonomy.RenderState(nil, append(defaultStateBars(60, 70), autonomy.StateBar{Name: "饥饿", Description: "高=很饿",
+	block := autonomy.RenderState(nil, nil, append(defaultStateBars(60, 70), autonomy.StateBar{Name: "饥饿", Description: "高=很饿",
 		Value: autonomy.Decay(70, 30, 6*time.Hour, 10*time.Minute)}),
 		[]autonomy.StateEffect{{Name: "着凉", Description: "有点冷", UntilAt: added.Add(time.Hour)}}, clock.now(), env.o.loc)
 	if !strings.Contains(block, "效果：着凉（还剩约 50 分；有点冷）") || !strings.Contains(inB, block) {

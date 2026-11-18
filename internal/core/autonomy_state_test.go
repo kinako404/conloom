@@ -89,7 +89,7 @@ func TestState_InjectedInPrivate(t *testing.T) {
 	env.seedBar(t, key, "心情", 82, now.Add(-6*time.Hour))
 
 	req := env.statePrivateRequest(t, clock, "洗完了吗")
-	want := autonomy.RenderState(&autonomy.StateStatus{Activity: "洗澡", StartedAt: started, UntilAt: until},
+	want := autonomy.RenderState(nil, &autonomy.StateStatus{Activity: "洗澡", StartedAt: started, UntilAt: until},
 		defaultStateBars(autonomy.Decay(82, 60, 6*time.Hour, 6*time.Hour), 70), nil, time.Time{}, env.o.loc)
 	for _, line := range []string{"正在：洗澡（10:50 开始，预计 11:20 结束", "心情：偏高", "精力：偏高"} {
 		if !strings.Contains(want, line) {
@@ -148,7 +148,7 @@ func TestState_CustomBarsAndEffectsInjected(t *testing.T) {
 	env.seedEffect(t, key, "吃饱了", "", now.Add(-10*time.Minute), now.Add(20*time.Minute))
 
 	req := env.statePrivateRequest(t, clock, "在吗")
-	want := autonomy.RenderState(nil, []autonomy.StateBar{
+	want := autonomy.RenderState(nil, nil, []autonomy.StateBar{
 		{Name: "好奇", Description: curious.Description, Value: 37.5},
 		{Name: "饥饿", Description: "高=很饿", Value: 50},
 		{Name: "困意", Value: 30},
@@ -191,7 +191,7 @@ func TestState_BarsNeedBuffSkill(t *testing.T) {
 	env.seedEffect(t, key, "脚麻", "", now, now.Add(time.Hour))
 
 	req := env.statePrivateRequest(t, clock, "在吗")
-	want := autonomy.RenderState(&autonomy.StateStatus{Activity: "洗澡", StartedAt: started, UntilAt: until}, nil, nil, time.Time{}, env.o.loc)
+	want := autonomy.RenderState(nil, &autonomy.StateStatus{Activity: "洗澡", StartedAt: started, UntilAt: until}, nil, nil, time.Time{}, env.o.loc)
 	if last := lastContent(req); !strings.HasPrefix(last, want+"\n\n【当前消息】") {
 		t.Fatalf("last user message = %q, want it to start with the status only\n%s", last, want)
 	}
@@ -217,7 +217,7 @@ func TestState_IgnoresRemovedBars(t *testing.T) {
 	env.seedBar(t, key, "精力", 15, now)
 
 	req := env.statePrivateRequest(t, clock, "在吗")
-	want := autonomy.RenderState(nil, []autonomy.StateBar{
+	want := autonomy.RenderState(nil, nil, []autonomy.StateBar{
 		{Name: "耐心", Description: bars[0].Description, Value: 50},
 		{Name: "精力", Description: bars[1].Description, Value: 15},
 	}, nil, time.Time{}, env.o.loc)
