@@ -32,9 +32,11 @@ const (
 	// toolCallTimeout bounds one tool call, for tools that honour their
 	// context.
 	toolCallTimeout = 10 * time.Second
-	// toolLoopTimeout bounds a reply's tool calls: once it has passed no new
-	// call is run and the next request offers no tools. It leaves the final
-	// request room within the 60 seconds a platform's typing indicator lasts.
+	// toolLoopTimeout bounds the tool calls of a reply's model call, counted
+	// from its first request; a re-routed model gets its own. Once it has
+	// passed no new call is run and the next request offers no tools. It
+	// leaves the final request room within the 60 seconds a platform's typing
+	// indicator lasts.
 	toolLoopTimeout = 25 * time.Second
 	// assistantTokensFallback bounds an assistant message when the profile
 	// reserves no output tokens.
@@ -65,9 +67,10 @@ const (
 
 // skillRun is one task's use of skills: the toolset offered to the model, who
 // the calls act for, and the progress so far. The progress (the assistant
-// messages with tool calls and the tool results, the rounds run and the time
-// limit) outlives a failed model call: a re-routed model continues from it, so
-// no call runs twice.
+// messages with tool calls and the tool results, the rounds run and the call
+// counts) outlives a failed model call: a re-routed model continues from it,
+// so no call runs twice and the rounds stay bounded by maxToolRounds overall.
+// The time limit does not: a re-routed model gets its own (restartClock).
 type skillRun struct {
 	set    skills.Toolset
 	tools  []openai.Tool
@@ -77,10 +80,19 @@ type skillRun struct {
 	// maxResult is the longest result any of the tools may return.
 	maxResult int
 
-	msgs     []openai.ChatMessage
-	rounds   int
+	msgs   []openai.ChatMessage
+	rounds int
+	// deadline is when the current model's toolLoopTimeout runs out; zero
+	// until its first request.
 	deadline time.Time
 	counts   map[string]int
+}
+
+// restartClock gives the next model call, a re-routed one, its own
+// toolLoopTimeout: the time a failed model spent, often most of it waiting
+// for a slow or empty answer, would otherwise leave the new model no tools.
+func (r *skillRun) restartClock() {
+	r.deadline = time.Time{}
 }
 
 // newSkillRun returns the skills of a private chat or a group message
@@ -192,8 +204,8 @@ func notAnAnswer(resp openai.ChatResponse, final bool) string {
 }
 
 // lastRequest reports whether the next request must be the final one, without
-// tools: the rounds or the time are used up, or another round could overflow
-// the prompt limit.
+// tools: the task's rounds or the current model's time are used up, or
+// another round could overflow the prompt limit.
 func (o *Orchestrator) lastRequest(run *skillRun, estimate, worst int, d router.Decision) bool {
 	return run.rounds >= maxToolRounds || !o.now().Before(run.deadline) || estimate+worst > d.MaxPromptTokens
 }

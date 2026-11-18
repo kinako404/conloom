@@ -400,6 +400,9 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		}
 		d = d2
 		out.meta.SelectedModelRole, out.meta.RouteReason = string(d.Profile.Role), d.Reason
+		if run != nil {
+			run.restartClock()
+		}
 		resp, err = call(d)
 	}
 	if ctx.Err() != nil {
@@ -644,8 +647,9 @@ func partsDirective(maxParts int) string {
 // run made with an earlier model. A profile whose hard limit, with a round
 // reserved, leaves less than minToolHistoryTokens for history gets the reply
 // without skills instead. The final request offers no tools: it comes after
-// maxToolRounds rounds, after toolLoopTimeout, or when another round could
-// overflow the prompt limit.
+// maxToolRounds rounds (those of an earlier model count), toolLoopTimeout
+// after this model's first request, or when another round could overflow the
+// prompt limit.
 // Every request waits for its own admission. The response is the model's final
 // answer; a tool call written as text, a tool round cut off by the output
 // limit and tool calls in the final request are not answers (ErrEmptyOutput).

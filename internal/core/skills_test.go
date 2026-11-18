@@ -622,6 +622,63 @@ func TestSkills_RerouteKeepsTheRoundCount(t *testing.T) {
 	}
 }
 
+func TestSkills_RerouteGetsAFreshTimeLimit(t *testing.T) {
+	clock := &testClock{t: time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC)}
+	now := &recTool{name: "now"}
+	env := skillEnv(t, testOpts{
+		now: clock.now,
+		shortTools: func(req map[string]any) fakeopenai.Reply {
+			clock.advance(toolLoopTimeout + 30*time.Second)
+			return fakeopenai.Reply{}
+		},
+		longTools: callOnceThen("四点半", fakeopenai.ToolCall{ID: "l", Name: "now", Arguments: "{}"}),
+	}, []string{"time"}, now)
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "几点了", mentionBot, occurredAt(clock.now()))).TaskID)
+	if len(task.Actions) != 1 || task.Actions[0].Content.Text != "四点半" || task.Meta.SelectedModelRole != "long_context" {
+		t.Fatalf("task = %+v", task)
+	}
+	longReqs := env.long.Requests()
+	if len(longReqs) != 2 || !reflect.DeepEqual(offeredTools(longReqs[0]), []string{"now"}) {
+		t.Fatalf("long model requests = %d, first offers %v; want the tools offered after the slow failure", len(longReqs), offeredTools(longReqs[0]))
+	}
+	if now.count() != 1 || len(toolMessages(longReqs[1])) != 1 {
+		t.Errorf("tool calls = %d, final request results = %d; want 1 and 1", now.count(), len(toolMessages(longReqs[1])))
+	}
+}
+
+func TestSkills_RerouteAfterTheTimeLimitKeepsTheRoundCount(t *testing.T) {
+	clock := &testClock{t: time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC)}
+	now := &recTool{name: "now"}
+	env := skillEnv(t, testOpts{
+		now: clock.now,
+		shortTools: func(req map[string]any) fakeopenai.Reply {
+			if hasToolResult(req) {
+				clock.advance(toolLoopTimeout + 30*time.Second)
+				return fakeopenai.Reply{}
+			}
+			return fakeopenai.Reply{ToolCalls: []fakeopenai.ToolCall{{ID: "s", Name: "now", Arguments: `{"s":1}`}}}
+		},
+		longTools: func(req map[string]any) fakeopenai.Reply {
+			if len(offeredTools(req)) == 0 {
+				return fakeopenai.Reply{Content: "四点半"}
+			}
+			n := len(toolMessages(req))
+			return fakeopenai.Reply{ToolCalls: []fakeopenai.ToolCall{{ID: fmt.Sprintf("l%d", n), Name: "now", Arguments: fmt.Sprintf(`{"l":%d}`, n)}}}
+		},
+	}, []string{"time"}, now)
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "几点了", mentionBot, occurredAt(clock.now()))).TaskID)
+	if len(task.Actions) != 1 || task.Actions[0].Content.Text != "四点半" {
+		t.Fatalf("task = %+v", task)
+	}
+	longReqs := env.long.Requests()
+	if len(longReqs) != 3 || len(offeredTools(longReqs[0])) != 1 || len(offeredTools(longReqs[1])) != 1 || len(offeredTools(longReqs[2])) != 0 {
+		t.Fatalf("long model requests = %d, want two rounds with tools and then a final request without", len(longReqs))
+	}
+	if now.count() != maxToolRounds || len(toolMessages(longReqs[2])) != maxToolRounds {
+		t.Errorf("tool calls = %d, final request results = %d; want %d and %d", now.count(), len(toolMessages(longReqs[2])), maxToolRounds, maxToolRounds)
+	}
+}
+
 func TestSkills_InvocationIsTheSpeaker(t *testing.T) {
 	now := &recTool{name: "now"}
 	env := skillEnv(t, testOpts{shortTools: callOnceThen("好", fakeopenai.ToolCall{ID: "a", Name: "now", Arguments: "{}"})},
