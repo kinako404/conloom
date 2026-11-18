@@ -3,6 +3,7 @@
 
 import { h, mount, errorBox, field, select } from '../lib/dom.js';
 import { get, post, upload, isAbort } from '../lib/api.js';
+import { barLimit, BAR_DEFAULT_MAX_STEP, BAR_DEFAULT_MAX_DAY, BAR_MAX_LIMIT } from '../lib/format.js';
 import { imageURL, originalImageURL } from './avatar.js';
 import { cropAvatar, AVATAR_SIZE } from './avatarcrop.js';
 
@@ -22,6 +23,10 @@ const STYLE = [
 const MAX_EXAMPLES = 8;
 // MAX_BARS is conloomapi.MaxPersonaBars, the most bars a persona has.
 const MAX_BARS = 4;
+// BAR_KIND are the kinds of a persona bar (conloomapi.BarKindInner and
+// BarKindOuter), BAR_KIND_HINT what each means.
+const BAR_KIND = { inner: '内在', outer: '外在' };
+const BAR_KIND_HINT = { inner: '只影响 bot 的语气和想不想多聊，bot 不会提起', outer: '别人看得出来，比如吃饱、脸红；bot 会在动作和外表描写里自然带出，不说数字' };
 // MAX_APPEARANCE is conloomapi.MaxAppearanceRunes, the longest appearance text.
 const MAX_APPEARANCE = 800;
 // MAX_IMAGE_MIB is imaging.MaxBytes in MiB, the largest image upload.
@@ -56,8 +61,11 @@ function shortDuration(v) {
   return String(v || '').replace(/([hm])0s$/, '$1').replace(/h0m$/, 'h');
 }
 
-// barsEditor edits a persona's bars, one row each, at most MAX_BARS. read
-// returns {bars}, keeping fields the rows do not show, or {error}.
+// barsEditor edits a persona's bars, one row each, at most MAX_BARS: name,
+// kind (inner or outer), baseline, half-life, the step and daily limits of
+// adjust_buff (blank for the defaults) and description. read returns {bars},
+// keeping fields the rows do not show and leaving out the kind of an inner
+// bar and a blank limit, or {error}.
 function barsEditor(bars) {
   const list = h('div');
   const inputs = new WeakMap();
@@ -67,14 +75,25 @@ function barsEditor(bars) {
   };
   const addBar = (bar) => {
     const name = h('input', { value: bar.name || '' });
+    const kind = select(BAR_KIND, bar.kind === 'outer' ? 'outer' : 'inner');
+    const kindField = field('类型', kind, BAR_KIND_HINT[kind.value]);
+    const kindHint = kindField.querySelector('.hint');
+    kind.addEventListener('change', () => {
+      kindHint.textContent = BAR_KIND_HINT[kind.value];
+    });
     const baseline = h('input', { type: 'number', min: 0, max: 100, step: 1, value: bar.baseline ?? '' });
     const halfLife = h('input', { value: shortDuration(bar.half_life), placeholder: '6h' });
+    const maxStep = h('input', { type: 'number', min: 1, max: BAR_MAX_LIMIT, step: 1, value: bar.max_step ?? '', placeholder: String(BAR_DEFAULT_MAX_STEP) });
+    const maxDay = h('input', { type: 'number', min: 1, max: BAR_MAX_LIMIT, step: 1, value: bar.max_day ?? '', placeholder: String(BAR_DEFAULT_MAX_DAY) });
     const description = h('input', { value: bar.description || '' });
     const row = h('div', { class: 'card' },
       h('div', { class: 'form-grid' },
         field('名称', name, '1–6 字，不能重复，不含空白、【】和冒号'),
+        kindField,
         field('基准', baseline, '0–100 的整数，数值会逐渐回到这里'),
         field('半衰期', halfLife, '30m–168h，如 6h、90m'),
+        field('单次最多', maxStep, '1–100 的整数，一次最多调多少；留空为 10'),
+        field('每天最多', maxDay, '1–100 的整数，一天里净变化最多多少，不能小于单次最多；留空为 30'),
         field('说明', description, '可选，最多 40 字，如“高=有精神，低=累、困”')),
       h('button', {
         type: 'button',
@@ -84,27 +103,41 @@ function barsEditor(bars) {
           updateAdd();
         },
       }, '删除状态条'));
-    inputs.set(row, { bar, name, baseline, halfLife, description });
+    inputs.set(row, { bar, name, kind, baseline, halfLife, maxStep, maxDay, description });
     list.appendChild(row);
     updateAdd();
   };
   add.addEventListener('click', () => addBar({}));
   for (const bar of bars || []) addBar(bar);
   const read = () => {
-    const out = [];
+    const saved = [];
     for (const [i, row] of [...list.children].entries()) {
       const r = inputs.get(row);
       const baseline = Number(r.baseline.value);
       if (r.baseline.value.trim() === '' || !Number.isInteger(baseline)) return { error: `第 ${i + 1} 条状态条的基准必须是整数` };
-      out.push({
+      const step = barLimit(r.maxStep.value);
+      if (step === null) return { error: `第 ${i + 1} 条状态条的单次最多必须是 1–100 的整数，或留空` };
+      const day = barLimit(r.maxDay.value);
+      if (day === null) return { error: `第 ${i + 1} 条状态条的每天最多必须是 1–100 的整数，或留空` };
+      if ((day ?? BAR_DEFAULT_MAX_DAY) < (step ?? BAR_DEFAULT_MAX_STEP)) {
+        return { error: `第 ${i + 1} 条状态条的每天最多不能小于单次最多（${step ?? BAR_DEFAULT_MAX_STEP}）` };
+      }
+      const out = {
         ...r.bar,
         name: r.name.value.trim(),
         baseline,
         half_life: r.halfLife.value.trim(),
         description: r.description.value.trim(),
-      });
+      };
+      delete out.kind;
+      delete out.max_step;
+      delete out.max_day;
+      if (r.kind.value === 'outer') out.kind = 'outer';
+      if (step !== undefined) out.max_step = step;
+      if (day !== undefined) out.max_day = day;
+      saved.push(out);
     }
-    return { bars: out };
+    return { bars: saved };
   };
   return { el: [list, h('div', { class: 'toolbar' }, add)], read };
 }
@@ -601,7 +634,7 @@ export function personaForm(doc, { save, saveText = '保存人设', avatar: with
   examples,
   h('div', { class: 'toolbar' }, addButton),
   h('h3', null, `状态条（最多 ${MAX_BARS} 条）`),
-  h('p', { class: 'hint' }, '私聊里只有 bot 自己知道的数值（0–100），只影响语气和想不想多聊，不进系统提示；bot 启用了 buff 技能才生效。一条都不写时用默认的心情和精力。'),
+  h('p', { class: 'hint' }, '私聊里 bot 自己的数值（0–100），不进系统提示；bot 启用了 buff 技能才生效。内在的只影响语气和想不想多聊，bot 不会提起；外在的是别人看得出来的状态，bot 会在动作和外表描写里自然带出，但不说数字。一条都不写时用默认的心情和精力。'),
   bars.el,
   field('原因', reason),
   msg, submit);

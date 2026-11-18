@@ -106,6 +106,33 @@ export function sceneLabel(scene) {
   return scene.place ? `面对面 · ${scene.place}` : '面对面';
 }
 
+// BAR_DEFAULT_MAX_STEP, BAR_DEFAULT_MAX_DAY and BAR_MAX_LIMIT are
+// conloomapi.DefaultBarMaxStep, DefaultBarMaxDay and MaxBarLimit: the most a
+// persona bar moves in one adjust_buff call and in a day when it sets no
+// limit, and the highest limit it may set.
+export const BAR_DEFAULT_MAX_STEP = 10;
+export const BAR_DEFAULT_MAX_DAY = 30;
+export const BAR_MAX_LIMIT = 100;
+
+// barLimit reads a bar limit input: undefined when blank (the default), the
+// integer 1–BAR_MAX_LIMIT, else null.
+export function barLimit(text) {
+  const s = String(text ?? '').trim();
+  if (s === '') return undefined;
+  if (!/^\d+$/.test(s)) return null;
+  const n = Number(s);
+  return n >= 1 && n <= BAR_MAX_LIMIT ? n : null;
+}
+
+// barLimitsText words a bar's limits when it sets either, the other one at
+// its default: '单次最多 ±40，每天最多 ±30'; else ''.
+export function barLimitsText(b) {
+  if (!b || (!(b.max_step > 0) && !(b.max_day > 0))) return '';
+  const step = b.max_step > 0 ? b.max_step : BAR_DEFAULT_MAX_STEP;
+  const day = b.max_day > 0 ? b.max_day : BAR_DEFAULT_MAX_DAY;
+  return `单次最多 ±${step}，每天最多 ±${day}`;
+}
+
 // actionParts splits text into its runs in order, each {text, action}, action
 // true for a short action or look written in full-width brackets on one line,
 // such as （笑）; a bracket left open stays plain text.

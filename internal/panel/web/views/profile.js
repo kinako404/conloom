@@ -71,9 +71,10 @@ function section(title, body) {
   return h('section', { class: 'tg-profile-section' }, h('h3', null, title), body);
 }
 
-// stateBody shows the bars and running effects of state, or that the bot has
-// none without the buff skill. skills is null when unknown; then a bot with
-// bars is taken to use them.
+// stateBody shows the bars of state with their values, an outer one tagged
+// 外在, and its running effects, or that the bot has none without the buff
+// skill. skills is null when unknown; then a bot with bars is taken to use
+// them.
 function stateBody(state, skills) {
   const bars = state.bars || [];
   const effects = state.effects || [];
@@ -87,7 +88,7 @@ function stateBody(state, skills) {
       return item([
         `${b.value} · ${b.band}`,
         h('div', { class: 'tg-profile-bar', role: 'img', 'aria-label': `${b.name} ${b.value}` }, fill),
-      ], b.name);
+      ], [b.name, b.kind === 'outer' ? h('span', { class: 'badge tg-profile-tag' }, '外在') : null]);
     }),
     effects.map((e) => item(e.name, `还剩 ${minutesLeft(e.until_at)} 分钟`)),
   ];
