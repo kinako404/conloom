@@ -4,6 +4,7 @@ import { go, href } from '../lib/router.js';
 import { fmtTime, sceneLabel, actionParts } from '../lib/format.js';
 import { avatarEl } from './avatar.js';
 import { commandMenu } from './commandmenu.js';
+import { openProfile } from './profile.js';
 
 // POLL_MS is how often the chat asks for new messages.
 export const POLL_MS = 1500;
@@ -188,7 +189,9 @@ export async function deleteChatConfirmed(key) {
 // chatBar tops the pane of the chat key like Telegram: ← back to the list
 // (onBack), shown on a narrow screen; the avatar and name of bot, null when
 // the chat is not known, with title, who the bot talks with, on hover and
-// status, when given, under the name; and a ⋮ menu with 会话详情, items and,
+// status, when given, under the name, which together, when the bar has key and
+// bot, are one button, 查看资料, that opens the chat's profile card (see
+// openProfile; signal closes it too); and a ⋮ menu with 会话详情, items and,
 // when onDelete is given, 删除这个聊天. Choosing an item, a click elsewhere or
 // Escape anywhere on the page closes the menu; signal ends the listening for
 // those.
@@ -217,12 +220,19 @@ export function chatBar({ key, bot, title, status, items, onBack, onDelete, sign
       more.focus();
     }
   }, signal);
-  return h('header', { class: 'tg-bar' },
-    h('button', { type: 'button', class: 'tg-bar-back', title: '返回', 'aria-label': '返回', onclick: onBack }, '←'),
+  const who = [
     bot ? avatarEl(bot, 40) : null,
-    h('div', { class: 'tg-bar-name', title: title || null },
+    h('span', { class: 'tg-bar-name', title: title || null },
       h('strong', null, bot ? bot.name || bot.id : key),
       status || h('span', { class: 'tg-bar-status' })),
+  ];
+  const profile = key && bot ? h('button', {
+    type: 'button', class: 'tg-bar-profile', title: '查看资料', 'aria-label': '查看资料',
+    onclick: () => openProfile({ key, bot, signal, opener: profile }),
+  }, who) : null;
+  return h('header', { class: 'tg-bar' },
+    h('button', { type: 'button', class: 'tg-bar-back', title: '返回', 'aria-label': '返回', onclick: onBack }, '←'),
+    profile || who,
     h('div', { class: 'tg-bar-actions' }, more, menu));
 }
 
