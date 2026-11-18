@@ -14,6 +14,7 @@ import (
 	"github.com/kinako404/conloom/internal/autonomy"
 	"github.com/kinako404/conloom/internal/ids"
 	"github.com/kinako404/conloom/internal/memory"
+	"github.com/kinako404/conloom/internal/skills/tools"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -33,10 +34,16 @@ const (
 // the panel and the API answer it with 400.
 var ErrInvalidBar = errors.New("core: invalid bar change")
 
+// ErrInvalidScene refuses a scene set through the panel or the API: a mode
+// other than online and in_person, or a place longer than
+// conloomapi.ScenePlaceMaxRunes. The error wrapping it says which; the panel
+// and the API answer it with 400.
+var ErrInvalidScene = errors.New("core: invalid scene")
+
 // AutonomyService shows and changes the hidden state of private chats, their
-// status, bars and effects, for the panel and the API. The status, bars,
-// effects and their changes are those of the chat's memory scope
-// (memory.ScopeKey): all panel chats of a bot share them.
+// status, bars, effects and scene, for the panel and the API. The status,
+// bars, effects, their changes and the scene are those of the chat's memory
+// scope (memory.ScopeKey): all panel chats of a bot share them.
 type AutonomyService struct{ o *Orchestrator }
 
 // Autonomy returns the service over the orchestrator's private chats.
@@ -49,10 +56,11 @@ func (o *Orchestrator) Autonomy() *AutonomyService { return &AutonomyService{o: 
 // is stored; stored bars that are neither are left out); the names of the
 // bars the bot added that a persona bar has since replaced, in the order
 // added; the effects active now; the newest 50 bar and effect changes first;
-// and how the bot starts the chat (privateProactiveStatus, with the chat's
-// own timers). It writes nothing, not even the persona version a reply would
-// create. A chat that does not exist is store.ErrNotFound, another kind of
-// conversation ErrNotPrivate.
+// how the bot starts the chat (privateProactiveStatus, with the chat's own
+// timers); and the scene in effect now (Scene). It writes nothing, not even
+// the persona version a reply would create or the scene's fallback to online
+// a reply would store. A chat that does not exist is store.ErrNotFound,
+// another kind of conversation ErrNotPrivate.
 func (s *AutonomyService) State(ctx context.Context, convKey string) (conloomapi.AutonomyState, error) {
 	o := s.o
 	conv, err := s.privateChat(ctx, convKey)
@@ -115,7 +123,112 @@ func (s *AutonomyService) State(ctx context.Context, convKey string) (conloomapi
 	if out.Proactive, err = o.privateProactiveStatus(ctx, convKey); err != nil {
 		return conloomapi.AutonomyState{}, err
 	}
+	if out.Scene, err = s.scene(ctx, conv); err != nil {
+		return conloomapi.AutonomyState{}, err
+	}
 	return out, nil
+}
+
+// Scene returns the scene of the private chat convKey in effect now
+// (effectiveScene) without writing: online since SinceAt, zero when the chat
+// has no scene stored, or in person at Place since SinceAt. IdleOnline marks
+// an in-person scene that fell back to online after sceneIdleTimeout without
+// a message from the person, whether a reply has stored that fallback yet or
+// not. Enabled reports whether the chat's bot enables the scene skill; the
+// scene is returned either way. A chat that does not exist is
+// store.ErrNotFound, another kind of conversation ErrNotPrivate.
+func (s *AutonomyService) Scene(ctx context.Context, convKey string) (conloomapi.AutonomyScene, error) {
+	conv, err := s.privateChat(ctx, convKey)
+	if err != nil {
+		return conloomapi.AutonomyScene{}, err
+	}
+	return s.scene(ctx, conv)
+}
+
+// scene is Scene of the private chat conv.
+func (s *AutonomyService) scene(ctx context.Context, conv store.ConversationRecord) (conloomapi.AutonomyScene, error) {
+	raw, found, err := s.storedScene(ctx, conv)
+	if err != nil {
+		return conloomapi.AutonomyScene{}, err
+	}
+	eff, fellBack := effectiveScene(raw, found, s.o.now())
+	bot, ok := s.o.bots.Bot(conv.BotInstanceID)
+	return conloomapi.AutonomyScene{
+		Enabled: ok && slices.Contains(bot.Skills, skillScene),
+		Mode:    eff.Mode, Place: eff.Place, SinceAt: eff.SinceAt.UTC(), IdleOnline: fellBack || idleOnline(eff),
+	}, nil
+}
+
+// storedScene returns the scene stored for conv's memory scope; found is
+// false when there is none.
+func (s *AutonomyService) storedScene(ctx context.Context, conv store.ConversationRecord) (sc store.ConversationScene, found bool, err error) {
+	sc, err = s.o.st.GetScene(ctx, memory.ScopeKey(conv))
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return store.ConversationScene{}, false, nil
+	case err != nil:
+		return store.ConversationScene{}, false, err
+	}
+	return sc, true, nil
+}
+
+// SetScene sets the scene of the private chat convKey's memory scope to mode,
+// conloomapi.SceneOnline or SceneInPerson, at place, for actor through source
+// (store.BuffSourcePanel or BuffSourceAPI), whether or not the chat's bot
+// enables the scene skill. place is flattened to one line (tools.CleanActivity)
+// and must then have at most conloomapi.ScenePlaceMaxRunes runes; it may be
+// empty, and is dropped online. Unlike set_scene's, it is not reviewed: an
+// operator wrote it. Another mode or a longer place is ErrInvalidScene. A
+// fallback to online that is due (effectiveScene) is stored first, so the
+// change is to the scene in effect. The scene starts and is touched now, set
+// in convKey; setting the scene in effect again keeps its start
+// (store.Store.SetScene). It is audited as autonomy.scene.set, also when
+// nothing changed; a failed audit is only logged. A chat that does not exist
+// is store.ErrNotFound, another kind of conversation ErrNotPrivate.
+func (s *AutonomyService) SetScene(ctx context.Context, convKey, mode, place, source, actor string) error {
+	if err := checkPanelSource(source); err != nil {
+		return err
+	}
+	o := s.o
+	conv, err := s.privateChat(ctx, convKey)
+	if err != nil {
+		return err
+	}
+	switch mode {
+	case conloomapi.SceneInPerson:
+		place = tools.CleanActivity(place)
+	case conloomapi.SceneOnline:
+		place = ""
+	default:
+		return fmt.Errorf("%w: mode must be %s or %s, got %q", ErrInvalidScene, conloomapi.SceneOnline, conloomapi.SceneInPerson, mode)
+	}
+	if n := utf8.RuneCountInString(place); n > conloomapi.ScenePlaceMaxRunes {
+		return fmt.Errorf("%w: place must be at most %d characters, got %d", ErrInvalidScene, conloomapi.ScenePlaceMaxRunes, n)
+	}
+	scope := memory.ScopeKey(conv)
+	now := o.now()
+	raw, found, err := s.storedScene(ctx, conv)
+	if err != nil {
+		return err
+	}
+	if eff, fellBack := effectiveScene(raw, found, now); fellBack {
+		if _, err := o.st.EndIdleScene(ctx, scope, raw.TouchedAt, eff.SinceAt); err != nil {
+			return err
+		}
+	}
+	changed, err := o.st.SetScene(ctx, store.ConversationScene{ConversationKey: scope, OriginConversationKey: conv.Key,
+		Mode: mode, Place: place, SinceAt: now, TouchedAt: now, UpdatedAt: now})
+	if err != nil {
+		return err
+	}
+	o.log.Info("scene set", "conversation", convKey, "mode", mode, "source", source, "changed", changed)
+	s.audit(ctx, conv, "autonomy.scene.set", actor, struct {
+		Mode    string `json:"mode"`
+		Place   string `json:"place"`
+		Source  string `json:"source"`
+		Changed bool   `json:"changed"`
+	}{mode, place, source, changed})
+	return nil
 }
 
 // SetBar sets the bar name of the private chat convKey to value, an integer

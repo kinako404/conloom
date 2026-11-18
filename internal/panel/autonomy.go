@@ -9,13 +9,15 @@ import (
 )
 
 // AutonomyService shows and changes the hidden state of private chats, their
-// status, bars and effects; *core.AutonomyService is one.
+// status, bars, effects and scene; *core.AutonomyService is one.
 type AutonomyService interface {
 	State(ctx context.Context, convKey string) (conloomapi.AutonomyState, error)
 	SetBar(ctx context.Context, convKey, name string, value int, reason, source, actor string) error
 	RemoveBar(ctx context.Context, convKey, name, source, actor string) error
 	RemoveEffect(ctx context.Context, convKey, name, source, actor string) error
 	ClearStatus(ctx context.Context, convKey, actor string) error
+	Scene(ctx context.Context, convKey string) (conloomapi.AutonomyScene, error)
+	SetScene(ctx context.Context, convKey, mode, place, source, actor string) error
 }
 
 // autonomyService is Deps.Autonomy, writing 503 when there is none.
@@ -28,8 +30,9 @@ func (s *Server) autonomyService(w http.ResponseWriter, r *http.Request) (Autono
 }
 
 // getAutonomy shows the private chat's status, bars, effects, their recent
-// changes and how the bot starts the chat. Activities, reasons and the bot's
-// names and descriptions are data, which the page shows as plain text.
+// changes, how the bot starts the chat and its scene. Activities, reasons,
+// places and the bot's names and descriptions are data, which the page shows
+// as plain text.
 func (s *Server) getAutonomy(w http.ResponseWriter, r *http.Request, _ *Session) {
 	svc, ok := s.autonomyService(w, r)
 	if !ok {
@@ -67,6 +70,29 @@ func (s *Server) putAutonomyBar(w http.ResponseWriter, r *http.Request, sess *Se
 		return
 	}
 	if err := svc.SetBar(r.Context(), conv.Key, r.PathValue("name"), *put.Value, put.Reason, store.BuffSourcePanel, panelActor(sess)); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// putAutonomyScene sets the private chat's scene to the body's mode and place
+// (conloomapi.AutonomyScenePut), audited as autonomy.scene.set by the
+// service; an unknown mode or a place that is too long is 400.
+func (s *Server) putAutonomyScene(w http.ResponseWriter, r *http.Request, sess *Session) {
+	svc, ok := s.autonomyService(w, r)
+	if !ok {
+		return
+	}
+	conv, ok := s.privateConversation(w, r)
+	if !ok {
+		return
+	}
+	var put conloomapi.AutonomyScenePut
+	if !s.decode(w, r, &put) {
+		return
+	}
+	if err := svc.SetScene(r.Context(), conv.Key, put.Mode, put.Place, store.BuffSourcePanel, panelActor(sess)); err != nil {
 		s.fail(w, r, err)
 		return
 	}

@@ -105,6 +105,7 @@ func (s *Server) routes() {
 	s.handle("DELETE /api/v1/conversations/{id}/autonomy/bars/{name}", conloomapi.ScopeMemoryWrite, s.deleteAutonomyBar)
 	s.handle("DELETE /api/v1/conversations/{id}/autonomy/effects/{name}", conloomapi.ScopeMemoryWrite, s.deleteAutonomyEffect)
 	s.handle("DELETE /api/v1/conversations/{id}/autonomy/status", conloomapi.ScopeMemoryWrite, s.deleteAutonomyStatus)
+	s.handle("PUT /api/v1/conversations/{id}/autonomy/scene", conloomapi.ScopeMemoryWrite, s.putAutonomyScene)
 	s.mux.HandleFunc("GET /healthz", s.healthz)
 	if s.d.Config.Server.MetricsEnabled && s.d.Metrics != nil {
 		s.mux.Handle("GET /metrics", s.d.Metrics)

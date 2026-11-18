@@ -44,6 +44,9 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, core.ErrInvalidBar):
 		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
 			strings.TrimPrefix(err.Error(), core.ErrInvalidBar.Error()+": "), false, err)
+	case errors.Is(err, core.ErrInvalidScene):
+		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
+			strings.TrimPrefix(err.Error(), core.ErrInvalidScene.Error()+": "), false, err)
 	case errors.Is(err, core.ErrNotPrivate):
 		s.writeError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent, "not a private conversation", false, err)
 	case errors.Is(err, memory.ErrUpdateConflict):

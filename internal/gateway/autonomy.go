@@ -22,7 +22,8 @@ func (s *Server) privateConversation(w http.ResponseWriter, r *http.Request, tok
 }
 
 // getAutonomy returns the private chat's status, bars, effects, their recent
-// changes and how the bot starts the chat (core.AutonomyService.State).
+// changes, how the bot starts the chat and its scene
+// (core.AutonomyService.State).
 func (s *Server) getAutonomy(w http.ResponseWriter, r *http.Request, tok *token) {
 	conv, ok := s.privateConversation(w, r, tok)
 	if !ok {
@@ -54,6 +55,27 @@ func (s *Server) putAutonomyBar(w http.ResponseWriter, r *http.Request, tok *tok
 	err := s.d.Orchestrator.Autonomy().SetBar(r.Context(), conv.Key, r.PathValue("name"), *put.Value, put.Reason,
 		store.BuffSourceAPI, tok.name)
 	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		OK bool `json:"ok"`
+	}{true})
+}
+
+// putAutonomyScene sets the private chat's scene to the body's mode and place
+// (conloomapi.AutonomyScenePut) as the token, audited as autonomy.scene.set;
+// an unknown mode or a place that is too long is 400.
+func (s *Server) putAutonomyScene(w http.ResponseWriter, r *http.Request, tok *token) {
+	conv, ok := s.privateConversation(w, r, tok)
+	if !ok {
+		return
+	}
+	var put conloomapi.AutonomyScenePut
+	if !s.decodeBody(w, r, &put) {
+		return
+	}
+	if err := s.d.Orchestrator.Autonomy().SetScene(r.Context(), conv.Key, put.Mode, put.Place, store.BuffSourceAPI, tok.name); err != nil {
 		s.fail(w, r, err)
 		return
 	}

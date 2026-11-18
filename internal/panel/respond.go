@@ -72,7 +72,7 @@ func (s *Server) respond(w http.ResponseWriter, r *http.Request, status int, cod
 
 // fail maps err from a collaborator to an error response as the Bot
 // Interaction API does: store.ErrNotFound is 404; a rejected policy, persona,
-// persona template, member memory, bar or panel bot edit is 400 with the
+// persona template, member memory, bar, scene or panel bot edit is 400 with the
 // error text, and so is a request for the hidden state of a conversation that
 // is not private; a change to a bot of the config file, and deleting the
 // persona template "default", is 403; a refused consolidation is 409
@@ -101,6 +101,9 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, core.ErrInvalidBar):
 		s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
 			strings.TrimPrefix(err.Error(), core.ErrInvalidBar.Error()+": "), err)
+	case errors.Is(err, core.ErrInvalidScene):
+		s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
+			strings.TrimPrefix(err.Error(), core.ErrInvalidScene.Error()+": "), err)
 	case errors.Is(err, core.ErrInvalidBot):
 		s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
 			strings.TrimPrefix(err.Error(), core.ErrInvalidBot.Error()+": "), err)
