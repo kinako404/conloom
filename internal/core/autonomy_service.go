@@ -50,12 +50,14 @@ type AutonomyService struct{ o *Orchestrator }
 func (o *Orchestrator) Autonomy() *AutonomyService { return &AutonomyService{o: o} }
 
 // State returns the hidden state of the private chat convKey: the status
-// while it lasts; the bars (scopeBars), the persona's in its order then those
-// the bot added, marked Custom, in the order added, at their values decayed
-// to now with their own baselines and half-lives (their baselines when none
-// is stored; stored bars that are neither are left out); the names of the
-// bars the bot added that a persona bar has since replaced, in the order
-// added; the effects active now; the newest 50 bar and effect changes first;
+// while it lasts; the bars (scopeBars), inner and outer alike, the persona's
+// in its order then those the bot added, marked Custom, in the order added,
+// at their values decayed to now with their own baselines and half-lives
+// (their baselines when none is stored; stored bars that are neither are left
+// out), the persona's carrying their kind, max_step and max_day as convKey's
+// persona (s.persona) writes them, the bot's none; the names of the bars the
+// bot added that a persona bar has since replaced, in the order added; the
+// effects active now; the newest 50 bar and effect changes first;
 // how the bot starts the chat (privateProactiveStatus, with the chat's own
 // timers); and the scene in effect now (Scene). It writes nothing, not even
 // the persona version a reply would create or the scene's fallback to online
@@ -93,7 +95,7 @@ func (s *AutonomyService) State(ctx context.Context, convKey string) (conloomapi
 		v := barValue(b, cur, found, now)
 		out.Bars = append(out.Bars, conloomapi.AutonomyBar{
 			Name: b.Name, Value: roundBar(v), Band: autonomy.Band(v), Baseline: b.Baseline, Description: b.Description,
-			Custom: i >= len(persona),
+			Custom: i >= len(persona), Kind: b.Kind, MaxStep: b.MaxStep, MaxDay: b.MaxDay,
 		})
 	}
 	for _, c := range custom {
@@ -432,7 +434,7 @@ func (s *AutonomyService) privateChat(ctx context.Context, convKey string) (stor
 	return conv, nil
 }
 
-// barDefs returns what defines the hidden bars of conv (scopeBars): conv's
+// barDefs returns what defines the bars of conv (scopeBars): conv's
 // persona (s.persona) and the bars the bot added to conv's memory scope.
 func (s *AutonomyService) barDefs(ctx context.Context, conv store.ConversationRecord) (conloomapi.PersonaDoc, []store.CustomBar, error) {
 	doc, err := s.persona(ctx, conv)
