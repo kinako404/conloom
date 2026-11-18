@@ -2,6 +2,7 @@ package web
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -33,7 +34,7 @@ func TestProfile_Card(t *testing.T) {
 		"opener.focus()", "errorBox(", "h('details'", "skills.join('、')",
 		"class: 'tg-profile-backdrop'", "class: 'tg-profile'", "'tg-profile-head'",
 		"'tg-profile-avatar'", "'tg-profile-name'", "'tg-profile-status'",
-		"'tg-profile-section'", "'tg-profile-row'", "'tg-profile-label'",
+		"'tg-profile-section'", "'tg-profile-item'", "'tg-profile-value'", "'tg-profile-label'", "'tg-profile-body'",
 		"'tg-profile-bar'", "class: 'fill'", "'tg-profile-list'",
 	} {
 		if !strings.Contains(js, want) {
@@ -59,5 +60,97 @@ func TestProfile_Card(t *testing.T) {
 	// The page's signal closes the card too.
 	if !strings.Contains(js, "listen(signal, 'abort', close, ctrl.signal)") {
 		t.Error("views/profile.js does not close the card when the page's signal fires")
+	}
+}
+
+// Each row of the card is one inset item holding its value and, under it,
+// its muted label; a section's hints, loading, empty notes and errors sit in
+// its body with the same inset; a band separates the head from the first
+// section and each section from the next.
+func TestProfile_Layout(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js := files["views/profile.js"]
+	if !regexp.MustCompile(`h\('div', \{ class: 'tg-profile-item' \},\s*h\('div', \{ class: 'tg-profile-value' \}, value\),\s*h\('div', \{ class: 'tg-profile-label' \}, text\)\)`).MatchString(js) {
+		t.Error("views/profile.js: item does not wrap its value and label in one .tg-profile-item")
+	}
+	if strings.Contains(js, "'tg-profile-row'") {
+		t.Error("views/profile.js still uses .tg-profile-row")
+	}
+	if n := strings.Count(js, "h('div', { class: 'tg-profile-body' }, loading())"); n != 3 {
+		t.Errorf("views/profile.js has %d section bodies with class tg-profile-body, want 3", n)
+	}
+	css := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(files["style.css"], "")
+	for _, c := range []struct{ name, re string }{
+		{"an inset item", `\.chat-app \.tg-profile-item\s*\{[^}]*padding:\s*\d+px 16px;`},
+		{"inset hints, loading and empty notes", `\.chat-app \.tg-profile-body > p\s*\{[^}]*margin:\s*\d+px 16px;`},
+		{"an inset error", `\.chat-app \.tg-profile \.error\s*\{[^}]*margin:\s*\d+px 16px;`},
+		{"a band over every section and the list", `\.chat-app \.tg-profile-section,\s*\.chat-app \.tg-profile-list\s*\{[^}]*border-top:\s*8px solid`},
+	} {
+		if !regexp.MustCompile(c.re).MatchString(css) {
+			t.Errorf("style.css lacks %s (%s)", c.name, c.re)
+		}
+	}
+	for _, bad := range []string{".tg-profile-head + *", ".tg-profile-row", ".tg-profile-section > p"} {
+		if strings.Contains(css, bad) {
+			t.Errorf("style.css still has %q", bad)
+		}
+	}
+	if regexp.MustCompile(`\.tg-profile-label\s*\{[^}]*order:`).MatchString(css) {
+		t.Error("style.css reorders .tg-profile-label")
+	}
+}
+
+// Each section renders as soon as its own sources settle; a failed refresh
+// keeps the error already shown when the message is the same.
+func TestProfile_Sections(t *testing.T) {
+	js := assets(t, ".js")["views/profile.js"]
+	if strings.Contains(js, "Promise.allSettled([convP, personaP, memoryP, autonomyP, skillsP])") {
+		t.Error("views/profile.js waits for every source before rendering any section")
+	}
+	for _, want := range []string{
+		"done([convP], ", "done([convP, personaP], ", "done([convP, memoryP], ",
+		"done([convP, autonomyP, skillsP], ", "done([skillsP], ",
+		"if (text === stateError) return;",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/profile.js lacks %q", want)
+		}
+	}
+}
+
+// Closing fades the card out briefly, except under reduced motion, when the
+// page goes away or when ✎ navigates, which remove it at once; the focus goes
+// back to the opener only while it is still on the page; only a plain left
+// click on ✎ closes the card.
+func TestProfile_Closing(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js := files["views/profile.js"]
+	for _, want := range []string{
+		"matchMedia('(prefers-reduced-motion: reduce)').matches",
+		"signal && signal.aborted", "backdrop.classList.add('closing')",
+		"backdrop.addEventListener('animationend'", "setTimeout(() => backdrop.remove(), FADE_MS)",
+		"opener && opener.isConnected",
+		"e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/profile.js lacks %q", want)
+		}
+	}
+	css := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(files["style.css"], "")
+	m := regexp.MustCompile(`\.chat-app \.tg-profile-backdrop\.closing\s*\{[^}]*animation:\s*tg-fade-out (\d+)ms ease-out forwards;`).FindStringSubmatch(css)
+	if m == nil {
+		t.Fatal("style.css: a closing card does not fade out")
+	}
+	if ms, _ := strconv.Atoi(m[1]); ms > 150 {
+		t.Errorf("style.css: the card fades out in %dms, want at most 150ms", ms)
+	}
+	if !regexp.MustCompile(`\.chat-app \.tg-profile-backdrop\.closing\s*\{[^}]*pointer-events:\s*none;`).MatchString(css) {
+		t.Error("style.css: a closing card still takes clicks")
+	}
+	if !regexp.MustCompile(`@keyframes tg-fade-out\s*\{\s*to\s*\{\s*opacity:\s*0;`).MatchString(css) {
+		t.Error("style.css lacks @keyframes tg-fade-out")
+	}
+	if !regexp.MustCompile(`const FADE_MS = (\d+);`).MatchString(js) {
+		t.Error("views/profile.js lacks FADE_MS")
 	}
 }

@@ -17,7 +17,8 @@ func TestProfile_HeaderEntry(t *testing.T) {
 	js := files["views/chat.js"]
 	for _, want := range []string{
 		"import { openProfile } from './profile.js';",
-		"class: 'tg-bar-profile'", "'aria-label': '查看资料'", "title: '查看资料'",
+		"class: 'tg-bar-profile'", "'aria-label': `查看资料：${", "title: '查看资料'",
+		"'aria-describedby': 'tg-bar-status'", "statusEl.id = 'tg-bar-status';",
 		"openProfile({ key, bot, signal, opener: profile })",
 	} {
 		if !strings.Contains(js, want) {

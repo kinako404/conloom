@@ -9,6 +9,9 @@ import { EVENT_KIND, eventChange } from './autonomy.js';
 
 // POLL_MS is how often the card refreshes the hidden state while open.
 export const POLL_MS = 5000;
+// FADE_MS is how long a closing card waits at most for its fade-out (120ms in
+// style.css) to end before it is removed anyway.
+const FADE_MS = 200;
 // AVATAR is how many pixels across the card's avatar is.
 const AVATAR = 96;
 // LONG is how many characters a text has before the card collapses it, and
@@ -44,7 +47,9 @@ function statusLine(state) {
 
 // item is a row of a section: value on top, its muted label under it.
 function item(value, text) {
-  return h('div', null, h('div', { class: 'tg-profile-row' }, value), h('div', { class: 'tg-profile-label' }, text));
+  return h('div', { class: 'tg-profile-item' },
+    h('div', { class: 'tg-profile-value' }, value),
+    h('div', { class: 'tg-profile-label' }, text));
 }
 
 // longText shows text, collapsed to its first PREVIEW characters with a
@@ -80,8 +85,8 @@ function stateBody(state, skills) {
       const fill = h('span', { class: 'fill' });
       fill.style.width = `${Math.min(Math.max(Number(b.value) || 0, 0), 100)}%`;
       return item([
-        h('div', { class: 'tg-profile-bar', role: 'img', 'aria-label': `${b.name} ${b.value}` }, fill),
         `${b.value} · ${b.band}`,
+        h('div', { class: 'tg-profile-bar', role: 'img', 'aria-label': `${b.name} ${b.value}` }, fill),
       ], b.name);
     }),
     effects.map((e) => item(e.name, `还剩 ${minutesLeft(e.until_at)} 分钟`)),
@@ -127,23 +132,28 @@ function listRow(icon, name, count) {
   ];
 }
 
-function eventsRow(events) {
-  return h('li', null, h('details', null,
+// eventsList is the 最近变化 row: its count, expanding to the changes.
+function eventsList(events) {
+  return h('details', null,
     h('summary', null, listRow('↻', '最近变化', fmtInt(events.length))),
     events.length
       ? h('ul', { class: 'plain' }, events.map((e) => h('li', null,
         h('div', null, `${e.name} · ${label(EVENT_KIND, e.kind)} · ${eventChange(e)}`),
         h('div', { class: 'tg-profile-label' }, [fmtTime(e.at), e.reason].filter(Boolean).join(' · ')))))
-      : empty('最近没有变化')));
+      : empty('最近没有变化'));
 }
 
 // openProfile opens the profile card of the chat key with bot ({id, name,
 // avatar, skills when known}) over the page: its persona, and in a private
-// chat its hidden state and how the bot relates to the person, each section
-// from its own request so one that fails shows its error there only. While
-// open it refreshes the hidden state every POLL_MS. ×, Escape, a click on
-// the backdrop or signal, the page's, close it; close() ends its requests,
-// timer and listeners and returns the focus to opener.
+// chat its hidden state and how the bot relates to the person. Each section
+// renders as soon as its own requests settle, so a slow one holds up no
+// other and one that fails shows its error there only. While open it
+// refreshes the hidden state every POLL_MS. ×, Escape, a click on the
+// backdrop or signal, the page's, close it, and so does a plain click on ✎,
+// which goes to 会话详情. close() ends its requests, timer and listeners,
+// returns the focus to opener while it is on the page and fades the card
+// out, or removes it at once under reduced motion, when the page goes away or
+// when ✎ navigates.
 export function openProfile({ key, bot, signal, opener }) {
   if (signal && signal.aborted) return { close() {} };
   const ctrl = new AbortController();
@@ -151,26 +161,42 @@ export function openProfile({ key, bot, signal, opener }) {
   let timer = 0;
   let closed = false;
 
-  const close = () => {
+  // finish closes the card, removing it at once when now is set.
+  const finish = (now) => {
     if (closed) return;
     closed = true;
     clearTimeout(timer);
     ctrl.abort();
-    backdrop.remove();
-    if (opener) opener.focus();
+    if (now || (signal && signal.aborted) || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      backdrop.remove();
+    } else {
+      backdrop.classList.add('closing');
+      backdrop.addEventListener('animationend', (e) => {
+        if (e.target === backdrop) backdrop.remove();
+      });
+      setTimeout(() => backdrop.remove(), FADE_MS);
+    }
+    if (opener && opener.isConnected) opener.focus();
   };
+  const close = () => finish(false);
 
   const avatar = h('div', { class: 'tg-profile-avatar' }, avatarEl(who, AVATAR));
   const name = h('div', { class: 'tg-profile-name', id: 'tg-profile-name' }, who.name || who.id);
   const status = h('div', { class: 'tg-profile-status' });
   const edit = h('a', {
-    class: 'tg-profile-edit', href: href('conversations', key), title: '在会话详情里编辑', 'aria-label': '在会话详情里编辑', onclick: close,
+    class: 'tg-profile-edit', href: href('conversations', key), title: '在会话详情里编辑', 'aria-label': '在会话详情里编辑',
+    onclick: (e) => {
+      if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) finish(true);
+    },
   }, '✎');
   const shut = h('button', { type: 'button', class: 'tg-profile-close', title: '关闭', 'aria-label': '关闭', onclick: close }, '×');
-  const stateEl = h('div', null, loading());
-  const relationEl = h('div', null, loading());
-  const profileEl = h('div', null, loading());
-  const listEl = h('ul', { class: 'tg-profile-list' });
+  const stateEl = h('div', { class: 'tg-profile-body' }, loading());
+  const relationEl = h('div', { class: 'tg-profile-body' }, loading());
+  const profileEl = h('div', { class: 'tg-profile-body' }, loading());
+  const eventsEl = h('li', null, listRow('↻', '最近变化', '…'));
+  const messagesEl = h('li', null, listRow('✉', '消息', '…'));
+  const skillsEl = h('li', null, listRow('★', '技能', '…'));
+  const listEl = h('ul', { class: 'tg-profile-list' }, messagesEl, skillsEl);
   const privateEls = h('div');
   const card = h('section', { class: 'tg-profile', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'tg-profile-name', tabindex: '-1' },
     h('div', { class: 'tg-profile-head' },
@@ -216,13 +242,26 @@ export function openProfile({ key, bot, signal, opener }) {
       const b = (res.bots || []).find((x) => x.id === who.id);
       return b ? b.skills || [] : null;
     });
+  // done shows, unless the card has closed, what sources settled to.
+  const done = (sources, show) => Promise.allSettled(sources).then((results) => {
+    if (!closed) show(...results);
+  });
+  const privateConv = (convR) => convR.status === 'fulfilled' && isPrivate(convR.value);
 
   let skills = null;
+  // stateError is the message of the error the 状态 section shows, '' when
+  // it shows the state.
+  let stateError = '';
   const showState = (res) => {
     if (res.status === 'rejected') {
-      if (!isAbort(res.reason)) mount(stateEl, errorBox(res.reason));
+      if (isAbort(res.reason)) return;
+      const text = res.reason && res.reason.message ? res.reason.message : String(res.reason);
+      if (text === stateError) return;
+      stateError = text;
+      mount(stateEl, errorBox(res.reason));
       return;
     }
+    stateError = '';
     mount(status, statusLine(res.value));
     mount(stateEl, stateBody(res.value, skills));
   };
@@ -238,33 +277,56 @@ export function openProfile({ key, bot, signal, opener }) {
     timer = setTimeout(poll, POLL_MS);
   };
 
-  Promise.allSettled([convP, personaP, memoryP, autonomyP, skillsP]).then(([convR, personaR, memoryR, autonomyR, skillsR]) => {
-    if (closed) return;
-    const conv = convR.status === 'fulfilled' ? convR.value : null;
-    skills = skillsR.status === 'fulfilled' ? skillsR.value : null;
+  done([convP], (convR) => {
+    if (convR.status === 'rejected') {
+      listEl.prepend(h('li', null, errorBox(convR.reason)));
+      mount(messagesEl, listRow('✉', '消息', '—'));
+      return;
+    }
+    mount(messagesEl, listRow('✉', '消息', fmtInt(convR.value.message_count)));
+    if (!isPrivate(convR.value)) return;
+    mount(privateEls, section('状态', stateEl), section('关系', relationEl));
+    listEl.prepend(eventsEl);
+  });
 
+  done([convP, personaP], (convR, personaR) => {
+    const conv = convR.status === 'fulfilled' ? convR.value : null;
     if (personaR.status === 'rejected') {
       mount(profileEl, errorBox(personaR.reason), conv ? item(personaLabel(conv), '人设') : null);
-    } else {
-      const doc = (personaR.value.current ? personaR.value.current.persona : personaR.value.template_doc) || {};
-      if (doc.character_name) mount(name, doc.character_name);
-      if (doc.avatar_image && doc.avatar_image !== who.avatar) mount(avatar, avatarEl({ ...who, avatar: doc.avatar_image }, AVATAR));
-      mount(profileEl, profileBody(conv, personaR.value));
+      return;
     }
+    const doc = (personaR.value.current ? personaR.value.current.persona : personaR.value.template_doc) || {};
+    if (doc.character_name) mount(name, doc.character_name);
+    if (doc.avatar_image && doc.avatar_image !== who.avatar) mount(avatar, avatarEl({ ...who, avatar: doc.avatar_image }, AVATAR));
+    mount(profileEl, profileBody(conv, personaR.value));
+  });
 
-    const rows = [];
-    if (conv && isPrivate(conv)) {
-      mount(privateEls, section('状态', stateEl), section('关系', relationEl));
-      showState(autonomyR);
-      if (memoryR.status === 'rejected') mount(relationEl, errorBox(memoryR.reason));
-      else mount(relationEl, relationBody(conv, memoryR.value));
-      if (autonomyR.status !== 'fulfilled') rows.push(h('li', null, listRow('↻', '最近变化', '—')));
-      else rows.push(eventsRow(autonomyR.value.events || []));
-      timer = setTimeout(poll, POLL_MS);
+  done([convP, memoryP], (convR, memoryR) => {
+    if (!privateConv(convR)) return;
+    if (memoryR.status === 'rejected') mount(relationEl, errorBox(memoryR.reason));
+    else mount(relationEl, relationBody(convR.value, memoryR.value));
+  });
+
+  done([convP, autonomyP], (convR, autonomyR) => {
+    if (!privateConv(convR)) return;
+    if (autonomyR.status !== 'fulfilled') {
+      mount(eventsEl, listRow('↻', '最近变化', '—'));
+      return;
     }
-    rows.push(h('li', null, listRow('✉', '消息', conv ? fmtInt(conv.message_count) : '—')));
-    rows.push(h('li', null, listRow('★', '技能', skills ? (skills.length ? skills.join('、') : '没有') : '—')));
-    mount(listEl, convR.status === 'rejected' ? h('li', null, errorBox(convR.reason)) : null, rows);
+    mount(status, statusLine(autonomyR.value));
+    mount(eventsEl, eventsList(autonomyR.value.events || []));
+  });
+
+  done([convP, autonomyP, skillsP], (convR, autonomyR, skillsR) => {
+    if (!privateConv(convR)) return;
+    skills = skillsR.status === 'fulfilled' ? skillsR.value : null;
+    showState(autonomyR);
+    timer = setTimeout(poll, POLL_MS);
+  });
+
+  done([skillsP], (skillsR) => {
+    skills = skillsR.status === 'fulfilled' ? skillsR.value : null;
+    mount(skillsEl, listRow('★', '技能', skills ? (skills.length ? skills.join('、') : '没有') : '—'));
   });
 
   return { close };

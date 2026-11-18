@@ -1034,8 +1034,11 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   background: rgba(0, 0, 0, .5);
   animation: tg-fade-in 150ms ease-out;
 }
+.chat-app .tg-profile-backdrop.closing { pointer-events: none; animation: tg-fade-out 120ms ease-out forwards; }
+.chat-app .tg-profile-backdrop.closing .tg-profile { animation: tg-profile-out 120ms ease-out forwards; }
 .chat-app .tg-profile {
   --tg-profile-band: var(--accent);
+  --tg-profile-gap: var(--code-bg);
   position: relative;
   display: flex;
   flex-direction: column;
@@ -1050,8 +1053,9 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   animation: tg-profile-in 200ms cubic-bezier(.2,.8,.2,1);
 }
 @media (prefers-color-scheme: dark) {
-  .chat-app .tg-profile { --tg-profile-band: #2b5278; }
+  .chat-app .tg-profile { --tg-profile-band: #2b5278; --tg-profile-gap: var(--bg); }
 }
+.chat-app .tg-profile:focus { outline: none; }
 .chat-app .tg-profile-head {
   position: relative;
   flex: none;
@@ -1074,8 +1078,6 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
 .chat-app .tg-profile-status { max-width: 100%; color: rgba(255, 255, 255, .8); font-size: 14px; overflow-wrap: anywhere; }
 .chat-app .tg-profile-status:empty { display: none; }
 .chat-app .tg-profile-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; }
-.chat-app .tg-profile-head > .tg-profile-close { position: absolute; top: 8px; right: 8px; }
-.chat-app .tg-profile-head > .tg-profile-edit { position: absolute; top: 8px; right: 52px; }
 .chat-app .tg-profile-head a,
 .chat-app .tg-profile-head button {
   display: inline-flex;
@@ -1091,29 +1093,28 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   font-size: 20px;
   line-height: 1;
 }
+.chat-app .tg-profile-head .tg-profile-edit { font-size: 18px; }
+.chat-app .tg-profile-head .tg-profile-close { font-size: 26px; }
 .chat-app .tg-profile-head a:hover,
 .chat-app .tg-profile-head button:hover { background: rgba(255, 255, 255, .15); color: #ffffff; text-decoration: none; }
 .chat-app .tg-profile-head a:focus-visible,
 .chat-app .tg-profile-head button:focus-visible { outline: 2px solid #ffffff; outline-offset: -2px; }
 .chat-app .tg-profile-section,
-.chat-app .tg-profile-list { flex: none; padding: 8px 0; border-top: 8px solid var(--bg); }
-.chat-app .tg-profile-head + * { border-top: none; }
-.chat-app .tg-profile-section > h2,
-.chat-app .tg-profile-section > h3,
-.chat-app .tg-profile-title { margin: 4px 16px 2px; color: var(--accent); font-size: 14px; font-weight: 600; }
-.chat-app .tg-profile-section > p { margin: 6px 16px; color: var(--muted); font-size: 13px; }
-.chat-app .tg-profile-row {
+.chat-app .tg-profile-list { flex: none; margin: 0; padding: 8px 0; border-top: 8px solid var(--tg-profile-gap); }
+.chat-app .tg-profile-section > h3 { margin: 6px 16px 2px; color: var(--accent); font-size: 14px; font-weight: 600; }
+.chat-app .tg-profile-body > p { margin: 6px 16px; color: var(--muted); font-size: 13px; }
+.chat-app .tg-profile-item {
   display: flex;
   flex-direction: column;
   gap: 1px;
   padding: 7px 16px;
-  white-space: pre-line;
   overflow-wrap: anywhere;
 }
-.chat-app .tg-profile-label { order: 1; color: var(--muted); font-size: 13px; white-space: normal; }
+.chat-app .tg-profile-value { font-size: 15px; white-space: pre-line; }
+.chat-app .tg-profile-label { color: var(--muted); font-size: 13px; }
 .chat-app .tg-profile-bar {
   height: 6px;
-  margin: 4px 0 2px;
+  margin: 6px 0 3px;
   border-radius: 3px;
   background: var(--code-bg);
   overflow: hidden;
@@ -1127,6 +1128,9 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
 }
 .chat-app .tg-profile details { margin: 0; }
 .chat-app .tg-profile summary { color: var(--accent); font-size: 13px; white-space: normal; }
+.chat-app .tg-profile-value summary { color: var(--text); font-size: inherit; }
+.chat-app .tg-profile-value summary::marker { color: var(--accent); }
+.chat-app .tg-profile-value details[open] > summary { color: var(--accent); font-size: 13px; }
 .chat-app .tg-profile summary:focus { outline: none; }
 .chat-app .tg-profile summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .chat-app .tg-profile details ul,
@@ -1134,7 +1138,6 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
 .chat-app .tg-profile .error { margin: 6px 16px; padding: 6px 10px; font-size: 13px; }
 .chat-app .tg-profile-list { list-style: none; margin: 0; }
 .chat-app .tg-profile-list > * { display: flex; align-items: center; gap: 16px; padding: 10px 16px; }
-.chat-app .tg-profile-list > details { display: block; }
 .chat-app .tg-profile-list details { flex: 1; min-width: 0; }
 .chat-app .tg-profile-list summary {
   display: flex;
@@ -1150,13 +1153,16 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
 .chat-app .tg-profile-list summary:hover { background: var(--code-bg); }
 .chat-app .tg-profile-list details[open] > summary { margin-bottom: 0; }
 .chat-app .tg-profile-list details > :not(summary) { margin: 6px 0 0 40px; }
+.chat-app .tg-profile-list details ul { padding-left: 0; }
+.chat-app .tg-profile-list details li + li { margin-top: 6px; }
+.chat-app .tg-profile-list details li > :first-child { color: var(--text); }
 .chat-app .tg-profile-icon { flex: none; width: 24px; color: var(--muted); font-size: 18px; text-align: center; }
 .chat-app .tg-profile-count { margin-left: auto; padding-left: 12px; color: var(--muted); white-space: nowrap; }
 
 /* The page's motion: what arrives eases in, from below for a message and the
    profile card, from its corner for a menu, from the side it comes from for a
-   page on a narrow screen. With reduced motion asked for, nothing moves (see
-   the end). */
+   page on a narrow screen; the closing profile card fades out, sinking a
+   little. With reduced motion asked for, nothing moves (see the end). */
 @keyframes tg-fade-in {
   from { opacity: 0; }
 }
@@ -1183,6 +1189,12 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
 }
 @keyframes tg-profile-in {
   from { opacity: 0; transform: translateY(16px); }
+}
+@keyframes tg-fade-out {
+  to { opacity: 0; }
+}
+@keyframes tg-profile-out {
+  to { transform: translateY(8px); }
 }
 
 .hint.warn { color: var(--warn); }
@@ -1275,7 +1287,8 @@ details > summary { cursor: pointer; color: var(--accent); white-space: nowrap; 
 }
 
 /* With reduced motion asked for, the Telegram-style page does not move:
-   正在输入's dots stand still, shown, and the profile card just appears. */
+   正在输入's dots stand still, shown, and the profile card just appears and
+   goes (views/profile.js removes it at once then). */
 @media (prefers-reduced-motion: reduce) {
   .chat-app *,
   .chat-app *::before,

@@ -191,7 +191,8 @@ export async function deleteChatConfirmed(key) {
 // the chat is not known, with title, who the bot talks with, on hover and
 // status, when given, under the name, which together, when the bar has key and
 // bot, are one button, 查看资料, that opens the chat's profile card (see
-// openProfile; signal closes it too); and a ⋮ menu with 会话详情, items and,
+// openProfile; signal closes it too), named 查看资料：<name> and described by
+// the status for screen readers; and a ⋮ menu with 会话详情, items and,
 // when onDelete is given, 删除这个聊天. Choosing an item, a click elsewhere or
 // Escape anywhere on the page closes the menu; signal ends the listening for
 // those.
@@ -220,14 +221,17 @@ export function chatBar({ key, bot, title, status, items, onBack, onDelete, sign
       more.focus();
     }
   }, signal);
+  const statusEl = status || h('span', { class: 'tg-bar-status' });
+  statusEl.id = 'tg-bar-status';
   const who = [
     bot ? avatarEl(bot, 40) : null,
     h('span', { class: 'tg-bar-name', title: title || null },
       h('strong', null, bot ? bot.name || bot.id : key),
-      status || h('span', { class: 'tg-bar-status' })),
+      statusEl),
   ];
   const profile = key && bot ? h('button', {
-    type: 'button', class: 'tg-bar-profile', title: '查看资料', 'aria-label': '查看资料',
+    type: 'button', class: 'tg-bar-profile', title: '查看资料',
+    'aria-label': `查看资料：${bot.name || bot.id}`, 'aria-describedby': 'tg-bar-status',
     onclick: () => openProfile({ key, bot, signal, opener: profile }),
   }, who) : null;
   return h('header', { class: 'tg-bar' },
