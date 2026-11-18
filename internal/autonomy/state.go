@@ -1,7 +1,7 @@
 package autonomy
 
 import (
-	"slices"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -29,11 +29,19 @@ type StateStatus struct {
 	StartedAt, UntilAt time.Time
 }
 
-// StateBar is a hidden bar with its current value.
+// StateBar is a bar with its current value. Inner bars are shown with their
+// band only; Outer bars are shown with their value too, under outerHeader.
+// MaxStep > 0 adds "单次最多 ±MaxStep" to the line.
 type StateBar struct {
 	Name, Description string
 	Value             float64
+	Outer             bool
+	MaxStep           int
 }
+
+// outerHeader heads the outer bars, the states others can see, after the
+// footer of the inner part of the state block.
+const outerHeader = "【外在状态（别人看得出来，可以在动作和外表描写里自然带出；不说数字，不提状态条、工具或系统）】"
 
 // StateEffect is a passing condition of the bot that runs out at UntilAt.
 type StateEffect struct {
@@ -43,12 +51,18 @@ type StateEffect struct {
 
 // RenderState renders the hidden state block injected into private replies:
 // the scene line when scene is set, the status line when st is set, then a
-// line per bar showing its band, then one line with the effects still running
-// at now and the time each has left, with times in loc. The place, activity
-// and descriptions are flattened to one line without 【】 or control
-// characters. It returns "" when there is nothing to show. Over 300 runes it
-// drops all descriptions, then trailing effects, then trailing bars, then
-// shortens the activity; the scene line is always kept whole.
+// line per inner bar showing its band, then one line with the effects still
+// running at now and the time each has left, with times in loc, then the
+// footer, then, when bars holds outer bars, outerHeader and a line per outer
+// bar showing its value and band (inner and outer bars each in the order of
+// bars; see barLine). The place, activity and descriptions are flattened to
+// one line without 【】 or control characters. It returns "" when there is
+// nothing to show. Over 300 runes it drops all descriptions, then trailing
+// effects, then trailing inner bars, then trailing outer bars while the block
+// would be over 300 runes even with the activity cut to nothing (the heading
+// goes with the last outer bar), then shortens the activity; the scene line
+// is always kept whole, and a bar line, its step limit included, is kept or
+// dropped whole.
 func RenderState(scene *StateScene, st *StateStatus, bars []StateBar, effects []StateEffect, now time.Time,
 	loc *time.Location) string {
 	sceneText := ""
@@ -63,9 +77,14 @@ func RenderState(scene *StateScene, st *StateStatus, bars []StateBar, effects []
 			status = &s
 		}
 	}
-	bars = slices.Clone(bars)
-	for i := range bars {
-		bars[i].Description = oneLine(bars[i].Description)
+	var inner, outer []StateBar
+	for _, bar := range bars {
+		bar.Description = oneLine(bar.Description)
+		if bar.Outer {
+			outer = append(outer, bar)
+		} else {
+			inner = append(inner, bar)
+		}
 	}
 	var running []StateEffect
 	for _, e := range effects {
@@ -76,25 +95,38 @@ func RenderState(scene *StateScene, st *StateStatus, bars []StateBar, effects []
 	}
 	effects = running
 
-	block := renderState(sceneText, status, bars, effects, true, now, loc)
+	block := renderState(sceneText, status, inner, outer, effects, true, now, loc)
 	fits := func() bool { return utf8.RuneCountInString(block) <= maxStateRunes }
 	if fits() {
 		return block
 	}
-	block = renderState(sceneText, status, bars, effects, false, now, loc)
+	block = renderState(sceneText, status, inner, outer, effects, false, now, loc)
 	for !fits() && len(effects) > 0 {
 		effects = effects[:len(effects)-1]
-		block = renderState(sceneText, status, bars, effects, false, now, loc)
+		block = renderState(sceneText, status, inner, outer, effects, false, now, loc)
 	}
-	for !fits() && len(bars) > 0 {
-		bars = bars[:len(bars)-1]
-		block = renderState(sceneText, status, bars, nil, false, now, loc)
+	for !fits() && len(inner) > 0 {
+		inner = inner[:len(inner)-1]
+		block = renderState(sceneText, status, inner, outer, nil, false, now, loc)
+	}
+	if !fits() && len(outer) > 0 {
+		bare := status
+		if status != nil {
+			s := *status
+			s.Activity = ""
+			bare = &s
+		}
+		for len(outer) > 0 &&
+			utf8.RuneCountInString(renderState(sceneText, bare, nil, outer, nil, false, now, loc)) > maxStateRunes {
+			outer = outer[:len(outer)-1]
+		}
+		block = renderState(sceneText, status, nil, outer, nil, false, now, loc)
 	}
 	if !fits() && status != nil {
 		activity := []rune(status.Activity)
 		over := utf8.RuneCountInString(block) - maxStateRunes
 		status.Activity = strings.TrimSpace(string(activity[:max(len(activity)-over, 0)]))
-		block = renderState(sceneText, status, nil, nil, false, now, loc)
+		block = renderState(sceneText, status, nil, outer, nil, false, now, loc)
 	}
 	return block
 }
@@ -113,11 +145,13 @@ func sceneLine(inPerson bool, place string) string {
 }
 
 // renderState renders the block of RenderState: the scene line when scene is
-// not empty, then the status, bars and effects, the bars' and effects'
-// descriptions only when withDescriptions.
-func renderState(scene string, st *StateStatus, bars []StateBar, effects []StateEffect, withDescriptions bool,
+// not empty, then the status, inner bars and effects, then the footer when
+// any of those was written, then outerHeader and the outer bars when there
+// are any, with no trailing newline; the bars' and effects' descriptions only
+// when withDescriptions.
+func renderState(scene string, st *StateStatus, inner, outer []StateBar, effects []StateEffect, withDescriptions bool,
 	now time.Time, loc *time.Location) string {
-	if scene == "" && st == nil && len(bars) == 0 && len(effects) == 0 {
+	if scene == "" && st == nil && len(inner) == 0 && len(outer) == 0 && len(effects) == 0 {
 		return ""
 	}
 	var b strings.Builder
@@ -130,12 +164,8 @@ func renderState(scene string, st *StateStatus, bars []StateBar, effects []State
 			"（" + st.StartedAt.In(loc).Format("15:04") + " 开始，预计 " + st.UntilAt.In(loc).Format("15:04") +
 			" 结束；这期间对方找你照常回，但要符合正在做的事）\n")
 	}
-	for _, bar := range bars {
-		b.WriteString(bar.Name + "：" + Band(bar.Value))
-		if withDescriptions && bar.Description != "" {
-			b.WriteString("（" + bar.Description + "）")
-		}
-		b.WriteString("\n")
+	for _, bar := range inner {
+		b.WriteString(barLine(bar, withDescriptions) + "\n")
 	}
 	for i, e := range effects {
 		if i == 0 {
@@ -152,8 +182,46 @@ func renderState(scene string, st *StateStatus, bars []StateBar, effects []State
 	if len(effects) > 0 {
 		b.WriteString("\n")
 	}
-	b.WriteString(stateFooter)
+	if scene != "" || st != nil || len(inner) > 0 || len(effects) > 0 {
+		b.WriteString(stateFooter)
+		if len(outer) > 0 {
+			b.WriteString("\n")
+		}
+	}
+	if len(outer) > 0 {
+		b.WriteString(outerHeader)
+		for _, bar := range outer {
+			b.WriteString("\n" + barLine(bar, withDescriptions))
+		}
+	}
 	return b.String()
+}
+
+// barLine renders the line of bar without its newline: "名字：档位" for an
+// inner bar, "名字：80/100（档位）" with the rounded value for an outer one,
+// the step limit "单次最多 ±N" when bar.MaxStep > 0 (in its own brackets for
+// an inner bar, after the band for an outer one), then "（说明）" when
+// withDescriptions and the bar has a description.
+func barLine(bar StateBar, withDescriptions bool) string {
+	limit := ""
+	if bar.MaxStep > 0 {
+		limit = "单次最多 ±" + strconv.Itoa(bar.MaxStep)
+	}
+	line := bar.Name + "："
+	switch {
+	case bar.Outer && limit != "":
+		line += strconv.Itoa(int(math.Round(bar.Value))) + "/100（" + Band(bar.Value) + "，" + limit + "）"
+	case bar.Outer:
+		line += strconv.Itoa(int(math.Round(bar.Value))) + "/100（" + Band(bar.Value) + "）"
+	case limit != "":
+		line += Band(bar.Value) + "（" + limit + "）"
+	default:
+		line += Band(bar.Value)
+	}
+	if withDescriptions && bar.Description != "" {
+		line += "（" + bar.Description + "）"
+	}
+	return line
 }
 
 // TimeLeft words d, a positive time an effect has left, rounded up to the

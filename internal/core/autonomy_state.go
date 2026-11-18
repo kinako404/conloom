@@ -25,7 +25,11 @@ var wakeTools = []string{"adjust_buff", "add_buff", "remove_buff"}
 // the status while it lasts and, when the bot enables skillBuff, the bars
 // (scopeBars), each at the scope's stored value decayed to now with its
 // baseline and half-life, or at its baseline when none is stored, then the
-// effects still active. Stored bars that are neither doc's nor added by the
+// effects still active. Kind and step limit of a bar come from doc, the
+// persona of the conversation being answered (stateBar), so panel chats
+// sharing a scope show a bar by their own persona: outer bars with their
+// value under the outer heading, a step limit next to outer bars and bars
+// with a non-default one. Stored bars that are neither doc's nor added by the
 // bot are left out. It is "" for other conversations, when there is nothing
 // to show, or when a read fails, which is logged.
 func (o *Orchestrator) stateBlock(ctx context.Context, task store.TaskRecord, bot config.BotConfig, doc conloomapi.PersonaDoc,
@@ -65,7 +69,7 @@ func (o *Orchestrator) stateBlock(ctx context.Context, task store.TaskRecord, bo
 		}
 		for _, b := range scopeBars(doc, custom) {
 			cur, found := storedBar(stored, b.Name)
-			bars = append(bars, autonomy.StateBar{Name: b.Name, Description: b.Description, Value: barValue(b, cur, found, now)})
+			bars = append(bars, stateBar(b, barValue(b, cur, found, now)))
 		}
 		for _, e := range active {
 			effects = append(effects, autonomy.StateEffect{Name: e.Name, Description: e.Description, UntilAt: e.UntilAt})
@@ -74,7 +78,18 @@ func (o *Orchestrator) stateBlock(ctx context.Context, task store.TaskRecord, bo
 	return autonomy.RenderState(scene.state(), status, bars, effects, now, o.loc)
 }
 
-// scopeBars returns the hidden bars of a memory scope: doc's
+// stateBar is b at value v as the state block shows it: Outer for an outer
+// persona bar; MaxStep set for an outer bar and for a bar whose
+// EffectiveMaxStep is not conloomapi.DefaultBarMaxStep, else 0.
+func stateBar(b conloomapi.PersonaBar, v float64) autonomy.StateBar {
+	bar := autonomy.StateBar{Name: b.Name, Description: b.Description, Value: v, Outer: b.Outer()}
+	if step := b.EffectiveMaxStep(); bar.Outer || step != conloomapi.DefaultBarMaxStep {
+		bar.MaxStep = step
+	}
+	return bar
+}
+
+// scopeBars returns the bars of a memory scope, inner and outer: doc's
 // (conloomapi.PersonaDoc.EffectiveBars) in their order, then those of custom,
 // the bars the bot added, whose name none of doc's has; doc's bar wins a
 // name.
