@@ -205,6 +205,61 @@ ul.plain { list-style: none; margin: 0; padding: 0; }
   border-radius: 6px;
   background: var(--code-bg);
 }
+.persona-avatar-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 4px; }
+.persona-avatar-row .toolbar { margin-bottom: 0; }
+.persona-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 96px;
+  height: 96px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--code-bg);
+  object-fit: cover;
+}
+.persona-avatar-none { color: var(--muted); font-size: 12px; }
+
+.crop-stage { display: flex; justify-content: center; margin: 8px 0; touch-action: none; }
+.crop-frame {
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  background: var(--code-bg);
+}
+.crop-image { display: block; width: 100%; height: 100%; pointer-events: none; }
+.crop-box {
+  position: absolute;
+  border: 2px solid #ffffff;
+  outline: 1px solid rgba(0, 0, 0, .6);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, .5);
+  cursor: move;
+  touch-action: none;
+}
+.crop-box:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.crop-handle {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border: 1px solid rgba(0, 0, 0, .6);
+  border-radius: 4px;
+  background: #ffffff;
+}
+.crop-handle[data-corner=nw] { left: -2px; top: -2px; cursor: nwse-resize; }
+.crop-handle[data-corner=ne] { right: -2px; top: -2px; cursor: nesw-resize; }
+.crop-handle[data-corner=sw] { left: -2px; bottom: -2px; cursor: nesw-resize; }
+.crop-handle[data-corner=se] { right: -2px; bottom: -2px; cursor: nwse-resize; }
+.crop-side { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-bottom: 8px; }
+.crop-preview {
+  width: 96px;
+  height: 96px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--code-bg);
+}
 
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 12px 0 16px; flex-wrap: wrap; }
 .tabs a { padding: 6px 14px; color: var(--text); border-bottom: 2px solid transparent; }

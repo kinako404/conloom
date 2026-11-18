@@ -329,6 +329,7 @@ export async function templateView(ctx) {
 
   const form = personaForm(t.persona, {
     saveText: '保存',
+    avatar: true,
     save: (persona, reason, msg, button) => write(msg, button, () => put(templatePath(name), { persona, reason }), `模板 ${name} 已保存`),
   });
 

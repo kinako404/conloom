@@ -3,7 +3,8 @@
 
 import { h, mount, errorBox, field, select } from '../lib/dom.js';
 import { get, post, upload, isAbort } from '../lib/api.js';
-import { imageURL } from './avatar.js';
+import { imageURL, originalImageURL } from './avatar.js';
+import { cropAvatar, AVATAR_SIZE } from './avatarcrop.js';
 
 const REPLY_LENGTH = { short: '短（short）', medium: '中（medium）', long: '长（long）' };
 const FOLLOWUP = { never: '从不（never）', occasionally: '偶尔（occasionally）', often: '经常（often）' };
@@ -25,6 +26,11 @@ const MAX_BARS = 4;
 const MAX_APPEARANCE = 800;
 // MAX_IMAGE_MIB is imaging.MaxBytes in MiB, the largest image upload.
 const MAX_IMAGE_MIB = 8;
+// AVATAR_SOURCE_TYPES are the images an avatar is cropped from; the browser
+// decodes them, and the crop is uploaded as a PNG or JPEG.
+const AVATAR_SOURCE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+// MAX_AVATAR_SOURCE_MIB bounds the image file an avatar is cropped from.
+const MAX_AVATAR_SOURCE_MIB = 32;
 // INTIMACY_LEVELS is the values of conloomapi.PersonaIntimacy.Levels, from
 // mixing in none of the intimacy side to mixing in the most.
 const INTIMACY_LEVELS = { none: '不混', light: '少量', half: '一半', major: '为主' };
@@ -106,9 +112,10 @@ function barsEditor(bars) {
 // appearanceEditor edits a persona's appearance: its text, its reference
 // image and whether replies carry the image. An upload is stored on the
 // server at once, but the persona refers to it only once saved; a generated
-// description only fills the text box. read returns {fields}, the three
-// fields, or {error} while an upload or a description is under way.
-function appearanceEditor(base) {
+// description only fills the text box. onImage runs when the reference image
+// changes, image() returns its ID. read returns {fields}, the three fields,
+// or {error} while an upload or a description is under way.
+function appearanceEditor(base, onImage) {
   let imageId = base.appearance_image || '';
   let busy = false;
   const text = h('textarea', { value: base.appearance || '' });
@@ -159,6 +166,7 @@ function appearanceEditor(base) {
     try {
       const res = await upload('persona-images', f);
       imageId = res.id;
+      onImage();
       show(imageURL(imageId));
       mount(msg, h('div', { class: 'notice' },
         `已上传（${res.width}×${res.height}，回复时约占 ${res.reply_tokens} token）。点保存后才写进人设。`));
@@ -190,6 +198,7 @@ function appearanceEditor(base) {
 
   remove.addEventListener('click', () => {
     imageId = '';
+    onImage();
     show('');
     mount(msg, h('div', { class: 'notice' }, '已移除参考图，点保存后生效。'));
     sync();
@@ -212,7 +221,117 @@ function appearanceEditor(base) {
       h('label', { class: 'field inline' }, attach, '回复时附带外观图'),
       h('p', { class: 'hint' }, '勾选且有参考图时，回复模型支持图片的话，回复请求里带上这张图的缩小版，让角色知道自己的样子。'),
     ],
+    image: () => imageId,
     read,
+  };
+}
+
+// avatarEditor edits a persona template's avatar, the square image the chat
+// page shows for the bots using the template, never sent to a model: a
+// circle of the current one, and buttons to choose a square of an image file
+// or of the reference image (reference() returns its ID, '' without one) in
+// the crop dialog, which uploads it, and to remove it. Like the reference
+// image, the avatar is uploaded at once but only saved with the form. sync()
+// updates the buttons after the reference image changed. read returns
+// {fields}, avatar_image, or {error} while the crop dialog is open.
+function avatarEditor(base, reference) {
+  let avatarId = base.avatar_image || '';
+  let busy = false;
+  const msg = h('div');
+  const current = h('img', { class: 'persona-avatar', alt: '头像', width: 96, height: 96 });
+  const none = h('span', { class: 'persona-avatar persona-avatar-none' }, '未设置');
+  const file = h('input', { type: 'file', accept: AVATAR_SOURCE_TYPES.join(','), hidden: true });
+  const choose = h('button', { type: 'button', onclick: () => file.click() }, '上传头像');
+  const fromReference = h('button', { type: 'button' }, '从参考图选取');
+  const remove = h('button', { type: 'button', class: 'danger' }, '移除头像');
+  const el = h('div', { class: 'persona-avatar-editor' });
+
+  const sync = () => {
+    choose.disabled = busy;
+    fromReference.disabled = busy || !reference();
+    remove.disabled = busy || !avatarId;
+  };
+  const show = () => {
+    if (avatarId) current.setAttribute('src', imageURL(avatarId));
+    else current.removeAttribute('src');
+    current.hidden = !avatarId;
+    none.hidden = !!avatarId;
+  };
+  current.addEventListener('error', () => {
+    if (current.getAttribute('src')) fail(msg, '头像读取失败，可能已被清理。请重新选择，或移除后再保存。');
+  });
+
+  const crop = async (src) => {
+    try {
+      const res = await cropAvatar({ src, parent: el, maxBytes: MAX_IMAGE_MIB * 1024 * 1024 });
+      if (res) {
+        avatarId = res.id;
+        show();
+        mount(msg, h('div', { class: 'notice' }, '已设置头像，点保存后才写进人设。'));
+      } else {
+        mount(msg);
+      }
+    } catch (err) {
+      if (!isAbort(err)) mount(msg, errorBox(err));
+    } finally {
+      busy = false;
+      sync();
+    }
+  };
+  const start = () => {
+    busy = true;
+    sync();
+    mount(msg, h('p', { class: 'muted' }, '正在读取图片…'));
+  };
+
+  file.addEventListener('change', () => {
+    const f = file.files[0];
+    file.value = '';
+    if (!f) return;
+    if (f.type && !AVATAR_SOURCE_TYPES.includes(f.type)) {
+      fail(msg, '只支持 PNG、JPEG、WebP 或 GIF 图片');
+      return;
+    }
+    if (f.size > MAX_AVATAR_SOURCE_MIB * 1024 * 1024) {
+      fail(msg, `图片不能超过 ${MAX_AVATAR_SOURCE_MIB} MiB`);
+      return;
+    }
+    start();
+    const reader = new FileReader();
+    reader.addEventListener('load', () => crop(reader.result));
+    reader.addEventListener('error', () => {
+      busy = false;
+      sync();
+      fail(msg, '无法读取这个文件');
+    });
+    reader.readAsDataURL(f);
+  });
+  fromReference.addEventListener('click', () => {
+    const id = reference();
+    if (!id) return;
+    start();
+    crop(originalImageURL(id));
+  });
+  remove.addEventListener('click', () => {
+    avatarId = '';
+    show();
+    mount(msg, h('div', { class: 'notice' }, '已移除头像，点保存后生效。'));
+    sync();
+  });
+
+  show();
+  sync();
+  mount(el,
+    h('div', { class: 'persona-avatar-row' }, current, none,
+      h('div', { class: 'toolbar' }, choose, fromReference, remove, file)),
+    h('p', { class: 'hint' },
+      `PNG、JPEG、WebP 或 GIF，最多 ${MAX_AVATAR_SOURCE_MIB} MiB。选好图后框出一个正方形，裁成 ${AVATAR_SIZE}×${AVATAR_SIZE} 上传。` +
+      '头像只在面板的聊天页显示，不发给模型；没有头像时显示参考图。'),
+    msg);
+  return {
+    el,
+    sync,
+    read: () => (busy ? { error: '头像还在裁剪或上传，完成后再保存' } : { fields: { avatar_image: avatarId } }),
   };
 }
 
@@ -323,7 +442,8 @@ function intimacyEditor(base, { minor, adult }) {
 // show. Submitting (the button saveText) reads the persona and calls
 // save(persona, reason, msg, button), which stores it and shows the outcome
 // in msg; read() reads the persona without saving, as {persona} or {error}.
-export function personaForm(doc, { save, saveText = '保存人设' }) {
+// With avatar, as on the templates page, it also edits the avatar.
+export function personaForm(doc, { save, saveText = '保存人设', avatar: withAvatar = false }) {
   const base = JSON.parse(JSON.stringify(doc || {}));
   const style = base.style || {};
   const behavior = base.behavior || {};
@@ -334,7 +454,11 @@ export function personaForm(doc, { save, saveText = '保存人设' }) {
   const gender = select(GENDER, base.gender || '');
   const description = h('textarea', { value: base.description || '' });
   const speakingStyle = h('textarea', { value: base.speaking_style || '' });
-  const appearance = appearanceEditor(base);
+  let avatar = null;
+  const appearance = appearanceEditor(base, () => {
+    if (avatar) avatar.sync();
+  });
+  avatar = withAvatar ? avatarEditor(base, appearance.image) : null;
   const styleInputs = Object.fromEntries(STYLE.map(([k]) => [k,
     h('input', { type: 'number', min: 0, max: 1, step: 'any', value: style[k] ?? '' })]));
   const replyLength = select(REPLY_LENGTH, behavior.default_reply_length);
@@ -390,6 +514,8 @@ export function personaForm(doc, { save, saveText = '保存人设' }) {
     if (barRows.error) return { error: barRows.error };
     const look = appearance.read();
     if (look.error) return { error: look.error };
+    const face = avatar ? avatar.read() : { fields: {} };
+    if (face.error) return { error: face.error };
     const side = intimacy.read();
     if (side.error) return { error: side.error };
     if (minor.checked && adultAppearance.value.trim() !== '') return { error: '未成年人设不能填写成年外观描述，请先清空' };
@@ -412,7 +538,7 @@ export function personaForm(doc, { save, saveText = '保存人设' }) {
     persona.character_name = characterName.value;
     persona.gender = gender.value;
     persona.description = description.value;
-    Object.assign(persona, look.fields);
+    Object.assign(persona, look.fields, face.fields);
     persona.speaking_style = speakingStyle.value;
     persona.minor = minor.checked;
     persona.adult = adult.checked;
@@ -450,6 +576,7 @@ export function personaForm(doc, { save, saveText = '保存人设' }) {
   field('说话风格', speakingStyle, '可选，最多 1000 字'),
   h('h3', null, '外观'),
   appearance.el,
+  avatar ? [h('h3', null, '头像'), avatar.el] : null,
   h('h3', null, '风格（0–1）'),
   h('div', { class: 'form-grid' }, STYLE.map(([k, title]) => field(`${title}（${k}）`, styleInputs[k]))),
   h('h3', null, '行为'),
