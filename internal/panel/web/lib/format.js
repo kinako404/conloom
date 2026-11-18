@@ -106,17 +106,14 @@ export function sceneLabel(scene) {
   return scene.place ? `面对面 · ${scene.place}` : '面对面';
 }
 
-// ACTION matches a short action or look written in full-width brackets on one
-// line, such as （笑）.
-export const ACTION = /（[^（）\n]*）/g;
-
 // actionParts splits text into its runs in order, each {text, action}, action
-// true for a run ACTION matches; a bracket left open stays plain text.
+// true for a short action or look written in full-width brackets on one line,
+// such as （笑）; a bracket left open stays plain text.
 export function actionParts(text) {
   const s = text || '';
   const out = [];
   let at = 0;
-  for (const m of s.matchAll(ACTION)) {
+  for (const m of s.matchAll(/（[^（）\n]*）/g)) {
     if (m.index > at) out.push({ text: s.slice(at, m.index), action: false });
     out.push({ text: m[0], action: true });
     at = m.index + m[0].length;

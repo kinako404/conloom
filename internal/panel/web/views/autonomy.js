@@ -42,7 +42,7 @@ function sceneSection(key, scene, write) {
     type: 'button',
     onclick: () => write(msg, online, () => put(path, { mode: 'online', place: '' }), '已切到线上'),
   }, '切到线上');
-  const placeInput = h('input', { maxlength: SCENE_PLACE_MAX, placeholder: '地点（可选，最多 16 字）', 'aria-label': '面对面的地点' });
+  const placeInput = h('input', { placeholder: '地点（可选，最多 16 字）', 'aria-label': '面对面的地点' });
   const inPerson = h('button', { type: 'submit' }, '切到面对面');
   const form = h('form', {
     class: 'toolbar',
