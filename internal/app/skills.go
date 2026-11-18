@@ -40,6 +40,7 @@ func builtinTools(d toolDeps) []skills.Tool {
 		tools.NewGetAffinity(tools.AffinityDeps{Store: d.Store, Policies: d.Policies}),
 		tools.NewNow(),
 		tools.NewSetStatus(d.Store, d.Policies, d.Personas, d.Reviewer),
+		tools.NewSetScene(d.Store, d.Policies, d.Personas, d.Reviewer),
 		tools.NewAdjustBuff(d.Store, d.Personas),
 		tools.NewAddBuff(d.Store, d.Policies, d.Personas, d.Reviewer),
 		tools.NewRemoveBuff(d.Store, d.Personas),

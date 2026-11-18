@@ -46,13 +46,17 @@ func TestLoad_Builtins(t *testing.T) {
 				return
 			}
 		}
-	}); !slices.Equal(names, []string{"buff", "memory", "status", "time"}) {
+	}); !slices.Equal(names, []string{"buff", "memory", "scene", "status", "time"}) {
 		t.Fatalf("builtin skills = %v", names)
 	}
 	for _, c := range []struct {
 		name  string
 		tools []string
-	}{{"status", []string{"set_status"}}, {"buff", []string{"adjust_buff", "add_buff", "remove_buff"}}} {
+	}{
+		{"status", []string{"set_status"}},
+		{"scene", []string{"set_scene"}},
+		{"buff", []string{"adjust_buff", "add_buff", "remove_buff"}},
+	} {
 		s := got[c.name]
 		if !slices.Equal(s.Tools, c.tools) || !slices.Equal(s.Conversations, []string{"private"}) || s.Description == "" ||
 			s.Source != "builtin" {
@@ -95,7 +99,7 @@ func TestLoad_DirOverridesAndAdds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(got) != 5 || got["memory"].Body != memoryBody {
+	if len(got) != 6 || got["memory"].Body != memoryBody {
 		t.Fatalf("skills = %v", got)
 	}
 	if tm := got["time"]; tm.Body != "- 只在被问到时间时调用 now。" || !slices.Equal(tm.Conversations, []string{"private"}) ||
@@ -127,7 +131,7 @@ func TestLoad_SymlinkedSkillDirs(t *testing.T) {
 	if tm := got["time"]; tm.Body != "- 只在被问到时间时调用 now。" || tm.Source != filepath.Join(dir, "time", "SKILL.md") {
 		t.Errorf("time through a symlinked directory = %+v, want the one in %s", tm, elsewhere)
 	}
-	if len(got) != 4 {
+	if len(got) != 5 {
 		t.Errorf("skills = %v, want the built-in ones with time replaced and the linked file left out", got)
 	}
 
@@ -231,7 +235,7 @@ func TestRegistry_SkillAndSkills(t *testing.T) {
 	for _, s := range r.Skills() {
 		names = append(names, s.Name)
 	}
-	if !slices.Equal(names, []string{"buff", "groupnote", "memory", "status", "time"}) {
+	if !slices.Equal(names, []string{"buff", "groupnote", "memory", "scene", "status", "time"}) {
 		t.Errorf("Skills = %v, want every loaded skill by name", names)
 	}
 	if s, ok := r.Skill("groupnote"); !ok || !slices.Equal(s.Conversations, []string{"group"}) {

@@ -1,6 +1,6 @@
 // Package tools holds the built-in tools that skills expose to the model:
-// remember, recall, get_affinity, now, set_status, adjust_buff, add_buff and
-// remove_buff. Each acts only for the speaker and conversation of its
+// remember, recall, get_affinity, now, set_status, set_scene, adjust_buff,
+// add_buff and remove_buff. Each acts only for the speaker and conversation of its
 // skills.Invocation, never for anyone named in its arguments.
 package tools
 
@@ -32,6 +32,11 @@ type PersonaSource interface {
 type StatusStore interface {
 	SetStatus(ctx context.Context, s store.ConversationStatus, ret *store.ConversationTimer) error
 	ClearStatus(ctx context.Context, convKey string, untilAt time.Time) (bool, error)
+}
+
+// SceneStore is the part of store.Store that set_scene uses.
+type SceneStore interface {
+	SetScene(ctx context.Context, s store.ConversationScene) (bool, error)
 }
 
 // BuffStore is the part of store.Store that adjust_buff, add_buff and
@@ -78,7 +83,7 @@ var noArguments = json.RawMessage(`{"type":"object","properties":{}}`)
 
 // shortResultRunes is the result limit (skills.ResultLimiter) of the tools
 // that answer with one sentence: remember, get_affinity, now, set_status,
-// adjust_buff, add_buff and remove_buff.
+// set_scene, adjust_buff, add_buff and remove_buff.
 const shortResultRunes = 100
 
 // memoryOn reports whether memory is in effect for convKey, as for the

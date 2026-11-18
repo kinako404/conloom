@@ -57,7 +57,7 @@ func TestBuiltinTools(t *testing.T) {
 	for _, tool := range builtinTools(toolDeps{}) {
 		names = append(names, tool.Spec().Name)
 	}
-	if !slices.Equal(names, []string{"remember", "recall", "get_affinity", "now", "set_status", "adjust_buff", "add_buff", "remove_buff"}) {
+	if !slices.Equal(names, []string{"remember", "recall", "get_affinity", "now", "set_status", "set_scene", "adjust_buff", "add_buff", "remove_buff"}) {
 		t.Fatalf("builtinTools = %v", names)
 	}
 	for _, c := range []struct {
