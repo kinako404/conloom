@@ -218,8 +218,8 @@ type ReplyPolicy struct {
 	Quote string `json:"quote" yaml:"quote"`
 	// MaxParts is how many separate messages one reply may be split into: 1
 	// sends it as one message, 0 splits it at every split point without a
-	// cap. A max_parts key missing from decoded JSON is filled by WithDefaults
-	// (see UnmarshalJSON).
+	// cap. A max_parts key missing from a freshly decoded policy is filled by
+	// WithDefaults (see MarkMissingMaxParts).
 	MaxParts int `json:"max_parts" yaml:"max_parts"`
 	// PrivateWait is the pause in a private chat that ends the user's turn;
 	// PrivateMaxWait caps how long the turn may keep growing.
@@ -227,33 +227,42 @@ type ReplyPolicy struct {
 	PrivateMaxWait Duration `json:"private_max_wait" yaml:"private_max_wait"`
 }
 
-// maxPartsUnset is the MaxParts of a reply section decoded without a max_parts
-// key, until WithDefaults fills it. It never reaches JSON: MarshalJSON leaves
-// the key out.
+// maxPartsUnset is the MaxParts that MarkMissingMaxParts sets for a missing
+// max_parts, until WithDefaults fills it. It never reaches JSON: MarshalJSON
+// leaves the key out.
 const maxPartsUnset = math.MinInt
 
-// UnmarshalJSON decodes the section as usual, except that decoding into a zero
-// ReplyPolicy without a max_parts key (or with null) marks MaxParts as missing,
-// so WithDefaults fills it while an explicit 0 is kept. Decoding over a
-// non-zero ReplyPolicy keeps its MaxParts when the key is missing.
-func (r *ReplyPolicy) UnmarshalJSON(b []byte) error {
-	if string(bytes.TrimSpace(b)) == "null" {
-		return nil
+// MaxPartsMissing reports whether MaxParts was missing from the JSON the
+// policy was decoded from (see MarkMissingMaxParts) and is not filled yet.
+func (r ReplyPolicy) MaxPartsMissing() bool {
+	return r.MaxParts == maxPartsUnset
+}
+
+// MarkMissingMaxParts marks p's reply.max_parts as missing (see MaxPartsMissing) when raw, the JSON
+// p was decoded from, has no reply section, a null one, or one without a max_parts key or with a
+// null max_parts, so WithDefaults fills it while an explicit 0 is kept. Call it after decoding a
+// policy afresh, as stored versions and request bodies are; a policy decoded over defaults keeps
+// their value for a missing key and needs no call. Empty raw counts as a policy without a reply
+// section.
+func MarkMissingMaxParts(raw []byte, p *GroupPolicy) error {
+	var probe struct {
+		Reply *struct {
+			MaxParts json.RawMessage `json:"max_parts"`
+		} `json:"reply"`
 	}
-	type plain ReplyPolicy
-	v := plain(*r)
-	if *r == (ReplyPolicy{}) {
-		v.MaxParts = maxPartsUnset
+	if len(bytes.TrimSpace(raw)) > 0 {
+		if err := json.Unmarshal(raw, &probe); err != nil {
+			return err
+		}
 	}
-	if err := json.Unmarshal(b, &v); err != nil {
-		return err
+	if probe.Reply == nil || len(probe.Reply.MaxParts) == 0 || string(probe.Reply.MaxParts) == "null" {
+		p.Reply.MaxParts = maxPartsUnset
 	}
-	*r = ReplyPolicy(v)
 	return nil
 }
 
 // MarshalJSON encodes the section, leaving out a max_parts still missing (see
-// UnmarshalJSON), so it decodes as missing again.
+// MarkMissingMaxParts), so it is decoded as missing again.
 func (r ReplyPolicy) MarshalJSON() ([]byte, error) {
 	type plain ReplyPolicy
 	if r.MaxParts != maxPartsUnset {
@@ -291,8 +300,10 @@ type PolicyState struct {
 // the group's current one: a section counts as omitted when it is zero and its Present flag is false.
 // UnmarshalJSON sets ProactivePresent and MemoryPresent when the body has a non-null policy.proactive
 // or policy.memory key, so a JSON section such as {"enabled":false} is applied as given (missing
-// memory keys take the built-in defaults) and an invalid one fails validation. Go callers that build
-// a PolicyPut leave the flags false, and a zero section from them is omitted.
+// memory keys take the built-in defaults) and an invalid one fails validation. It also marks a
+// missing policy.reply.max_parts (see MarkMissingMaxParts), so it takes the default while an explicit
+// 0 is kept. Go callers that build a PolicyPut leave the flags false, and a zero section from them is
+// omitted; their MaxParts is taken as given, so 0 means split every line.
 type PolicyPut struct {
 	Policy GroupPolicy `json:"policy" yaml:"policy"`
 	Reason string      `json:"reason" yaml:"reason"`
@@ -351,7 +362,13 @@ func (p *PolicyPut) UnmarshalJSON(b []byte) error {
 		p.Policy.Memory = *w.Policy.Memory
 		p.MemoryPresent = true
 	}
-	return nil
+	var raw struct {
+		Policy json.RawMessage `json:"policy"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	return MarkMissingMaxParts(raw.Policy, &p.Policy)
 }
 
 func DefaultGroupPolicy() GroupPolicy {
@@ -418,7 +435,7 @@ func DefaultPrivatePolicy() GroupPolicy {
 // and each turn-taking, quote and join setting that is zero (missing from policies stored before
 // it existed; zero is never valid for them) taken from def. Zero is a valid max_parts, so
 // max_parts is taken from def only when it was missing from the decoded JSON (see
-// ReplyPolicy.UnmarshalJSON). Zero is a valid private_wait, so private_wait and private_max_wait
+// MarkMissingMaxParts). Zero is a valid private_wait, so private_wait and private_max_wait
 // are taken from def only when both are zero.
 // Within a stored memory section, zero summary_max_chars and note_max_chars are kept, not filled
 // from def: their zero means the default of the conversation's type. A missing memory section is
@@ -437,7 +454,7 @@ func (p GroupPolicy) WithDefaults(def GroupPolicy) GroupPolicy {
 	fillZero(&p.Reply.MaxUnpromptedReplies, def.Reply.MaxUnpromptedReplies)
 	fillZero(&p.Reply.MaxConsecutiveSkips, def.Reply.MaxConsecutiveSkips)
 	fillZero(&p.Reply.Quote, def.Reply.Quote)
-	if p.Reply.MaxParts == maxPartsUnset {
+	if p.Reply.MaxPartsMissing() {
 		p.Reply.MaxParts = def.Reply.MaxParts
 	}
 	if p.Reply.PrivateWait == (Duration{}) && p.Reply.PrivateMaxWait == (Duration{}) {
@@ -514,7 +531,7 @@ func (p GroupPolicy) Validate() error {
 	if !slices.Contains([]string{QuoteAuto, QuoteAlways, QuoteNever}, r.Quote) {
 		fail("reply.quote must be one of auto|always|never, got %q", r.Quote)
 	}
-	if r.MaxParts == maxPartsUnset {
+	if r.MaxPartsMissing() {
 		fail("reply.max_parts is missing")
 	} else if r.MaxParts < 0 || r.MaxParts > 10 {
 		fail("reply.max_parts must be in [0, 10], got %d", r.MaxParts)

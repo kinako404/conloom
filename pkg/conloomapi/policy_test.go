@@ -846,6 +846,9 @@ func TestWithDefaultsFillsRhythmFields(t *testing.T) {
 	if err := json.Unmarshal(legacy, &p); err != nil {
 		t.Fatal(err)
 	}
+	if err := MarkMissingMaxParts(legacy, &p); err != nil {
+		t.Fatal(err)
+	}
 	got := p.WithDefaults(def)
 	want := stored
 	want.Reply.MaxParts = 3
@@ -925,10 +928,19 @@ func TestReplyPolicy_MaxPartsMissingOrZero(t *testing.T) {
 		if err := json.Unmarshal([]byte(src), &p); err != nil {
 			t.Fatal(err)
 		}
+		if err := MarkMissingMaxParts([]byte(src), &p); err != nil {
+			t.Fatal(err)
+		}
 		return p
 	}
-	for name, src := range map[string]string{"missing": missing, "null": null} {
+	for name, src := range map[string]string{
+		"missing": missing, "null": null,
+		"no reply section": `{}`, "null reply section": `{"reply":null}`, "empty reply section": `{"reply":{}}`,
+	} {
 		p := decode(src)
+		if !p.Reply.MaxPartsMissing() {
+			t.Errorf("%s: MaxPartsMissing = false, want true", name)
+		}
 		if got := p.WithDefaults(def).Reply.MaxParts; got != 3 {
 			t.Errorf("%s max_parts filled = %d, want the default's 3", name, got)
 		}
@@ -959,12 +971,18 @@ func TestReplyPolicy_MaxPartsMissingOrZero(t *testing.T) {
 		t.Errorf("max_parts 0 marshals as %s", b)
 	}
 
-	var empty ReplyPolicy
-	if err := json.Unmarshal([]byte(`{}`), &empty); err != nil {
+	if decode(zero).Reply.MaxPartsMissing() {
+		t.Error("explicit max_parts 0 reported missing")
+	}
+	var plain GroupPolicy
+	if err := json.Unmarshal([]byte(missing), &plain); err != nil {
 		t.Fatal(err)
 	}
-	if got := (GroupPolicy{Reply: empty}).WithDefaults(def).Reply.MaxParts; got != 3 {
-		t.Errorf("empty reply section max_parts filled = %d, want 3", got)
+	if plain.Reply.MaxPartsMissing() || plain.Reply.MaxParts != 0 {
+		t.Errorf("plain json.Unmarshal max_parts = %d, want 0 without MarkMissingMaxParts", plain.Reply.MaxParts)
+	}
+	if err := MarkMissingMaxParts([]byte(`{"reply":"x"}`), &plain); err == nil {
+		t.Error("MarkMissingMaxParts accepted a reply that is not an object")
 	}
 
 	for _, tc := range []struct {
@@ -973,6 +991,8 @@ func TestReplyPolicy_MaxPartsMissingOrZero(t *testing.T) {
 	}{
 		{`{"policy":` + missing + `,"reason":"r"}`, 3},
 		{`{"policy":` + zero + `,"reason":"r"}`, 0},
+		{`{"policy":{"reply":null},"reason":"r"}`, 3},
+		{`{"reason":"r"}`, 3},
 	} {
 		var put PolicyPut
 		if err := json.Unmarshal([]byte(tc.body), &put); err != nil {
@@ -996,6 +1016,18 @@ func TestReplyPolicy_MaxPartsMissingOrZero(t *testing.T) {
 	lit.Reply.MaxParts = 0
 	if got := lit.WithDefaults(def).Reply.MaxParts; got != 0 {
 		t.Errorf("Go policy max_parts 0 filled to %d, want 0 kept", got)
+	}
+}
+
+// Decoding a policy with DisallowUnknownFields still rejects unknown reply keys.
+func TestReplyPolicy_StrictDecoding(t *testing.T) {
+	for _, key := range []string{"max_part", "turn_gapp"} {
+		dec := json.NewDecoder(strings.NewReader(`{"reply":{"` + key + `":0}}`))
+		dec.DisallowUnknownFields()
+		p := DefaultGroupPolicy()
+		if err := dec.Decode(&p); err == nil || !strings.Contains(err.Error(), "unknown field") || !strings.Contains(err.Error(), key) {
+			t.Errorf("decode reply.%s: err = %v, want unknown field %q", key, err, key)
+		}
 	}
 }
 

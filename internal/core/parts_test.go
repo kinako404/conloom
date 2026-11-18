@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
@@ -259,11 +260,17 @@ func TestRunner_MaxPartsZeroSplitsEveryLine(t *testing.T) {
 	}
 }
 
-func TestMaxPartsZeroSendsCommandRepliesWhole(t *testing.T) {
-	env := newTestOrchestrator(t, testOpts{short: answer("不该用到"), configure: withMaxParts(0)})
-	got := env.command(t, "20001", "/help")
-	if !strings.Contains(got, "\n") || !strings.HasPrefix(got, "我是") {
-		t.Fatalf("/help = %q, want the whole multi-line help in one message", got)
+// Text an outcome carries other than a model reply (error copy) is sent
+// whole, also when the policy's max_parts is 0.
+func TestExecute_NonModelTextIsSentWhole(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: withMaxParts(0)})
+	out := env.o.execute(t.Context(), store.TaskRecord{ID: "task_missing_conv", BotInstanceID: testBot,
+		ConversationKey: store.ConversationKey(testBot, "qq", conloomapi.ConvGroup, "99999")}, joinPlan{})
+	if out.status != conloomapi.TaskFailed {
+		t.Fatalf("outcome = %+v, want a failed task", out)
+	}
+	if got := splitParts("第一行\n第二行", out.maxParts); len(got) != 1 {
+		t.Fatalf("outcome max parts %d splits text into %q, want it whole", out.maxParts, got)
 	}
 }
 

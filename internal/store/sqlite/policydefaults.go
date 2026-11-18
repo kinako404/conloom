@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 const policyDefaultsCols = `kind, version, policy, reason, updated_by, created_at`
@@ -19,6 +20,9 @@ func scanPolicyDefaults(row scanner) (store.PolicyDefaults, error) {
 		return d, notFound(err)
 	}
 	if err := json.Unmarshal([]byte(policy), &d.Policy); err != nil {
+		return d, err
+	}
+	if err := conloomapi.MarkMissingMaxParts([]byte(policy), &d.Policy); err != nil {
 		return d, err
 	}
 	d.CreatedAt, err = parseTime(created)

@@ -70,7 +70,11 @@ func TestRestorePolicy_VersionWithoutMaxParts(t *testing.T) {
 	h.setDefaults(policy.KindGroup, policyWith(func(p *conloomapi.GroupPolicy) { p.Reply.MaxParts = 3 }))
 	old := policyWith(func(p *conloomapi.GroupPolicy) { p.Context.MaxRecentMessages = 30 })
 	var legacy conloomapi.GroupPolicy
-	if err := json.Unmarshal(policyWithMaxParts(t, old, ""), &legacy); err != nil {
+	raw := policyWithMaxParts(t, old, "")
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := conloomapi.MarkMissingMaxParts(raw, &legacy); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.db.AppendPolicyVersion(context.Background(), store.PolicyVersion{
@@ -83,12 +87,12 @@ func TestRestorePolicy_VersionWithoutMaxParts(t *testing.T) {
 	}
 
 	var pol policyResp
-	raw := h.getJSON(convPath(writeGroup.Key, "policy"), &pol)
+	body := h.getJSON(convPath(writeGroup.Key, "policy"), &pol)
 	if pol.Current.Policy.Reply.MaxParts != 3 || len(pol.Versions) != 2 || pol.Versions[0].Policy.Reply.MaxParts != 3 {
-		t.Errorf("GET policy = %s, want max_parts 3 filled and stored by pause", raw)
+		t.Errorf("GET policy = %s, want max_parts 3 filled and stored by pause", body)
 	}
-	if strings.Count(string(raw), `"max_parts"`) != 2 || strings.Contains(string(raw), "-9223372036854775808") {
-		t.Errorf("GET policy = %s, want max_parts in the current policy and the paused version only", raw)
+	if strings.Count(string(body), `"max_parts"`) != 2 || strings.Contains(string(body), "-9223372036854775808") {
+		t.Errorf("GET policy = %s, want max_parts in the current policy and the paused version only", body)
 	}
 
 	got := decodeCurrent[policyVersionResp](t, h.write(http.MethodPost, convPath(writeGroup.Key, "policy", "restore"),
@@ -118,5 +122,20 @@ func TestSettingsPolicies_PutMaxPartsMissingOrZero(t *testing.T) {
 		http.StatusBadRequest, conloomapi.CodeInvalidEvent)
 	if !strings.Contains(eb.Message, "reply.max_parts must be in [0, 10], got 11") {
 		t.Errorf("max_parts 11 message = %q", eb.Message)
+	}
+}
+
+func TestSettingsPolicies_PutRejectsUnknownReplyField(t *testing.T) {
+	h := newWriteHarness(t, nil)
+	for _, key := range []string{"max_part", "turn_gapp"} {
+		eb := errorBody(t, h.write(http.MethodPut, settingsPath+"/group",
+			map[string]any{"policy": map[string]any{"reply": map[string]any{key: 0}}}),
+			http.StatusBadRequest, conloomapi.CodeInvalidEvent)
+		if !strings.Contains(eb.Message, "unknown field") || !strings.Contains(eb.Message, key) {
+			t.Errorf("reply.%s message = %q, want unknown field %q", key, eb.Message, key)
+		}
+	}
+	if d := h.policies.Defaults(policy.KindGroup); d.Version != 0 {
+		t.Errorf("group defaults = v%d, want nothing stored", d.Version)
 	}
 }

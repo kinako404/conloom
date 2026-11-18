@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 
 	"github.com/kinako404/conloom/internal/store"
+	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
 // personaVersionCols reads a version's template, falling back to the
@@ -80,6 +81,9 @@ func scanPolicyVersion(row scanner) (store.PolicyVersion, error) {
 		return pv, notFound(err)
 	}
 	if err := json.Unmarshal([]byte(policy), &pv.Policy); err != nil {
+		return pv, err
+	}
+	if err := conloomapi.MarkMissingMaxParts([]byte(policy), &pv.Policy); err != nil {
 		return pv, err
 	}
 	pv.CreatedAt, err = parseTime(created)

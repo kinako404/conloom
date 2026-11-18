@@ -89,7 +89,7 @@
 
 - 请求体完全不含 `proactive` 段时，保留本群**当前**的主动搭话设置。
 - 只要含有 `proactive` 段，它就必须是完整且合法的一段。API 不会把它与当前设置或默认值合并，像 `{"enabled": false}` 这样只写部分字段的请求会被拒绝并返回校验错误。
-- 例外：`reply.turn_gap`、`turn_max_wait`、`turn_cooldown`、`max_unprompted_replies`、`max_consecutive_skips`、`quote`、`max_parts` 和 `proactive.join_*` 在请求里缺少时逐字段按默认值补齐，方便旧的调用方继续使用；已移除的 `proactive.contact_cooldown` 出现在请求里会被忽略。`max_parts` 只在缺少这个键（或为 `null`）时补齐，写成 0 表示全部分条，按 0 保存。
+- 例外：`reply.turn_gap`、`turn_max_wait`、`turn_cooldown`、`max_unprompted_replies`、`max_consecutive_skips`、`quote`、`max_parts` 和 `proactive.join_*` 在请求里缺少时逐字段按默认值补齐，方便旧的调用方继续使用；已移除的 `proactive.contact_cooldown` 出现在请求里会被忽略。`max_parts` 只在缺少这个键（或为 `null`）时补齐，写成 0 表示全部分条，按 0 保存。用 Go SDK（`pkg/client`）时注意：在 Go 里构造的 `conloomapi.PolicyPut` 会带上 `max_parts`，没赋值的 `MaxParts` 是 0，表示全部分条，不会补成默认值；想用默认值，要么先 `GET` 当前策略再改，要么自己发不含这个键的 JSON。
 - `reply.private_wait` 和 `private_max_wait` 成对补齐：两者都缺少或都为 0 时，一起取会话类型对应的默认值，所以请求里把两者都设为 0 表示“用默认值”，存下来的是默认值；只要有一个不为 0，就按写的值校验（`private_wait` 0~60s，`private_max_wait` 从 `private_wait` 到 2m）。
 - 请求体完全不含 `memory` 段时，同样保留本群**当前**的记忆设置，与 `proactive` 相同。含有 `memory` 段时，段内缺少的键取内置默认值，不与当前设置合并：`{"memory":{"enabled":true}}` 得到 `affinity: true`、`consolidate_every: 150`、`consolidate_interval: 6h`、`backlog: 1000`、`summary_max_chars: 0`、`note_max_chars: 0`（0 表示按会话类型的默认上限）；显式写出的 `0` 和 `false` 保留。`memory.enabled` 为 true 时要求 `concurrency.allow_long_requests` 也为 true，否则返回校验错误。
 - 只想关闭主动搭话时，管理员可以在群里发 `/主动 全群 关`：它以当前版本为基础写入一个新版本，只改 `proactive.enabled`（`开` 同理），可以用 `GET …/policy` 查看结果。

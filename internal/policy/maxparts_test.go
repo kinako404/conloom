@@ -91,6 +91,67 @@ func TestPolicy_StoredMaxPartsMissingOrZero(t *testing.T) {
 	}
 }
 
+func TestPolicy_StoredDefaultsMaxPartsMissingOrZero(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "conloom.db")
+	db, err := sqlite.Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer conn.Close()
+
+	stored := conloomapi.DefaultGroupPolicy()
+	stored.Context.MaxRecentMessages = 30
+	rows := map[string]string{
+		KindPrivate: replyJSON(t, stored, ""),
+		KindGroup:   replyJSON(t, stored, "0"),
+	}
+	for kind, raw := range rows {
+		if _, err := conn.ExecContext(ctx, `INSERT INTO policy_defaults
+			(kind, version, policy, reason, updated_by, created_at) VALUES (?, 1, ?, 'legacy', 'system', ?)`,
+			kind, raw, time.Now().UTC().Format("2006-01-02T15:04:05.000000000Z07:00")); err != nil {
+			t.Fatalf("insert %s: %v", kind, err)
+		}
+	}
+	if d, err := db.LatestPolicyDefaults(ctx, KindPrivate); err != nil || !d.Policy.Reply.MaxPartsMissing() {
+		t.Fatalf("stored private defaults = %+v, %v; want max_parts marked missing", d.Policy.Reply, err)
+	}
+
+	group := conloomapi.DefaultGroupPolicy()
+	group.Reply.MaxParts = 2
+	private := privateDefaults()
+	private.Reply.MaxParts = 4
+	s := NewService(db, group).WithPrivateDefaults(private)
+	if err := s.LoadDefaults(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := Builtin(KindPrivate).Reply.MaxParts
+	if got := s.Defaults(KindPrivate).Policy; got.Reply.MaxParts != want || got.Context.MaxRecentMessages != 30 {
+		t.Fatalf("loaded private defaults = %+v, want the built-in max_parts %d", got.Reply, want)
+	}
+	if got := s.Defaults(KindGroup).Policy.Reply.MaxParts; got != 0 {
+		t.Fatalf("loaded group defaults max_parts = %d, want 0 kept", got)
+	}
+	pv, err := s.Current(ctx, testPrivateKey)
+	if err != nil || !pv.FollowsDefaults || pv.Policy.Reply.MaxParts != want {
+		t.Fatalf("private follower = %+v, %v; want max_parts %d", pv.Policy.Reply, err, want)
+	}
+
+	versions, err := db.ListPolicyDefaults(ctx, KindPrivate, 0)
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("ListPolicyDefaults = %+v, %v", versions, err)
+	}
+	d, err := s.SetDefaults(ctx, KindPrivate, versions[0].Policy, "恢复", "test", "restore")
+	if err != nil || d.Version != 2 || d.Policy.Reply.MaxParts != want {
+		t.Fatalf("restore of the stored defaults = %+v, %v; want v2 with max_parts %d", d.Policy.Reply, err, want)
+	}
+}
+
 func TestPolicy_UpdateMaxPartsMissingOrZero(t *testing.T) {
 	ctx := context.Background()
 	group := conloomapi.DefaultGroupPolicy()

@@ -140,8 +140,9 @@ func (s *Service) WithLogger(l *slog.Logger) *Service {
 }
 
 // LoadDefaults replaces the default policy of each kind with its latest stored
-// version; a kind without one keeps its current default policy. Call it once,
-// before the service is used.
+// version; a kind without one keeps its current default policy. A reply.max_parts
+// missing from the stored version takes the built-in value (Builtin), as a field
+// left out of a default policy does. Call it once, before the service is used.
 func (s *Service) LoadDefaults(ctx context.Context) error {
 	loaded := map[string]store.PolicyDefaults{}
 	for _, kind := range []string{KindGroup, KindPrivate} {
@@ -152,6 +153,7 @@ func (s *Service) LoadDefaults(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("policy: load the %s default policy: %w", kind, err)
 		}
+		d.Policy = withBuiltinMaxParts(kind, d.Policy)
 		loaded[kind] = d
 	}
 	s.mu.Lock()
@@ -173,6 +175,15 @@ func (s *Service) Defaults(kind string) store.PolicyDefaults {
 	return s.defaults[kind]
 }
 
+// withBuiltinMaxParts returns p, a default policy of kind, with a reply.max_parts missing from the
+// JSON it was decoded from (see conloomapi.MarkMissingMaxParts) taken from Builtin(kind).
+func withBuiltinMaxParts(kind string, p conloomapi.GroupPolicy) conloomapi.GroupPolicy {
+	if p.Reply.MaxPartsMissing() {
+		p.Reply.MaxParts = Builtin(kind).Reply.MaxParts
+	}
+	return p
+}
+
 // defaultsFor is the default policy of convKey's conversation type. s.mu must be held.
 func (s *Service) defaultsFor(convKey string) conloomapi.GroupPolicy {
 	return s.defaults[KindOf(convKey)].Policy
@@ -189,9 +200,11 @@ func (s *Service) checkContextCap(p conloomapi.GroupPolicy) error {
 }
 
 // SetDefaults stores p as a new version of kind's default policy and makes it the default policy
-// of the conversations that follow it at once. p is stored as given; an unknown kind, an action
-// other than update or restore, a p that fails Validate or a context.max_context_tokens refused as
-// in Update is ErrInvalid and stores nothing. It records a settings.policy.update audit event with
+// of the conversations that follow it at once. p is stored as given, except that a reply.max_parts
+// missing from the JSON it was decoded from (a stored version being restored) takes the built-in
+// value, as LoadDefaults does; an unknown kind, an action other than update or restore, a p that
+// fails Validate or a context.max_context_tokens refused as in Update is ErrInvalid and stores
+// nothing. It records a settings.policy.update audit event with
 // action, and notifies the following conversations (see PolicyFollowers) in the background, in
 // batches and in the order of the changes, after it returns (see Wait and Close): each that still
 // follows the default policy when its turn comes, and has not yet been notified of this change's
@@ -207,6 +220,7 @@ func (s *Service) SetDefaults(ctx context.Context, kind string, p conloomapi.Gro
 	if action != "update" && action != "restore" {
 		return store.PolicyDefaults{}, fmt.Errorf("%w: unknown default policy action %q", ErrInvalid, action)
 	}
+	p = withBuiltinMaxParts(kind, p)
 	if err := Validate(p); err != nil {
 		return store.PolicyDefaults{}, err
 	}
