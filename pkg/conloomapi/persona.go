@@ -25,8 +25,8 @@ import (
 // ValidateContent). Intimacy, also optional, is the intimacy side (see
 // PersonaIntimacy): it too only takes effect in ContentOpen, it never enters
 // the system prompt, and a minor persona cannot have one (see
-// ValidateContent). Bars, also optional, define the hidden bars of private
-// chats (see EffectiveBars); they never enter the system prompt.
+// ValidateContent). Bars, also optional, define the bars of private chats
+// (see EffectiveBars); they never enter the system prompt.
 type PersonaDoc struct {
 	PersonaName         string           `json:"persona_name" yaml:"persona_name"`
 	TemplateVersion     int              `json:"template_version" yaml:"template_version"`
@@ -62,14 +62,21 @@ type PersonaExample struct {
 	Reply string `json:"reply" yaml:"reply"`
 }
 
-// PersonaBar is a hidden bar of private chats: a value in [0, 100] that
-// decays toward Baseline, halving its distance every HalfLife. Description
-// tells the model what high and low values mean.
+// PersonaBar is a bar of private chats: a value in [0, 100] that decays
+// toward Baseline, halving its distance every HalfLife. Description tells the
+// model what high and low values mean. Kind is BarKindInner (also when empty:
+// hidden, shown to the model as a band only, it only affects the tone) or
+// BarKindOuter (visible, shown to the model with its value; the bot may show
+// it in its descriptions). adjust_buff moves the bar by at most
+// EffectiveMaxStep per call and EffectiveMaxDay net per local day.
 type PersonaBar struct {
 	Name        string   `json:"name" yaml:"name"`
 	Baseline    int      `json:"baseline" yaml:"baseline"`
 	HalfLife    Duration `json:"half_life" yaml:"half_life"`
 	Description string   `json:"description,omitempty" yaml:"description,omitempty"`
+	Kind        string   `json:"kind,omitempty" yaml:"kind,omitempty"`
+	MaxStep     int      `json:"max_step,omitempty" yaml:"max_step,omitempty"`
+	MaxDay      int      `json:"max_day,omitempty" yaml:"max_day,omitempty"`
 }
 
 // PersonaIntimacy is a persona's intimacy side: how the character sounds
@@ -171,6 +178,19 @@ const (
 	MaxBarHalfLife = 7 * 24 * time.Hour
 )
 
+// Values of PersonaBar.Kind; empty is BarKindInner.
+const (
+	BarKindInner = "inner"
+	BarKindOuter = "outer"
+)
+
+// Defaults and bound of PersonaBar.MaxStep and MaxDay.
+const (
+	DefaultBarMaxStep = 10
+	DefaultBarMaxDay  = 30
+	MaxBarLimit       = 100
+)
+
 type PersonaStyle struct {
 	Warmth      float64 `json:"warmth" yaml:"warmth"`
 	Humor       float64 `json:"humor" yaml:"humor"`
@@ -242,6 +262,28 @@ func (p PersonaDoc) EffectiveBars() []PersonaBar {
 		return slices.Clone(p.Bars)
 	}
 	return DefaultBars()
+}
+
+// Outer reports whether b is an outer bar (Kind is BarKindOuter).
+func (b PersonaBar) Outer() bool {
+	return b.Kind == BarKindOuter
+}
+
+// EffectiveMaxStep returns MaxStep, or DefaultBarMaxStep when it is 0 or
+// less.
+func (b PersonaBar) EffectiveMaxStep() int {
+	if b.MaxStep <= 0 {
+		return DefaultBarMaxStep
+	}
+	return b.MaxStep
+}
+
+// EffectiveMaxDay returns MaxDay, or DefaultBarMaxDay when it is 0 or less.
+func (b PersonaBar) EffectiveMaxDay() int {
+	if b.MaxDay <= 0 {
+		return DefaultBarMaxDay
+	}
+	return b.MaxDay
 }
 
 // breaksName reports whether r must not appear in a character name: a line or
@@ -424,6 +466,22 @@ func (p PersonaDoc) Validate() error {
 			fail("%s.half_life must be in [30m, 168h], got %s", path, h)
 		}
 		maxRunes(path+".description", bar.Description, MaxBarDescriptionRunes)
+		if !slices.Contains([]string{"", BarKindInner, BarKindOuter}, bar.Kind) {
+			fail("%s.kind must be inner or outer, got %q", path, bar.Kind)
+		}
+		limitsOK := true
+		for _, l := range []struct {
+			field    string
+			v, deflt int
+		}{{"max_step", bar.MaxStep, DefaultBarMaxStep}, {"max_day", bar.MaxDay, DefaultBarMaxDay}} {
+			if l.v < 0 || l.v > MaxBarLimit {
+				fail("%s.%s must be in [1, %d] (0 for the default %d), got %d", path, l.field, MaxBarLimit, l.deflt, l.v)
+				limitsOK = false
+			}
+		}
+		if step, day := bar.EffectiveMaxStep(), bar.EffectiveMaxDay(); limitsOK && day < step {
+			fail("%s.max_day must be at least max_step (%d), got %d", path, step, day)
+		}
 	}
 	return errors.Join(errs...)
 }

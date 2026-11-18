@@ -5,13 +5,14 @@ import "time"
 // AutonomyState is the hidden state of a private chat as the panel and the
 // API show it: the status while it lasts (null otherwise), the bars (the
 // persona's in its order, then those the bot added) at their values decayed
-// to now, the names of the bars the bot added that a persona bar of the same
-// name has since replaced (ShadowedBars: the bot no longer sees them, but
-// each still counts toward its limit of bars until removed), the effects
-// still active, the chat's newest bar and effect changes first, how the
-// bot starts the chat and the scene in effect now. Activity, Reason, Place,
-// and the names and descriptions the bot gave its bars and effects are text
-// the model or an operator wrote; show them as plain text.
+// to now, inner and outer alike, the names of the bars the bot added that a
+// persona bar of the same name has since replaced (ShadowedBars: the bot no
+// longer sees them, but each still counts toward its limit of bars until
+// removed), the effects still active, the chat's newest bar and effect
+// changes first, how the bot starts the chat and the scene in effect now.
+// Activity, Reason, Place, and the names and descriptions the bot gave its
+// bars and effects are text the model or an operator wrote; show them as
+// plain text.
 type AutonomyState struct {
 	Status       *AutonomyStatus    `json:"status"`
 	Bars         []AutonomyBar      `json:"bars"`
@@ -58,10 +59,12 @@ type AutonomyScenePut struct {
 	Place string `json:"place"`
 }
 
-// AutonomyBar is one of the hidden bars: its value decayed to now, rounded,
-// the band of that value (很低, 偏低, 中等, 偏高 or 很高), and the bar's
-// baseline and description. Custom marks a bar the bot added itself
-// (add_buff), which can be removed; the persona's bars cannot.
+// AutonomyBar is one of the bars: its value decayed to now, rounded, the band
+// of that value (很低, 偏低, 中等, 偏高 or 很高), and the bar's baseline and
+// description. Custom marks a bar the bot added itself (add_buff), which can
+// be removed; the persona's bars cannot. Kind, MaxStep and MaxDay are those
+// of the viewed conversation's persona bar as written (empty and 0 mean
+// inner and the defaults, see PersonaBar); a bar the bot added has none.
 type AutonomyBar struct {
 	Name        string `json:"name"`
 	Value       int    `json:"value"`
@@ -69,6 +72,9 @@ type AutonomyBar struct {
 	Baseline    int    `json:"baseline"`
 	Description string `json:"description,omitempty"`
 	Custom      bool   `json:"custom"`
+	Kind        string `json:"kind,omitempty"`
+	MaxStep     int    `json:"max_step,omitempty"`
+	MaxDay      int    `json:"max_day,omitempty"`
 }
 
 // AutonomyEffect is an effect the bot gave itself (add_buff), active from
