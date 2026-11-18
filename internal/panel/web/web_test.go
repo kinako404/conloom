@@ -821,9 +821,9 @@ func TestPersonaForm_AvatarSection(t *testing.T) {
 		"fromReference.disabled = busy || !reference();",
 		"crop(originalImageURL(id));",
 		"reader.readAsDataURL(f);",
-		"cropAvatar({ src, parent: el, maxBytes: MAX_IMAGE_MIB * 1024 * 1024 })",
+		"cropAvatar({ src, parent: el, maxBytes: MAX_IMAGE_MIB * 1024 * 1024, signal })",
 		"{ fields: { avatar_image: avatarId } }",
-		"avatar = withAvatar ? avatarEditor(base, appearance.image) : null;",
+		"avatar = withAvatar ? avatarEditor(base, appearance.image, signal) : null;",
 		"avatar ? [h('h3', null, '头像'), avatar.el] : null,",
 		"Object.assign(persona, look.fields, face.fields);",
 		"不发给模型",
@@ -874,10 +874,45 @@ func TestAvatarCrop_Dialog(t *testing.T) {
 			t.Errorf("views/avatarcrop.js lacks %q", want)
 		}
 	}
-	for _, m := range regexp.MustCompile(`(\w+)\.addEventListener\(`).FindAllStringSubmatch(js, -1) {
-		if m[1] != "el" && m[1] != "img" && m[1] != "dialog" {
-			t.Errorf("views/avatarcrop.js: %s.addEventListener bypasses listen(), which removes it on close", m[1])
+	start := strings.Index(js, "export async function cropAvatar(")
+	if start < 0 {
+		t.Fatal("views/avatarcrop.js has no cropAvatar")
+	}
+	crop := js[start:]
+	for _, m := range regexp.MustCompile(`(\w+)\.addEventListener\(`).FindAllStringSubmatch(crop, -1) {
+		if m[1] != "el" {
+			t.Errorf("views/avatarcrop.js: cropAvatar's %s.addEventListener bypasses listen(), which removes it on close", m[1])
 		}
+	}
+	for _, want := range []string{
+		"if (signal && signal.aborted) throw aborted();",
+		"const img = await loadImage(src, signal);",
+		"listen(window, 'resize', layout);",
+		"listen(dialog, 'close', finish);",
+		"if (signal) listen(signal, 'abort', finish);",
+		"if (dialog.open) dialog.close();",
+		"img.removeAttribute('src');",
+		"Promise.resolve(uploading).then(done, done);",
+	} {
+		if !strings.Contains(crop, want) {
+			t.Errorf("views/avatarcrop.js: cropAvatar lacks %q", want)
+		}
+	}
+	if !strings.Contains(js, "if (signal) signal.removeEventListener('abort', onAbort);") {
+		t.Error("views/avatarcrop.js: loadImage keeps its abort listener once the image settled")
+	}
+	form := files["views/personaform.js"]
+	for _, want := range []string{
+		"avatar: withAvatar = false, signal }",
+		"avatarEditor(base, appearance.image, signal)",
+		"cropAvatar({ src, parent: el, maxBytes: MAX_IMAGE_MIB * 1024 * 1024, signal })",
+	} {
+		if !strings.Contains(form, want) {
+			t.Errorf("views/personaform.js does not pass the route's signal to the crop: lacks %q", want)
+		}
+	}
+	if !strings.Contains(files["views/templates.js"], "avatar: true,\n    signal: ctx.signal,") {
+		t.Error("views/templates.js does not pass ctx.signal to the persona form")
 	}
 	css := files["style.css"]
 	for _, c := range []struct{ name, re string }{

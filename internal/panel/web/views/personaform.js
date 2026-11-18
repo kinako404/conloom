@@ -233,8 +233,9 @@ function appearanceEditor(base, onImage) {
 // the crop dialog, which uploads it, and to remove it. Like the reference
 // image, the avatar is uploaded at once but only saved with the form. sync()
 // updates the buttons after the reference image changed. read returns
-// {fields}, avatar_image, or {error} while the crop dialog is open.
-function avatarEditor(base, reference) {
+// {fields}, avatar_image, or {error} while the crop dialog is open. signal,
+// the route's, closes the dialog when the page goes away.
+function avatarEditor(base, reference, signal) {
   let avatarId = base.avatar_image || '';
   let busy = false;
   const msg = h('div');
@@ -263,7 +264,7 @@ function avatarEditor(base, reference) {
 
   const crop = async (src) => {
     try {
-      const res = await cropAvatar({ src, parent: el, maxBytes: MAX_IMAGE_MIB * 1024 * 1024 });
+      const res = await cropAvatar({ src, parent: el, maxBytes: MAX_IMAGE_MIB * 1024 * 1024, signal });
       if (res) {
         avatarId = res.id;
         show();
@@ -442,8 +443,9 @@ function intimacyEditor(base, { minor, adult }) {
 // show. Submitting (the button saveText) reads the persona and calls
 // save(persona, reason, msg, button), which stores it and shows the outcome
 // in msg; read() reads the persona without saving, as {persona} or {error}.
-// With avatar, as on the templates page, it also edits the avatar.
-export function personaForm(doc, { save, saveText = '保存人设', avatar: withAvatar = false }) {
+// With avatar, as on the templates page, it also edits the avatar; signal,
+// the route's, closes the crop dialog when the page goes away.
+export function personaForm(doc, { save, saveText = '保存人设', avatar: withAvatar = false, signal }) {
   const base = JSON.parse(JSON.stringify(doc || {}));
   const style = base.style || {};
   const behavior = base.behavior || {};
@@ -458,7 +460,7 @@ export function personaForm(doc, { save, saveText = '保存人设', avatar: with
   const appearance = appearanceEditor(base, () => {
     if (avatar) avatar.sync();
   });
-  avatar = withAvatar ? avatarEditor(base, appearance.image) : null;
+  avatar = withAvatar ? avatarEditor(base, appearance.image, signal) : null;
   const styleInputs = Object.fromEntries(STYLE.map(([k]) => [k,
     h('input', { type: 'number', min: 0, max: 1, step: 'any', value: style[k] ?? '' })]));
   const replyLength = select(REPLY_LENGTH, behavior.default_reply_length);

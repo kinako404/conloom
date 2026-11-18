@@ -18,16 +18,29 @@ const CORNERS = { nw: [-1, -1], ne: [1, -1], sw: [-1, 1], se: [1, 1] };
 
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 
+// aborted is the error of a crop given up because the page went away.
+const aborted = () => new DOMException('页面已离开', 'AbortError');
+
 // loadImage resolves to the decoded image at src, a data: URL or an address
-// of this panel, so that a canvas it is drawn on can still be read.
-function loadImage(src) {
+// of this panel, so that a canvas it is drawn on can still be read. When
+// signal fires first, it drops the image and rejects with an AbortError.
+function loadImage(src, signal) {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.addEventListener('load', () => {
+    const onAbort = () => {
+      img.removeAttribute('src');
+      reject(aborted());
+    };
+    const settle = (fn) => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      fn();
+    };
+    img.addEventListener('load', () => settle(() => {
       if (img.naturalWidth && img.naturalHeight) resolve(img);
       else reject(new Error('无法读取这张图片'));
-    }, { once: true });
-    img.addEventListener('error', () => reject(new Error('无法读取这张图片，请换一张 PNG、JPEG、WebP 或 GIF 图片')), { once: true });
+    }), { once: true });
+    img.addEventListener('error', () => settle(() => reject(new Error('无法读取这张图片，请换一张 PNG、JPEG、WebP 或 GIF 图片'))), { once: true });
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
     img.src = src;
   });
 }
@@ -73,7 +86,10 @@ function toBlob(canvas, type, quality) {
 // avatarBlob is the selection of img as an AVATAR_SIZE square PNG or, when
 // that is over maxBytes, a JPEG of quality 0.9 on white.
 async function avatarBlob(img, sel, maxBytes) {
-  const canvas = drawSquare(img, Math.round(sel.x), Math.round(sel.y), Math.round(sel.size), AVATAR_SIZE);
+  const size = Math.round(sel.size);
+  const x = clamp(Math.round(sel.x), 0, img.naturalWidth - size);
+  const y = clamp(Math.round(sel.y), 0, img.naturalHeight - size);
+  const canvas = drawSquare(img, x, y, size, AVATAR_SIZE);
   const png = await toBlob(canvas, 'image/png');
   if (png.size <= maxBytes) return png;
   const flat = canvasOf(AVATAR_SIZE, AVATAR_SIZE);
@@ -94,10 +110,15 @@ async function avatarBlob(img, sel, maxBytes) {
 // preview follows the selection. 确定 draws it at AVATAR_SIZE pixels and
 // uploads it as a persona image of at most maxBytes; the promise resolves to
 // the upload's answer ({id, …}) then, or to null on 取消. It rejects, without
-// a dialog, when the image cannot be loaded. The dialog's listeners go and
-// the dialog is removed when it closes.
-export async function cropAvatar({ src, parent, maxBytes }) {
-  const img = await loadImage(src);
+// a dialog, when the image cannot be loaded, and with an AbortError when
+// signal, the route's, fires first. When the dialog closes, or signal fires
+// while it is open (the page went away: removing an open dialog fires no
+// close), its listeners, the window's included, go, the dialog is removed
+// and the image dropped; an upload under way is still waited for, so the
+// promise resolves to its answer, or to null.
+export async function cropAvatar({ src, parent, maxBytes, signal }) {
+  if (signal && signal.aborted) throw aborted();
+  const img = await loadImage(src, signal);
   const W = img.naturalWidth;
   const H = img.naturalHeight;
   const minSize = Math.min(MIN_CROP, W, H);
@@ -222,31 +243,45 @@ export async function cropAvatar({ src, parent, maxBytes }) {
 
   return new Promise((resolve) => {
     let result = null;
+    let uploading = null;
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      for (const off of offs) off();
+      offs.length = 0;
+      drag = null;
+      if (dialog.open) dialog.close();
+      dialog.remove();
+      img.removeAttribute('src');
+      const done = () => resolve(result);
+      Promise.resolve(uploading).then(done, done);
+    };
+    listen(dialog, 'close', finish);
+    if (signal) listen(signal, 'abort', finish);
     listen(cancel, 'click', () => dialog.close());
-    listen(ok, 'click', async () => {
+    listen(ok, 'click', () => {
+      if (uploading) return;
       busy = true;
       ok.disabled = true;
       cancel.disabled = true;
       mount(msg, h('p', { class: 'muted' }, '正在上传…'));
-      try {
+      uploading = (async () => {
         const blob = await avatarBlob(img, sel, maxBytes);
         result = await upload('persona-images', blob);
+      })();
+      uploading.then(() => {
         busy = false;
-        dialog.close();
-      } catch (err) {
-        if (!isAbort(err)) mount(msg, errorBox(err));
-      } finally {
+        if (!finished) dialog.close();
+      }, (err) => {
+        if (!finished && !isAbort(err)) mount(msg, errorBox(err));
+      }).then(() => {
+        uploading = null;
         busy = false;
         ok.disabled = false;
         cancel.disabled = false;
-      }
+      });
     });
-    dialog.addEventListener('close', () => {
-      for (const off of offs) off();
-      drag = null;
-      dialog.remove();
-      resolve(result);
-    }, { once: true });
     parent.appendChild(dialog);
     dialog.showModal();
     layout();
