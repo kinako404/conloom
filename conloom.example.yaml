@@ -131,7 +131,7 @@ model_profiles:
   #     data_location: remote
   #     allow_sensitive_content: true
 
-# 技能：内置技能 memory、time、status、buff 打包在程序里。dir 可选，相对路径按本文件所在目录解析；
+# 技能：内置技能 memory、time、status、scene、buff 打包在程序里。dir 可选，相对路径按本文件所在目录解析；
 # 目录里每个 <名字>/SKILL.md 与内置技能同名时替换它，否则作为新技能加入（格式见 docs/skills.md）。
 # skills:
 #   dir: ./skills

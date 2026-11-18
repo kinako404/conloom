@@ -26,11 +26,12 @@
 | `PUT /api/v1/conversations/{id}/memory/members/{user_id}` | `memory:write` | 修改某位群友的笔记、好感度 |
 | `DELETE /api/v1/conversations/{id}/memory/members/{user_id}` | `memory:write` | 忘记某位群友，等同于他发 `/忘记我` |
 | `POST /api/v1/conversations/{id}/memory/consolidate` | `memory:write` | 立即整理一次记忆；返回 202 |
-| `GET /api/v1/conversations/{id}/autonomy` | `memory:read` | 私聊的状态、状态条、效果、最近的变化和主动找人的情况 |
+| `GET /api/v1/conversations/{id}/autonomy` | `memory:read` | 私聊的状态、状态条、效果、最近的变化、主动找人的情况和场景 |
 | `PUT /api/v1/conversations/{id}/autonomy/buffs/{name}` | `memory:write` | 把私聊的一条状态条设成指定值 |
 | `DELETE /api/v1/conversations/{id}/autonomy/bars/{name}` | `memory:write` | 删除机器人自建的一条状态条 |
 | `DELETE /api/v1/conversations/{id}/autonomy/effects/{name}` | `memory:write` | 提前去掉机器人自己加的一个效果 |
 | `DELETE /api/v1/conversations/{id}/autonomy/status` | `memory:write` | 结束私聊的当前状态，同时取消回来说话的定时 |
+| `PUT /api/v1/conversations/{id}/autonomy/scene` | `memory:write` | 把私聊的场景切到线上或面对面 |
 | `GET /healthz` | 无 | 健康检查：查一次数据库（2 秒超时），正常返回纯文本 `ok`，失败返回 503 |
 | `GET /metrics` | 无 | Prometheus 指标，`server.metrics_enabled: false` 时不注册 |
 
@@ -136,13 +137,13 @@
 - 返回修改后的这位群友（格式同 `members` 里的一项）。每个有变化的字段写一条修改记录（来源 `api`，原因取 `reason`），并写审计 `memory.update`，审计里只记用户 ID 和改了哪些字段。和整理同时修改同一个人时会自动重试；仍然冲突时返回 503（`retryable: true`），可以稍后重试。
 - 记忆关闭时也可以修改，方便管理员更正冻结的数据。
 
-`DELETE …/memory/members/{user_id}` 等同于这位群友发 `/忘记我`：清空笔记和好感度，删除他的修改记录，记下忘记的时间，写审计 `memory.forget`，返回 `{"ok":true}`。记忆关闭时同样可用；群聊摘要不会逐人删除，私聊会话的对话摘要会一起清空，摘要的全部修改记录也一并删除（整理进度保留）。私聊会话还会删除机器人的当前状态、还没触发的定时（回来说话、主动找人、追问）、状态条的数值、机器人自建的状态条和效果，以及这些的变化记录。面板里新建的聊天（`{id}` 是 bot 的任何一个面板聊天）作用在 bot 所有面板聊天共用的那份上：清空这个用户的笔记和好感度，清空共用的摘要、状态、状态条、效果和变化记录，删除所有面板聊天的定时，整理进度跳到所有面板聊天里最新的消息，并删除所有面板聊天里忘记之前的语义检索数据。有几个面板用户时，他们在这个 bot 的面板聊天共用这一份，所以忘记一个面板用户也会清掉别的面板用户在用的这些共同部分（包括他们聊天里忘记之前的语义检索数据和还没整理的消息）；别的用户的笔记和好感度不变。
+`DELETE …/memory/members/{user_id}` 等同于这位群友发 `/忘记我`：清空笔记和好感度，删除他的修改记录，记下忘记的时间，写审计 `memory.forget`，返回 `{"ok":true}`。记忆关闭时同样可用；群聊摘要不会逐人删除，私聊会话的对话摘要会一起清空，摘要的全部修改记录也一并删除（整理进度保留）。私聊会话还会删除机器人的当前状态、场景、还没触发的定时（回来说话、主动找人、追问）、状态条的数值、机器人自建的状态条和效果，以及这些的变化记录。面板里新建的聊天（`{id}` 是 bot 的任何一个面板聊天）作用在 bot 所有面板聊天共用的那份上：清空这个用户的笔记和好感度，清空共用的摘要、状态、场景、状态条、效果和变化记录，删除所有面板聊天的定时，整理进度跳到所有面板聊天里最新的消息，并删除所有面板聊天里忘记之前的语义检索数据。有几个面板用户时，他们在这个 bot 的面板聊天共用这一份，所以忘记一个面板用户也会清掉别的面板用户在用的这些共同部分（包括他们聊天里忘记之前的语义检索数据和还没整理的消息）；别的用户的笔记和好感度不变。
 
 `POST …/memory/consolidate` 请求立即整理一次，返回 202 `{"accepted":true}`，整理在后台执行，结果可以用 `GET …/memory` 查看。会话没有开启记忆时返回 409 `MEMORY_DISABLED`；会话暂停中（`concurrency.max_interactive_requests: 0`）时返回 409 `PAUSED`。两种情况都不会整理。
 
 ## 自主状态
 
-私聊里机器人的状态（`set_status`）、状态条（`adjust_buff`，机器人还可以用 `add_buff` 自己加状态条和效果、用 `remove_buff` 删掉）和主动找人，规则见 [使用指南](usage.md) 和 [技能](skills.md)。`{id}` 必须是私聊会话：群聊等其他会话返回 400，会话不属于令牌的机器人时返回 404。权限沿用记忆的 `memory:read`、`memory:write`。面板里新建的聊天的状态、状态条、效果和变化记录是同一个 bot 所有面板聊天共用的（和[记忆](#记忆)一样），对哪个面板聊天读写都一样；`proactive` 和其中的定时是这个聊天自己的，回来说话的定时只在设状态的那个聊天里。
+私聊里机器人的状态（`set_status`）、状态条（`adjust_buff`，机器人还可以用 `add_buff` 自己加状态条和效果、用 `remove_buff` 删掉）、场景（`set_scene`）和主动找人，规则见 [使用指南](usage.md) 和 [技能](skills.md)。`{id}` 必须是私聊会话：群聊等其他会话返回 400，会话不属于令牌的机器人时返回 404。权限沿用记忆的 `memory:read`、`memory:write`。面板里新建的聊天的状态、场景、状态条、效果和变化记录是同一个 bot 所有面板聊天共用的（和[记忆](#记忆)一样），对哪个面板聊天读写都一样；`proactive` 和其中的定时是这个聊天自己的，回来说话的定时只在设状态的那个聊天里。
 
 `GET …/autonomy` 返回：
 
@@ -166,7 +167,8 @@
     "enabled": true, "level": "mid", "sent_today": 1, "daily_cap": 2,
     "quiet_start": "00:30", "quiet_end": "08:00", "quiet_inferred": false, "unanswered_left": 2,
     "timers": [{"kind": "status_return", "due_at": "2026-11-14T12:30:00Z"}]
-  }
+  },
+  "scene": {"enabled": true, "mode": "online", "place": "", "since_at": "2026-11-14T12:10:00Z", "idle_online": false}
 }
 ```
 
@@ -176,7 +178,8 @@
 - `effects` 是还在生效（`until_at` 晚于现在）的效果，按开始时间排列；到时间的不列出，由每小时的维护任务删掉。
 - `events` 是最近 50 次状态条和效果的变化，新的在前。`kind` 为 `adjust`（调整数值，`before` → `after`）、`bar_add`（新增状态条，`before`、`after` 都是初始值）、`bar_remove`（删除状态条，`before`、`after` 都是删除时存的值）、`effect_add`、`effect_remove`（增减效果，`before`、`after` 为 0）；`source` 为 `model`（模型调用工具）、`panel` 或 `api`，`before`、`after` 四舍五入。人设里已经去掉的条，以前的变化照样列出。变化记录保留 30 天。
 - `proactive`：`enabled` 是策略的 `proactive.enabled`；`level` 是生效的档位（没设时为 `mid`）；`sent_today`、`daily_cap` 是今天（`server.timezone` 的自然日）已经主动发出的条数和档位的上限；`quiet_start`、`quiet_end` 是生效的免打扰时段，`quiet_inferred` 为 true 表示按对方的作息推算；`unanswered_left` 是对方再次发言前还能主动发几条（发出的回来说话也占一条，但不计入 `sent_today`）；`timers` 是还没触发的定时，按时间排序，`kind` 为 `status_return`（回来说话）、`initiate`（主动找人）或 `follow_up`（追问）。
-- 各个列表总是数组。`activity`、`reason`，以及机器人自建的状态条和效果的名字、说明是模型或管理员写的文字，请按纯文本显示。
+- `scene` 是现在生效的场景（规则见 [技能：set_scene](skills.md#set_scene)），总是对象：`enabled` 表示机器人启用了 `scene` 技能（没启用时场景照样可以读写，只是不进 prompt）；`mode` 为 `online`（线上）或 `in_person`（面对面），没存过场景时是 `online`；`place` 是面对面的地点，可以为空，线上时总是空字符串；`since_at` 是这个场景开始的时间，没存过场景时省略；`idle_online` 为 true 表示面对面时对方超过 3 小时没说话，已经自动回到线上（这时 `since_at` 是满 3 小时的那一刻）。读的时候按这个规则算，不写库；回到线上到下一次回复或修改场景时才写进库里。
+- 各个列表总是数组。`activity`、`reason`、`place`，以及机器人自建的状态条和效果的名字、说明是模型或管理员写的文字，请按纯文本显示。
 
 `PUT …/autonomy/buffs/{name}` 把一条状态条直接设成指定值，`{name}` 是 URL 编码的条名：
 
@@ -199,6 +202,18 @@
 
 `DELETE …/autonomy/status` 立即结束当前状态，同时取消回来说话的定时，等同于模型调用 `set_status` 设 0 分钟：还在排队的回来说话任务找不到状态，结束时不发消息；已经开始生成的那一次在写结果前会再查一次状态，状态已没有时同样不发。没有状态时同样成功。写审计 `autonomy.status.clear`（`cleared` 表示是否删掉了状态，删掉时附带它的内容和结束时间），返回 `{"ok":true}`。
 
+`PUT …/autonomy/scene` 把场景切到线上或面对面，从现在开始，和模型调用 `set_scene` 的效果一样（Go SDK：`client.PutAutonomyScene`）：
+
+```json
+{"mode": "in_person", "place": "食堂"}
+```
+
+- `mode` 必填，`online` 或 `in_person`。`place` 可以省略或为空；面对面时先压成一行（去掉控制字符、零宽字符这类看不见的字符和 `【】`，去掉首尾空白），之后最多 16 字；线上时忽略 `place`。地点是管理员写的，不过输出审查。
+- 现在的场景已经因为 3 小时没说话回到了线上时，先把这个结果写进库里，再按请求切换，所以结果和 `GET …/autonomy` 看到的一致。
+- 和现在生效的场景一样（同样的 `mode` 和地点）时不改开始时间，只记下对方还在（刷新 3 小时的计时）。机器人没启用 `scene` 技能时也能写，只是不进 prompt。
+- 写审计 `autonomy.scene.set`（`actor` 是令牌名，目标是这个会话），内容 `{"mode","place","source","changed"}`，`source` 为 `api`，`changed` 表示场景有没有变；没有变时也写。返回 `{"ok":true}`。
+- `mode` 不是这两个值、地点超过 16 字或请求体不是 JSON 时返回 400 `INVALID_EVENT`（如 `mode must be online or in_person, got "offline"`、`place must be at most 16 characters, got 17`），什么都不改；群聊等其他会话返回 400，会话不存在或不属于令牌的机器人时返回 404。
+
 ## 错误格式
 
 所有 JSON 错误响应统一为：
@@ -209,7 +224,7 @@
 
 | 状态码 | `code` | 场景 |
 |---|---|---|
-| 400 | `INVALID_EVENT` | 请求不合法，包括人格、群策略、记忆、状态条修改校验失败、删除人设的状态条，以及读写非私聊会话的自主状态；Web 管理面板导入人设模板时，文件不合格或超过 200 个模板（“一个文件最多 200 个模板”）也是 400 |
+| 400 | `INVALID_EVENT` | 请求不合法，包括人格、群策略、记忆、状态条修改、场景修改校验失败、删除人设的状态条，以及读写非私聊会话的自主状态；Web 管理面板导入人设模板时，文件不合格或超过 200 个模板（“一个文件最多 200 个模板”）也是 400 |
 | 401 | `UNAUTHORIZED` | 缺少或无效的令牌 |
 | 403 | `FORBIDDEN` | 缺少 scope，或事件的机器人与令牌不一致 |
 | 404 | `NOT_FOUND` | 任务、动作、会话不存在，或要删除的自建状态条、效果不存在 |
