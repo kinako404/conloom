@@ -20,6 +20,10 @@ const LONG = 80;
 const PREVIEW = 40;
 // PANEL is the platform of conversations held in the panel (store.PlatformPanel).
 const PANEL = 'panel';
+// FOLD_KEY is where the browser keeps, followed by the section's name, that
+// a foldable section of the card was left FOLD_CLOSED; it is open otherwise.
+const FOLD_KEY = 'conloom.profile.fold.';
+const FOLD_CLOSED = 'closed';
 
 const GENDER = { female: '女', male: '男' };
 
@@ -67,13 +71,34 @@ function longText(text, always = false) {
   return details;
 }
 
-// section is a part of the card headed title; when fold is set its heading
-// is a toggle that hides body, open at first.
-function section(title, body, fold = false) {
+// foldOpen reads whether the section saved under name was left open; a
+// browser that refuses storage gets it open.
+function foldOpen(name) {
+  try {
+    return localStorage.getItem(FOLD_KEY + name) !== FOLD_CLOSED;
+  } catch {
+    return true;
+  }
+}
+
+function saveFoldOpen(name, open) {
+  try {
+    if (open) localStorage.removeItem(FOLD_KEY + name);
+    else localStorage.setItem(FOLD_KEY + name, FOLD_CLOSED);
+  } catch {
+    // Without storage the section stays as it is until the card closes.
+  }
+}
+
+// section is a part of the card headed title; when fold names it its
+// heading is a toggle that hides body, open unless the browser remembers it
+// closed under that name.
+function section(title, body, fold = '') {
   const heading = h('h3', null, title);
-  return h('section', { class: 'tg-profile-section' }, fold
-    ? h('details', { class: 'tg-profile-fold', open: true }, h('summary', null, heading), body)
-    : [heading, body]);
+  if (!fold) return h('section', { class: 'tg-profile-section' }, heading, body);
+  const details = h('details', { class: 'tg-profile-fold', open: foldOpen(fold) }, h('summary', null, heading), body);
+  details.addEventListener('toggle', () => saveFoldOpen(fold, details.open));
+  return h('section', { class: 'tg-profile-section' }, details);
 }
 
 // stateBody shows the bars of state with their values, an outer one tagged
@@ -209,7 +234,7 @@ export function openProfile({ key, bot, signal, opener }) {
       h('div', { class: 'tg-profile-actions' }, edit, shut),
       avatar, name, status),
     privateEls,
-    section('资料', profileEl, true),
+    section('资料', profileEl, 'profile'),
     listEl);
   const backdrop = h('div', { class: 'tg-profile-backdrop' }, card);
 
@@ -291,7 +316,7 @@ export function openProfile({ key, bot, signal, opener }) {
     }
     mount(messagesEl, listRow('✉', '消息', fmtInt(convR.value.message_count)));
     if (!isPrivate(convR.value)) return;
-    mount(privateEls, section('状态', stateEl), section('关系', relationEl, true));
+    mount(privateEls, section('状态', stateEl), section('关系', relationEl, 'relation'));
     listEl.prepend(eventsEl);
   });
 

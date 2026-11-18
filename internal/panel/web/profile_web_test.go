@@ -100,17 +100,31 @@ func TestProfile_Layout(t *testing.T) {
 	}
 }
 
-// 关系 and 资料 fold under their headings, open at first, with the accent
-// triangle of the folding items; 状态 keeps a plain heading. Polling remounts
+// 关系 and 资料 fold under their headings with the accent triangle of the
+// folding items, each open unless the browser remembers it closed (storage
+// that throws leaves it open); 状态 keeps a plain heading. Polling remounts
 // only the 状态 body and the status line, so a folded section stays folded.
 func TestProfile_Fold(t *testing.T) {
 	files := assets(t, ".js", ".css")
 	js := files["views/profile.js"]
+	for _, fn := range []string{"foldOpen(name)", "saveFoldOpen(name, open)"} {
+		body := regexp.MustCompile(`(?s)\nfunction ` + regexp.QuoteMeta(fn) + ` \{\n(.*?)\n\}\n`).FindStringSubmatch(js)
+		if body == nil {
+			t.Errorf("views/profile.js lacks function %s", fn)
+		} else if !strings.HasPrefix(body[1], "  try {") || !strings.Contains(body[1], "} catch {") {
+			t.Errorf("views/profile.js: %s reaches localStorage outside try/catch", fn)
+		}
+	}
 	for _, want := range []string{
-		"h('details', { class: 'tg-profile-fold', open: true }, h('summary', null, heading), body)",
+		"h('details', { class: 'tg-profile-fold', open: foldOpen(fold) }, h('summary', null, heading), body)",
 		"const heading = h('h3', null, title);",
-		"section('资料', profileEl, true)",
-		"section('状态', stateEl), section('关系', relationEl, true)",
+		"details.addEventListener('toggle', () => saveFoldOpen(fold, details.open));",
+		"const FOLD_KEY = 'conloom.profile.fold.';",
+		"return localStorage.getItem(FOLD_KEY + name) !== FOLD_CLOSED;",
+		"if (open) localStorage.removeItem(FOLD_KEY + name);",
+		"else localStorage.setItem(FOLD_KEY + name, FOLD_CLOSED);",
+		"section('资料', profileEl, 'profile')",
+		"section('状态', stateEl), section('关系', relationEl, 'relation')",
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("views/profile.js lacks %q", want)
