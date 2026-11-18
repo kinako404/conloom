@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"math"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -106,11 +107,11 @@ func TestAdjustBuff_Caps(t *testing.T) {
 			t.Errorf("step %d adjust_buff(%s) = %q, want %q", steps, args, got, want)
 		}
 	}
-	const capped = "心情今天的变化已经到上限，这次没有调整。"
+	const capped = "心情今天的变化已经到上限（每天最多 ±30），这次没有调整。"
 
-	step(testNow, `{"name":"心情","delta":15,"reason":"好消息"}`, "心情：偏高 → 偏高")
+	step(testNow, `{"name":"心情","delta":15,"reason":"好消息"}`, "心情：偏高 → 偏高（超过单次上限 ±10，按 +10 调整）")
 	checkBuff(t, st, privateKey, "心情", 70, "2026-11-13", 10)
-	step(testNow, `{"name":"心情","delta":"-15","reason":"坏消息"}`, "心情：偏高 → 偏高")
+	step(testNow, `{"name":"心情","delta":"-15","reason":"坏消息"}`, "心情：偏高 → 偏高（超过单次上限 ±10，按 -10 调整）")
 	checkBuff(t, st, privateKey, "心情", 60, "2026-11-13", 0)
 
 	step(testNow, `{"name":"心情","delta":10,"reason":"好消息"}`, "心情：偏高 → 偏高")
@@ -125,7 +126,7 @@ func TestAdjustBuff_Caps(t *testing.T) {
 	}
 	step(testNow, `{"name":"心情","delta":-4,"reason":"小失望"}`, "心情：很高 → 很高")
 	checkBuff(t, st, privateKey, "心情", 86, "2026-11-13", 26)
-	step(testNow, `{"name":"心情","delta":10,"reason":"好消息"}`, "心情：很高 → 很高")
+	step(testNow, `{"name":"心情","delta":10,"reason":"好消息"}`, "心情：很高 → 很高（今天的变化快到上限 ±30，只调整了 +4）")
 	checkBuff(t, st, privateKey, "心情", 90, "2026-11-13", 30)
 
 	// 2026-11-13 23:00 UTC is already 2026-11-14 in Asia/Shanghai.
@@ -142,7 +143,7 @@ func TestAdjustBuff_Caps(t *testing.T) {
 	checkBuff(t, st, privateKey, "精力", 0, "2026-11-13", -10)
 	step(testNow, `{"name":"精力","delta":-10,"reason":"熬夜"}`, "精力：很低 → 很低")
 	step(testNow, `{"name":"精力","delta":-10,"reason":"熬夜"}`, "精力：很低 → 很低")
-	step(testNow, `{"name":"精力","delta":-1,"reason":"熬夜"}`, "精力今天的变化已经到上限，这次没有调整。")
+	step(testNow, `{"name":"精力","delta":-1,"reason":"熬夜"}`, "精力今天的变化已经到上限（每天最多 ±30），这次没有调整。")
 	checkBuff(t, st, privateKey, "精力", 0, "2026-11-13", -30)
 }
 
@@ -150,7 +151,7 @@ func TestAdjustBuff_BadArguments(t *testing.T) {
 	st := newStore(t)
 	tool := newAdjustBuff(st, conloomapi.DefaultPersona())
 	inv := invocation(privateKey, "20001", "小明")
-	const badDelta = "delta 需要是不为 0 的整数，单次最多 ±10。"
+	const badDelta = "delta 需要是不为 0 的整数，不超过这一条的单次上限（默认 ±10）。"
 	const badReason = "需要简单写一下原因（reason），1 到 40 字。"
 	for _, c := range []struct{ args, want string }{
 		{`{"name":"心情","delta":0,"reason":"没事"}`, badDelta},
@@ -319,13 +320,14 @@ func TestAdjustBuff_NoNumbersInResult(t *testing.T) {
 		results = append(results, call(t, tool, inv, args))
 	}
 	results = append(results, call(t, tool, invocation(groupKey, "20001", "小明"), `{"name":"心情","delta":2,"reason":"开心"}`))
+	limits := regexp.MustCompile("[±+-][0-9]+")
 	for _, r := range results {
-		if strings.ContainsAny(r, "0123456789０１２３４５６７８９") {
+		if strings.ContainsAny(limits.ReplaceAllString(r, ""), "0123456789０１２３４５６７８９") {
 			t.Errorf("result %q shows a number", r)
 		}
 	}
 	if want := []string{"心情：偏低 → 中等", "这一条这次已经调过了。", "精力：偏高 → 偏高",
-		"心情今天的变化已经到上限，这次没有调整。", "没有这一条。现有：心情、精力。", "只能在私聊里用。"}; strings.Join(results, "|") != strings.Join(want, "|") {
+		"心情今天的变化已经到上限（每天最多 ±30），这次没有调整。", "没有这一条。现有：心情、精力。", "只能在私聊里用。"}; strings.Join(results, "|") != strings.Join(want, "|") {
 		t.Errorf("results = %q, want %q", results, want)
 	}
 }
