@@ -752,7 +752,8 @@ func TestExchange_AdultAppearance(t *testing.T) {
 	ctx := context.Background()
 	svc := newServiceWith(t, newTestStore(t), nil)
 	grownup := tagged("乙")
-	grownup.Adult, grownup.AdultAppearance = true, "占位的成年外观文字。"
+	grownup.Description = "成年的工程师，做事认真。"
+	grownup.Adult, grownup.AdultAppearance = true, "身材高挑，常穿深色风衣。"
 	if err := svc.PutTemplate(ctx, "grownup", grownup, "panel:admin"); err != nil {
 		t.Fatalf("PutTemplate: %v", err)
 	}
@@ -764,7 +765,7 @@ func TestExchange_AdultAppearance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(raw, []byte(`"adult_appearance":"占位的成年外观文字。"`)) {
+	if !bytes.Contains(raw, []byte(`"adult_appearance":"身材高挑，常穿深色风衣。"`)) {
 		t.Fatalf("exchange file %s does not carry the adult appearance", raw)
 	}
 	var back ExchangeFile

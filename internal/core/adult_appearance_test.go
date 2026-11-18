@@ -10,12 +10,13 @@ import (
 )
 
 // testAdultAppearance is the adult appearance of the adult appearance tests.
-const testAdultAppearance = "占位的成年外观文字。"
+const testAdultAppearance = "身材高挑，常穿深色风衣。"
 
-// adultAppearancePersona is a persona with an appearance and
-// testAdultAppearance, adult when adult is set.
+// adultAppearancePersona is a persona of an adult character with an
+// appearance and testAdultAppearance, marked adult when adult is set.
 func adultAppearancePersona(adult bool) conloomapi.PersonaDoc {
 	p := conloomapi.DefaultPersona()
+	p.Description = "成年的工程师，做事认真。"
 	p.Adult = adult
 	p.Appearance = "短发，常穿一件蓝色雨衣。"
 	p.AdultAppearance = testAdultAppearance
@@ -82,10 +83,11 @@ func TestAdultAppearance_NeverProtected(t *testing.T) {
 	t.Run("private minor", func(t *testing.T) {
 		env := newTestOrchestrator(t, testOpts{})
 		key := privateKey("29999")
-		minor := adultAppearancePersona(true)
-		minor.Minor = true
+		invalid := conloomapi.DefaultPersona()
+		invalid.Appearance, invalid.AdultAppearance = "短发，常穿一件蓝色雨衣。", testAdultAppearance
+		invalid.Minor, invalid.Adult = true, true
 		if _, err := env.st.AppendPersonaVersion(context.Background(), store.PersonaVersion{
-			ConversationKey: key, TemplateName: "default", Persona: minor,
+			ConversationKey: key, TemplateName: "default", Persona: invalid,
 			Reason: "edited in the database", UpdatedBy: "system",
 		}); err != nil {
 			t.Fatalf("AppendPersonaVersion: %v", err)

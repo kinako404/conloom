@@ -167,7 +167,8 @@ func TestValidateConfig_MinorTemplateAdultAppearance(t *testing.T) {
 	const minorLook = "persona_templates.child: a minor persona cannot have an adult appearance"
 	cfg := mustLoad(t, "testdata/valid.yaml")
 	adult := conloomapi.DefaultPersona()
-	adult.Adult, adult.AdultAppearance = true, "占位的成年外观文字。"
+	adult.Description = "成年的工程师，做事认真。"
+	adult.Adult, adult.AdultAppearance = true, "身材高挑，常穿深色风衣。"
 	minor := conloomapi.DefaultPersona()
 	minor.Minor, minor.AdultAppearance = true, " \n"
 	cfg.LegacyPersonaTemplates = map[string]conloomapi.PersonaDoc{"grownup": adult, "child": minor}

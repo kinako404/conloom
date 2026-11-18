@@ -157,7 +157,8 @@ func TestValidateContent_MinorAdultAppearance(t *testing.T) {
 
 	for _, adult := range []bool{false, true} {
 		doc := DefaultPersona()
-		doc.Adult, doc.AdultAppearance = adult, "占位的成年外观文字。"
+		doc.Description = "成年的工程师，做事认真。"
+		doc.Adult, doc.AdultAppearance = adult, "身材高挑，常穿深色风衣。"
 		if err := ValidateContent(doc); err != nil {
 			t.Errorf("adult=%v, not minor, with an adult appearance: %v", adult, err)
 		}

@@ -792,9 +792,20 @@ const testAdultAppearance = "这里是部署者写的成年外观占位文字。
 
 const adultAppearanceHeading = "\n\n私密场景下的外貌（只在这段私聊里用）：\n"
 
-func TestRenderFor_AdultAppearance(t *testing.T) {
+// testAdultDescription is the description of adultCharacter.
+const testAdultDescription = "苔灯是一名成年的工程师，做事认真，喜欢收集贝壳。"
+
+// adultCharacter is testCharacter as an adult: an adult description, marked
+// Adult.
+func adultCharacter() conloomapi.PersonaDoc {
 	p := testCharacter()
-	p.Adult, p.Gender, p.Appearance = true, conloomapi.GenderFemale, "短发，常穿一件蓝色雨衣。"
+	p.Description, p.Adult = testAdultDescription, true
+	return p
+}
+
+func TestRenderFor_AdultAppearance(t *testing.T) {
+	p := adultCharacter()
+	p.Gender, p.Appearance = conloomapi.GenderFemale, "短发，常穿一件蓝色雨衣。"
 	without := p
 	p.AdultAppearance = " \n" + testAdultAppearance + "\n\n"
 
@@ -816,7 +827,7 @@ func TestRenderFor_AdultAppearance(t *testing.T) {
 	want := "人格：灯塔看守\n" +
 		"说话风格：语气温暖亲切，乐于回应大家。偶尔可以轻松幽默一下。表达清楚，不绕弯子也不生硬。通常一两句话，尽量简短。不使用表情符号。只回应别人说的，不主动展开话题。\n" +
 		"行为习惯：默认回复简短，一两句话就好。可以适当使用网络梗。只在确实需要澄清时偶尔追问。技术问题讲清楚、讲实用，给出能直接用的做法。\n" +
-		"\n角色设定：\n苔灯是海边小镇的灯塔看守，十几岁，做事认真，喜欢收集贝壳。\n她把群友当成镇上的邻居。\n" +
+		"\n角色设定：\n" + testAdultDescription + "\n" +
 		"\n性别：女。\n" +
 		"\n外貌：\n短发，常穿一件蓝色雨衣。\n" +
 		"\n私密场景下的外貌（只在这段私聊里用）：\n" + testAdultAppearance + "\n" +
@@ -847,13 +858,12 @@ func TestRenderFor_AdultAppearance(t *testing.T) {
 func TestSystemPrompt_AdultAppearanceOnlyOpen(t *testing.T) {
 	ctx := context.Background()
 	privateKey := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "20001")
-	adult := testCharacter()
-	adult.Description = "苔灯是海边小镇的灯塔看守，已经成年，做事认真。"
-	adult.Adult, adult.ContentRules, adult.Appearance = true, testContentRules, "短发，常穿一件蓝色雨衣。"
+	adult := adultCharacter()
+	adult.ContentRules, adult.Appearance = testContentRules, "短发，常穿一件蓝色雨衣。"
 	look := adult
 	look.AdultAppearance = "\n" + testAdultAppearance + " "
-	plain := testCharacter()
-	plain.Appearance = adult.Appearance
+	plain := adultCharacter()
+	plain.Adult, plain.Appearance = false, adult.Appearance
 	plainLook := plain
 	plainLook.AdultAppearance = testAdultAppearance
 	get := func(svc *Service, key string) Prompt {
@@ -895,10 +905,10 @@ func TestSystemPrompt_AdultAppearanceOnlyOpen(t *testing.T) {
 	}
 
 	st := newTestStore(t)
-	minor := testCharacter()
-	minor.Minor, minor.Adult, minor.AdultAppearance = true, true, testAdultAppearance
+	invalid := conloomapi.DefaultPersona()
+	invalid.Minor, invalid.Adult, invalid.AdultAppearance = true, true, testAdultAppearance
 	if _, err := st.AppendPersonaVersion(ctx, store.PersonaVersion{
-		ConversationKey: privateKey, TemplateName: "default", Persona: minor,
+		ConversationKey: privateKey, TemplateName: "default", Persona: invalid,
 		Reason: "edited in the database", UpdatedBy: "system",
 	}); err != nil {
 		t.Fatalf("AppendPersonaVersion: %v", err)
@@ -925,12 +935,12 @@ func TestService_SystemPromptCacheFollowsAdultAppearance(t *testing.T) {
 		return p
 	}
 	get()
-	adult := conloomapi.DefaultPersona()
-	adult.Adult, adult.AdultAppearance = true, testAdultAppearance
+	adult := adultCharacter()
+	adult.AdultAppearance = testAdultAppearance
 	if _, err := svc.Update(ctx, privateKey, "default", conloomapi.PersonaPut{Persona: &adult}, "29999"); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if p := get(); !strings.HasSuffix(p.Text, adultAppearanceHeading+testAdultAppearance) {
+	if p := get(); !strings.Contains(p.Text, adultAppearanceHeading+testAdultAppearance) {
 		t.Fatalf("after adult update: prompt %q", p.Text)
 	}
 	one := 1
@@ -1328,8 +1338,8 @@ func TestUpdate_RejectsMinorAdultAppearance(t *testing.T) {
 	if err := svc.PutTemplate(ctx, "young", minor, "panel:admin"); !errors.Is(err, ErrInvalidTemplate) || !strings.Contains(err.Error(), want) {
 		t.Errorf("PutTemplate: err = %v, want ErrInvalidTemplate containing %q", err, want)
 	}
-	adult := minor
-	adult.Minor, adult.Adult = false, true
+	adult := adultCharacter()
+	adult.AdultAppearance = testAdultAppearance
 	if pv, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Persona: &adult}, "29999"); err != nil || pv.Persona.AdultAppearance != testAdultAppearance {
 		t.Errorf("adult persona with an adult appearance = %+v, %v; want accepted", pv, err)
 	}
