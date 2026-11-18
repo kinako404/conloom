@@ -164,16 +164,32 @@ func TestSkills_TruncatedToolRoundIsNotSent(t *testing.T) {
 		t.Errorf("logs lack the reason")
 	}
 
-	// A truncated final answer is still an answer.
-	final := skillEnv(t, testOpts{shortTools: func(req map[string]any) fakeopenai.Reply {
-		if len(offeredTools(req)) == 0 {
-			return fakeopenai.Reply{Content: "四点", FinishReason: "length"}
-		}
-		return fakeopenai.Reply{ToolCalls: []fakeopenai.ToolCall{{ID: fmt.Sprintf("c%d", len(toolMessages(req))), Name: "now",
-			Arguments: fmt.Sprintf(`{"n":%d}`, len(toolMessages(req)))}}}
-	}}, []string{"time"}, &recTool{name: "now"})
+	// A truncated final answer is not an answer either.
+	final := skillEnv(t, testOpts{
+		shortTools: func(req map[string]any) fakeopenai.Reply {
+			if len(offeredTools(req)) == 0 {
+				return fakeopenai.Reply{Content: "四点", FinishReason: "length"}
+			}
+			return fakeopenai.Reply{ToolCalls: []fakeopenai.ToolCall{{ID: fmt.Sprintf("c%d", len(toolMessages(req))), Name: "now",
+				Arguments: fmt.Sprintf(`{"n":%d}`, len(toolMessages(req)))}}}
+		},
+		longTools: func(map[string]any) fakeopenai.Reply { return fakeopenai.Reply{Content: "四点半"} },
+	}, []string{"time"}, &recTool{name: "now"})
 	task = final.waitTask(t, final.submit(t, final.groupEvent("20001", "几点了", mentionBot)).TaskID)
-	if len(task.Actions) != 1 || task.Actions[0].Content.Text != "四点" {
-		t.Errorf("truncated final answer: task = %+v", task)
+	if len(task.Actions) != 1 || task.Actions[0].Content.Text != "四点半" || task.Meta.SelectedModelRole != "long_context" {
+		t.Errorf("truncated final answer: task = %+v, want the re-routed answer", task)
+	}
+	if !strings.Contains(final.logs.String(), "truncated final answer") {
+		t.Errorf("logs lack the truncated final answer reason")
+	}
+}
+
+func TestSkills_TruncatedReplyWithoutSkillsIsSent(t *testing.T) {
+	env := skillEnv(t, testOpts{shortTools: func(map[string]any) fakeopenai.Reply {
+		return fakeopenai.Reply{Content: "很长的回复", FinishReason: "length"}
+	}}, nil)
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "讲个故事", mentionBot)).TaskID)
+	if len(task.Actions) != 1 || task.Actions[0].Content.Text != "很长的回复" || env.long.Calls() != 0 {
+		t.Fatalf("task = %+v, want the reply without skills sent as is", task)
 	}
 }

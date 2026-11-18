@@ -123,7 +123,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `runtime.cpu_offloaded_kv_tokens`、`runtime.prefix_caching` | — | 可以写，目前不生效 |
 | `privacy.allow_sensitive_content` | false | 私聊（包括面板聊天）的回复和记忆整理只会路由到为 `true` 的模型，面板聊天的建议回复只在 `short_context` 为 `true` 时生成；`long_context` 为 `false` 时私聊不整理记忆（私聊默认策略开启了记忆时，启动日志有一条 warn，在设置页保存私聊默认策略时也会提示） |
 | `privacy.data_location` | — | 说明性标签（如 `remote` 表示数据会离开本机），代码不读取 |
-| `extra_body` | 空 | 原样合并进请求体，例如 `enable_thinking: false`；它可以覆盖 `model`、`messages` 等字段，请谨慎使用。面板聊天的建议回复用 `short_context` 时只在那次请求里关闭思考：这里有 `chat_template_kwargs` 时把其中的 `enable_thinking` 改为 `false`，有顶层 `enable_thinking` 时也改为 `false`，见 [Web 管理面板：在面板里聊天](panel.md#在面板里聊天) |
+| `extra_body` | 空 | 原样合并进请求体，例如 `enable_thinking: false`；它可以覆盖 `model`、`messages` 等字段，请谨慎使用。面板聊天的建议回复用 `short_context` 时，以及带技能的回复的收尾请求（不再提供工具的那次，任一模型配置），只在那次请求里关闭思考：这里有 `chat_template_kwargs` 时把其中的 `enable_thinking` 改为 `false`，有顶层 `enable_thinking` 时也改为 `false`，见 [Web 管理面板：在面板里聊天](panel.md#在面板里聊天) 和 [技能](skills.md#一次回复里的工具调用) |
 | `token_estimate_factor` | 1.0 | token 估算系数，≥ 0，0 视为 1 |
 
 ## 人设模板

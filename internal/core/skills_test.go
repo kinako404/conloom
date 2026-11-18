@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kinako404/conloom/internal/config"
+	"github.com/kinako404/conloom/internal/provider/openai"
 	"github.com/kinako404/conloom/internal/skills"
 	"github.com/kinako404/conloom/internal/testutil/fakeopenai"
 	"github.com/kinako404/conloom/pkg/conloomapi"
@@ -386,11 +387,195 @@ func TestSkills_LoopTimeLimitForcesText(t *testing.T) {
 	if len(reqs) != 2 || len(offeredTools(reqs[1])) != 0 {
 		t.Fatalf("requests = %d (second offers %v), want a final request without tools after the time limit", len(reqs), offeredTools(reqs[1]))
 	}
-	if slow.count() != 1 {
-		t.Errorf("tool executed %d times, want 1: no new calls after the time limit", slow.count())
+	if slow.count() != 2 {
+		t.Errorf("tool executed %d times, want 2: calls already returned run past the time limit", slow.count())
 	}
-	if got := toolMessages(reqs[1]); len(got) != 2 || got[1]["content"] != "调用失败。" {
-		t.Errorf("tool messages = %v, want the second call answered without running", got)
+	if got := toolMessages(reqs[1]); len(got) != 2 || got[0]["content"] != fromTool(nowResult) ||
+		got[1]["content"] != fromTool(nowResult)+"\n\n"+copyToolsGone {
+		t.Errorf("tool messages = %v, want both results, the last with the note", got)
+	}
+}
+
+func TestSkills_CallsReturnedAfterTheTimeLimitAreRun(t *testing.T) {
+	clock := &testClock{t: time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC)}
+	buff := &recTool{name: "now", fn: func(json.RawMessage) (string, error) { return "已调整。", nil }}
+	env := skillEnv(t, testOpts{now: clock.now, shortTools: func(req map[string]any) fakeopenai.Reply {
+		if len(offeredTools(req)) == 0 {
+			return fakeopenai.Reply{Content: "好了"}
+		}
+		clock.advance(toolLoopTimeout + 16*time.Second)
+		return fakeopenai.Reply{ToolCalls: []fakeopenai.ToolCall{{ID: "a", Name: "now", Arguments: `{"delta":5}`}}}
+	}}, []string{"time"}, buff)
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "几点了", mentionBot, occurredAt(clock.now()))).TaskID)
+	if len(task.Actions) != 1 || task.Actions[0].Content.Text != "好了" {
+		t.Fatalf("task = %+v", task)
+	}
+	if buff.count() != 1 || buff.args[0] != `{"delta":5}` {
+		t.Fatalf("tool ran %d times with %v, want once with the returned arguments", buff.count(), buff.args)
+	}
+	reqs := env.short.Requests()
+	if len(reqs) != 2 || len(offeredTools(reqs[1])) != 0 {
+		t.Fatalf("requests = %d, want a final request without tools after the slow round", len(reqs))
+	}
+	msgs := requestMessages(t, reqs[1])
+	last := msgs[len(msgs)-1]
+	if last["role"] != "tool" || last["tool_call_id"] != "a" || last["content"] != fromTool("已调整。")+"\n\n"+copyToolsGone {
+		t.Errorf("last message = %v, want the result with the note", last)
+	}
+	if n := env.skillCount(t, "now", "ok"); n != 1 {
+		t.Errorf("skill calls now/ok = %v, want 1", n)
+	}
+}
+
+func TestSkills_FinalRequestTurnsThinkingOff(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		extra map[string]any
+		check func(t *testing.T, offered, final map[string]any)
+	}{
+		{"chat_template_kwargs", map[string]any{"chat_template_kwargs": map[string]any{"enable_thinking": true, "keep": "x"}, "top_k": 20},
+			func(t *testing.T, offered, final map[string]any) {
+				if want := map[string]any{"enable_thinking": true, "keep": "x"}; !reflect.DeepEqual(offered["chat_template_kwargs"], want) {
+					t.Errorf("tool round chat_template_kwargs = %v, want the profile's %v", offered["chat_template_kwargs"], want)
+				}
+				if want := map[string]any{"enable_thinking": false, "keep": "x"}; !reflect.DeepEqual(final["chat_template_kwargs"], want) || final["top_k"] != float64(20) {
+					t.Errorf("final chat_template_kwargs = %v, top_k = %v; want %v and 20", final["chat_template_kwargs"], final["top_k"], want)
+				}
+			}},
+		{"top-level enable_thinking", map[string]any{"enable_thinking": true},
+			func(t *testing.T, offered, final map[string]any) {
+				if offered["enable_thinking"] != true || final["enable_thinking"] != false {
+					t.Errorf("enable_thinking = %v then %v, want true then false", offered["enable_thinking"], final["enable_thinking"])
+				}
+				if _, ok := final["chat_template_kwargs"]; ok {
+					t.Errorf("final request adds chat_template_kwargs: %v", final["chat_template_kwargs"])
+				}
+			}},
+		{"no thinking keys", map[string]any{"top_k": 20},
+			func(t *testing.T, offered, final map[string]any) {
+				for _, k := range []string{"chat_template_kwargs", "enable_thinking"} {
+					if _, ok := final[k]; ok {
+						t.Errorf("final request sets %s: %v", k, final[k])
+					}
+				}
+			}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			now := &recTool{name: "now"}
+			env := skillEnv(t, testOpts{
+				shortTools: func(req map[string]any) fakeopenai.Reply {
+					if len(offeredTools(req)) == 0 {
+						return fakeopenai.Reply{Content: "说不上来"}
+					}
+					return fakeopenai.Reply{ToolCalls: []fakeopenai.ToolCall{{Name: "now", Arguments: fmt.Sprintf(`{"n":%d}`, len(toolMessages(req)))}}}
+				},
+				configure: func(cfg *config.Config) {
+					p := cfg.ModelProfiles["short_context"]
+					p.ExtraBody = c.extra
+					cfg.ModelProfiles["short_context"] = p
+				},
+			}, []string{"time"}, now)
+			task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "几点了", mentionBot)).TaskID)
+			if len(task.Actions) != 1 || task.Actions[0].Content.Text != "说不上来" {
+				t.Fatalf("task = %+v", task)
+			}
+			reqs := env.short.Requests()
+			if len(reqs) != maxToolRounds+1 || len(offeredTools(reqs[maxToolRounds])) != 0 {
+				t.Fatalf("requests = %d, want %d rounds and a final request", len(reqs), maxToolRounds)
+			}
+			c.check(t, reqs[0], reqs[maxToolRounds])
+			if got := c.extra["chat_template_kwargs"]; got != nil && got.(map[string]any)["enable_thinking"] != true {
+				t.Errorf("profile extra_body changed: %v", c.extra)
+			}
+		})
+	}
+}
+
+func TestSkills_TruncatedFinalAnswerIsReRouted(t *testing.T) {
+	clock := &testClock{t: time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC)}
+	now := &recTool{name: "now"}
+	env := skillEnv(t, testOpts{
+		now: clock.now,
+		shortTools: func(req map[string]any) fakeopenai.Reply {
+			if len(offeredTools(req)) == 0 {
+				return fakeopenai.Reply{Content: "Okay, the user wants me to adjust the buff. The parameters are", FinishReason: "length"}
+			}
+			clock.advance(toolLoopTimeout + time.Second)
+			return fakeopenai.Reply{ToolCalls: []fakeopenai.ToolCall{{ID: "s", Name: "now", Arguments: "{}"}}}
+		},
+		longTools: func(req map[string]any) fakeopenai.Reply { return fakeopenai.Reply{Content: "四点半"} },
+	}, []string{"time"}, now)
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "几点了", mentionBot, occurredAt(clock.now()))).TaskID)
+	if len(task.Actions) != 1 || task.Actions[0].Content.Text != "四点半" || task.Meta.SelectedModelRole != "long_context" {
+		t.Fatalf("task = %+v, want the re-routed answer, not the truncated one", task)
+	}
+	if !strings.Contains(env.logs.String(), "truncated final answer") {
+		t.Errorf("logs lack the reason")
+	}
+	longReqs := env.long.Requests()
+	if len(longReqs) != 1 || len(offeredTools(longReqs[0])) != 1 {
+		t.Fatalf("long model requests = %d, want one offering the tools", len(longReqs))
+	}
+	if got := toolMessages(longReqs[0]); len(got) != 1 || got[0]["content"] != fromTool(nowResult) {
+		t.Errorf("long model tool messages = %v, want the earlier result without the note", got)
+	}
+	if now.count() != 1 {
+		t.Errorf("tool calls = %d, want 1", now.count())
+	}
+}
+
+func TestSkills_EchoedFinalNoteIsStripped(t *testing.T) {
+	now := &recTool{name: "now"}
+	env := skillEnv(t, testOpts{shortTools: func(req map[string]any) fakeopenai.Reply {
+		if len(offeredTools(req)) == 0 {
+			return fakeopenai.Reply{Content: copyToolsGone + "\n说不上来"}
+		}
+		return fakeopenai.Reply{ToolCalls: []fakeopenai.ToolCall{{Name: "now", Arguments: fmt.Sprintf(`{"n":%d}`, len(toolMessages(req)))}}}
+	}}, []string{"time"}, now)
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "几点了", mentionBot)).TaskID)
+	if len(task.Actions) != 1 || task.Actions[0].Content.Text != "说不上来" {
+		t.Fatalf("task = %+v, want the reply without the echoed note", task)
+	}
+
+	only := skillEnv(t, testOpts{
+		shortTools: func(req map[string]any) fakeopenai.Reply {
+			if len(offeredTools(req)) == 0 {
+				return fakeopenai.Reply{Content: copyToolsGone}
+			}
+			return fakeopenai.Reply{ToolCalls: []fakeopenai.ToolCall{{Name: "now", Arguments: fmt.Sprintf(`{"n":%d}`, len(toolMessages(req)))}}}
+		},
+		longTools: func(map[string]any) fakeopenai.Reply { return fakeopenai.Reply{Content: "四点半"} },
+	}, []string{"time"}, &recTool{name: "now"})
+	task = only.waitTask(t, only.submit(t, only.groupEvent("20001", "几点了", mentionBot)).TaskID)
+	if len(task.Actions) != 1 || task.Actions[0].Content.Text != "四点半" || task.Meta.SelectedModelRole != "long_context" {
+		t.Fatalf("task = %+v, want the re-routed answer after an echo-only final answer", task)
+	}
+	if !strings.Contains(only.logs.String(), "empty final answer") {
+		t.Errorf("logs lack the empty final answer reason")
+	}
+}
+
+func TestWithToolsGone(t *testing.T) {
+	sys := openai.ChatMessage{Role: "system", Content: "s"}
+	user := openai.ChatMessage{Role: "user", Content: "几点了"}
+	call := openai.ChatMessage{Role: "assistant", ToolCalls: []openai.ToolCall{{ID: "a", Name: "now", Arguments: "{}"}}}
+	result := openai.ChatMessage{Role: "tool", ToolCallID: "a", Content: "r"}
+
+	in := []openai.ChatMessage{sys, user, call, result}
+	got := withToolsGone(in)
+	want := []openai.ChatMessage{sys, user, call, {Role: "tool", ToolCallID: "a", Content: "r\n\n" + copyToolsGone}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("after a tool message: %+v, want %+v", got, want)
+	}
+	if in[3].Content != "r" {
+		t.Errorf("input changed: %+v", in[3])
+	}
+
+	in = []openai.ChatMessage{sys, user}
+	got = withToolsGone(in[:2:2])
+	want = []openai.ChatMessage{sys, user, {Role: "user", Content: copyToolsGone}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("without a tool message: %+v, want %+v", got, want)
 	}
 }
 

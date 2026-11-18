@@ -32,11 +32,11 @@ const (
 	// toolCallTimeout bounds one tool call, for tools that honour their
 	// context.
 	toolCallTimeout = 10 * time.Second
-	// toolLoopTimeout bounds the tool calls of a reply's model call, counted
+	// toolLoopTimeout bounds the tool rounds of a reply's model call, counted
 	// from its first request; a re-routed model gets its own. Once it has
-	// passed no new call is run and the next request offers no tools. It
-	// leaves the final request room within the 60 seconds a platform's typing
-	// indicator lasts.
+	// passed the calls the model already returned are still run, but the next
+	// request is the final one, without tools. It leaves the final request room
+	// within the 60 seconds a platform's typing indicator lasts.
 	toolLoopTimeout = 25 * time.Second
 	// assistantTokensFallback bounds an assistant message when the profile
 	// reserves no output tokens.
@@ -52,6 +52,7 @@ const (
 
 	copyToolFailed   = "调用失败。"
 	copyTooManyCalls = "本轮调用太多。"
+	copyToolsGone    = "（工具现在不能再用了，不要再提工具或调用，直接用你的口吻回复对方。）"
 
 	// unknownToolLabel names, in metrics and logs, a tool the model made up.
 	unknownToolLabel = "unknown"
@@ -188,8 +189,10 @@ var toolCallMarkers = []string{"<tool_call", "<function=", "<function_calls"}
 // notAnAnswer returns why resp, to a request offering tools (final false) or
 // to the final request, must not be taken as the reply, or "": a tool call
 // written as text, a tool round cut off by the output limit before any call,
-// or tool calls in the final request, whose text is mostly a filler like
-// "稍等，我查一下".
+// tool calls in the final request, whose text is mostly a filler like
+// "稍等，我查一下", a final answer cut off by the output limit, which is
+// often the model's deliberation about the tools rather than a reply, or a
+// final answer left empty once an echoed copyToolsGone is stripped.
 func notAnAnswer(resp openai.ChatResponse, final bool) string {
 	content := strings.ToLower(resp.Content)
 	switch {
@@ -197,10 +200,42 @@ func notAnAnswer(resp openai.ChatResponse, final bool) string {
 		return "tool call written as text"
 	case final && len(resp.ToolCalls) > 0:
 		return "tool calls in the final request"
+	case final && resp.FinishReason == "length":
+		return "truncated final answer"
+	case final && strings.TrimSpace(resp.Content) == "":
+		return "empty final answer"
 	case !final && resp.FinishReason == "length" && len(resp.ToolCalls) == 0:
 		return "truncated tool round"
 	}
 	return ""
+}
+
+// withToolsGone returns msgs, the messages of a skill run's final request, with
+// copyToolsGone telling the model the tools are gone: appended to the last
+// message when it is a tool result, else as a user message of its own, since
+// chat templates may reject a system message after the first. msgs is not
+// changed.
+func withToolsGone(msgs []openai.ChatMessage) []openai.ChatMessage {
+	out := slices.Clone(msgs)
+	if n := len(out); n > 0 && out[n-1].Role == "tool" {
+		out[n-1].Content += "\n\n" + copyToolsGone
+		return out
+	}
+	return append(out, openai.ChatMessage{Role: "user", Content: copyToolsGone})
+}
+
+// toolsGoneTokens bounds the prompt tokens withToolsGone adds.
+func toolsGoneTokens(factor float64) int {
+	return estimateMessages([]openai.ChatMessage{{Role: "user", Content: copyToolsGone}}, factor)
+}
+
+// stripToolsGone removes copyToolsGone that a model echoed at the start of its
+// final answer.
+func stripToolsGone(s string) string {
+	if rest, ok := strings.CutPrefix(strings.TrimSpace(s), copyToolsGone); ok {
+		return strings.TrimSpace(rest)
+	}
+	return s
 }
 
 // lastRequest reports whether the next request must be the final one, without
@@ -210,9 +245,10 @@ func (o *Orchestrator) lastRequest(run *skillRun, estimate, worst int, d router.
 	return run.rounds >= maxToolRounds || !o.now().Before(run.deadline) || estimate+worst > d.MaxPromptTokens
 }
 
-// toolRound runs the calls of resp and returns the messages to append: the
-// assistant message (calls without an ID get one unique in the task, empty
-// arguments become {}) and one tool message per call.
+// toolRound runs the calls of resp, even once the time limit has passed, and
+// returns the messages to append: the assistant message (calls without an ID
+// get one unique in the task, empty arguments become {}) and one tool message
+// per call.
 func (o *Orchestrator) toolRound(ctx context.Context, task store.TaskRecord, run *skillRun, resp openai.ChatResponse) []openai.ChatMessage {
 	calls := slices.Clone(resp.ToolCalls)
 	for i := range calls {
@@ -226,11 +262,7 @@ func (o *Orchestrator) toolRound(ctx context.Context, task store.TaskRecord, run
 	msgs := []openai.ChatMessage{{Role: "assistant", Content: resp.Content, ToolCalls: calls}}
 	for i, c := range calls {
 		text := copyTooManyCalls
-		switch {
-		case i >= maxCallsPerRound:
-		case !o.now().Before(run.deadline):
-			text = copyToolFailed
-		default:
+		if i < maxCallsPerRound {
 			text = o.callTool(ctx, task, run, c)
 		}
 		msgs = append(msgs, openai.ChatMessage{Role: "tool", ToolCallID: c.ID, Content: text})

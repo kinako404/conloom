@@ -642,17 +642,22 @@ func partsDirective(maxParts int) string {
 // call builds the context for the routed profile and calls the model. With
 // skills (run not nil) the system prompt gets the skill section and the
 // prompt keeps its usual budget unless the hard prompt limit leaves no room
-// for one worst-case tool round on top of it; requests offer the tools and the
-// calls the model makes are run, their results fed back, after any progress
-// run made with an earlier model. A profile whose hard limit, with a round
-// reserved, leaves less than minToolHistoryTokens for history gets the reply
-// without skills instead. The final request offers no tools: it comes after
-// maxToolRounds rounds (those of an earlier model count), toolLoopTimeout
-// after this model's first request, or when another round could overflow the
-// prompt limit.
+// for one worst-case tool round and copyToolsGone on top of it; requests offer
+// the tools and the calls the model makes are run, their results fed back,
+// after any progress run made with an earlier model. Calls the model returned
+// run even when toolLoopTimeout passed while it answered. A profile whose hard
+// limit, with a round reserved, leaves less than minToolHistoryTokens for
+// history gets the reply without skills instead. The final request offers no
+// tools: it comes after maxToolRounds rounds (those of an earlier model
+// count), toolLoopTimeout after this model's first request, or when another
+// round could overflow the prompt limit. It carries copyToolsGone (see
+// withToolsGone), not kept in run, and turns thinking off where the profile's
+// extra_body sets it (thinkingOff); a leading echo of the note is stripped
+// from its answer.
 // Every request waits for its own admission. The response is the model's final
 // answer; a tool call written as text, a tool round cut off by the output
-// limit and tool calls in the final request are not answers (ErrEmptyOutput).
+// limit, tool calls in the final request and a final answer cut off by the
+// output limit are not answers (ErrEmptyOutput).
 // A profile whose modalities lack "image" gets every request without the
 // appearance image and its label, though the estimates still count them.
 func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router.Decision, in contextbuilder.Input, run *skillRun) (openai.ChatResponse, error) {
@@ -661,7 +666,7 @@ func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router
 	in.TokenFactor = p.Config.TokenEstimateFactor
 	worst := 0
 	if run != nil {
-		worst = worstRound(d.MaxOutputTokens, in.TokenFactor, run.maxResult)
+		worst = worstRound(d.MaxOutputTokens, in.TokenFactor, run.maxResult) + toolsGoneTokens(in.TokenFactor)
 		with := withSkills(in, run)
 		if room := d.MaxPromptTokens - worst; room-contextbuilder.BaseTokens(with) >= minToolHistoryTokens {
 			in = with
@@ -688,13 +693,20 @@ func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router
 	estimate := built.EstimatedTokens + estimateMessages(run.msgs, in.TokenFactor)
 	for {
 		final := o.lastRequest(run, estimate, worst, d)
-		req.Tools = run.tools
+		send, sendEstimate := req, estimate
+		send.Tools = run.tools
 		if final {
-			req.Tools = nil
+			send.Tools = nil
+			send.Messages = withToolsGone(req.Messages)
+			send.ExtraBody = thinkingOff(p.Config.ExtraBody)
+			sendEstimate += toolsGoneTokens(in.TokenFactor)
 		}
-		resp, err := o.chat(ctx, task, d, req, built, estimate, []any{"round", run.rounds, "final", final})
+		resp, err := o.chat(ctx, task, d, send, built, sendEstimate, []any{"round", run.rounds, "final", final})
 		if err != nil {
 			return resp, err
+		}
+		if final {
+			resp.Content = stripToolsGone(resp.Content)
 		}
 		if reason := notAnAnswer(resp, final); reason != "" {
 			o.log.Warn("model output rejected", "task_id", task.ID, "role", p.Role, "round", run.rounds, "reason", reason)
@@ -703,9 +715,9 @@ func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router
 		if len(resp.ToolCalls) == 0 {
 			return resp, nil
 		}
-		if !o.now().Before(run.deadline) {
-			continue // out of time: these calls are not run; ask for the final answer
-		}
+		// Calls in a final response were rejected above, so these come from a
+		// round with tools: they run even when the time limit passed while the
+		// model was answering, and the next request is then the final one.
 		added := o.toolRound(ctx, task, run, resp)
 		run.msgs = append(run.msgs, added...)
 		run.rounds++
