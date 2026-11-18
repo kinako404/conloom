@@ -8,10 +8,10 @@ import "time"
 // to now, the names of the bars the bot added that a persona bar of the same
 // name has since replaced (ShadowedBars: the bot no longer sees them, but
 // each still counts toward its limit of bars until removed), the effects
-// still active, the chat's newest bar and effect changes first and how the
-// bot starts the chat. Activity, Reason, and the names and descriptions the
-// bot gave its bars and effects are text the model or an operator wrote;
-// show them as plain text.
+// still active, the chat's newest bar and effect changes first, how the
+// bot starts the chat and the scene in effect now. Activity, Reason, Place,
+// and the names and descriptions the bot gave its bars and effects are text
+// the model or an operator wrote; show them as plain text.
 type AutonomyState struct {
 	Status       *AutonomyStatus    `json:"status"`
 	Bars         []AutonomyBar      `json:"bars"`
@@ -19,6 +19,7 @@ type AutonomyState struct {
 	Effects      []AutonomyEffect   `json:"effects"`
 	Events       []AutonomyBarEvent `json:"events"`
 	Proactive    AutonomyProactive  `json:"proactive"`
+	Scene        AutonomyScene      `json:"scene"`
 }
 
 // AutonomyStatus is what the bot is doing in a private chat, from StartedAt

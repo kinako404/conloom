@@ -358,3 +358,35 @@ func TestClient_MemoryMethods(t *testing.T) {
 		t.Fatalf("ConsolidateMemory on a disabled group: err = %v", err)
 	}
 }
+
+func TestClient_PutAutonomyScene(t *testing.T) {
+	var method, path, body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		method, path, body = r.Method, r.URL.EscapedPath(), string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(srv.Close)
+	ctx := context.Background()
+	put := conloomapi.AutonomyScenePut{Mode: conloomapi.SceneInPerson, Place: "食堂"}
+	if err := client.New(srv.URL, "test-memory-token", nil).PutAutonomyScene(ctx, "c/1", put); err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodPut || path != "/api/v1/conversations/c%2F1/autonomy/scene" || body != `{"mode":"in_person","place":"食堂"}` {
+		t.Fatalf("request = %s %s %s", method, path, body)
+	}
+
+	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"code":"INVALID_EVENT","message":"mode must be online or in_person","retryable":false,"trace_id":"trace_x"}}`)
+	}))
+	t.Cleanup(errSrv.Close)
+	var apiErr *client.APIError
+	err := client.New(errSrv.URL, "t", nil).PutAutonomyScene(ctx, "private_20001", conloomapi.AutonomyScenePut{Mode: "offline"})
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest || apiErr.Body.Code != conloomapi.CodeInvalidEvent ||
+		client.IsRetryable(err) {
+		t.Fatalf("PutAutonomyScene with a bad mode: err = %v", err)
+	}
+}

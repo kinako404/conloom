@@ -229,6 +229,13 @@ func (c *Client) DeleteMemberMemory(ctx context.Context, convID, userID string) 
 	return c.call(ctx, http.MethodDelete, memberMemoryPath(convID, userID), nil, nil)
 }
 
+// PutAutonomyScene sets the scene of the private conversation convID: online,
+// or in person at put.Place (at most conloomapi.ScenePlaceMaxRunes runes,
+// may be empty).
+func (c *Client) PutAutonomyScene(ctx context.Context, convID string, put conloomapi.AutonomyScenePut) error {
+	return c.call(ctx, http.MethodPut, conversationPath(convID, "autonomy/scene"), put, nil)
+}
+
 // ConsolidateMemory asks for a consolidation of the conversation's memory; it
 // fails with MEMORY_DISABLED when memory is off.
 func (c *Client) ConsolidateMemory(ctx context.Context, convID string) error {
