@@ -105,6 +105,47 @@ func TestScene_SetRecordsPrevAndNoop(t *testing.T) {
 		PrevMode: conloomapi.SceneInPerson, PrevPlace: "食堂"})
 }
 
+func TestScene_SwitchTaskID(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	key := sceneKey("20001")
+	at := sceneAt
+	set := func(mode, task string) {
+		t.Helper()
+		at = at.Add(time.Minute)
+		setScene(t, db, store.ConversationScene{ConversationKey: key, Mode: mode, Place: "",
+			SinceAt: at, TouchedAt: at, SwitchTaskID: task})
+	}
+	want := func(step, task string) {
+		t.Helper()
+		if got := getScene(t, db, key); got.SwitchTaskID != task {
+			t.Errorf("%s: switch task %q, want %q", step, got.SwitchTaskID, task)
+		}
+	}
+
+	set(conloomapi.SceneInPerson, "task_in")
+	want("switch in person", "task_in")
+	set(conloomapi.SceneOnline, "task_a")
+	want("switch online", "task_a")
+	set(conloomapi.SceneOnline, "task_a")
+	want("no-op of the same task", "task_a")
+	set(conloomapi.SceneOnline, "task_b")
+	want("no-op of another task", "")
+	set(conloomapi.SceneInPerson, "")
+	want("panel switch in person", "")
+	set(conloomapi.SceneOnline, "task_c")
+	want("switch online again", "task_c")
+	set(conloomapi.SceneOnline, "")
+	want("panel no-op", "")
+
+	set(conloomapi.SceneInPerson, "task_d")
+	touched := at
+	if ok, err := db.EndIdleScene(ctx, key, touched, touched.Add(3*time.Hour)); err != nil || !ok {
+		t.Fatalf("EndIdleScene = %v, %v", ok, err)
+	}
+	want("silence fallback", "")
+}
+
 func TestScene_SetZeroTimesAreNow(t *testing.T) {
 	db := newTestDB(t)
 	key := sceneKey("20001")
@@ -318,7 +359,7 @@ func TestMigration0022_AddsSceneTable(t *testing.T) {
 	}
 	want := []string{"0|conversation_key|TEXT|0||1", "1|mode|TEXT|1||0", "2|place|TEXT|1|''|0", "3|since_at|TEXT|1||0",
 		"4|touched_at|TEXT|1||0", "5|prev_mode|TEXT|1|''|0", "6|prev_place|TEXT|1|''|0", "7|updated_at|TEXT|1||0",
-		"8|origin_conversation_key|TEXT|1|''|0"}
+		"8|origin_conversation_key|TEXT|1|''|0", "9|switch_task_id|TEXT|1|''|0"}
 	if !slices.Equal(afterCols["conversation_scene"], want) {
 		t.Errorf("conversation_scene columns %v, want %v", afterCols["conversation_scene"], want)
 	}

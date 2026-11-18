@@ -370,17 +370,18 @@ type Store interface {
 	// SetScene stores s as the scene of scope s.ConversationKey, set in
 	// s.Origin(). When the stored scene (online and "" without a row) has s's
 	// Mode and Place it only stores s.TouchedAt (and UpdatedAt, origin) — no
-	// row is created for an online no-op — and reports false; otherwise
-	// PrevMode/PrevPlace become the replaced scene's, SinceAt/TouchedAt s's,
-	// and it reports true. Zero SinceAt/TouchedAt/UpdatedAt are now.
+	// row is created for an online no-op — and clears SwitchTaskID unless it
+	// is s's, then reports false; otherwise PrevMode/PrevPlace become the
+	// replaced scene's, SinceAt/TouchedAt/SwitchTaskID s's, and it reports
+	// true. Zero SinceAt/TouchedAt/UpdatedAt are now.
 	SetScene(ctx context.Context, s ConversationScene) (changed bool, err error)
 	// TouchScene sets TouchedAt to at when the scope's scene is in_person and
 	// touched before at, and reports whether it did.
 	TouchScene(ctx context.Context, convKey string, at time.Time) (bool, error)
 	// EndIdleScene switches the scope's scene to online since `since`
-	// (PrevMode/PrevPlace = the in-person scene, TouchedAt kept) only if it is
-	// still in_person with TouchedAt equal to touchedAt, and reports whether
-	// it did.
+	// (PrevMode/PrevPlace = the in-person scene, TouchedAt kept, SwitchTaskID
+	// cleared) only if it is still in_person with TouchedAt equal to
+	// touchedAt, and reports whether it did.
 	EndIdleScene(ctx context.Context, convKey string, touchedAt, since time.Time) (bool, error)
 	// ArmTimer stores t, replacing the conversation's timer of the same kind,
 	// unclaimed.

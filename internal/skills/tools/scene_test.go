@@ -63,8 +63,9 @@ func TestSetScene_SwitchesAndRecordsPrev(t *testing.T) {
 		t.Errorf("set_scene online = %q, want %q", got, want)
 	}
 	s = checkScene(t, st, privateKey, conloomapi.SceneOnline, "")
-	if s.PrevMode != conloomapi.SceneInPerson || s.PrevPlace != "食堂" || !s.SinceAt.Equal(inv.Now) {
-		t.Errorf("scene = %+v, want online since %v after in person at 食堂", s, inv.Now)
+	if s.PrevMode != conloomapi.SceneInPerson || s.PrevPlace != "食堂" || !s.SinceAt.Equal(inv.Now) ||
+		s.SwitchTaskID != inv.TaskID {
+		t.Errorf("scene = %+v, want online since %v after in person at 食堂, switched by %s", s, inv.Now, inv.TaskID)
 	}
 
 	inv.Now = testNow.Add(20 * time.Minute)

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -21,13 +22,27 @@ func sceneWakeEnv(t *testing.T, botSkills []string) (*testEnv, *injectClock) {
 	return env, clock
 }
 
+// errandTask is the task setWakeStatus stores as the one that set the status.
+const errandTask = "task_seed"
+
 // statusReturn stores 洗澡 from started for d as the private chat's status,
 // fires its return at its end and returns the last user message of the wake
 // task's request.
 func (e *testEnv) statusReturn(t *testing.T, clock *injectClock, started time.Time, d time.Duration) string {
 	t.Helper()
+	return e.statusReturnAfter(t, clock, started, d, nil)
+}
+
+// statusReturnAfter is statusReturn that calls during, unless nil, halfway
+// through the status, with the clock there.
+func (e *testEnv) statusReturnAfter(t *testing.T, clock *injectClock, started time.Time, d time.Duration, during func()) string {
+	t.Helper()
 	until := started.Add(d)
 	timer := e.setWakeStatus(t, "洗澡", started, until)
+	if during != nil {
+		clock.set(started.Add(d / 2))
+		during()
+	}
 	clock.set(until)
 	if task := e.fireWake(t, timer); task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 {
 		t.Fatalf("status return task = %+v, want one reply", task)
@@ -53,7 +68,7 @@ func TestSceneReturn_RestoresInPerson(t *testing.T) {
 	t0 := clock.now()
 	env.setScene(t, conloomapi.SceneInPerson, "食堂", t0, t0)
 	left := t0.Add(time.Minute)
-	env.setScene(t, conloomapi.SceneOnline, "", left, left)
+	env.setSceneBy(t, conloomapi.SceneOnline, "", left, left, errandTask)
 
 	last := env.statusReturn(t, clock, left, 20*time.Minute)
 	now := clock.now()
@@ -70,22 +85,26 @@ func TestSceneReturn_RestoresInPerson(t *testing.T) {
 	}
 }
 
-func TestSceneReturn_SlackBoundary(t *testing.T) {
+func TestSceneReturn_OnlyTheTaskThatLeft(t *testing.T) {
 	for _, c := range []struct {
 		name     string
-		early    time.Duration
+		task     string
+		left     time.Duration
 		restored bool
 	}{
-		{"at the slack", sceneReturnSlack, true},
-		{"past the slack", sceneReturnSlack + time.Second, false},
+		{"switched just before the status", errandTask, -time.Second, true},
+		{"switched after the status", errandTask, time.Second, true},
+		{"switched long before by the same task", errandTask, -time.Hour, true},
+		{"the person left in another task", "task_left", time.Minute, false},
+		{"the person left before the errand", "task_left", -time.Minute, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			env, clock := sceneWakeEnv(t, []string{"scene", "status", "buff"})
 			t0 := clock.now()
-			started := t0.Add(10 * time.Minute)
-			left := started.Add(-c.early)
+			started := t0.Add(2 * time.Hour)
+			left := started.Add(c.left)
 			env.setScene(t, conloomapi.SceneInPerson, "食堂", t0, t0)
-			env.setScene(t, conloomapi.SceneOnline, "", left, left)
+			env.setSceneBy(t, conloomapi.SceneOnline, "", left, left, c.task)
 
 			last := env.statusReturn(t, clock, started, 20*time.Minute)
 			if c.restored {
@@ -96,6 +115,27 @@ func TestSceneReturn_SlackBoundary(t *testing.T) {
 				return
 			}
 			requireScene(t, env, conloomapi.SceneOnline, "", left, left, conloomapi.SceneInPerson)
+			if !strings.Contains(last, sceneOnlineLine) || !strings.HasSuffix(last, "\n"+CopyDirectiveStatusReturn("洗澡", false)) {
+				t.Fatalf("last user message = %q, want the online scene and status return", last)
+			}
+		})
+	}
+}
+
+func TestSceneReturn_PanelOnlineDuringErrandStays(t *testing.T) {
+	for _, source := range []string{store.BuffSourcePanel, store.BuffSourceAPI} {
+		t.Run(source, func(t *testing.T) {
+			env, clock := sceneWakeEnv(t, []string{"scene", "status", "buff"})
+			t0 := clock.now()
+			env.setScene(t, conloomapi.SceneInPerson, "食堂", t0, t0)
+			var switched time.Time
+			last := env.statusReturnAfter(t, clock, t0.Add(time.Minute), 20*time.Minute, func() {
+				switched = clock.now()
+				if err := env.o.Autonomy().SetScene(context.Background(), privateConvKey, conloomapi.SceneOnline, "", source, "operator"); err != nil {
+					t.Fatal(err)
+				}
+			})
+			requireScene(t, env, conloomapi.SceneOnline, "", switched, switched, conloomapi.SceneInPerson)
 			if !strings.Contains(last, sceneOnlineLine) || !strings.HasSuffix(last, "\n"+CopyDirectiveStatusReturn("洗澡", false)) {
 				t.Fatalf("last user message = %q, want the online scene and status return", last)
 			}
@@ -134,15 +174,41 @@ func TestSceneReturn_OnlineBeforeErrandStaysOnline(t *testing.T) {
 }
 
 func TestSceneReturn_ErrandOutlastsSilence(t *testing.T) {
+	for name, task := range map[string]string{"set in person by the panel": "", "set in person by the errand's task": errandTask} {
+		t.Run(name, func(t *testing.T) {
+			env, clock := sceneWakeEnv(t, []string{"scene", "status", "buff"})
+			t0 := clock.now()
+			env.setSceneBy(t, conloomapi.SceneInPerson, "食堂", t0, t0, task)
+
+			last := env.statusReturn(t, clock, t0, 4*time.Hour)
+			sc := requireScene(t, env, conloomapi.SceneOnline, "", t0.Add(sceneIdleTimeout), t0, conloomapi.SceneInPerson)
+			if sc.SwitchTaskID != "" {
+				t.Errorf("stored scene = %+v, want the fallback switched by no task", sc)
+			}
+			if !strings.Contains(last, sceneOnlineLine) || !strings.HasSuffix(last, "\n"+CopyDirectiveStatusReturn("洗澡", false)) {
+				t.Fatalf("last user message = %q, want the online scene and status return", last)
+			}
+		})
+	}
+}
+
+func TestSceneReturn_FallbackDuringErrandStays(t *testing.T) {
 	env, clock := sceneWakeEnv(t, []string{"scene", "status", "buff"})
 	t0 := clock.now()
-	env.setScene(t, conloomapi.SceneInPerson, "食堂", t0, t0)
+	env.setSceneBy(t, conloomapi.SceneInPerson, "食堂", t0, t0, errandTask)
+	fellBack := t0.Add(sceneIdleTimeout)
 
-	last := env.statusReturn(t, clock, t0, 4*time.Hour)
-	now := clock.now()
-	requireScene(t, env, conloomapi.SceneInPerson, "食堂", now, now, conloomapi.SceneOnline)
-	if !strings.Contains(last, sceneAtCanteen) || !strings.HasSuffix(last, "\n"+CopyDirectiveStatusReturn("洗澡", true)) {
-		t.Fatalf("last user message = %q, want the in-person scene and status return", last)
+	last := env.statusReturnAfter(t, clock, t0.Add(2*time.Hour), 2*time.Hour, func() {
+		if got, err := env.o.Autonomy().Scene(context.Background(), privateConvKey); err != nil || !got.IdleOnline {
+			t.Fatalf("Scene halfway = %+v, %v; want idle online", got, err)
+		}
+		if ended, err := env.st.EndIdleScene(context.Background(), memory.ScopeKeyOf(privateConvKey), t0, fellBack); err != nil || !ended {
+			t.Fatalf("EndIdleScene = %v, %v", ended, err)
+		}
+	})
+	requireScene(t, env, conloomapi.SceneOnline, "", fellBack, t0, conloomapi.SceneInPerson)
+	if !strings.Contains(last, sceneOnlineLine) || !strings.HasSuffix(last, "\n"+CopyDirectiveStatusReturn("洗澡", false)) {
+		t.Fatalf("last user message = %q, want the online scene and status return", last)
 	}
 }
 

@@ -487,15 +487,16 @@ func (o *Orchestrator) wakeDirective(ctx context.Context, task store.TaskRecord,
 }
 
 // restoreScene brings the bot back beside the person on its return from st,
-// a status that ended: a scene that went from in person to online at or after
-// st started (less sceneReturnSlack, since set_status and set_scene usually
-// share a turn) is stored, and kept in scene, as in person at the place it
-// left, since and touched now. A failed write is logged and leaves scene as
-// it was.
+// a status that ended: a scene that went from in person to online by the
+// set_scene of the reply task that set st (SwitchTaskID is st.TaskID) is
+// stored, and kept in scene, as in person at the place it left, since and
+// touched now. A switch by another task (the person left), by the silence
+// fallback or by the panel or the API stays online. A failed write is logged
+// and leaves scene as it was.
 func (o *Orchestrator) restoreScene(ctx context.Context, task store.TaskRecord, st store.ConversationStatus, scene *taskScene) {
 	sc := scene.sc
 	if !scene.on || sc.Mode != conloomapi.SceneOnline || sc.PrevMode != conloomapi.SceneInPerson ||
-		sc.SinceAt.Before(st.StartedAt.Add(-sceneReturnSlack)) {
+		sc.SwitchTaskID == "" || sc.SwitchTaskID != st.TaskID {
 		return
 	}
 	now := o.now()

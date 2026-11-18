@@ -11,14 +11,14 @@ import (
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
 
-const sceneCols = `conversation_key, mode, place, since_at, touched_at, prev_mode, prev_place, updated_at, origin_conversation_key`
+const sceneCols = `conversation_key, mode, place, since_at, touched_at, prev_mode, prev_place, updated_at, origin_conversation_key, switch_task_id`
 
 func (db *DB) GetScene(ctx context.Context, convKey string) (store.ConversationScene, error) {
 	var s store.ConversationScene
 	var since, touched, updated string
 	err := db.r.QueryRowContext(ctx, `SELECT `+sceneCols+` FROM conversation_scene WHERE conversation_key = ?`, convKey).
 		Scan(&s.ConversationKey, &s.Mode, &s.Place, &since, &touched, &s.PrevMode, &s.PrevPlace, &updated,
-			&s.OriginConversationKey)
+			&s.OriginConversationKey, &s.SwitchTaskID)
 	if err != nil {
 		return store.ConversationScene{}, notFound(err)
 	}
@@ -59,18 +59,19 @@ func (db *DB) SetScene(ctx context.Context, s store.ConversationScene) (bool, er
 				return nil
 			}
 			_, err := tx.ExecContext(ctx, `UPDATE conversation_scene SET touched_at = ?, updated_at = ?,
-				origin_conversation_key = ? WHERE conversation_key = ?`,
-				fmtTime(s.TouchedAt), fmtTime(s.UpdatedAt), s.OriginConversationKey, s.ConversationKey)
+				origin_conversation_key = ?, switch_task_id = CASE WHEN switch_task_id = ? THEN switch_task_id ELSE '' END
+				WHERE conversation_key = ?`,
+				fmtTime(s.TouchedAt), fmtTime(s.UpdatedAt), s.OriginConversationKey, s.SwitchTaskID, s.ConversationKey)
 			return err
 		}
 		changed = true
-		_, err = tx.ExecContext(ctx, `INSERT INTO conversation_scene (`+sceneCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		_, err = tx.ExecContext(ctx, `INSERT INTO conversation_scene (`+sceneCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (conversation_key) DO UPDATE SET mode = excluded.mode, place = excluded.place,
 				since_at = excluded.since_at, touched_at = excluded.touched_at, prev_mode = excluded.prev_mode,
 				prev_place = excluded.prev_place, updated_at = excluded.updated_at,
-				origin_conversation_key = excluded.origin_conversation_key`,
+				origin_conversation_key = excluded.origin_conversation_key, switch_task_id = excluded.switch_task_id`,
 			s.ConversationKey, s.Mode, s.Place, fmtTime(s.SinceAt), fmtTime(s.TouchedAt), mode, place,
-			fmtTime(s.UpdatedAt), s.OriginConversationKey)
+			fmtTime(s.UpdatedAt), s.OriginConversationKey, s.SwitchTaskID)
 		return err
 	})
 	if err != nil {
@@ -114,7 +115,7 @@ func (db *DB) EndIdleScene(ctx context.Context, convKey string, touchedAt, since
 	err := db.inTx(ctx, func(tx *sql.Tx) error {
 		var err error
 		n, err = execCount(ctx, tx, `UPDATE conversation_scene SET mode = ?, place = '', since_at = ?,
-				prev_mode = mode, prev_place = place, updated_at = ?
+				prev_mode = mode, prev_place = place, switch_task_id = '', updated_at = ?
 			WHERE conversation_key = ? AND mode = ? AND touched_at = ?`,
 			conloomapi.SceneOnline, fmtTime(since), fmtTime(time.Now()), convKey, conloomapi.SceneInPerson, fmtTime(touchedAt))
 		return err

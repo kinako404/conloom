@@ -211,6 +211,7 @@
 - `mode` 必填，`online` 或 `in_person`。`place` 可以省略或为空；面对面时先压成一行（去掉控制字符、零宽字符这类看不见的字符和 `【】`，去掉首尾空白），之后最多 16 字；线上时忽略 `place`。地点是管理员写的，不过输出审查。
 - 现在的场景已经因为 3 小时没说话回到了线上时，先把这个结果写进库里，再按请求切换，所以结果和 `GET …/autonomy` 看到的一致。
 - 和现在生效的场景一样（同样的 `mode` 和地点）时不改开始时间，只记下对方还在（刷新 3 小时的计时）。机器人没启用 `scene` 技能时也能写，只是不进 prompt。
+- 回来说话时只恢复机器人自己在设状态的同一次回复里切到线上的场景（见 [技能：set_scene](skills.md#set_scene)）。从 API 切到线上（包括切到已经是线上的场景）之后，这次离开回来时不会恢复成面对面，API 的切换不会被撤回。
 - 写审计 `autonomy.scene.set`（`actor` 是令牌名，目标是这个会话），内容 `{"mode","place","source","changed"}`，`source` 为 `api`，`changed` 表示场景有没有变；没有变时也写。返回 `{"ok":true}`。
 - `mode` 不是这两个值、地点超过 16 字或请求体不是 JSON 时返回 400 `INVALID_EVENT`（如 `mode must be online or in_person, got "offline"`、`place must be at most 16 characters, got 17`），什么都不改；群聊等其他会话返回 400，会话不存在或不属于令牌的机器人时返回 404。
 

@@ -41,8 +41,14 @@ func sceneEnv(t *testing.T, botSkills []string) (*testEnv, *injectClock) {
 // the scene of the private chat's memory scope.
 func (e *testEnv) setScene(t *testing.T, mode, place string, since, touched time.Time) {
 	t.Helper()
+	e.setSceneBy(t, mode, place, since, touched, "")
+}
+
+// setSceneBy is setScene as switched by the set_scene of task taskID.
+func (e *testEnv) setSceneBy(t *testing.T, mode, place string, since, touched time.Time, taskID string) {
+	t.Helper()
 	_, err := e.st.SetScene(context.Background(), store.ConversationScene{ConversationKey: memory.ScopeKeyOf(privateConvKey),
-		Mode: mode, Place: place, SinceAt: since, TouchedAt: touched, UpdatedAt: since})
+		Mode: mode, Place: place, SinceAt: since, TouchedAt: touched, SwitchTaskID: taskID, UpdatedAt: since})
 	if err != nil {
 		t.Fatal(err)
 	}

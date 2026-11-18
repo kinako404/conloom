@@ -74,6 +74,9 @@ bot's panel chats):
   restore in person after an errand; see "Coming back")
 - `updated_at`
 - `origin_conversation_key` (the chat that set it, like status 0016)
+- `switch_task_id` (the reply task whose `set_scene` made the latest switch;
+  empty when the panel, the API, the silence fallback or the errand restore
+  made it; see "Coming back")
 
 Store methods `GetScene`, `SetScene`, `ClearScene`; the table joins the same
 cleanup/migration lists as `conversation_status` (`autonomyTables`,
@@ -128,12 +131,22 @@ Every switch records the scene it replaced in `prev_mode`/`prev_place`.
 Wake turns do not offer `set_scene` (they keep offering only the buff tools).
 Instead, the return is deterministic: when a `status_return` wake fires and the
 stored scene is online with `prev_mode = in_person`, and the switch to online
-happened at or after the status started (allow 2 minutes of slack, since the
-two tools are usually called in the same turn), the scene is restored to in
+was made by `set_scene` in the same reply task that set the status
+(`switch_task_id` equals the status's `task_id`), the scene is restored to in
 person at `prev_place` (`touched_at = now`) before the return message is
 built. The status-return directive then uses its in-person variant ("you are
 back beside them"). If the bot forgot to switch to online when leaving, the
 scene simply stays in person.
+
+Only that one task proves the bot itself left for the errand. Everything else
+stays online: the person leaving ("我回宿舍了") in another task, even when the
+bot then sets a status of its own; the 3-hour silence fallback during the
+errand (it clears `switch_task_id`); an operator switching online from the
+panel or the API (they write an empty `switch_task_id`). Setting the online
+scene again (a no-op) keeps `switch_task_id` only when it comes from the same
+task, so a later "我也走了" in another task also stops the restore. (Revised
+in the final review: this replaces an earlier time rule, "switched at or after
+the status started, less 2 minutes of slack", which could not tell who left.)
 
 ### Prompt
 

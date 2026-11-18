@@ -20,16 +20,13 @@ const (
 	// sceneIdleTimeout is how long an in-person scene lasts after the person's
 	// last message before it falls back to online.
 	sceneIdleTimeout = 3 * time.Hour
-	// sceneReturnSlack is how much earlier than a status's start a switch to
-	// online may be and still count as leaving for that status.
-	sceneReturnSlack = 2 * time.Minute
 )
 
 // effectiveScene is the scene sc, the stored one when found, at now: online
 // without a row, and online, after the in-person scene it replaces, from
 // TouchedAt+sceneIdleTimeout on when the person has not spoken for
 // sceneIdleTimeout. fellBack reports the latter, which is not stored yet;
-// TouchedAt is kept.
+// TouchedAt is kept and no task made the switch (SwitchTaskID empty).
 func effectiveScene(sc store.ConversationScene, found bool, now time.Time) (eff store.ConversationScene, fellBack bool) {
 	if !found {
 		return store.ConversationScene{Mode: conloomapi.SceneOnline}, false
@@ -41,6 +38,7 @@ func effectiveScene(sc store.ConversationScene, found bool, now time.Time) (eff 
 	eff.Mode, eff.Place = conloomapi.SceneOnline, ""
 	eff.PrevMode, eff.PrevPlace = conloomapi.SceneInPerson, sc.Place
 	eff.SinceAt = sc.TouchedAt.Add(sceneIdleTimeout)
+	eff.SwitchTaskID = ""
 	return eff, true
 }
 

@@ -91,7 +91,8 @@ func (t *setSceneTool) Call(ctx context.Context, inv skills.Invocation, args jso
 	}
 	now, _ := clock(inv)
 	changed, err := t.st.SetScene(ctx, store.ConversationScene{ConversationKey: memory.ScopeKeyOf(inv.ConversationKey),
-		OriginConversationKey: inv.ConversationKey, Mode: mode, Place: place, SinceAt: now, TouchedAt: now})
+		OriginConversationKey: inv.ConversationKey, Mode: mode, Place: place, SinceAt: now, TouchedAt: now,
+		SwitchTaskID: inv.TaskID})
 	if err != nil {
 		return "", err
 	}

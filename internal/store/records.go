@@ -445,15 +445,18 @@ func (s ConversationStatus) Origin() string {
 // conloomapi.SceneInPerson), at Place (optional, only in person), since
 // SinceAt. TouchedAt is when the scene was last set, or the person last
 // spoke while in person. PrevMode and PrevPlace are the scene the latest
-// switch replaced. ConversationKey is the memory scope it is kept under
-// (MemoryScopeKey), like ConversationStatus; OriginConversationKey is the
-// chat it was set in, empty meaning ConversationKey itself (see Origin).
+// switch replaced. SwitchTaskID is the reply task whose set_scene made the
+// latest switch, empty when the panel, the API, the silence fallback or an
+// errand's return made it. ConversationKey is the memory scope it is kept
+// under (MemoryScopeKey), like ConversationStatus; OriginConversationKey is
+// the chat it was set in, empty meaning ConversationKey itself (see Origin).
 // Without a stored scene a conversation is online.
 type ConversationScene struct {
 	ConversationKey, OriginConversationKey string
 	Mode, Place                            string
 	SinceAt, TouchedAt                     time.Time
 	PrevMode, PrevPlace                    string
+	SwitchTaskID                           string
 	UpdatedAt                              time.Time
 }
 
