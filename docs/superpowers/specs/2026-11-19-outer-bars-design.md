@@ -89,3 +89,30 @@ its own step limits.
 
 Exact Chinese wording of the outer heading and SKILL.md lines, Go names,
 where the outer section sits inside the block, the form layout.
+
+## Builder-check decisions (controller's calls)
+
+1. **Over-limit deltas are clamped, not refused**, exactly like today's ±10
+   clamp and partial daily-cap application (`buff.go` `dayCapped`) — only the
+   numbers now come from the bar's `max_step`/`max_day` (defaults 10/30), so
+   existing personas behave the same. The goal's "rejection text" means: the
+   tool result says when a delta was cut down and to what limit; the existing
+   "today's change is used up" rejection names the bar's daily limit.
+2. **How the model learns limits:** the state block shows the step limit next
+   to a bar only for outer bars and for bars with a non-default `max_step`
+   (e.g. `肚子：80/100（很高，单次最多 ±40）（说明）`); inner bars with default
+   limits render byte-identically. The shared `adjust_buff` description and
+   SKILL.md are reworded generically (no "隐藏" absolutism; "幅度按状态条的单次
+   上限，默认 ±10"; outer bars may be shown in descriptions) — a small prompt
+   change for every buff bot, accepted. The limit text must survive the
+   300-rune trimming as long as the bar line does.
+3. **Panel chats sharing one memory scope:** values and the daily counter stay
+   keyed by bar name in the scope (unchanged); `kind`, `max_step`, `max_day`
+   come from the persona of the conversation being answered (as
+   `scopePersonaBar` already does for baseline/half-life). `AutonomyBar` gains
+   `kind`, `max_step`, `max_day` (omitempty) read from the viewed
+   conversation's persona, for the autonomy tab and the profile card.
+4. **Exchange format:** no version bump. The new fields are `omitempty`, so
+   exports that don't use them still import on older builds; exports that do
+   fail on older builds with the existing unknown-field error (documented in
+   the persona exchange docs).
