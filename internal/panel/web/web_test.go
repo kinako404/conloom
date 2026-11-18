@@ -1683,6 +1683,39 @@ func TestSections_Order(t *testing.T) {
 	}
 }
 
+// The top bar never wraps: when its links do not fit on one line, measured
+// with a ResizeObserver, it collapses into a ☰ button with the current
+// section's title, which opens the sections in a menu.
+func TestTopbar_CollapsesInsteadOfWrapping(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	containsAll(t, "app.js", files["app.js"],
+		"class: 'nav-toggle'", "'aria-label': '导航菜单'", "'aria-expanded': 'false'", "'aria-controls': 'nav-menu'", "'☰'",
+		"h('div', { class: 'nav-menu', id: 'nav-menu', hidden: true }, items)",
+		"toggle.setAttribute('aria-expanded', String(open));",
+		"new ResizeObserver(fit)", "resized.observe(topbar);", "document.fonts.ready.then(fit);",
+		"topbar.classList.toggle('nav-collapsed', collapsed);",
+		"e.key === 'Escape'", "'ArrowDown'", "'ArrowUp'",
+		"const items = SECTIONS.map(sectionLink);", "mount(current, shown ? shown[1] : '');", "closeMenu(false);")
+	css := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(files["style.css"], "")
+	for _, m := range cssRule.FindAllStringSubmatch(css, -1) {
+		sel := strings.TrimSpace(m[1])
+		if (sel == ".topbar" || sel == ".nav" || sel == ".nav-links") && strings.Contains(m[0], "flex-wrap: wrap") {
+			t.Errorf("style.css: %s still wraps", sel)
+		}
+	}
+	for _, c := range []struct{ name, re string }{
+		{"a top bar on one line", `\.topbar\s*\{[^}]*flex-wrap:\s*nowrap;`},
+		{"links on one line", `\.nav-links\s*\{[^}]*flex-wrap:\s*nowrap;`},
+		{"the row measured while collapsed", `\.nav-collapsed \.nav-links\s*\{[^}]*visibility:\s*hidden;`},
+		{"the ☰ button and menu only when collapsed", `\.nav-bar, \.nav-menu\s*\{\s*display:\s*none;`},
+		{"a menu under the bar", `\.nav-collapsed \.nav-menu\s*\{[^}]*position:\s*absolute;`},
+	} {
+		if !regexp.MustCompile(c.re).MatchString(css) {
+			t.Errorf("style.css lacks %s (%s)", c.name, c.re)
+		}
+	}
+}
+
 // The settings page edits the group and private default policies with the
 // shared policy form, JSON editor and version list, and shows how many
 // conversations follow each and the warnings a save returns.
