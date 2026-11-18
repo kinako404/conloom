@@ -440,6 +440,32 @@ func (s ConversationStatus) Origin() string {
 	return s.OriginConversationKey
 }
 
+// ConversationScene is where the bot and the person of a private
+// conversation are: Mode online or in_person (conloomapi.SceneOnline,
+// conloomapi.SceneInPerson), at Place (optional, only in person), since
+// SinceAt. TouchedAt is when the scene was last set, or the person last
+// spoke while in person. PrevMode and PrevPlace are the scene the latest
+// switch replaced. ConversationKey is the memory scope it is kept under
+// (MemoryScopeKey), like ConversationStatus; OriginConversationKey is the
+// chat it was set in, empty meaning ConversationKey itself (see Origin).
+// Without a stored scene a conversation is online.
+type ConversationScene struct {
+	ConversationKey, OriginConversationKey string
+	Mode, Place                            string
+	SinceAt, TouchedAt                     time.Time
+	PrevMode, PrevPlace                    string
+	UpdatedAt                              time.Time
+}
+
+// Origin returns the chat the scene was set in: OriginConversationKey, or
+// ConversationKey when that is empty.
+func (s ConversationScene) Origin() string {
+	if s.OriginConversationKey == "" {
+		return s.ConversationKey
+	}
+	return s.OriginConversationKey
+}
+
 // BuffValue is a hidden bar's value in a private conversation as last
 // written at UpdatedAt, before any decay since. DayDelta is the bar's net
 // change on Day, a local date as "2006-01-02".

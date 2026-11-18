@@ -12,10 +12,10 @@ import (
 )
 
 // autonomyTables hold a private conversation's status, timers, bar values,
-// bar changes, bot-created bars and effects; a shared panel memory scope
-// holds all but timers, which stay with each of its chats.
+// bar changes, bot-created bars, effects and scene; a shared panel memory
+// scope holds all but timers, which stay with each of its chats.
 var autonomyTables = []string{"conversation_status", "conversation_timers", "conversation_buffs", "conversation_buff_events",
-	"conversation_custom_bars", "conversation_effects"}
+	"conversation_custom_bars", "conversation_effects", "conversation_scene"}
 
 var knownTimerKinds = []store.TimerKind{store.TimerStatusReturn, store.TimerInitiate, store.TimerFollowUp}
 

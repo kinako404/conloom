@@ -29,6 +29,34 @@ type AutonomyStatus struct {
 	UntilAt   time.Time `json:"until_at"`
 }
 
+// The modes of a private chat's scene, and how many runes its place has at
+// most.
+const (
+	SceneOnline        = "online"
+	SceneInPerson      = "in_person"
+	ScenePlaceMaxRunes = 16
+)
+
+// AutonomyScene is a private chat's scene as in effect now: online, or in
+// person at Place (empty when none was given) since SinceAt (zero for a chat
+// that never had a scene). Enabled: the bot enables the scene skill.
+// IdleOnline: online because the person said nothing for 3 hours while in
+// person. Place is text the model or an operator wrote; show it as plain text.
+type AutonomyScene struct {
+	Enabled    bool      `json:"enabled"`
+	Mode       string    `json:"mode"`
+	Place      string    `json:"place"`
+	SinceAt    time.Time `json:"since_at,omitzero"`
+	IdleOnline bool      `json:"idle_online"`
+}
+
+// AutonomyScenePut sets a private chat's scene: Mode is SceneOnline or
+// SceneInPerson, Place at most ScenePlaceMaxRunes runes, ignored online.
+type AutonomyScenePut struct {
+	Mode  string `json:"mode"`
+	Place string `json:"place"`
+}
+
 // AutonomyBar is one of the hidden bars: its value decayed to now, rounded,
 // the band of that value (很低, 偏低, 中等, 偏高 or 很高), and the bar's
 // baseline and description. Custom marks a bar the bot added itself

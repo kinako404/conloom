@@ -336,6 +336,8 @@ func seedScopeRows(t *testing.T, db *DB, key string) {
 			VALUES (?1, '饥饿', 30, 21600, '', 'task_1', ?2)`,
 		`INSERT INTO conversation_effects (conversation_key, name, description, started_at, until_at, task_id)
 			VALUES (?1, '着凉', '', ?2, ?2, 'task_2')`,
+		`INSERT INTO conversation_scene (conversation_key, mode, place, since_at, touched_at, prev_mode, prev_place, updated_at,
+			origin_conversation_key) VALUES (?1, 'in_person', '食堂', ?2, ?2, 'online', '', ?2, '')`,
 	} {
 		if _, err := db.w.Exec(seed, key, at); err != nil {
 			t.Fatalf("seed %s: %v", seed, err)
@@ -349,7 +351,7 @@ var scopeKeyedTables = []string{
 	"group_memory", "member_memory", "memory_revisions",
 	"memory_chunks", "memory_chunk_state", "memory_chunk_rebuild", "memory_chunk_forgets",
 	"conversation_status", "conversation_timers", "conversation_buffs", "conversation_buff_events",
-	"conversation_custom_bars", "conversation_effects",
+	"conversation_custom_bars", "conversation_effects", "conversation_scene",
 }
 
 // scopeRowCounts counts the rows under key in every table of scopeKeyedTables.

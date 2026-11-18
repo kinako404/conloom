@@ -20,7 +20,7 @@ var conversationTables = []string{
 	"conversation_members", "proactive_log", "group_memory", "member_memory", "memory_revisions",
 	"memory_chunks", "memory_chunk_state", "memory_chunk_rebuild", "memory_chunk_forgets",
 	"conversation_status", "conversation_timers", "conversation_buffs", "conversation_buff_events",
-	"conversation_custom_bars", "conversation_effects",
+	"conversation_custom_bars", "conversation_effects", "conversation_scene",
 }
 
 func (db *DB) DeleteConversation(ctx context.Context, convKey string) error {
@@ -57,9 +57,11 @@ func (db *DB) DeleteConversation(ctx context.Context, convKey string) error {
 		}
 		// The chat's status_return timer went with its timers above.
 		if scope := store.MemoryScopeKey(convKey); store.IsSharedScope(scope) {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM conversation_status
-				WHERE conversation_key = ? AND origin_conversation_key = ?`, scope, convKey); err != nil {
-				return err
+			for _, table := range []string{"conversation_status", "conversation_scene"} {
+				if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+`
+					WHERE conversation_key = ? AND origin_conversation_key = ?`, scope, convKey); err != nil {
+					return err
+				}
 			}
 		}
 		_, err = tx.ExecContext(ctx, `DELETE FROM conversations WHERE key = ?`, convKey)
@@ -130,7 +132,7 @@ var scopeTables = []string{
 	"group_memory", "member_memory", "memory_revisions",
 	"memory_chunks", "memory_chunk_state", "memory_chunk_rebuild", "memory_chunk_forgets",
 	"conversation_status", "conversation_timers", "conversation_buffs", "conversation_buff_events",
-	"conversation_custom_bars", "conversation_effects",
+	"conversation_custom_bars", "conversation_effects", "conversation_scene",
 }
 
 func (db *DB) DeleteScope(ctx context.Context, scopeKey string) error {

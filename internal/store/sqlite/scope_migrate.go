@@ -16,6 +16,7 @@ import (
 // MigratePanelMemoryScope merges into the chat's shared memory scope.
 var scopeMergeTables = []string{
 	"group_memory", "member_memory", "memory_revisions", "conversation_status", "conversation_buffs", "conversation_buff_events",
+	"conversation_scene",
 }
 
 // MigratePanelMemoryScope merges the memory that older versions kept under
@@ -31,7 +32,8 @@ var scopeMergeTables = []string{
 //   - the status is the one ending last, still marked as set in its chat,
 //     whose status_return timer stays; the other chats' status_return timers
 //     are deleted;
-//   - each bar keeps the value updated last.
+//   - each bar keeps the value updated last;
+//   - the scene is the one updated last, still marked as set in its chat.
 //
 // Semantic search chunks stay with their chats, which the scope's searches
 // cover. Rows of any other conversation are not touched. It returns, ordered
@@ -95,6 +97,10 @@ func panelChatBots(ctx context.Context, tx *sql.Tx) ([]string, error) {
 	return out, errors.Join(rows.Err(), rows.Close())
 }
 
+// keepOrigin is keepNewest's set clause that keeps a status or scene moved
+// under a scope marked as set in the chat it was kept under.
+const keepOrigin = `origin_conversation_key = CASE origin_conversation_key WHEN '' THEN conversation_key ELSE origin_conversation_key END, `
+
 // mergeIntoScope merges the memory rows of chats into scope as
 // MigratePanelMemoryScope describes and returns the chats that had any,
 // ordered by key.
@@ -126,8 +132,10 @@ func mergeIntoScope(ctx context.Context, tx *sql.Tx, scope string, chats []strin
 	if err := keepNewest(ctx, tx, "member_memory", "platform_user_id", "updated_at DESC, version DESC", keys, scope, ""); err != nil {
 		return nil, err
 	}
-	if err := keepNewest(ctx, tx, "conversation_status", "", "until_at DESC, updated_at DESC", keys, scope,
-		`origin_conversation_key = CASE origin_conversation_key WHEN '' THEN conversation_key ELSE origin_conversation_key END, `); err != nil {
+	if err := keepNewest(ctx, tx, "conversation_status", "", "until_at DESC, updated_at DESC", keys, scope, keepOrigin); err != nil {
+		return nil, err
+	}
+	if err := keepNewest(ctx, tx, "conversation_scene", "", "updated_at DESC", keys, scope, keepOrigin); err != nil {
 		return nil, err
 	}
 	chatsIn, chatArgs := inList(chats)

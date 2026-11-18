@@ -24,7 +24,7 @@ var keyedTables = []string{
 	"conversation_members", "proactive_log", "group_memory", "member_memory", "memory_revisions",
 	"memory_chunks", "memory_chunk_state", "memory_chunk_rebuild", "memory_chunk_forgets",
 	"conversation_status", "conversation_timers", "conversation_buffs", "conversation_buff_events",
-	"conversation_custom_bars", "conversation_effects",
+	"conversation_custom_bars", "conversation_effects", "conversation_scene",
 }
 
 type seededConversation struct {
@@ -171,6 +171,10 @@ func seedConversation(t *testing.T, db *DB, platform, convID, note string, users
 		t.Fatalf("SetStatus: %v", err)
 	}
 	seedBuffRows(t, db, key, taskID, now)
+	if _, err := db.SetScene(ctx, store.ConversationScene{ConversationKey: key, Mode: conloomapi.SceneInPerson, Place: "食堂",
+		SinceAt: now, TouchedAt: now}); err != nil {
+		t.Fatalf("SetScene: %v", err)
+	}
 	at := fmtTime(now)
 	for _, seed := range []struct {
 		stmt string

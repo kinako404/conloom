@@ -269,14 +269,15 @@ type Store interface {
 	// is consolidated again. A conversation without a memory row gets one. Its
 	// semantic search chunks that start before at are deleted, and those
 	// running past at queued to be rebuilt. The conversation's status, timers,
-	// bar values, bar changes, bot-created bars and effects are deleted too.
+	// bar values, bar changes, bot-created bars, effects and scene are deleted
+	// too.
 	// It is ForgetPrivateScope of the conversation as its own scope and only
 	// chat.
 	ForgetPrivate(ctx context.Context, convKey, userID string, at time.Time) error
 	// ForgetPrivateScope is ForgetPrivate for the memory scope scopeKey (see
 	// MemoryScopeKey) of the private chats chats: the member, summary, summary
-	// revisions, cursor, status, bar values, bar changes, bot-created bars and
-	// effects are those under scopeKey, the cursor moves up to the newest
+	// revisions, cursor, status, bar values, bar changes, bot-created bars,
+	// effects and scene are those under scopeKey, the cursor moves up to the newest
 	// message of any of chats, and the chunks and timers of each of chats are
 	// dealt with as ForgetPrivate deals with its conversation's.
 	ForgetPrivateScope(ctx context.Context, scopeKey string, chats []string, userID string, at time.Time) error
@@ -363,6 +364,24 @@ type Store interface {
 	// status was deleted. A zero untilAt deletes convKey's timer even without
 	// a status.
 	ClearStatus(ctx context.Context, convKey string, untilAt time.Time) (bool, error)
+	// GetScene returns the scene of convKey, a memory scope like the status's,
+	// or ErrNotFound without one (the conversation is online).
+	GetScene(ctx context.Context, convKey string) (ConversationScene, error)
+	// SetScene stores s as the scene of scope s.ConversationKey, set in
+	// s.Origin(). When the stored scene (online and "" without a row) has s's
+	// Mode and Place it only stores s.TouchedAt (and UpdatedAt, origin) — no
+	// row is created for an online no-op — and reports false; otherwise
+	// PrevMode/PrevPlace become the replaced scene's, SinceAt/TouchedAt s's,
+	// and it reports true. Zero SinceAt/TouchedAt/UpdatedAt are now.
+	SetScene(ctx context.Context, s ConversationScene) (changed bool, err error)
+	// TouchScene sets TouchedAt to at when the scope's scene is in_person and
+	// touched before at, and reports whether it did.
+	TouchScene(ctx context.Context, convKey string, at time.Time) (bool, error)
+	// EndIdleScene switches the scope's scene to online since `since`
+	// (PrevMode/PrevPlace = the in-person scene, TouchedAt kept) only if it is
+	// still in_person with TouchedAt equal to touchedAt, and reports whether
+	// it did.
+	EndIdleScene(ctx context.Context, convKey string, touchedAt, since time.Time) (bool, error)
 	// ArmTimer stores t, replacing the conversation's timer of the same kind,
 	// unclaimed.
 	ArmTimer(ctx context.Context, t ConversationTimer) error
@@ -455,10 +474,10 @@ type Store interface {
 	PurgeExpiredEffects(ctx context.Context, now time.Time) (int, error)
 	// DeleteConversation deletes everything stored under convKey (messages and their
 	// keyword index rows, tasks, outbox actions, personas, policies, members, memory,
-	// chunks, proactive log, status, timers, bars, effects, users only referenced by this
+	// chunks, proactive log, status, timers, bars, effects, scene, users only referenced by this
 	// conversation, events of it) except model_calls and audit_events, then the
-	// conversation row. For a panel chat it also deletes the status of its shared
-	// memory scope when that was set in the chat; the rest of the scope stays.
+	// conversation row. For a panel chat it also deletes the status and the scene of its
+	// shared memory scope when they were set in the chat; the rest of the scope stays.
 	// ErrNotFound if absent.
 	DeleteConversation(ctx context.Context, convKey string) error
 	// DeleteMessagesFrom deletes the conversation's messages with seq >= fromSeq,
@@ -470,8 +489,8 @@ type Store interface {
 	DeleteMessagesFrom(ctx context.Context, convKey string, fromSeq int64) (int, error)
 	// DeleteScope deletes everything stored under the shared panel memory scope
 	// scopeKey (summary and cursor, members with their forget times, revisions,
-	// chunk records, status, timers, bar values, bar changes, bot-created bars
-	// and effects), for a panel
+	// chunk records, status, timers, bar values, bar changes, bot-created bars,
+	// effects and scene), for a panel
 	// bot whose chats are gone. It returns ErrBotHasData, with nothing deleted,
 	// while the bot still has panel chats; a key that is not a shared scope
 	// (IsSharedScope) is an error.
