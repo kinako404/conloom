@@ -1,7 +1,7 @@
 import { h, mount, errorBox, empty, table, kv } from '../lib/dom.js';
 import { get, put, del, convPath } from '../lib/api.js';
 import { href } from '../lib/router.js';
-import { fmtTime, label, sceneLabel, PRIVATE_LEVEL, SCENE_PLACE_MAX } from '../lib/format.js';
+import { fmtTime, label, sceneLabel, barLimitsText, PRIVATE_LEVEL, SCENE_PLACE_MAX } from '../lib/format.js';
 
 // TIMER_KIND are the kinds of a private chat's pending wake-ups.
 const TIMER_KIND = {
@@ -135,14 +135,20 @@ function shadowedNote(key, name, msg, write) {
       barPath(key, name), `已删除 bot 自建的「${name}」`));
 }
 
+// barsSection lists the bars of the chat key, persona bars first: each with
+// its 外在 or 自建 tag, its description and the step limits its persona bar
+// sets, its value, and a way to set it.
 function barsSection(key, bars, shadowed, write) {
   const msg = h('div');
   const columns = [
     {
       title: '状态条',
       cell: (b) => [
-        h('div', null, b.name, b.custom ? [' ', h('span', { class: 'badge' }, '自建')] : null),
+        h('div', null, b.name,
+          b.kind === 'outer' ? [' ', h('span', { class: 'badge' }, '外在')] : null,
+          b.custom ? [' ', h('span', { class: 'badge' }, '自建')] : null),
         b.description ? h('div', { class: 'muted small' }, b.description) : null,
+        barLimitsText(b) ? h('div', { class: 'muted small' }, barLimitsText(b)) : null,
       ],
     },
     {
@@ -164,7 +170,7 @@ function barsSection(key, bars, shadowed, write) {
   }
   return h('section', { class: 'card' },
     h('h2', null, '状态条'),
-    h('p', { class: 'hint' }, '数值 0–100，按各自的半衰期逐渐回到基准。在这里设的值立即生效，不受模型调整的单次和每日上限约束。只有 bot 启用了 buff 技能时，状态条才会影响回复。'),
+    h('p', { class: 'hint' }, '数值 0–100，按各自的半衰期逐渐回到基准。在这里设的值立即生效，不受模型调整的单次和每日上限约束。只有 bot 启用了 buff 技能时，状态条才会影响回复。标“外在”的是别人看得出来的状态，bot 会在动作和外表描写里带出来。'),
     h('p', { class: 'hint' }, '先列人设里的，再列标“自建”的：bot 用 add_buff 自己加的，可以删除；人设里的不能删除。面板不能新增状态条。'),
     bars.length ? table(columns, bars) : empty('没有状态条'),
     shadowed.map((name) => shadowedNote(key, name, msg, write)),

@@ -1112,6 +1112,7 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
 }
 .chat-app .tg-profile-value { font-size: 15px; white-space: pre-line; }
 .chat-app .tg-profile-label { color: var(--muted); font-size: 13px; }
+.chat-app .tg-profile-tag { margin-left: 6px; vertical-align: middle; }
 .chat-app .tg-profile-bar {
   height: 6px;
   margin: 6px 0 3px;
