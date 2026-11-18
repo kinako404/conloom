@@ -67,8 +67,13 @@ function longText(text, always = false) {
   return details;
 }
 
-function section(title, body) {
-  return h('section', { class: 'tg-profile-section' }, h('h3', null, title), body);
+// section is a part of the card headed title; when fold is set its heading
+// is a toggle that hides body, open at first.
+function section(title, body, fold = false) {
+  const heading = h('h3', null, title);
+  return h('section', { class: 'tg-profile-section' }, fold
+    ? h('details', { class: 'tg-profile-fold', open: true }, h('summary', null, heading), body)
+    : [heading, body]);
 }
 
 // stateBody shows the bars of state with their values, an outer one tagged
@@ -204,7 +209,7 @@ export function openProfile({ key, bot, signal, opener }) {
       h('div', { class: 'tg-profile-actions' }, edit, shut),
       avatar, name, status),
     privateEls,
-    section('资料', profileEl),
+    section('资料', profileEl, true),
     listEl);
   const backdrop = h('div', { class: 'tg-profile-backdrop' }, card);
 
@@ -286,7 +291,7 @@ export function openProfile({ key, bot, signal, opener }) {
     }
     mount(messagesEl, listRow('✉', '消息', fmtInt(convR.value.message_count)));
     if (!isPrivate(convR.value)) return;
-    mount(privateEls, section('状态', stateEl), section('关系', relationEl));
+    mount(privateEls, section('状态', stateEl), section('关系', relationEl, true));
     listEl.prepend(eventsEl);
   });
 

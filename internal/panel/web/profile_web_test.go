@@ -100,6 +100,44 @@ func TestProfile_Layout(t *testing.T) {
 	}
 }
 
+// 关系 and 资料 fold under their headings, open at first, with the accent
+// triangle of the folding items; 状态 keeps a plain heading. Polling remounts
+// only the 状态 body and the status line, so a folded section stays folded.
+func TestProfile_Fold(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js := files["views/profile.js"]
+	for _, want := range []string{
+		"h('details', { class: 'tg-profile-fold', open: true }, h('summary', null, heading), body)",
+		"const heading = h('h3', null, title);",
+		"section('资料', profileEl, true)",
+		"section('状态', stateEl), section('关系', relationEl, true)",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/profile.js lacks %q", want)
+		}
+	}
+	poll := regexp.MustCompile(`(?s)const showState = .*?\n  \};`).FindString(js)
+	if poll == "" {
+		t.Fatal("views/profile.js lacks showState")
+	}
+	for _, bad := range []string{"privateEls", "section(", "relationEl", "profileEl"} {
+		if strings.Contains(poll, bad) {
+			t.Errorf("views/profile.js: showState touches %q, so polling would reset the folded sections", bad)
+		}
+	}
+	css := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(files["style.css"], "")
+	for _, c := range []struct{ name, re string }{
+		{"a fold heading styled as the plain heading", `\.chat-app \.tg-profile-section > h3,\s*\.chat-app \.tg-profile-section > \.tg-profile-fold > summary\s*\{[^}]*margin:\s*6px 16px 2px;[^}]*color:\s*var\(--accent\);[^}]*font-size:\s*14px;[^}]*font-weight:\s*600;`},
+		{"an accent triangle", `\.chat-app \.tg-profile-fold > summary::marker\s*\{\s*color:\s*var\(--accent\);`},
+		{"an inline heading in the toggle", `\.chat-app \.tg-profile-fold > summary > h3\s*\{[^}]*display:\s*inline;[^}]*margin:\s*0;`},
+		{"a focus ring on the toggle", `\.chat-app \.tg-profile summary:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);`},
+	} {
+		if !regexp.MustCompile(c.re).MatchString(css) {
+			t.Errorf("style.css lacks %s (%s)", c.name, c.re)
+		}
+	}
+}
+
 // Each section renders as soon as its own sources settle; a failed refresh
 // keeps the error already shown when the message is the same.
 func TestProfile_Sections(t *testing.T) {

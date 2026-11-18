@@ -1101,7 +1101,10 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
 .chat-app .tg-profile-head button:focus-visible { outline: 2px solid #ffffff; outline-offset: -2px; }
 .chat-app .tg-profile-section,
 .chat-app .tg-profile-list { flex: none; margin: 0; padding: 8px 0; border-top: 8px solid var(--tg-profile-gap); }
-.chat-app .tg-profile-section > h3 { margin: 6px 16px 2px; color: var(--accent); font-size: 14px; font-weight: 600; }
+.chat-app .tg-profile-section > h3,
+.chat-app .tg-profile-section > .tg-profile-fold > summary { margin: 6px 16px 2px; color: var(--accent); font-size: 14px; font-weight: 600; }
+.chat-app .tg-profile-fold > summary::marker { color: var(--accent); }
+.chat-app .tg-profile-fold > summary > h3 { display: inline; margin: 0; font: inherit; color: inherit; }
 .chat-app .tg-profile-body > p { margin: 6px 16px; color: var(--muted); font-size: 13px; }
 .chat-app .tg-profile-item {
   display: flex;
