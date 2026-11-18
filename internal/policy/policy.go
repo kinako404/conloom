@@ -375,8 +375,9 @@ func (s *Service) OnTransition(fn func(convKey string, before, after conloomapi.
 // it gets that version with the default policy in place of the stored one. Otherwise it gets its
 // latest stored version, where a section or setting missing (such as proactive or memory, or the
 // turn-taking, quote, max_parts and join settings, in versions written before they existed) is
-// filled from the defaults; private_wait and private_max_wait are filled as a pair, only when both
-// are zero (see conloomapi.GroupPolicy.WithDefaults).
+// filled from the defaults; max_parts only when its key is missing (an explicit 0 is kept), and
+// private_wait and private_max_wait as a pair, only when both are zero (see
+// conloomapi.GroupPolicy.WithDefaults).
 func (s *Service) Current(ctx context.Context, convKey string) (store.PolicyVersion, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -414,9 +415,9 @@ func (s *Service) current(ctx context.Context, convKey string) (store.PolicyVers
 // omits the proactive or memory section (see
 // conloomapi.PolicyPut.ProactiveOmitted and MemoryOmitted) the group's current section is kept,
 // which is the defaults for a group that never configured one or follows the defaults; a section
-// that is present is validated as given, except that zero turn-taking, quote, max_parts and join
-// settings, and private_wait and private_max_wait when both are zero, are filled from the defaults
-// as in Current. A context.max_context_tokens that leaves no room for a prompt (see
+// that is present is validated as given, except that zero turn-taking, quote and join settings, a
+// max_parts missing from the request, and private_wait and private_max_wait when both are zero, are
+// filled from the defaults as in Current. A context.max_context_tokens that leaves no room for a prompt (see
 // WithReservedContextTokens) is ErrInvalid.
 func (s *Service) Update(ctx context.Context, convKey string, put conloomapi.PolicyPut, by string) (store.PolicyVersion, error) {
 	return s.change(ctx, convKey, by, "update", false, func(cur store.PolicyVersion) (conloomapi.GroupPolicy, string, bool, error) {

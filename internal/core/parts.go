@@ -37,11 +37,12 @@ const (
 // split it, except inside paired CJK quotes or brackets, right before an ASCII
 // quote, or on a line with a backtick; the ellipsis and the punctuation right
 // after it stay with the text before. Parts are trimmed and empty ones
-// dropped; those beyond max are joined into the last one by what separated
-// them: a newline for lines, the spaces after an ellipsis. With max <= 1 the
-// text is its only part, unchanged.
+// dropped; with max >= 2, those beyond max are joined into the last one by
+// what separated them: a newline for lines, the spaces after an ellipsis.
+// With max 0 every part is kept. With max 1 (or below 0) the text is its
+// only part, unchanged.
 func splitParts(text string, max int) []string {
-	if max <= 1 {
+	if max == 1 || max < 0 {
 		return []string{text}
 	}
 	if strings.Contains(text, "```") {
@@ -66,7 +67,7 @@ func splitParts(text string, max int) []string {
 			seps = append(seps, sep)
 		}
 	}
-	if len(parts) > max {
+	if max > 0 && len(parts) > max {
 		var last strings.Builder
 		last.WriteString(parts[max-1])
 		for i := max; i < len(parts); i++ {
@@ -78,8 +79,9 @@ func splitParts(text string, max int) []string {
 	return parts
 }
 
-// splitAtSeparators splits text into at most max parts at lines that hold
-// only partSeparator (and blanks), as splitParts does for text with code.
+// splitAtSeparators splits text into at most max parts (any number with max
+// 0) at lines that hold only partSeparator (and blanks), as splitParts does
+// for text with code.
 func splitAtSeparators(text string, max int) []string {
 	var parts []string
 	var cur []string
@@ -97,7 +99,7 @@ func splitAtSeparators(text string, max int) []string {
 		cur = append(cur, strings.TrimRight(line, "\r\n"))
 	}
 	flush()
-	if len(parts) > max {
+	if max > 0 && len(parts) > max {
 		parts = append(parts[:max-1], strings.Join(parts[max-1:], "\n"))
 	}
 	return parts

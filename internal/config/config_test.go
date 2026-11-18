@@ -821,6 +821,32 @@ func TestLoad_PrivatePolicyProactivePrivate(t *testing.T) {
 	}
 }
 
+func TestLoad_PolicyMaxPartsMissingOrZero(t *testing.T) {
+	cfg := mustLoad(t, writeConfig(t, `default_group_policy:
+  reply:
+    quote: never
+default_private_policy:
+  reply:
+    max_parts: 0
+`))
+	if got := cfg.DefaultGroupPolicy.Reply; got.MaxParts != 1 || got.Quote != conloomapi.QuoteNever {
+		t.Errorf("group reply without max_parts = %+v, want the built-in max_parts 1", got)
+	}
+	if got := cfg.PrivatePolicy().Reply.MaxParts; got != 0 {
+		t.Errorf("private max_parts = %d, want 0 kept", got)
+	}
+	for _, p := range []conloomapi.GroupPolicy{cfg.DefaultGroupPolicy, cfg.PrivatePolicy()} {
+		if err := p.Validate(); err != nil {
+			t.Errorf("policy invalid: %v", err)
+		}
+	}
+
+	_, err := Load(writeConfig(t, "default_group_policy:\n  reply:\n    max_part: 3\n"))
+	if err == nil || !strings.Contains(err.Error(), "max_part") {
+		t.Fatalf("Load err = %v, want the unknown reply field named", err)
+	}
+}
+
 func TestLoad_PrivatePolicyUnknownFieldRejected(t *testing.T) {
 	_, err := Load(writeConfig(t, "default_private_policy:\n  memroy:\n    enabled: true\n"))
 	if err == nil || !strings.Contains(err.Error(), "memroy") {

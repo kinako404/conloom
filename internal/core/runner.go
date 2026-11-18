@@ -67,7 +67,7 @@ type outcome struct {
 	conv     store.ConversationRecord
 	triggers []store.MessageRecord
 	// maxParts is how many parts a model reply in text is split into (see
-	// splitParts); zero for any other text, which is sent whole.
+	// splitParts); 1 for any other text, which is sent whole.
 	maxParts int
 	// skillCalls counts the task's tool calls by tool.
 	skillCalls map[string]int
@@ -191,6 +191,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		meta:      conloomapi.TaskMeta{TraceID: ids.New("trace"), Trigger: task.Meta.Trigger},
 		proactive: task.Meta.Trigger == TriggerProactive,
 		join:      plan,
+		maxParts:  1,
 	}
 	if isWake(task.Meta.Trigger) {
 		out.wake = &wakeRun{kind: wakeKind(task.Meta.Trigger)}
@@ -623,8 +624,12 @@ func speaker(triggers []store.MessageRecord) string {
 }
 
 // partsDirective tells the model how many messages a reply may be split into
-// (see splitParts); it is appended to the system prompt.
+// (see splitParts), any number with maxParts 0; it is appended to the system
+// prompt.
 func partsDirective(maxParts int) string {
+	if maxParts == 0 {
+		return fmt.Sprintf("回复可以像聊天那样分成多条短消息，每条单独占一行（只有 %s 的一行也表示分隔）；一条就够时不要分。", partSeparator)
+	}
 	if maxParts <= 1 {
 		return "回复只发一条消息。"
 	}

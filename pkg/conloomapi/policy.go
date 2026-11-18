@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 )
@@ -215,12 +216,53 @@ type ReplyPolicy struct {
 	MaxConsecutiveSkips int `json:"max_consecutive_skips" yaml:"max_consecutive_skips"`
 	// Quote is when group replies quote the message they answer: auto, always or never.
 	Quote string `json:"quote" yaml:"quote"`
-	// MaxParts is how many separate messages one reply may be split into.
+	// MaxParts is how many separate messages one reply may be split into: 1
+	// sends it as one message, 0 splits it at every split point without a
+	// cap. A max_parts key missing from decoded JSON is filled by WithDefaults
+	// (see UnmarshalJSON).
 	MaxParts int `json:"max_parts" yaml:"max_parts"`
 	// PrivateWait is the pause in a private chat that ends the user's turn;
 	// PrivateMaxWait caps how long the turn may keep growing.
 	PrivateWait    Duration `json:"private_wait" yaml:"private_wait"`
 	PrivateMaxWait Duration `json:"private_max_wait" yaml:"private_max_wait"`
+}
+
+// maxPartsUnset is the MaxParts of a reply section decoded without a max_parts
+// key, until WithDefaults fills it. It never reaches JSON: MarshalJSON leaves
+// the key out.
+const maxPartsUnset = math.MinInt
+
+// UnmarshalJSON decodes the section as usual, except that decoding into a zero
+// ReplyPolicy without a max_parts key (or with null) marks MaxParts as missing,
+// so WithDefaults fills it while an explicit 0 is kept. Decoding over a
+// non-zero ReplyPolicy keeps its MaxParts when the key is missing.
+func (r *ReplyPolicy) UnmarshalJSON(b []byte) error {
+	if string(bytes.TrimSpace(b)) == "null" {
+		return nil
+	}
+	type plain ReplyPolicy
+	v := plain(*r)
+	if *r == (ReplyPolicy{}) {
+		v.MaxParts = maxPartsUnset
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*r = ReplyPolicy(v)
+	return nil
+}
+
+// MarshalJSON encodes the section, leaving out a max_parts still missing (see
+// UnmarshalJSON), so it decodes as missing again.
+func (r ReplyPolicy) MarshalJSON() ([]byte, error) {
+	type plain ReplyPolicy
+	if r.MaxParts != maxPartsUnset {
+		return json.Marshal(plain(r))
+	}
+	return json.Marshal(struct {
+		plain
+		MaxParts *int `json:"max_parts,omitempty"`
+	}{plain: plain(r)})
 }
 
 type ContextPolicy struct {
@@ -373,9 +415,11 @@ func DefaultPrivatePolicy() GroupPolicy {
 }
 
 // WithDefaults returns p with a missing (zero) Proactive or Memory section replaced by def's,
-// and each turn-taking, quote, max_parts and join setting that is zero (missing from policies
-// stored before it existed; zero is never valid for them) taken from def. Zero is a valid
-// private_wait, so private_wait and private_max_wait are taken from def only when both are zero.
+// and each turn-taking, quote and join setting that is zero (missing from policies stored before
+// it existed; zero is never valid for them) taken from def. Zero is a valid max_parts, so
+// max_parts is taken from def only when it was missing from the decoded JSON (see
+// ReplyPolicy.UnmarshalJSON). Zero is a valid private_wait, so private_wait and private_max_wait
+// are taken from def only when both are zero.
 // Within a stored memory section, zero summary_max_chars and note_max_chars are kept, not filled
 // from def: their zero means the default of the conversation's type. A missing memory section is
 // replaced by def's whole section, limits included. Likewise, proactive.private of a stored
@@ -393,7 +437,9 @@ func (p GroupPolicy) WithDefaults(def GroupPolicy) GroupPolicy {
 	fillZero(&p.Reply.MaxUnpromptedReplies, def.Reply.MaxUnpromptedReplies)
 	fillZero(&p.Reply.MaxConsecutiveSkips, def.Reply.MaxConsecutiveSkips)
 	fillZero(&p.Reply.Quote, def.Reply.Quote)
-	fillZero(&p.Reply.MaxParts, def.Reply.MaxParts)
+	if p.Reply.MaxParts == maxPartsUnset {
+		p.Reply.MaxParts = def.Reply.MaxParts
+	}
 	if p.Reply.PrivateWait == (Duration{}) && p.Reply.PrivateMaxWait == (Duration{}) {
 		p.Reply.PrivateWait = def.Reply.PrivateWait
 		p.Reply.PrivateMaxWait = def.Reply.PrivateMaxWait
@@ -468,8 +514,10 @@ func (p GroupPolicy) Validate() error {
 	if !slices.Contains([]string{QuoteAuto, QuoteAlways, QuoteNever}, r.Quote) {
 		fail("reply.quote must be one of auto|always|never, got %q", r.Quote)
 	}
-	if r.MaxParts < 1 || r.MaxParts > 5 {
-		fail("reply.max_parts must be in [1, 5], got %d", r.MaxParts)
+	if r.MaxParts == maxPartsUnset {
+		fail("reply.max_parts is missing")
+	} else if r.MaxParts < 0 || r.MaxParts > 10 {
+		fail("reply.max_parts must be in [0, 10], got %d", r.MaxParts)
 	}
 	if r.PrivateWait.Duration < 0 || r.PrivateWait.Duration > time.Minute {
 		fail("reply.private_wait must be in [0, 60s], got %s", r.PrivateWait)

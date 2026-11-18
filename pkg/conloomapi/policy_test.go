@@ -894,16 +894,123 @@ func TestWithDefaultsFillsRhythmFields(t *testing.T) {
 	}
 }
 
+func TestReplyPolicy_MaxPartsMissingOrZero(t *testing.T) {
+	def := DefaultGroupPolicy()
+	def.Reply.MaxParts = 3
+	raw, err := json.Marshal(DefaultGroupPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	encode := func() string {
+		b, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	delete(doc["reply"], "max_parts")
+	missing := encode()
+	doc["reply"]["max_parts"] = json.RawMessage("0")
+	zero := encode()
+	doc["reply"]["max_parts"] = json.RawMessage("null")
+	null := encode()
+
+	decode := func(src string) GroupPolicy {
+		t.Helper()
+		var p GroupPolicy
+		if err := json.Unmarshal([]byte(src), &p); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	for name, src := range map[string]string{"missing": missing, "null": null} {
+		p := decode(src)
+		if got := p.WithDefaults(def).Reply.MaxParts; got != 3 {
+			t.Errorf("%s max_parts filled = %d, want the default's 3", name, got)
+		}
+		err := p.Validate()
+		if err == nil || !strings.Contains(err.Error(), "reply.max_parts is missing") || strings.Contains(err.Error(), "reply.max_parts must be") {
+			t.Errorf("%s max_parts unfilled: Validate = %v, want reply.max_parts is missing", name, err)
+		}
+		b, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "max_parts") {
+			t.Errorf("%s max_parts marshals as %s, want the key left out", name, b)
+		}
+		if got := decode(string(b)).WithDefaults(def).Reply.MaxParts; got != 3 {
+			t.Errorf("%s max_parts after a round trip filled = %d, want 3", name, got)
+		}
+	}
+
+	z := decode(zero).WithDefaults(def)
+	if z.Reply.MaxParts != 0 {
+		t.Errorf("explicit max_parts 0 filled to %d, want 0 kept", z.Reply.MaxParts)
+	}
+	if err := z.Validate(); err != nil {
+		t.Errorf("max_parts 0 invalid: %v", err)
+	}
+	if b, _ := json.Marshal(z); !strings.Contains(string(b), `"max_parts":0`) {
+		t.Errorf("max_parts 0 marshals as %s", b)
+	}
+
+	var empty ReplyPolicy
+	if err := json.Unmarshal([]byte(`{}`), &empty); err != nil {
+		t.Fatal(err)
+	}
+	if got := (GroupPolicy{Reply: empty}).WithDefaults(def).Reply.MaxParts; got != 3 {
+		t.Errorf("empty reply section max_parts filled = %d, want 3", got)
+	}
+
+	for _, tc := range []struct {
+		body string
+		want int
+	}{
+		{`{"policy":` + missing + `,"reason":"r"}`, 3},
+		{`{"policy":` + zero + `,"reason":"r"}`, 0},
+	} {
+		var put PolicyPut
+		if err := json.Unmarshal([]byte(tc.body), &put); err != nil {
+			t.Fatal(err)
+		}
+		if got := put.Policy.WithDefaults(def).Reply.MaxParts; got != tc.want {
+			t.Errorf("PolicyPut %s max_parts = %d, want %d", tc.body, got, tc.want)
+		}
+	}
+
+	over := DefaultGroupPolicy()
+	over.Reply.MaxParts = 4
+	if err := json.Unmarshal([]byte(`{"reply":{"quote":"never"}}`), &over); err != nil {
+		t.Fatal(err)
+	}
+	if over.Reply.MaxParts != 4 || over.Reply.Quote != QuoteNever || over.Reply.CommandPrefix != "/" {
+		t.Errorf("decoding over a policy = %+v, want max_parts 4 and the other fields kept", over.Reply)
+	}
+
+	lit := DefaultGroupPolicy()
+	lit.Reply.MaxParts = 0
+	if got := lit.WithDefaults(def).Reply.MaxParts; got != 0 {
+		t.Errorf("Go policy max_parts 0 filled to %d, want 0 kept", got)
+	}
+}
+
 func TestValidateRhythmFields(t *testing.T) {
 	tests := []struct {
 		name    string
 		mutate  func(*GroupPolicy)
 		wantErr string
 	}{
-		{"max_parts 0", func(p *GroupPolicy) { p.Reply.MaxParts = 0 }, "reply.max_parts"},
+		{"max_parts -1", func(p *GroupPolicy) { p.Reply.MaxParts = -1 }, "reply.max_parts must be in [0, 10], got -1"},
+		{"max_parts 0 ok", func(p *GroupPolicy) { p.Reply.MaxParts = 0 }, ""},
 		{"max_parts 1 ok", func(p *GroupPolicy) { p.Reply.MaxParts = 1 }, ""},
 		{"max_parts 5 ok", func(p *GroupPolicy) { p.Reply.MaxParts = 5 }, ""},
-		{"max_parts 6", func(p *GroupPolicy) { p.Reply.MaxParts = 6 }, "reply.max_parts"},
+		{"max_parts 10 ok", func(p *GroupPolicy) { p.Reply.MaxParts = 10 }, ""},
+		{"max_parts 11", func(p *GroupPolicy) { p.Reply.MaxParts = 11 }, "reply.max_parts must be in [0, 10], got 11"},
 
 		{"private_wait negative", func(p *GroupPolicy) { p.Reply.PrivateWait = Duration{-time.Nanosecond} }, "reply.private_wait"},
 		{"private_wait 0 ok", func(p *GroupPolicy) { p.Reply.PrivateWait = Duration{0} }, ""},

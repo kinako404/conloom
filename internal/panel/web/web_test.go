@@ -1867,7 +1867,12 @@ func TestPolicyForm_Shared(t *testing.T) {
 	containsAll(t, "views/policyform.js", form,
 		"export function policyForm(", "export function policyJSONForm(", "export function policyVersions(",
 		"field('分条上限'", "field('免打扰开始'", "field('私聊等待'", "field('主动找人档位'", "恢复此版本",
-		"'分条上限必须是整数'", "'免打扰时段写成 23:00 这样的两位数时间'", "'JSON 格式错误：'")
+		"'分条上限必须是 0–10 的整数'", "'免打扰时段写成 23:00 这样的两位数时间'", "'JSON 格式错误：'",
+		"type: 'number', min: 0, max: 10, step: 1, value: reply.max_parts ?? ''",
+		"'一次回复最多分成几条消息发出，0–10；1 表示不分条，0 表示全部分条（每行都单独发）'")
+	if strings.Contains(form, "1–5") {
+		t.Error("views/policyform.js still says max_parts is 1–5")
+	}
 	conv := files["views/conversation.js"]
 	if strings.Contains(conv, "forDefaults") {
 		t.Error("views/conversation.js passes forDefaults; its hints must say 0 takes the defaults")

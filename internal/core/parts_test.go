@@ -70,7 +70,14 @@ func TestSplitParts(t *testing.T) {
 		{"code block without separator", "```\na\n\nb\n```", 3, []string{"```\na\n\nb\n```"}},
 		{"max one keeps whole text", "一\n|||\n二", 1, []string{"一\n|||\n二"}},
 		{"max one keeps lines and ellipses", " 一……二\n三 ", 1, []string{" 一……二\n三 "}},
-		{"max zero keeps whole text", "一\n|||\n二", 0, []string{"一\n|||\n二"}},
+		{"max zero splits everything", "一\n|||\n二……三\n四\n五\n六\n七\n八\n九\n十\n十一\n十二", 0,
+			[]string{"一", "二……", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"}},
+		{"max zero drops empty parts", "|||\n一\n\n|||\n  \n二\n|||", 0, []string{"一", "二"}},
+		{"max zero only separators", "|||\n|||", 0, nil},
+		{"max zero code block splits only at separators", "```\na\nb\n```\n|||\n一\n二\n|||\n三\n|||\n四", 0,
+			[]string{"```\na\nb\n```", "一\n二", "三", "四"}},
+		{"max ten caps", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12", 10, []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10\n11\n12"}},
+		{"negative max keeps whole text", "一\n|||\n二", -1, []string{"一\n|||\n二"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -220,6 +227,43 @@ func TestPartsDirective(t *testing.T) {
 	want := "回复可以像聊天那样分成 1 到 4 条短消息，每条单独占一行（只有 ||| 的一行也表示分隔）；一条就够时不要分。"
 	if got := partsDirective(4); got != want {
 		t.Errorf("partsDirective(4) = %q, want %q", got, want)
+	}
+	want = "回复可以像聊天那样分成 1 到 10 条短消息，每条单独占一行（只有 ||| 的一行也表示分隔）；一条就够时不要分。"
+	if got := partsDirective(10); got != want {
+		t.Errorf("partsDirective(10) = %q, want %q", got, want)
+	}
+	want = "回复可以像聊天那样分成多条短消息，每条单独占一行（只有 ||| 的一行也表示分隔）；一条就够时不要分。"
+	if got := partsDirective(0); got != want {
+		t.Errorf("partsDirective(0) = %q, want %q", got, want)
+	}
+	if got := partsDirective(-1); got != "回复只发一条消息。" {
+		t.Errorf("partsDirective(-1) = %q", got)
+	}
+}
+
+func TestRunner_MaxPartsZeroSplitsEveryLine(t *testing.T) {
+	lines := []string{"一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"}
+	env := newTestOrchestrator(t, testOpts{short: answer(strings.Join(lines, "\n")), configure: withMaxParts(0)})
+	task := env.waitTask(t, env.submit(t, env.groupEvent("20001", "你好", mentionBot)).TaskID)
+	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != len(lines) {
+		t.Fatalf("task = %+v, want %d parts", task, len(lines))
+	}
+	for i, a := range task.Actions {
+		if a.Content.Text != lines[i] || a.PartIndex != i+1 || a.PartCount != len(lines) {
+			t.Errorf("action %d = text %q part %d/%d, want %q part %d/%d", i, a.Content.Text, a.PartIndex, a.PartCount, lines[i], i+1, len(lines))
+		}
+	}
+	sys, _ := requestMessages(t, env.short.Requests()[0])[0]["content"].(string)
+	if !strings.Contains(sys, partsDirective(0)) {
+		t.Errorf("system prompt lacks %q: %q", partsDirective(0), sys)
+	}
+}
+
+func TestMaxPartsZeroSendsCommandRepliesWhole(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{short: answer("不该用到"), configure: withMaxParts(0)})
+	got := env.command(t, "20001", "/help")
+	if !strings.Contains(got, "\n") || !strings.HasPrefix(got, "我是") {
+		t.Fatalf("/help = %q, want the whole multi-line help in one message", got)
 	}
 }
 

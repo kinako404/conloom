@@ -47,7 +47,7 @@ export function policyForm({ policy, isPrivate, limits, forDefaults = false, onS
   const noteMax = h('input', { type: 'number', min: 0, max: 2000, step: 1, value: (p.memory || {}).note_max_chars ?? 0 });
   const recent = h('input', { type: 'number', min: 0, max: 500, step: 1, value: (p.context || {}).max_recent_messages ?? '' });
   const reply = p.reply || {};
-  const maxParts = h('input', { type: 'number', min: 1, max: 5, step: 1, value: reply.max_parts ?? '' });
+  const maxParts = h('input', { type: 'number', min: 0, max: 10, step: 1, value: reply.max_parts ?? '' });
   const lim = limits || {};
   const zeroLimit = forDefaults ? '0 表示用内置默认值' : '0 表示用本会话类型的默认值';
   const limitHint = (range, def, cur) => `${range}；${zeroLimit}（${def ?? '—'}），当前生效 ${cur ?? '—'}`;
@@ -67,7 +67,7 @@ export function policyForm({ policy, isPrivate, limits, forDefaults = false, onS
       const n = Number(recent.value);
       if (recent.value.trim() === '' || !Number.isInteger(n)) return fail(msg, '历史条数必须是整数');
       const parts = Number(maxParts.value);
-      if (maxParts.value.trim() === '' || !Number.isInteger(parts)) return fail(msg, '分条上限必须是整数');
+      if (maxParts.value.trim() === '' || !Number.isInteger(parts) || parts < 0 || parts > 10) return fail(msg, '分条上限必须是 0–10 的整数');
       const summaryChars = Number(summaryMax.value);
       if (summaryMax.value.trim() === '' || !Number.isInteger(summaryChars)) return fail(msg, '摘要字数上限必须是整数');
       const noteChars = Number(noteMax.value);
@@ -96,7 +96,7 @@ export function policyForm({ policy, isPrivate, limits, forDefaults = false, onS
     h('label', { class: 'field inline' }, proactive, '主动发言'),
     h('label', { class: 'field inline' }, memory, '记忆'),
     field('历史条数', recent, '每次回复带上的最近消息数，0–500'),
-    field('分条上限', maxParts, '一次回复最多分成几条消息发出，1–5；1 表示不分条')),
+    field('分条上限', maxParts, '一次回复最多分成几条消息发出，0–10；1 表示不分条，0 表示全部分条（每行都单独发）')),
   h('div', { class: 'form-grid' },
     field('摘要字数上限', summaryMax, limitHint('记忆摘要最多多少字，200–8000', lim.default_summary_max_chars, lim.summary_max_chars)),
     field('笔记字数上限', noteMax, limitHint('每人的记忆笔记最多多少字，50–2000', lim.default_note_max_chars, lim.note_max_chars))),
