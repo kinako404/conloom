@@ -18,7 +18,7 @@ const BAR_SOURCE = {
 };
 
 // EVENT_KIND are the kinds of a change of a bar or an effect.
-const EVENT_KIND = {
+export const EVENT_KIND = {
   adjust: '调整',
   bar_add: '新增状态条',
   bar_remove: '删除状态条',
@@ -214,7 +214,7 @@ function effectsSection(key, effects, write) {
 
 // eventChange shows what a change did: the values of an adjustment, the
 // starting value of an added bar.
-function eventChange(e) {
+export function eventChange(e) {
   if (e.kind === 'adjust') return `${e.before} → ${e.after}`;
   if (e.kind === 'bar_add') return `初始 ${e.after}`;
   return '—';
