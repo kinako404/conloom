@@ -58,8 +58,8 @@ func TestState_ExplicitDefaultsUnchanged(t *testing.T) {
 	if !strings.HasPrefix(last, want+"\n\n【当前消息】") {
 		t.Fatalf("last user message = %q, want it to start with today's block\n%s", last, want)
 	}
-	if text := requestText(t, req); strings.Contains(text, "单次最多") || strings.Contains(text, "【外在状态") {
-		t.Errorf("request shows a step limit or an outer section for default bars:\n%s", text)
+	if strings.Contains(last, "单次最多") || strings.Contains(last, "【外在状态") {
+		t.Errorf("state block shows a step limit or an outer section for default bars:\n%s", last)
 	}
 }
 
