@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/store"
@@ -26,6 +27,48 @@ type ChatService interface {
 
 // maxChatMessages bounds the messages of one chat poll.
 const maxChatMessages = 200
+
+// onlineWindow is how long after its newest message in a chat the bot still
+// shows as online there.
+const onlineWindow = 30 * time.Minute
+
+// spokeRecently reports which of convKeys have a bot message, the newest by
+// seq, from within onlineWindow before now.
+func (s *Server) spokeRecently(ctx context.Context, convKeys []string) (map[string]bool, error) {
+	last, err := s.d.Store.LastBotMessageTimes(ctx, convKeys)
+	if err != nil {
+		return nil, err
+	}
+	since := s.now().Add(-onlineWindow)
+	out := map[string]bool{}
+	for key, at := range last {
+		if !at.Before(since) {
+			out[key] = true
+		}
+	}
+	return out, nil
+}
+
+// onlineChats reports which of convKeys the bot is online in, as the chat
+// page marks its avatar: it is answering there, as getChat's typing says, or
+// it spoke there recently (see spokeRecently). Without a chat service no
+// conversation counts as busy.
+func (s *Server) onlineChats(ctx context.Context, convKeys []string) (map[string]bool, error) {
+	out, err := s.spokeRecently(ctx, convKeys)
+	if err != nil {
+		return nil, err
+	}
+	pending, err := s.d.Store.PendingPanelActionsIn(ctx, convKeys, s.now())
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range convKeys {
+		if pending[key] > 0 || (s.d.Chat != nil && s.d.Chat.Busy(key)) {
+			out[key] = true
+		}
+	}
+	return out, nil
+}
 
 // chatService is Deps.Chat, writing 503 when there is none.
 func (s *Server) chatService(w http.ResponseWriter, r *http.Request) (ChatService, bool) {
@@ -181,9 +224,11 @@ func (s *Server) regenerateChatMessage(w http.ResponseWriter, r *http.Request, s
 // delivered nor expired. NextAfter is the cursor of the next poll and
 // RegenerateSeq the seq of the newest message when POST …/regenerate would
 // accept it now (see core.Orchestrator.RegenerableSeq), 0 otherwise and
-// always while the bot is answering. Scene is the private chat's scene as the
-// autonomy tab shows it (AutonomyService.Scene), null for a group or when
-// there is no autonomy service.
+// always while the bot is answering. Online is whether the bot shows as online
+// in the chat: it is answering, or its newest message there is from within
+// onlineWindow. Scene is the private chat's scene as the autonomy tab shows it
+// (AutonomyService.Scene), null for a group or when there is no autonomy
+// service.
 func (s *Server) getChat(w http.ResponseWriter, r *http.Request, _ *Session) {
 	chat, ok := s.chatService(w, r)
 	if !ok {
@@ -225,11 +270,18 @@ func (s *Server) getChat(w http.ResponseWriter, r *http.Request, _ *Session) {
 		after = msgs[len(msgs)-1].Seq
 	}
 	var regen int64
+	online := typing
 	if !typing {
 		if regen, err = chat.RegenerableSeq(r.Context(), conv.Key); err != nil {
 			s.fail(w, r, err)
 			return
 		}
+		spoke, err := s.spokeRecently(r.Context(), []string{conv.Key})
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		online = spoke[conv.Key]
 	}
 	var scene *conloomapi.AutonomyScene
 	if s.d.Autonomy != nil && conv.Type == conloomapi.ConvPrivate {
@@ -243,10 +295,11 @@ func (s *Server) getChat(w http.ResponseWriter, r *http.Request, _ *Session) {
 	s.writeJSON(w, http.StatusOK, struct {
 		Messages      []messageView             `json:"messages"`
 		Typing        bool                      `json:"typing"`
+		Online        bool                      `json:"online"`
 		NextAfter     int64                     `json:"next_after"`
 		RegenerateSeq int64                     `json:"regenerate_seq"`
 		Scene         *conloomapi.AutonomyScene `json:"scene"`
-	}{out, typing, after, regen, scene})
+	}{out, typing, online, after, regen, scene})
 }
 
 // postSuggestions answers {suggestions}: up to three lines the user might

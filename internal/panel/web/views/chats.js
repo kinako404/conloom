@@ -4,7 +4,7 @@ import { go, href, withQuery } from '../lib/router.js';
 import { fmtTime, fmtClock } from '../lib/format.js';
 import { SECTIONS } from '../lib/sections.js';
 import { chatBar, chatPane, deleteChatConfirmed, listen, menuClosed, menuOpened } from './chat.js';
-import { avatarEl } from './avatar.js';
+import { avatarEl, onlineDot, withDot } from './avatar.js';
 
 // PANEL is the source of a bot created in the panel and the platform of the
 // chats held in the panel.
@@ -419,6 +419,12 @@ function recency(c) {
   return Number.isNaN(t) ? 0 : t;
 }
 
+// withoutOnline is groups, the bots with their chats, without whether each
+// chat is online.
+function withoutOnline(groups) {
+  return groups.map((g) => ({ ...g, chats: (g.chats || []).map(({ online, ...c }) => c) }));
+}
+
 // allIcon is the icon of the 全部 folder: two speech bubbles.
 function allIcon() {
   return s('svg', { class: 'tg-folder-icon', viewBox: '0 0 24 24', 'aria-hidden': 'true' },
@@ -785,15 +791,16 @@ function chatPage() {
       mine ? h('span', { class: 'tg-you' }, '你：') : null, c.last.text);
   };
 
-  // chatRow is chat c of bot g; with several chats of g it also names who
-  // the bot talks with.
+  // chatRow is chat c of bot g, whose avatar wears the online dot while the
+  // bot is online there; with several chats of g it also names who the bot
+  // talks with.
   const chatRow = (g, c, several) => h('li', null, h('a', {
     class: c.key === current ? 'tg-chat active' : 'tg-chat',
     href: chatHref(c.key),
     dataset: { key: c.key },
     title: c.last_message_at ? `最后消息 ${fmtTime(c.last_message_at)}` : '还没有消息',
   },
-  avatarEl(g, 48),
+  withDot(avatarEl(g, 48), onlineDot(c.online)),
   h('span', { class: 'tg-chat-body' },
     h('span', { class: 'tg-chat-line' },
       h('strong', { class: 'tg-chat-name' }, g.name || g.id),
@@ -828,9 +835,10 @@ function chatPage() {
     }
   };
 
-  // listState is what the folders and the list show, but the search, as a
-  // string; the day is in it for the times of the last messages.
-  const listState = () => JSON.stringify([groups, seen, bots, shownFolder(), current, new Date().toDateString()]);
+  // listState is what the folders and the list show, but the search and
+  // which chats are online (see showOnline), as a string; the day is in it for
+  // the times of the last messages.
+  const listState = () => JSON.stringify([withoutOnline(groups), seen, bots, shownFolder(), current, new Date().toDateString()]);
 
   function renderLists() {
     rendered = listState();
@@ -845,6 +853,17 @@ function chatPage() {
   // focus, a click under way and the avatars already loaded or failed.
   const renderChanged = () => {
     if (listState() !== rendered) renderLists();
+    showOnline();
+  };
+
+  // showOnline shows the online dot of each chat listed whose bot is online
+  // there and hides the others', leaving the avatars as they are.
+  const showOnline = () => {
+    for (const row of list.querySelectorAll('.tg-chat[data-key]')) {
+      const dot = row.querySelector('.online-dot');
+      const shown = find(row.dataset.key);
+      if (dot) dot.hidden = !(shown && shown.chat.online);
+    }
   };
 
   // withArrived is chat c counting the messages arrived after its last.
@@ -980,6 +999,7 @@ function chatPage() {
     const shown = find(key);
     let bot = shown ? { id: shown.group.id, name: shown.group.name || shown.group.id, avatar: shown.group.avatar || '' } : null;
     let title = shown ? shown.chat.title || key : '';
+    const online = !!(shown && shown.chat.online);
     const onDelete = () => removeChat(key);
     const onMessages = (messages) => {
       if (!signal.aborted) noteArrived(key, messages);
@@ -993,7 +1013,7 @@ function chatPage() {
       if (note) mount(paneMsg, note);
       refresh();
     };
-    const bar = (b, t) => chatBar({ key, bot: b, title: t, onBack, signal });
+    const bar = (b, t) => chatBar({ key, bot: b, title: t, dot: onlineDot(online), onBack, signal });
     mount(pane, bar(bot, title), loading());
     if (!fetched) {
       pending = signal;
@@ -1012,7 +1032,7 @@ function chatPage() {
         bot = { id: conv.bot_instance_id, name: conv.bot_name || conv.bot_instance_id, avatar: g ? g.avatar || '' : '' };
         title = conv.platform_conversation_id;
       }
-      const [head, ...body] = await chatPane({ key, signal, hint: PANEL_HINT, bot, title, onBack, onDelete, onMessages, reload });
+      const [head, ...body] = await chatPane({ key, signal, hint: PANEL_HINT, bot, title, online, onBack, onDelete, onMessages, reload });
       if (!signal.aborted) mount(pane, head, paneMsg, body);
     } catch (err) {
       if (!isAbort(err) && !signal.aborted) mount(pane, bar(bot, title), errorBox(err));

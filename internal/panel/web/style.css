@@ -466,6 +466,22 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
 .chat-app .avatar-c5 { background: #5a9fd6; }
 .chat-app .avatar-c6 { background: #e0729f; }
 .chat-app .avatar-c7 { background: #c99a3b; }
+/* The avatar of a bot online wears a green dot at its bottom right, ringed in
+   the color behind it, --online-ring, so that it looks cut out of the avatar.
+   The ring follows a row's background as it fades. */
+.chat-app .avatar-wrap { position: relative; flex: none; display: inline-flex; }
+.chat-app .online-dot {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #4dcd5e;
+  box-shadow: 0 0 0 2px var(--online-ring, var(--panel));
+  transition: box-shadow 120ms ease-out;
+}
+.chat-app .tg-bar .online-dot { width: 10px; height: 10px; }
 
 .chat-app .tg-rail {
   display: flex;
@@ -610,8 +626,8 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   color: var(--text);
   transition: background-color 120ms ease-out;
 }
-.chat-app .tg-chat:hover { background: var(--code-bg); text-decoration: none; }
-.chat-app .tg-chat.active { background: var(--accent); color: var(--accent-text); }
+.chat-app .tg-chat:hover { --online-ring: var(--code-bg); background: var(--code-bg); text-decoration: none; }
+.chat-app .tg-chat.active { --online-ring: var(--accent); background: var(--accent); color: var(--accent-text); }
 .chat-app .tg-chat-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .chat-app .tg-chat-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .chat-app .tg-chat-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

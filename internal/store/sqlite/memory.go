@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -406,6 +407,42 @@ func (db *DB) LastMessages(ctx context.Context, convKeys []string) (map[string]s
 		out[m.ConversationKey] = m
 	}
 	return out, nil
+}
+
+// LastBotMessageTimes walks each conversation's messages back from the newest
+// on messages_conversation_seq and stops at its first bot message.
+func (db *DB) LastBotMessageTimes(ctx context.Context, convKeys []string) (map[string]time.Time, error) {
+	out := map[string]time.Time{}
+	if len(convKeys) == 0 {
+		return out, nil
+	}
+	keys, err := json.Marshal(convKeys)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.r.QueryContext(ctx, `SELECT k.value, (SELECT occurred_at FROM messages
+			WHERE conversation_key = k.value AND from_bot = 1 ORDER BY seq DESC LIMIT 1)
+		FROM json_each(?) k`, string(keys))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var at sql.NullString
+		if err := rows.Scan(&key, &at); err != nil {
+			return nil, err
+		}
+		if !at.Valid {
+			continue
+		}
+		t, err := parseTime(at.String)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = t
+	}
+	return out, rows.Err()
 }
 
 func (db *DB) CountMessagesAfter(ctx context.Context, convKey string, afterSeq int64) (int, error) {

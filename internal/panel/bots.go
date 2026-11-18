@@ -89,7 +89,8 @@ type chatGroup struct {
 }
 
 // chatEntry is a panel chat on the chat page. Title is who the bot talks with
-// there (see chatTitle); Last is its newest message, null without one.
+// there (see chatTitle); Last is its newest message, null without one; Online
+// is whether the bot shows as online there (see onlineChats).
 type chatEntry struct {
 	Key           string     `json:"key"`
 	Title         string     `json:"title"`
@@ -97,6 +98,7 @@ type chatEntry struct {
 	LastMessageAt *time.Time `json:"last_message_at"`
 	MessageCount  int        `json:"message_count"`
 	Last          *chatLast  `json:"last"`
+	Online        bool       `json:"online"`
 }
 
 // chatLast is a chat's newest message as the chat page previews it: SenderID
@@ -394,9 +396,9 @@ func (s *Server) deleteBot(w http.ResponseWriter, r *http.Request, sess *Session
 // listChats lists the panel chats (store.PlatformPanel) of every bot for the
 // chat page, grouped by bot in directory order: each bot's most recently
 // active first (its newest message or, if later, its creation; see
-// privateChats), cut to maxBotChats after sorting, each with its message count
-// and newest message, and each bot with its avatar. Private chats on the
-// platforms are not listed.
+// privateChats), cut to maxBotChats after sorting, each with its message count,
+// newest message and whether the bot is online there, and each bot with its
+// avatar. Private chats on the platforms are not listed.
 func (s *Server) listChats(w http.ResponseWriter, r *http.Request, _ *Session) {
 	chats, err := s.privateChats(r.Context())
 	if err != nil {
@@ -418,6 +420,11 @@ func (s *Server) listChats(w http.ResponseWriter, r *http.Request, _ *Session) {
 		s.fail(w, r, err)
 		return
 	}
+	online, err := s.onlineChats(r.Context(), keys)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
 	out := make([]chatGroup, 0, len(all))
 	for i, b := range all {
 		g := chatGroup{ID: b.ID, Name: b.Name, Source: s.botSource(b.ID), Avatar: s.botAvatar(b),
@@ -430,7 +437,7 @@ func (s *Server) listChats(w http.ResponseWriter, r *http.Request, _ *Session) {
 			}
 			e := chatEntry{
 				Key: st.Key, Title: title, Platform: st.Platform, LastMessageAt: nullTime(st.LastMessageAt),
-				MessageCount: st.MessageCount,
+				MessageCount: st.MessageCount, Online: online[st.Key],
 			}
 			if m, ok := last[st.Key]; ok {
 				e.Last = newChatLast(m)

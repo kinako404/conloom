@@ -48,3 +48,16 @@ export function avatarEl(bot, size) {
   el.style.setProperty('--avatar-size', `${size}px`);
   return el;
 }
+
+// onlineDot is the green dot of an avatar whose bot is online, 在线 to screen
+// readers and on hover; it is there either way and hidden while the bot is
+// not online, so that a poll can switch it without rebuilding the avatar.
+export function onlineDot(online) {
+  return h('span', { class: 'online-dot', role: 'img', 'aria-label': '在线', title: '在线', hidden: !online });
+}
+
+// withDot is avatar, an avatarEl, with dot at its bottom right; id, when
+// given, names the pair, so that the dot can describe something else.
+export function withDot(avatar, dot, id) {
+  return h('span', { class: 'avatar-wrap', id }, avatar, dot);
+}

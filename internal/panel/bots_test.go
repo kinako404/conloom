@@ -698,6 +698,7 @@ type chatsResp struct {
 				At       time.Time `json:"at"`
 				Text     string    `json:"text"`
 			} `json:"last"`
+			Online bool `json:"online"`
 		} `json:"chats"`
 	} `json:"bots"`
 }

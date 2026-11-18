@@ -259,6 +259,7 @@ type chatMsgResp struct {
 type chatResp struct {
 	Messages      []chatMsgResp `json:"messages"`
 	Typing        bool          `json:"typing"`
+	Online        bool          `json:"online"`
 	NextAfter     int64         `json:"next_after"`
 	RegenerateSeq int64         `json:"regenerate_seq"`
 }
@@ -526,6 +527,72 @@ func TestChat_Typing(t *testing.T) {
 	h.advance(time.Hour)
 	if h.chat(private.Key, 0).Typing {
 		t.Fatal("typing for an expired panel part")
+	}
+}
+
+// The bot is online in a chat while it answers there, as typing says, or
+// when its newest message there is at most 30 minutes old by the server's
+// clock; the chat list and GET chat agree.
+func TestChat_Online(t *testing.T) {
+	h, chat := newChatHarness(t)
+	ctx := context.Background()
+	chats := map[string]store.ConversationRecord{}
+	for _, name := range []string{"busy", "pending", "recent", "stale", "user", "quiet"} {
+		chats[name] = h.panelChat(dataBot, name)
+	}
+	chat.setBusy(chats["busy"].Key, true)
+	h.seedMessage(chats["busy"], "在吗", h.now.Add(-time.Hour), false)
+	h.seedTask(chats["pending"], "task_01", conloomapi.TaskRunning, conloomapi.TaskMeta{}, h.now)
+	if err := h.db.CompleteTask(ctx, store.TaskCompletion{TaskID: "task_01", Status: conloomapi.TaskSucceeded,
+		Actions: []store.OutboxRecord{{
+			Action: conloomapi.Action{ActionID: "act_panel", Type: conloomapi.ActionMessageSend, ConversationID: chats["pending"].ID,
+				Content: conloomapi.ActionContent{Text: "在的"}, CreatedAt: h.now},
+			BotInstanceID: dataBot, ConversationKey: chats["pending"].Key, Platform: store.PlatformPanel, CreatedAt: h.now,
+			ExpiresAt: h.now.Add(time.Hour), Channel: store.ChannelPanel,
+		}}}); err != nil {
+		t.Fatal(err)
+	}
+	h.seedMessage(chats["recent"], "在的", h.now.Add(-29*time.Minute), true)
+	h.seedMessage(chats["recent"], "好的", h.now.Add(-time.Minute), false)
+	h.seedMessage(chats["stale"], "在的", h.now.Add(-31*time.Minute), true)
+	h.seedMessage(chats["user"], "在吗", h.now.Add(-time.Minute), false)
+	h.seedMessage(chats["user"], "在吗？", h.now, false)
+
+	check := func(want map[string]bool) {
+		t.Helper()
+		var resp chatsResp
+		h.getJSON("/panel/api/chats", &resp)
+		listed := map[string]bool{}
+		for _, b := range resp.Bots {
+			for _, c := range b.Chats {
+				listed[c.Key] = c.Online
+			}
+		}
+		for name, conv := range chats {
+			if got, ok := listed[conv.Key]; !ok || got != want[name] {
+				t.Errorf("list: %s online %v (listed %v), want %v", name, got, ok, want[name])
+			}
+			if got := h.chat(conv.Key, 0).Online; got != want[name] {
+				t.Errorf("GET chat: %s online %v, want %v", name, got, want[name])
+			}
+		}
+	}
+	check(map[string]bool{"busy": true, "pending": true, "recent": true})
+	if body := string(h.getJSON(convPath(chats["quiet"].Key, "chat"), nil)); !strings.Contains(body, `"online":false`) {
+		t.Errorf("GET chat body %s, want online false", body)
+	}
+
+	chat.setBusy(chats["busy"].Key, false)
+	h.advance(2 * time.Minute)
+	check(map[string]bool{"pending": true})
+	h.advance(time.Hour)
+	check(map[string]bool{})
+
+	// A group the bot spoke in recently is online by the same rule.
+	group := h.seedConv("qq", conloomapi.ConvGroup, "10001")
+	h.seedMessage(group, "大家好", h.now.Add(-time.Minute), true)
+	if !h.chat(group.Key, 0).Online {
+		t.Error("GET chat: a group the bot spoke in a minute ago is not online")
 	}
 }
 

@@ -151,6 +151,9 @@ type Store interface {
 	// PendingPanelActions counts the conversation's pending or leased panel-channel
 	// actions not yet expired at now.
 	PendingPanelActions(ctx context.Context, convKey string, now time.Time) (int, error)
+	// PendingPanelActionsIn is PendingPanelActions for each of convKeys; a
+	// conversation without such actions is absent. Without convKeys it is empty.
+	PendingPanelActionsIn(ctx context.Context, convKeys []string, now time.Time) (map[string]int, error)
 	GetOutbox(ctx context.Context, botID, actionID string) (OutboxRecord, error)
 	AckOutbox(ctx context.Context, botID, actionID string, ack conloomapi.AckRequest, botMsg *MessageRecord, now time.Time) (alreadyAcked bool, err error)
 	ExpireOutbox(ctx context.Context, now time.Time) (int, error)
@@ -310,6 +313,10 @@ type Store interface {
 	// LastMessages maps each of convKeys to its message with the largest Seq;
 	// a conversation without messages is absent. Without convKeys it is empty.
 	LastMessages(ctx context.Context, convKeys []string) (map[string]MessageRecord, error)
+	// LastBotMessageTimes maps each of convKeys to the OccurredAt of its bot
+	// message (FromBot) with the largest Seq; a conversation without one is
+	// absent. Without convKeys it is empty.
+	LastBotMessageTimes(ctx context.Context, convKeys []string) (map[string]time.Time, error)
 	// BacklogCursor returns the seq after which exactly backlog of the
 	// conversation's messages remain, or 0 when it has no more than backlog.
 	BacklogCursor(ctx context.Context, convKey string, backlog int) (int64, error)

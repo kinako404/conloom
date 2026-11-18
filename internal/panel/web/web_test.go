@@ -366,7 +366,7 @@ func TestChatPane_TelegramStyle(t *testing.T) {
 	js := files["views/chat.js"]
 	for _, want := range []string{
 		"'正在输入'", "'会话详情'", "'建议回复：开'", "'建议回复：关'", "'删除这个聊天'", "'➤'", "title: '发送'",
-		"onBack", "onDelete", "avatarEl(bot, 40)", "import { avatarEl } from './avatar.js';",
+		"onBack", "onDelete", "avatarEl(bot, 40)", "import { avatarEl, onlineDot, withDot } from './avatar.js';",
 		"m.channel && m.channel !== 'panel'", "`${d.getMonth() + 1}月${d.getDate()}日`", "`${d.getFullYear()}年${",
 		"const MAX_LINES = 6;", "send.disabled = true;",
 	} {
@@ -1087,7 +1087,7 @@ func TestChatsView_UnreadFollowsTheOpenChat(t *testing.T) {
 	files := assets(t, ".js")
 	chat, chats := files["views/chat.js"], files["views/chats.js"]
 	for _, want := range []string{
-		"export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete, onMessages, reload = () => go(href('im', key)) })",
+		"export async function chatPane({ key, signal, hint, bot, title, online, onBack, onDelete, onMessages, reload = () => go(href('im', key)) })",
 		"if (onMessages && !signal.aborted) onMessages(added);",
 	} {
 		if !strings.Contains(chat, want) {
@@ -1095,7 +1095,7 @@ func TestChatsView_UnreadFollowsTheOpenChat(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"chatPane({ key, signal, hint: PANEL_HINT, bot, title, onBack, onDelete, onMessages, reload })",
+		"chatPane({ key, signal, hint: PANEL_HINT, bot, title, online, onBack, onDelete, onMessages, reload })",
 		"if (!signal.aborted) noteArrived(key, messages);",
 		"delete arrived[key];",
 		"(arrived[c.key] || []).filter((m) => !c.last || m.seq > c.last.seq)",
@@ -1144,7 +1144,7 @@ func TestChatsView_ShellBeforeTheList(t *testing.T) {
 func TestChatsView_ListPollQuiet(t *testing.T) {
 	js := assets(t, ".js")["views/chats.js"]
 	for _, want := range []string{
-		"const listState = () => JSON.stringify([groups, seen, bots, shownFolder(), current, new Date().toDateString()]);",
+		"const listState = () => JSON.stringify([withoutOnline(groups), seen, bots, shownFolder(), current, new Date().toDateString()]);",
 		"rendered = listState();", "if (listState() !== rendered) renderLists();",
 	} {
 		if !strings.Contains(js, want) {
@@ -1164,6 +1164,63 @@ func TestChatsView_ListPollQuiet(t *testing.T) {
 	} {
 		if !strings.Contains(watch, want) {
 			t.Errorf("watch lacks %q", want)
+		}
+	}
+}
+
+// Like Telegram, the bot's avatar wears a green dot while the bot is online
+// in the chat (online in GET chats and GET chat): in each row of the list and
+// in the open chat's top bar, not on the rail. The dot is always there and
+// only hidden or shown, so a poll does not rebuild the avatar: the list leaves
+// online out of what decides a render and switches the dots in place, and the
+// pane switches its dot on each poll. It is named 在线, describes the 查看资料
+// button while shown, and is ringed in the color behind it, the selected row's
+// and a hovered row's too.
+func TestChatsView_OnlineDot(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	avatar, chat, chats := files["views/avatar.js"], files["views/chat.js"], files["views/chats.js"]
+	for _, want := range []string{
+		"export function onlineDot(online) {",
+		"h('span', { class: 'online-dot', role: 'img', 'aria-label': '在线', title: '在线', hidden: !online })",
+		"export function withDot(avatar, dot, id) {", "h('span', { class: 'avatar-wrap', id }, avatar, dot)",
+	} {
+		if !strings.Contains(avatar, want) {
+			t.Errorf("views/avatar.js lacks %q", want)
+		}
+	}
+	for _, want := range []string{
+		"withDot(avatarEl(g, 48), onlineDot(c.online))",
+		"chats: (g.chats || []).map(({ online, ...c }) => c)",
+		"if (listState() !== rendered) renderLists();\n    showOnline();",
+		"if (dot) dot.hidden = !(shown && shown.chat.online);",
+		"const online = !!(shown && shown.chat.online);", "dot: onlineDot(online)",
+	} {
+		if !strings.Contains(chats, want) {
+			t.Errorf("views/chats.js lacks %q", want)
+		}
+	}
+	if strings.Contains(chats, "avatarEl(g, 36), onlineDot") || strings.Contains(chats, "withDot(avatarEl(g, 36)") {
+		t.Error("views/chats.js puts the online dot on the rail")
+	}
+	for _, want := range []string{
+		"const dot = onlineDot(online);", "dot.hidden = !res.online;",
+		"withDot(avatarEl(bot, 40), dot, 'tg-bar-avatar')",
+		"chatBar({ key, bot, title, status, dot, items: [suggestItem], onBack, onDelete, signal })",
+	} {
+		if !strings.Contains(chat, want) {
+			t.Errorf("views/chat.js lacks %q", want)
+		}
+	}
+	css := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(files["style.css"], "")
+	for _, c := range []struct{ name, re string }{
+		{"a wrap the dot sits in", `\.chat-app \.avatar-wrap\s*\{[^}]*position:\s*relative;`},
+		{"a green dot at the bottom right", `\.chat-app \.online-dot\s*\{[^}]*position:\s*absolute;[^}]*right:\s*1px;[^}]*bottom:\s*1px;[^}]*border-radius:\s*50%;[^}]*background:\s*#4dcd5e;`},
+		{"a ring in the color behind it", `\.chat-app \.online-dot\s*\{[^}]*box-shadow:\s*0 0 0 2px var\(--online-ring, var\(--panel\)\);`},
+		{"a hovered row's ring", `\.chat-app \.tg-chat:hover\s*\{[^}]*--online-ring:\s*var\(--code-bg\);[^}]*background:\s*var\(--code-bg\);`},
+		{"the selected row's ring", `\.chat-app \.tg-chat\.active\s*\{[^}]*--online-ring:\s*var\(--accent\);[^}]*background:\s*var\(--accent\);`},
+	} {
+		if !regexp.MustCompile(c.re).MatchString(css) {
+			t.Errorf("style.css lacks %s (%s)", c.name, c.re)
 		}
 	}
 }

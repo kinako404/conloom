@@ -599,6 +599,41 @@ func TestLastMessages(t *testing.T) {
 	}
 }
 
+func TestLastBotMessageTimes(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	base := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	msg := func(key string, fromBot bool, at time.Duration) store.MessageRecord {
+		m := memMessage(key, "user_20001", "20001", fromBot)
+		m.OccurredAt = base.Add(at)
+		return m
+	}
+	memInsertMessages(t, db,
+		msg(testConvKey, true, time.Minute), msg(testConvKey, true, 3*time.Minute), msg(testConvKey, false, 4*time.Minute),
+		// The bot message with the largest seq counts, not the one with the
+		// latest time.
+		msg(testConvKeyB, true, 9*time.Minute), msg(testConvKeyB, true, 2*time.Minute),
+		msg(testPrivateKey, false, 5*time.Minute))
+	got, err := db.LastBotMessageTimes(ctx, []string{testConvKey, testConvKeyB, testPrivateKey, "missing"})
+	if err != nil {
+		t.Fatalf("LastBotMessageTimes: %v", err)
+	}
+	want := map[string]time.Time{testConvKey: base.Add(3 * time.Minute), testConvKeyB: base.Add(2 * time.Minute)}
+	if len(got) != len(want) {
+		t.Fatalf("LastBotMessageTimes = %v, want %v", got, want)
+	}
+	for key, at := range want {
+		if !got[key].Equal(at) {
+			t.Errorf("LastBotMessageTimes[%s] = %s, want %s", key, got[key], at)
+		}
+	}
+	for _, keys := range [][]string{nil, {}} {
+		if got, err := db.LastBotMessageTimes(ctx, keys); err != nil || got == nil || len(got) != 0 {
+			t.Errorf("LastBotMessageTimes(%v) = %v, %v; want an empty map", keys, got, err)
+		}
+	}
+}
+
 func TestUserIDsForActors(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()

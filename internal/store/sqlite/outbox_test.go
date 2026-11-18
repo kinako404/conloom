@@ -824,6 +824,38 @@ func TestPendingPanelActions(t *testing.T) {
 	}
 }
 
+func TestPendingPanelActionsIn(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	acked := panelAction("p0", testConvKey, now)
+	acked.Status = store.OutboxAcked
+	late := panelAction("q2", testConvKeyB, now)
+	late.ExpiresAt = now.Add(time.Second)
+	insertActions(t, db, acked, panelAction("p1", testConvKey, now), panelAction("p2", testConvKey, now),
+		panelAction("q1", testConvKeyB, now), late, convAction("a1", testPrivateKey, now))
+	leasePanel(t, db, 10, now)
+	keys := []string{testConvKey, testConvKeyB, testPrivateKey, "missing"}
+	if got, err := db.PendingPanelActionsIn(ctx, keys, now); err != nil ||
+		!reflect.DeepEqual(got, map[string]int{testConvKey: 2, testConvKeyB: 2}) {
+		t.Fatalf("PendingPanelActionsIn = %v, %v; want 2 and 2, and no platform-channel or unknown conversation", got, err)
+	}
+	if got, err := db.PendingPanelActionsIn(ctx, keys, now.Add(time.Second)); err != nil ||
+		!reflect.DeepEqual(got, map[string]int{testConvKey: 2, testConvKeyB: 1}) {
+		t.Fatalf("PendingPanelActionsIn once q2 expired = %v, %v; want 2 and 1", got, err)
+	}
+	ack(t, db, "p1", nil, now)
+	ack(t, db, "p2", nil, now)
+	if got, err := db.PendingPanelActionsIn(ctx, []string{testConvKey}, now); err != nil || len(got) != 0 {
+		t.Fatalf("PendingPanelActionsIn after acks = %v, %v; want none", got, err)
+	}
+	for _, keys := range [][]string{nil, {}} {
+		if got, err := db.PendingPanelActionsIn(ctx, keys, now); err != nil || got == nil || len(got) != 0 {
+			t.Errorf("PendingPanelActionsIn(%v) = %v, %v; want an empty map", keys, got, err)
+		}
+	}
+}
+
 func TestMigration0011_ExistingRowsArePlatformChannel(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "conloom.db")

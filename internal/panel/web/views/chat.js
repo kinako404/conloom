@@ -2,7 +2,7 @@ import { h, mount, errorBox } from '../lib/dom.js';
 import { get, post, del, convPath, isAbort } from '../lib/api.js';
 import { go, href } from '../lib/router.js';
 import { fmtTime, sceneLabel, actionParts } from '../lib/format.js';
-import { avatarEl } from './avatar.js';
+import { avatarEl, onlineDot, withDot } from './avatar.js';
 import { commandMenu } from './commandmenu.js';
 import { openProfile } from './profile.js';
 
@@ -188,15 +188,16 @@ export async function deleteChatConfirmed(key) {
 
 // chatBar tops the pane of the chat key like Telegram: ← back to the list
 // (onBack), shown on a narrow screen; the avatar and name of bot, null when
-// the chat is not known, with title, who the bot talks with, on hover and
-// status, when given, under the name, which together, when the bar has key and
-// bot, are one button, 查看资料, that opens the chat's profile card (see
-// openProfile; signal closes it too), named 查看资料：<name> and described by
-// the status for screen readers; and a ⋮ menu with 会话详情, items and,
+// the chat is not known, the avatar wearing dot, when given, an onlineDot,
+// with title, who the bot talks with, on hover and status, when given, under
+// the name, which together, when the bar has key and bot, are one button,
+// 查看资料, that opens the chat's profile card (see openProfile; signal closes
+// it too), named 查看资料：<name> and described by the status and, while
+// shown, the dot for screen readers; and a ⋮ menu with 会话详情, items and,
 // when onDelete is given, 删除这个聊天. Choosing an item, a click elsewhere or
 // Escape anywhere on the page closes the menu; signal ends the listening for
 // those.
-export function chatBar({ key, bot, title, status, items, onBack, onDelete, signal }) {
+export function chatBar({ key, bot, title, status, dot, items, onBack, onDelete, signal }) {
   const more = h('button', {
     type: 'button', class: 'tg-bar-more', title: '更多', 'aria-label': '更多', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
   }, '⋮');
@@ -224,14 +225,14 @@ export function chatBar({ key, bot, title, status, items, onBack, onDelete, sign
   const statusEl = status || h('span', { class: 'tg-bar-status' });
   statusEl.id = 'tg-bar-status';
   const who = [
-    bot ? avatarEl(bot, 40) : null,
+    bot ? withDot(avatarEl(bot, 40), dot, 'tg-bar-avatar') : null,
     h('span', { class: 'tg-bar-name', title: title || null },
       h('strong', null, bot ? bot.name || bot.id : key),
       statusEl),
   ];
   const profile = key && bot ? h('button', {
     type: 'button', class: 'tg-bar-profile', title: '查看资料',
-    'aria-label': `查看资料：${bot.name || bot.id}`, 'aria-describedby': 'tg-bar-status',
+    'aria-label': `查看资料：${bot.name || bot.id}`, 'aria-describedby': 'tg-bar-status tg-bar-avatar',
     onclick: () => openProfile({ key, bot, signal, opener: profile }),
   }, who) : null;
   return h('header', { class: 'tg-bar' },
@@ -251,7 +252,9 @@ export function chatBar({ key, bot, title, status, items, onBack, onDelete, sign
 // switch on, once the bot's turn is done it offers reply suggestions under
 // the newest message, which send themselves when clicked. hint, when given,
 // is shown above the messages. bot ({id, name, avatar}) is who the chat is
-// with, title who the bot talks with; onBack() returns to the chat list and
+// with; its avatar wears the online dot (see onlineDot) while GET chat says
+// the bot is online, and, until the first poll answers, when online is true.
+// title is who the bot talks with; onBack() returns to the chat list and
 // onDelete() deletes the chat after confirmation. onMessages(messages), when
 // given, gets the messages each time some are shown: the latest at first,
 // then each one new. Typing the command prefix in the box opens the command
@@ -266,8 +269,9 @@ export function chatBar({ key, bot, title, status, items, onBack, onDelete, sign
 // opens the chat afresh (by default the route of key), with note, when given,
 // shown there: a message that is gone already reloads with MESSAGE_GONE_NOTE,
 // a chat that is gone stops the pane as a 404 of the polling does.
-export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete, onMessages, reload = () => go(href('im', key)) }) {
+export async function chatPane({ key, signal, hint, bot, title, online, onBack, onDelete, onMessages, reload = () => go(href('im', key)) }) {
   const log = h('ul', { class: 'tg-log' }, hint ? h('li', { class: 'tg-note' }, hint) : null);
+  const dot = onlineDot(online);
   // typing is 正在输入 with three blinking dots, always in the status line,
   // which keeps its height, and shown by showTyping, which fades it. sceneEl,
   // stacked under it, names the scene GET chat gives while the chat is in
@@ -784,6 +788,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
         botTyping = !!res.typing;
         regenSeq = res.regenerate_seq || 0;
         showTyping(botTyping);
+        dot.hidden = !res.online;
         showScene(res.scene);
         refreshActions();
         mount(pollError);
@@ -901,7 +906,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     log.scrollTop = log.scrollHeight;
   });
   return [
-    chatBar({ key, bot, title, status, items: [suggestItem], onBack, onDelete, signal }),
+    chatBar({ key, bot, title, status, dot, items: [suggestItem], onBack, onDelete, signal }),
     conv,
   ];
 }

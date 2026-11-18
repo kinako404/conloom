@@ -114,6 +114,31 @@ func (db *DB) PendingPanelActions(ctx context.Context, convKey string, now time.
 	return n, err
 }
 
+func (db *DB) PendingPanelActionsIn(ctx context.Context, convKeys []string, now time.Time) (map[string]int, error) {
+	out := map[string]int{}
+	if len(convKeys) == 0 {
+		return out, nil
+	}
+	in, args := inList(convKeys)
+	rows, err := db.r.QueryContext(ctx, `SELECT conversation_key, COUNT(*) FROM outbox_actions
+		WHERE channel = ? AND status IN (?, ?) AND conversation_key IN (`+in+`) AND expires_at > ?
+		GROUP BY conversation_key`,
+		append(append([]any{store.ChannelPanel, store.OutboxPending, store.OutboxLeased}, args...), fmtTime(now))...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var n int
+		if err := rows.Scan(&key, &n); err != nil {
+			return nil, err
+		}
+		out[key] = n
+	}
+	return out, rows.Err()
+}
+
 func queryOutbox(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]store.OutboxRecord, error) {
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
