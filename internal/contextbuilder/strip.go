@@ -47,12 +47,12 @@ var (
 	intimacyBlockLine   = blockLine(`语气[：:]|心理[：:]|表现[：:]`)
 
 	stateBlockHeader = regexp.MustCompile(`^【你的状态[^\n]*(?:\n|$)`)
-	// stateBlockLine matches a line of the state block: the status
-	// "正在：…", a bar "名字：档位…" (any bar name, which holds no
-	// whitespace, 【】 or colon, followed by one of the five bands), the
-	// effects "效果：…" or the closing reminder starting "这些只影响". Other
-	// "短词：…" lines are kept.
-	stateBlockLine = blockLine(`正在[：:]|效果[：:]|这些只影响|[^\s【】\n:：]{1,6}[：:](?:很低|偏低|中等|偏高|很高)`)
+	// stateBlockLine matches a line of the state block: the scene
+	// "场景：…", the status "正在：…", a bar "名字：档位…" (any bar name,
+	// which holds no whitespace, 【】 or colon, followed by one of the five
+	// bands), the effects "效果：…" or the closing reminder starting
+	// "这些只影响". Other "短词：…" lines are kept.
+	stateBlockLine = blockLine(`场景[：:]|正在[：:]|效果[：:]|这些只影响|[^\s【】\n:：]{1,6}[：:](?:很低|偏低|中等|偏高|很高)`)
 )
 
 // memoryLineStart matches the start of a memory block line: the summary
@@ -94,8 +94,8 @@ func cutBlock(s string, header, line *regexp.Regexp) (string, bool) {
 // 【当前消息】 and 【近期消息…】 header lines, the 【你记得的事…】 header with the
 // summary, note and closing lines after it, the 【关系提示】 line, the 【亲密面】
 // heading with the "语气：…", "心理：…" and "表现：…" lines after it, the
-// 【你的状态…】 header with the status, bar, effects and closing lines after
-// it (see cutBlock), a "（@了 …）" line and "<botName>：". The 语气, 心理 and
+// 【你的状态…】 header with the scene, status, bar, effects and closing lines
+// after it (see cutBlock), a "（@了 …）" line and "<botName>：". The 语气, 心理 and
 // 表现 lines are kept when they do not follow a 【亲密面】 heading. A name holds no sentence punctuation
 // unless it is one of knownNames (the conversation's speakers) or botName. For those names a bare
 // header line "[HH:MM] 名字" without the colon (optionally with its

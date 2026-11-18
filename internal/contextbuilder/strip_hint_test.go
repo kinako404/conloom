@@ -66,7 +66,7 @@ func echoedPrefix(t *testing.T, relationship string) string {
 		Location:         echoLoc,
 		Memory:           memory.RenderPrivateBlock("在聊钢琴", memory.BlockEntry{Name: "小明", Tier: "很要好", Note: "喜欢猫"}, 1000),
 		Relationship:     relationship,
-		State: autonomy.RenderState(&autonomy.StateStatus{Activity: "看书", StartedAt: echoNow, UntilAt: echoNow.Add(30 * time.Minute)},
+		State: autonomy.RenderState(nil, &autonomy.StateStatus{Activity: "看书", StartedAt: echoNow, UntilAt: echoNow.Add(30 * time.Minute)},
 			[]autonomy.StateBar{{Name: "心情", Value: 65}}, nil, echoNow, echoLoc),
 	}
 	msgs := contextbuilder.Build(in).Messages
@@ -137,7 +137,7 @@ func TestStripTranscriptPrefix_EchoOnlyRelationshipHint(t *testing.T) {
 func TestStripTranscriptPrefix_IntimacyLinesOnlyAfterTheirHeading(t *testing.T) {
 	protected := echoHint{"很要好", false, conloomapi.IntimacyNone}.relationship()
 	open := echoHint{"很要好", true, conloomapi.IntimacyMajor}.relationship()
-	state := autonomy.RenderState(&autonomy.StateStatus{Activity: "看书", StartedAt: echoNow, UntilAt: echoNow.Add(30 * time.Minute)}, nil, nil, echoNow, echoLoc)
+	state := autonomy.RenderState(nil, &autonomy.StateStatus{Activity: "看书", StartedAt: echoNow, UntilAt: echoNow.Add(30 * time.Minute)}, nil, nil, echoNow, echoLoc)
 	cases := []struct{ in, want string }{
 		{"心理：其实我也很想你", "心理：其实我也很想你"},
 		{"心理：其实我也很想你\n好的呀", "心理：其实我也很想你\n好的呀"},

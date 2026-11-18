@@ -313,6 +313,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	if len(triggers) > 0 {
 		speakerName = triggers[len(triggers)-1].DisplayName
 	}
+	scene := o.readScene(ctx, task, bot)
 	if out.wake != nil {
 		out.wake.name = wakeName(history, speakerRows[task.ActorPlatformUserID])
 		speakerName = out.wake.name
@@ -350,7 +351,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 			"task_id", task.ID, "conversation", task.ConversationKey, "error", err)
 	} else {
 		if conv.Type == conloomapi.ConvPrivate {
-			in.State = o.stateBlock(ctx, task, bot, pv.Persona)
+			in.State = o.stateBlock(ctx, task, bot, pv.Persona, scene)
 		}
 		in.Image = o.appearanceImage(ctx, task, pv.Persona)
 	}

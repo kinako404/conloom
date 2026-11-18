@@ -16,6 +16,13 @@ const (
 	maxStateRunes = 300
 )
 
+// StateScene is the scene of a private chat: online, or in person at Place,
+// which may be empty.
+type StateScene struct {
+	InPerson bool
+	Place    string
+}
+
 // StateStatus is the bot's current activity, from StartedAt to UntilAt.
 type StateStatus struct {
 	Activity           string
@@ -35,13 +42,19 @@ type StateEffect struct {
 }
 
 // RenderState renders the hidden state block injected into private replies:
-// the status line when st is set, then a line per bar showing its band, then
-// one line with the effects still running at now and the time each has left,
-// with times in loc. The activity and descriptions are flattened to one line
-// without 【】 or control characters. It returns "" when there is nothing to
-// show. Over 300 runes it drops all descriptions, then trailing effects,
-// then trailing bars, then shortens the activity.
-func RenderState(st *StateStatus, bars []StateBar, effects []StateEffect, now time.Time, loc *time.Location) string {
+// the scene line when scene is set, the status line when st is set, then a
+// line per bar showing its band, then one line with the effects still running
+// at now and the time each has left, with times in loc. The place, activity
+// and descriptions are flattened to one line without 【】 or control
+// characters. It returns "" when there is nothing to show. Over 300 runes it
+// drops all descriptions, then trailing effects, then trailing bars, then
+// shortens the activity; the scene line is always kept whole.
+func RenderState(scene *StateScene, st *StateStatus, bars []StateBar, effects []StateEffect, now time.Time,
+	loc *time.Location) string {
+	sceneText := ""
+	if scene != nil {
+		sceneText = sceneLine(scene.InPerson, oneLine(scene.Place))
+	}
 	var status *StateStatus
 	if st != nil {
 		s := *st
@@ -63,36 +76,55 @@ func RenderState(st *StateStatus, bars []StateBar, effects []StateEffect, now ti
 	}
 	effects = running
 
-	block := renderState(status, bars, effects, true, now, loc)
+	block := renderState(sceneText, status, bars, effects, true, now, loc)
 	fits := func() bool { return utf8.RuneCountInString(block) <= maxStateRunes }
 	if fits() {
 		return block
 	}
-	block = renderState(status, bars, effects, false, now, loc)
+	block = renderState(sceneText, status, bars, effects, false, now, loc)
 	for !fits() && len(effects) > 0 {
 		effects = effects[:len(effects)-1]
-		block = renderState(status, bars, effects, false, now, loc)
+		block = renderState(sceneText, status, bars, effects, false, now, loc)
 	}
 	for !fits() && len(bars) > 0 {
 		bars = bars[:len(bars)-1]
-		block = renderState(status, bars, nil, false, now, loc)
+		block = renderState(sceneText, status, bars, nil, false, now, loc)
 	}
 	if !fits() && status != nil {
 		activity := []rune(status.Activity)
 		over := utf8.RuneCountInString(block) - maxStateRunes
 		status.Activity = strings.TrimSpace(string(activity[:max(len(activity)-over, 0)]))
-		block = renderState(status, nil, nil, false, now, loc)
+		block = renderState(sceneText, status, nil, nil, false, now, loc)
 	}
 	return block
 }
 
-func renderState(st *StateStatus, bars []StateBar, effects []StateEffect, withDescriptions bool, now time.Time,
-	loc *time.Location) string {
-	if st == nil && len(bars) == 0 && len(effects) == 0 {
+// sceneLine is the scene line of the state block: online, or in person at
+// place when it is not empty.
+func sceneLine(inPerson bool, place string) string {
+	if !inPerson {
+		return "场景：线上（你们隔着聊天软件发消息，不在一起）"
+	}
+	at := ""
+	if place != "" {
+		at = "，在" + place
+	}
+	return "场景：面对面" + at + "（你们在同一个地方；可以偶尔用括号写一个简短的动作或神态）"
+}
+
+// renderState renders the block of RenderState: the scene line when scene is
+// not empty, then the status, bars and effects, the bars' and effects'
+// descriptions only when withDescriptions.
+func renderState(scene string, st *StateStatus, bars []StateBar, effects []StateEffect, withDescriptions bool,
+	now time.Time, loc *time.Location) string {
+	if scene == "" && st == nil && len(bars) == 0 && len(effects) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString(stateHeader + "\n")
+	if scene != "" {
+		b.WriteString(scene + "\n")
+	}
 	if st != nil {
 		b.WriteString("正在：" + st.Activity +
 			"（" + st.StartedAt.In(loc).Format("15:04") + " 开始，预计 " + st.UntilAt.In(loc).Format("15:04") +

@@ -21,13 +21,15 @@ var wakeTools = []string{"adjust_buff", "add_buff", "remove_buff"}
 
 // stateBlock returns the hidden state block (autonomy.RenderState) of a
 // private task, read from the conversation's memory scope (memory.ScopeKey,
-// shared by a bot's panel chats): the status while it lasts and, when the bot
-// enables skillBuff, the bars (scopeBars), each at the scope's stored value
-// decayed to now with its baseline and half-life, or at its baseline when
-// none is stored, then the effects still active. Stored bars that are neither
-// doc's nor added by the bot are left out. It is "" for other conversations,
-// when there is nothing to show, or when a read fails, which is logged.
-func (o *Orchestrator) stateBlock(ctx context.Context, task store.TaskRecord, bot config.BotConfig, doc conloomapi.PersonaDoc) string {
+// shared by a bot's panel chats): the scene when it is on (see readScene),
+// the status while it lasts and, when the bot enables skillBuff, the bars
+// (scopeBars), each at the scope's stored value decayed to now with its
+// baseline and half-life, or at its baseline when none is stored, then the
+// effects still active. Stored bars that are neither doc's nor added by the
+// bot are left out. It is "" for other conversations, when there is nothing
+// to show, or when a read fails, which is logged.
+func (o *Orchestrator) stateBlock(ctx context.Context, task store.TaskRecord, bot config.BotConfig, doc conloomapi.PersonaDoc,
+	scene taskScene) string {
 	if convType(task.ConversationKey) != conloomapi.ConvPrivate {
 		return ""
 	}
@@ -69,7 +71,7 @@ func (o *Orchestrator) stateBlock(ctx context.Context, task store.TaskRecord, bo
 			effects = append(effects, autonomy.StateEffect{Name: e.Name, Description: e.Description, UntilAt: e.UntilAt})
 		}
 	}
-	return autonomy.RenderState(status, bars, effects, now, o.loc)
+	return autonomy.RenderState(scene.state(), status, bars, effects, now, o.loc)
 }
 
 // scopeBars returns the hidden bars of a memory scope: doc's

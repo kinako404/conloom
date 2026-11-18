@@ -51,7 +51,7 @@ func TestRenderState(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		if got := RenderState(tt.st, tt.bars, nil, time.Time{}, loc); got != tt.want {
+		if got := RenderState(nil, tt.st, tt.bars, nil, time.Time{}, loc); got != tt.want {
 			t.Errorf("%s: RenderState() =\n%s\nwant\n%s", tt.name, got, tt.want)
 		}
 	}
@@ -76,7 +76,7 @@ func TestRenderState_Cap(t *testing.T) {
 			{Name: "饥饿", Description: long, Value: 50},
 			{Name: "专注", Description: long, Value: 90},
 		}
-		got := RenderState(bath, bars, nil, time.Time{}, loc)
+		got := RenderState(nil, bath, bars, nil, time.Time{}, loc)
 		want := wantHeader + "\n" +
 			"正在：洗澡（20:10 开始，预计 20:30 结束；这期间对方找你照常回，但要符合正在做的事）\n" +
 			"心情：偏高\n精力：偏低\n饥饿：中等\n专注：很高\n" + wantFooter
@@ -90,7 +90,7 @@ func TestRenderState_Cap(t *testing.T) {
 			{Name: "心情", Description: strings.Repeat("长", 40), Value: 65},
 			{Name: "精力", Description: strings.Repeat("长", 40), Value: 30},
 		}
-		got := RenderState(bath, bars, nil, time.Time{}, loc)
+		got := RenderState(nil, bath, bars, nil, time.Time{}, loc)
 		if !strings.Contains(got, "心情：偏高（"+strings.Repeat("长", 40)+"）") {
 			t.Errorf("RenderState() dropped a description that fits:\n%s", got)
 		}
@@ -104,7 +104,7 @@ func TestRenderState_Cap(t *testing.T) {
 		for range 30 {
 			bars = append(bars, StateBar{Name: "很长很长的名字", Description: "说明", Value: 50})
 		}
-		got := RenderState(bath, bars, nil, time.Time{}, loc)
+		got := RenderState(nil, bath, bars, nil, time.Time{}, loc)
 		if n := utf8.RuneCountInString(got); n > 300 {
 			t.Fatalf("RenderState() has %d runes, want at most 300:\n%s", n, got)
 		}
@@ -130,7 +130,7 @@ func TestRenderState_Cap(t *testing.T) {
 	t.Run("shortens an overlong activity last", func(t *testing.T) {
 		st := *bath
 		st.Activity = strings.Repeat("忙", 400)
-		got := RenderState(&st, []StateBar{{Name: "心情", Value: 65}}, nil, time.Time{}, loc)
+		got := RenderState(nil, &st, []StateBar{{Name: "心情", Value: 65}}, nil, time.Time{}, loc)
 		if n := utf8.RuneCountInString(got); n != 300 {
 			t.Errorf("RenderState() has %d runes, want exactly 300:\n%s", n, got)
 		}
@@ -172,7 +172,7 @@ func TestRenderState_Effects(t *testing.T) {
 			wantHeader + "\n效果：头晕（还剩约 1 小时；站起来 就晕眼前发黑）\n" + wantFooter},
 	}
 	for _, tt := range tests {
-		if got := RenderState(tt.st, tt.bars, tt.effects, now, loc); got != tt.want {
+		if got := RenderState(nil, tt.st, tt.bars, tt.effects, now, loc); got != tt.want {
 			t.Errorf("%s: RenderState() =\n%s\nwant\n%s", tt.name, got, tt.want)
 		}
 	}
@@ -199,7 +199,7 @@ func TestRenderState_EffectTimeLeft(t *testing.T) {
 		{26*time.Hour + 30*time.Minute, "还剩约 1 天 3 小时"},
 		{7 * 24 * time.Hour, "还剩约 7 天"},
 	} {
-		got := RenderState(nil, nil, []StateEffect{{Name: "着凉", UntilAt: now.Add(tt.left)}}, now, loc)
+		got := RenderState(nil, nil, nil, []StateEffect{{Name: "着凉", UntilAt: now.Add(tt.left)}}, now, loc)
 		if want := wantHeader + "\n效果：着凉（" + tt.want + "）\n" + wantFooter; got != want {
 			t.Errorf("%v left: RenderState() =\n%s\nwant\n%s", tt.left, got, want)
 		}
@@ -223,7 +223,7 @@ func TestRenderState_EffectsCap(t *testing.T) {
 			{Name: "着凉", Description: long, UntilAt: now.Add(80 * time.Minute)},
 			{Name: "吃饱了", Description: long, UntilAt: now.Add(30 * time.Minute)},
 		}
-		got := RenderState(bath, bars, effects, now, loc)
+		got := RenderState(nil, bath, bars, effects, now, loc)
 		want := wantHeader + "\n" + statusLine + "\n心情：偏高\n精力：偏低\n饥饿：中等\n" +
 			"效果：着凉（还剩约 1 小时 20 分）、吃饱了（还剩约 30 分）\n" + wantFooter
 		if got != want {
@@ -240,7 +240,7 @@ func TestRenderState_EffectsCap(t *testing.T) {
 		for _, name := range []string{"第一个效果啊", "第二个效果啊", "第三个效果啊", "第四个效果啊", "第五个效果啊", "第六个效果啊"} {
 			effects = append(effects, StateEffect{Name: name, Description: "说明", UntilAt: now.Add(23*time.Hour + 59*time.Minute)})
 		}
-		got := RenderState(bath, bars, effects, now, loc)
+		got := RenderState(nil, bath, bars, effects, now, loc)
 		n := utf8.RuneCountInString(got)
 		if n > 300 {
 			t.Fatalf("RenderState() has %d runes, want at most 300:\n%s", n, got)
@@ -275,7 +275,7 @@ func TestRenderState_EffectsCap(t *testing.T) {
 			bars = append(bars, StateBar{Name: "很长很长的名字", Value: 50})
 		}
 		effects := []StateEffect{{Name: "着凉", UntilAt: now.Add(time.Hour)}}
-		got := RenderState(bath, bars, effects, now, loc)
+		got := RenderState(nil, bath, bars, effects, now, loc)
 		if n := utf8.RuneCountInString(got); n > 300 {
 			t.Fatalf("RenderState() has %d runes, want at most 300:\n%s", n, got)
 		}
@@ -291,7 +291,7 @@ func TestRenderState_EffectsCap(t *testing.T) {
 	t.Run("shortens an overlong activity last", func(t *testing.T) {
 		st := *bath
 		st.Activity = strings.Repeat("忙", 400)
-		got := RenderState(&st, []StateBar{{Name: "心情", Value: 65}}, []StateEffect{{Name: "着凉", UntilAt: now.Add(time.Hour)}}, now, loc)
+		got := RenderState(nil, &st, []StateBar{{Name: "心情", Value: 65}}, []StateEffect{{Name: "着凉", UntilAt: now.Add(time.Hour)}}, now, loc)
 		if n := utf8.RuneCountInString(got); n != 300 {
 			t.Errorf("RenderState() has %d runes, want exactly 300:\n%s", n, got)
 		}
@@ -300,4 +300,83 @@ func TestRenderState_EffectsCap(t *testing.T) {
 			t.Errorf("RenderState() =\n%s\nwant only the status line, shortened inside the block", got)
 		}
 	})
+}
+
+const (
+	wantOnline       = "场景：线上（你们隔着聊天软件发消息，不在一起）"
+	wantInPersonTail = "（你们在同一个地方；可以偶尔用括号写一个简短的动作或神态）"
+)
+
+func TestRenderState_SceneLine(t *testing.T) {
+	loc := shanghai(t)
+	now := time.Date(2026, 11, 16, 20, 0, 0, 0, loc)
+	bath := &StateStatus{Activity: "洗澡", StartedAt: now.Add(-10 * time.Minute), UntilAt: now.Add(20 * time.Minute)}
+	bars := []StateBar{{Name: "心情", Description: "高=开心放松，低=低落烦躁", Value: 65}}
+	statusLine := "正在：洗澡（19:50 开始，预计 20:20 结束；这期间对方找你照常回，但要符合正在做的事）"
+	barLine := "心情：偏高（高=开心放松，低=低落烦躁）"
+
+	tests := []struct {
+		name  string
+		scene *StateScene
+		st    *StateStatus
+		bars  []StateBar
+		want  string
+	}{
+		{"online alone", &StateScene{}, nil, nil, wantHeader + "\n" + wantOnline + "\n" + wantFooter},
+		{"online ignores a place", &StateScene{Place: "食堂"}, nil, nil, wantHeader + "\n" + wantOnline + "\n" + wantFooter},
+		{"in person with a status", &StateScene{InPerson: true, Place: "食堂"}, bath, bars,
+			wantHeader + "\n场景：面对面，在食堂" + wantInPersonTail + "\n" + statusLine + "\n" + barLine + "\n" + wantFooter},
+		{"in person without a place", &StateScene{InPerson: true}, nil, nil,
+			wantHeader + "\n场景：面对面" + wantInPersonTail + "\n" + wantFooter},
+		{"in person with a blank place", &StateScene{InPerson: true, Place: " 【】\n"}, nil, nil,
+			wantHeader + "\n场景：面对面" + wantInPersonTail + "\n" + wantFooter},
+		{"no scene", nil, bath, bars, wantHeader + "\n" + statusLine + "\n" + barLine + "\n" + wantFooter},
+		{"nothing", nil, nil, nil, ""},
+	}
+	for _, tt := range tests {
+		if got := RenderState(tt.scene, tt.st, tt.bars, nil, now, loc); got != tt.want {
+			t.Errorf("%s: RenderState() =\n%s\nwant\n%s", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestRenderState_SceneLineSurvivesCap(t *testing.T) {
+	loc := shanghai(t)
+	now := time.Date(2026, 11, 16, 20, 10, 0, 0, loc)
+	place := strings.Repeat("场", 16)
+	st := &StateStatus{Activity: strings.Repeat("忙", 400), StartedAt: now, UntilAt: now.Add(20 * time.Minute)}
+	long := strings.Repeat("长", 40)
+	bars := []StateBar{
+		{Name: "心情", Description: long, Value: 65},
+		{Name: "精力", Description: long, Value: 30},
+		{Name: "饥饿", Description: long, Value: 50},
+		{Name: "专注", Description: long, Value: 90},
+	}
+	effects := []StateEffect{{Name: "着凉", Description: long, UntilAt: now.Add(time.Hour)}}
+
+	got := RenderState(&StateScene{InPerson: true, Place: place}, st, bars, effects, now, loc)
+	if n := utf8.RuneCountInString(got); n != 300 {
+		t.Errorf("RenderState() has %d runes, want exactly 300:\n%s", n, got)
+	}
+	lines := strings.Split(got, "\n")
+	if len(lines) != 4 || lines[0] != wantHeader || lines[1] != "场景：面对面，在"+place+wantInPersonTail ||
+		!strings.HasPrefix(lines[2], "正在：忙忙忙") || lines[3] != wantFooter {
+		t.Fatalf("RenderState() =\n%s\nwant the header, the whole scene line, a status line and the footer", got)
+	}
+	without := RenderState(nil, st, bars, effects, now, loc)
+	statusOf := func(block string) string { return strings.Split(block, "\n")[1] }
+	if a, b := utf8.RuneCountInString(lines[2]), utf8.RuneCountInString(statusOf(without)); a >= b {
+		t.Errorf("status line has %d runes with the scene, %d without; want it shortened by the scene line", a, b)
+	}
+}
+
+func TestRenderState_ScenePlaceFlattened(t *testing.T) {
+	loc := shanghai(t)
+	got := RenderState(&StateScene{InPerson: true, Place: "食\n堂【x】"}, nil, nil, nil, time.Time{}, loc)
+	if want := wantHeader + "\n场景：面对面，在食 堂x" + wantInPersonTail + "\n" + wantFooter; got != want {
+		t.Errorf("RenderState() =\n%s\nwant\n%s", got, want)
+	}
+	if !strings.Contains(got, "在食 堂x（") {
+		t.Errorf("RenderState() = %q, want the place flattened", got)
+	}
 }

@@ -39,7 +39,7 @@ func newWakeEnvWith(t *testing.T, model handlerFunc, override []skills.Skill, bo
 	t.Helper()
 	clock := newInjectClock(injectMorning)
 	var tools []skills.Tool
-	for _, name := range []string{"now", "set_status", "adjust_buff", "add_buff", "remove_buff", "remember", "recall", "get_affinity"} {
+	for _, name := range []string{"now", "set_status", "set_scene", "adjust_buff", "add_buff", "remove_buff", "remember", "recall", "get_affinity"} {
 		tools = append(tools, &recTool{name: name})
 	}
 	env := skillEnvWith(t, testOpts{short: model, now: clock.now, configure: func(c *config.Config) {
@@ -245,7 +245,7 @@ func TestWake_StatusReturnSends(t *testing.T) {
 	req := wakeRequest(t, env)
 	last := lastContent(req)
 	directive := CopyDirectiveStatusReturn("洗澡")
-	state := autonomy.RenderState(nil, defaultStateBars(60, 70), nil, time.Time{}, env.o.loc)
+	state := autonomy.RenderState(nil, nil, defaultStateBars(60, 70), nil, time.Time{}, env.o.loc)
 	if !strings.HasPrefix(last, state+"\n\n") || !strings.HasSuffix(last, "\n"+directive) || !strings.Contains(last, "我去洗个澡") {
 		t.Fatalf("last user message = %q, want the state block, the history and then the directive", last)
 	}
