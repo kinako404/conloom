@@ -88,8 +88,9 @@ type skillRun struct {
 // conversation's type or the task is a turn or a join. A message the bot
 // starts itself (a wake task) gets only the wakeTools of skillBuff, even if a
 // skill of skills.dir replacing it lists others: neither set_status, so
-// statuses do not chain, nor memory tools, which would take old messages for
-// a request.
+// statuses do not chain, nor set_scene, since a status return restores the
+// scene itself (restoreScene), nor memory tools, which would take old
+// messages for a request.
 func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, conv store.ConversationRecord,
 	triggers []store.MessageRecord, out *outcome) *skillRun {
 	if o.skills == nil || len(bot.Skills) == 0 {

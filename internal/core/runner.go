@@ -318,7 +318,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		out.wake.name = wakeName(history, speakerRows[task.ActorPlatformUserID])
 		speakerName = out.wake.name
 		var ok bool
-		if directive, ok = o.wakeDirective(ctx, task, out.wake, system.Mode, history); !ok {
+		if directive, ok = o.wakeDirective(ctx, task, out.wake, system.Mode, history, &scene); !ok {
 			out.status, out.skipped, out.meta.ReviewResult = conloomapi.TaskSucceeded, true, reviewResultSkipped
 			return out
 		}

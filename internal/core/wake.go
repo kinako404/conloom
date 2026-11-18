@@ -443,11 +443,13 @@ func wakeDirectiveName(name string) string {
 // chat's last message in history was; a status return names the activity of
 // the status of the conversation's memory scope, which must have been set in
 // the conversation and have ended (a newer one, of this or another chat of
-// the scope, may have replaced it), and records its end in w. Initiates and
-// follow-ups outside ContentOpen get copyNoRomance. It reports false, after
-// logging why, when there is nothing to return from.
+// the scope, may have replaced it), records its end in w and first restores
+// the in-person scene the bot left for it (restoreScene). Initiates and
+// follow-ups outside ContentOpen get copyNoRomance; every kind gets its
+// in-person variant when scene is in person. It reports false, after logging
+// why, when there is nothing to return from.
 func (o *Orchestrator) wakeDirective(ctx context.Context, task store.TaskRecord, w *wakeRun, mode conloomapi.ContentMode,
-	history []store.MessageRecord) (string, bool) {
+	history []store.MessageRecord, scene *taskScene) (string, bool) {
 	name := wakeDirectiveName(w.name)
 	protected := mode != conloomapi.ContentOpen
 	switch w.kind {
@@ -457,9 +459,9 @@ func (o *Orchestrator) wakeDirective(ctx context.Context, task store.TaskRecord,
 		if n := len(history); n > 0 {
 			gap = approxGap(now.Sub(history[n-1].OccurredAt))
 		}
-		return CopyDirectiveInitiate(name, weekdayClock(now, o.loc), gap, protected), true
+		return CopyDirectiveInitiate(name, weekdayClock(now, o.loc), gap, protected, scene.inPerson()), true
 	case store.TimerFollowUp:
-		return CopyDirectiveFollowUp(name, protected), true
+		return CopyDirectiveFollowUp(name, protected, scene.inPerson()), true
 	case store.TimerStatusReturn:
 		st, err := o.st.GetStatus(ctx, memory.ScopeKeyOf(task.ConversationKey))
 		switch {
@@ -478,9 +480,34 @@ func (o *Orchestrator) wakeDirective(ctx context.Context, task store.TaskRecord,
 			return "", false
 		}
 		w.statusUntil = st.UntilAt
-		return CopyDirectiveStatusReturn(st.Activity), true
+		o.restoreScene(ctx, task, st, scene)
+		return CopyDirectiveStatusReturn(st.Activity, scene.inPerson()), true
 	}
 	return "", false
+}
+
+// restoreScene brings the bot back beside the person on its return from st,
+// a status that ended: a scene that went from in person to online at or after
+// st started (less sceneReturnSlack, since set_status and set_scene usually
+// share a turn) is stored, and kept in scene, as in person at the place it
+// left, since and touched now. A failed write is logged and leaves scene as
+// it was.
+func (o *Orchestrator) restoreScene(ctx context.Context, task store.TaskRecord, st store.ConversationStatus, scene *taskScene) {
+	sc := scene.sc
+	if !scene.on || sc.Mode != conloomapi.SceneOnline || sc.PrevMode != conloomapi.SceneInPerson ||
+		sc.SinceAt.Before(st.StartedAt.Add(-sceneReturnSlack)) {
+		return
+	}
+	now := o.now()
+	back := store.ConversationScene{ConversationKey: memory.ScopeKeyOf(task.ConversationKey),
+		OriginConversationKey: task.ConversationKey, Mode: conloomapi.SceneInPerson, Place: sc.PrevPlace,
+		SinceAt: now, TouchedAt: now, UpdatedAt: now}
+	if _, err := o.st.SetScene(ctx, back); err != nil {
+		o.logSceneWriteError(task, err)
+		return
+	}
+	back.PrevMode, back.PrevPlace = sc.Mode, sc.Place
+	scene.sc = back
 }
 
 var weekdays = [...]string{"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"}

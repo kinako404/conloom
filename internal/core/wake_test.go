@@ -244,7 +244,7 @@ func TestWake_StatusReturnSends(t *testing.T) {
 
 	req := wakeRequest(t, env)
 	last := lastContent(req)
-	directive := CopyDirectiveStatusReturn("洗澡")
+	directive := CopyDirectiveStatusReturn("洗澡", false)
 	state := autonomy.RenderState(nil, nil, defaultStateBars(60, 70), nil, time.Time{}, env.o.loc)
 	if !strings.HasPrefix(last, state+"\n\n") || !strings.HasSuffix(last, "\n"+directive) || !strings.Contains(last, "我去洗个澡") {
 		t.Fatalf("last user message = %q, want the state block, the history and then the directive", last)
@@ -520,7 +520,7 @@ func TestWake_InitiateLogsAndArmsFollowUp(t *testing.T) {
 		t.Fatalf("task = %+v, want one reply", task)
 	}
 	last := lastContent(wakeRequest(t, env))
-	directive := CopyDirectiveInitiate("小明", "星期四 16:00", "约 5 小时", true)
+	directive := CopyDirectiveInitiate("小明", "星期四 16:00", "约 5 小时", true, false)
 	if !strings.HasSuffix(last, "\n"+directive) || !strings.Contains(last, "今天下午要考试") || strings.Contains(last, "【当前消息】") {
 		t.Fatalf("last user message = %q, want the history and then\n%s", last, directive)
 	}
@@ -552,7 +552,7 @@ func TestWake_FollowUpNoFurtherTimer(t *testing.T) {
 	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 || task.Meta.Trigger != TriggerFollowUp {
 		t.Fatalf("task = %+v, want one reply", task)
 	}
-	if last := lastContent(wakeRequest(t, env)); !strings.HasSuffix(last, "\n"+CopyDirectiveFollowUp("小明", true)) {
+	if last := lastContent(wakeRequest(t, env)); !strings.HasSuffix(last, "\n"+CopyDirectiveFollowUp("小明", true, false)) {
 		t.Fatalf("last user message = %q, want the follow-up directive", last)
 	}
 	if got := env.privateLog(t, store.ProactivePrivateFollowUp); got != 1 {
@@ -672,7 +672,7 @@ func TestWake_OpenDirectiveNoProtectedLine(t *testing.T) {
 
 	task := env.fireWake(t, env.armWake(t, store.TimerInitiate, clock.now()))
 	last := lastContent(wakeRequest(t, env))
-	if strings.Contains(last, noRomanceLine) || !strings.HasSuffix(last, CopyDirectiveInitiate("小明", "星期四 16:00", "约 5 小时", false)) {
+	if strings.Contains(last, noRomanceLine) || !strings.HasSuffix(last, CopyDirectiveInitiate("小明", "星期四 16:00", "约 5 小时", false, false)) {
 		t.Errorf("open directive = %q, want the initiate directive without %q", last, noRomanceLine)
 	}
 	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 {
@@ -1153,27 +1153,27 @@ func TestWake_StopCancelsWake(t *testing.T) {
 
 func TestWake_Copy(t *testing.T) {
 	for _, s := range []string{
-		CopyDirectiveInitiate("小明", "星期四 16:00", "约 5 小时", false),
-		CopyDirectiveFollowUp("小明", false),
-		CopyDirectiveStatusReturn("洗澡"),
+		CopyDirectiveInitiate("小明", "星期四 16:00", "约 5 小时", false, false),
+		CopyDirectiveFollowUp("小明", false, false),
+		CopyDirectiveStatusReturn("洗澡", false),
 	} {
 		if !strings.HasPrefix(s, "【提示】") || !strings.Contains(s, SkipMarker) || strings.Contains(s, noRomanceLine) {
 			t.Errorf("directive %q", s)
 		}
 	}
-	initiate := CopyDirectiveInitiate("小明", "星期四 16:00", "约 5 小时", true)
+	initiate := CopyDirectiveInitiate("小明", "星期四 16:00", "约 5 小时", true, false)
 	for _, part := range []string{"主动找 小明 说话", "现在是 星期四 16:00，你们上次聊天是约 5 小时前。", "不要提“主动”“系统”“提示”", noRomanceLine} {
 		if !strings.Contains(initiate, part) {
 			t.Errorf("initiate directive lacks %q:\n%s", part, initiate)
 		}
 	}
-	if s := CopyDirectiveInitiate("小明", "星期四 16:00", "", false); strings.Contains(s, "上次聊天") || !strings.Contains(s, "现在是 星期四 16:00。") {
+	if s := CopyDirectiveInitiate("小明", "星期四 16:00", "", false, false); strings.Contains(s, "上次聊天") || !strings.Contains(s, "现在是 星期四 16:00。") {
 		t.Errorf("initiate directive without a gap = %q", s)
 	}
-	if s := CopyDirectiveFollowUp("小明", true); !strings.HasSuffix(s, noRomanceLine) || !strings.Contains(s, "不要催促或抱怨") {
+	if s := CopyDirectiveFollowUp("小明", true, false); !strings.HasSuffix(s, noRomanceLine) || !strings.Contains(s, "不要催促或抱怨") {
 		t.Errorf("protected follow-up directive = %q", s)
 	}
-	if s := CopyDirectiveStatusReturn("洗澡"); !strings.Contains(s, "你刚做完「洗澡」") {
+	if s := CopyDirectiveStatusReturn("洗澡", false); !strings.Contains(s, "你刚做完「洗澡」") {
 		t.Errorf("status return directive = %q", s)
 	}
 	for _, c := range []struct {

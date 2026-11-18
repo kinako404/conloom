@@ -169,7 +169,7 @@ func TestScope_StatusSharedReturnInOrigin(t *testing.T) {
 		t.Fatalf("status return action = %+v, %v; want it in A", rec, err)
 	}
 	if reqs := env.short.Requests(); len(reqs) != requests+1 || !strings.Contains(lastContent(reqs[len(reqs)-1]),
-		CopyDirectiveStatusReturn("洗澡")) {
+		CopyDirectiveStatusReturn("洗澡", false)) {
 		t.Fatalf("model requests after the return = %d, want one more returning from 洗澡", len(reqs))
 	}
 	if st, ok := env.scopeStatus(t, scope); ok {

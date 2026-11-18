@@ -133,13 +133,23 @@ const copyNoRomance = "不要表现出恋爱或暧昧的想念。"
 // CopyDirectiveInitiate ends the context of a task in which the bot may start
 // the private chat with name: now is the local weekday and time, gap how long
 // ago the chat's last message was ("" leaves that out), and protected adds
-// copyNoRomance.
-func CopyDirectiveInitiate(name, now, gap string, protected bool) string {
-	s := "【提示】现在没人在等你回复，这是你可以主动找 " + name + " 说话的机会（这次不受“只回应别人说的”这类习惯的限制）。现在是 " + now
-	if gap != "" {
-		s += "，你们上次聊天是" + gap + "前"
+// copyNoRomance. inPerson, for an in-person scene, has the bot speak up beside
+// name instead of sending a message.
+func CopyDirectiveInitiate(name, now, gap string, protected, inPerson bool) string {
+	var s string
+	if inPerson {
+		s = "【提示】你们现在在一起。现在没人在等你回复，这是你可以主动和 " + name + " 说话的机会（这次不受“只回应别人说的”这类习惯的限制）。现在是 " + now
+		if gap != "" {
+			s += "，你们上次说话是" + gap + "前"
+		}
+		s += "。结合聊天记录、你记得的事和你现在的状态，如果确实有自然想说的——接上没聊完的话题、关心对方提过的事、说说你在做的事或身边的事——就在对方身边开口说一两句，不要解释为什么开口，不要提“主动”“系统”“提示”。如果会显得突兀、打扰，或者你现在不想说话，只输出 [[SKIP]]。"
+	} else {
+		s = "【提示】现在没人在等你回复，这是你可以主动找 " + name + " 说话的机会（这次不受“只回应别人说的”这类习惯的限制）。现在是 " + now
+		if gap != "" {
+			s += "，你们上次聊天是" + gap + "前"
+		}
+		s += "。结合聊天记录、你记得的事和你现在的状态，如果确实有自然想说的——接上没聊完的话题、关心对方提过的事、分享你在做的事——就像平常发消息那样说一两句，不要解释为什么来找对方，不要提“主动”“系统”“提示”。如果会显得突兀、打扰，或者你现在不想说话，只输出 [[SKIP]]。"
 	}
-	s += "。结合聊天记录、你记得的事和你现在的状态，如果确实有自然想说的——接上没聊完的话题、关心对方提过的事、分享你在做的事——就像平常发消息那样说一两句，不要解释为什么来找对方，不要提“主动”“系统”“提示”。如果会显得突兀、打扰，或者你现在不想说话，只输出 [[SKIP]]。"
 	if protected {
 		s += copyNoRomance
 	}
@@ -148,9 +158,13 @@ func CopyDirectiveInitiate(name, now, gap string, protected bool) string {
 
 // CopyDirectiveFollowUp ends the context of a task in which the bot may
 // follow up the message it started with name, who did not answer; protected
-// adds copyNoRomance.
-func CopyDirectiveFollowUp(name string, protected bool) string {
+// adds copyNoRomance. inPerson, for an in-person scene, has the bot speak up
+// beside name again instead of sending another message.
+func CopyDirectiveFollowUp(name string, protected, inPerson bool) string {
 	s := "【提示】你上次主动找 " + name + " 后，对方还没回，可能在忙。可以再轻轻说一句，不要催促或抱怨；不合适就只输出 [[SKIP]]。"
+	if inPerson {
+		s = "【提示】你们现在在一起。你上次主动和 " + name + " 说话后，对方还没回应，可能在忙或没听见。可以在对方身边开口再轻轻说一句，不要催促或抱怨；不合适就只输出 [[SKIP]]。"
+	}
 	if protected {
 		s += copyNoRomance
 	}
@@ -158,8 +172,12 @@ func CopyDirectiveFollowUp(name string, protected bool) string {
 }
 
 // CopyDirectiveStatusReturn ends the context of a task in which the bot comes
-// back from activity, the status it set in the private chat.
-func CopyDirectiveStatusReturn(activity string) string {
+// back from activity, the status it set in the private chat. inPerson, for an
+// in-person scene, has the bot come back beside the person and speak up there.
+func CopyDirectiveStatusReturn(activity string, inPerson bool) string {
+	if inPerson {
+		return "【提示】你刚做完「" + activity + "」，回到了对方身边，你们现在在一起。可以在对方身边开口自然地说一句（说声回来了，或者接上离开前的话题）；如果这段时间你们一直在聊、或者话题已经结束，只输出 [[SKIP]]。"
+	}
 	return "【提示】你刚做完「" + activity + "」，回来了。可以自然地说一句（说声回来了，或者接上离开前的话题）；如果这段时间你们一直在聊、或者话题已经结束，只输出 [[SKIP]]。"
 }
 
