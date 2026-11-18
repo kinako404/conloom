@@ -100,10 +100,29 @@ export function pretty(v) {
 export const SCENE_PLACE_MAX = 16;
 
 // sceneLabel words a chat's scene: '面对面 · 食堂', '面对面' without a place,
-// '线上'.
+// '线上', also for no scene (a group's).
 export function sceneLabel(scene) {
-  if (scene.mode !== 'in_person') return '线上';
+  if (!scene || scene.mode !== 'in_person') return '线上';
   return scene.place ? `面对面 · ${scene.place}` : '面对面';
+}
+
+// ACTION matches a short action or look written in full-width brackets on one
+// line, such as （笑）.
+export const ACTION = /（[^（）\n]*）/g;
+
+// actionParts splits text into its runs in order, each {text, action}, action
+// true for a run ACTION matches; a bracket left open stays plain text.
+export function actionParts(text) {
+  const s = text || '';
+  const out = [];
+  let at = 0;
+  for (const m of s.matchAll(ACTION)) {
+    if (m.index > at) out.push({ text: s.slice(at, m.index), action: false });
+    out.push({ text: m[0], action: true });
+    at = m.index + m[0].length;
+  }
+  if (at < s.length) out.push({ text: s.slice(at), action: false });
+  return out;
 }
 
 export function label(map, v) {

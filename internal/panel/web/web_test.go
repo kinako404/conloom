@@ -1531,13 +1531,18 @@ func TestChatTG_MessageMenu(t *testing.T) {
 			t.Errorf("views/chat.js lacks %q", want)
 		}
 	}
-	for _, gone := range []string{"tg-actions", "tg-action'", "data-regenerate", "bubble(m, actions)"} {
+	// tg-action itself now marks a muted （动作） in a message's text, not a
+	// button (see TestChatPane_ActionBrackets).
+	for _, gone := range []string{
+		"tg-actions", "class: 'tg-action danger'", "h('button', { type: 'button', class: 'tg-action'",
+		"querySelectorAll('.tg-action')", "data-regenerate", "bubble(m, actions)",
+	} {
 		if strings.Contains(js, gone) {
 			t.Errorf("views/chat.js still has the in-bubble actions (%q)", gone)
 		}
 	}
-	if strings.Contains(css, ".tg-action") {
-		t.Error("style.css still styles the in-bubble actions (.tg-action)")
+	if m := regexp.MustCompile(`\.tg-action(?:s|\.danger|:|\[hidden\])`).FindString(css); m != "" {
+		t.Errorf("style.css still styles the in-bubble actions (%s)", m)
 	}
 	// Only the user's scrolling closes the menu: no scroll event does, since
 	// the pane's own scrolling to a new message fires them too.

@@ -1,7 +1,7 @@
 import { h, mount, errorBox } from '../lib/dom.js';
 import { get, post, del, convPath, isAbort } from '../lib/api.js';
 import { go, href } from '../lib/router.js';
-import { fmtTime } from '../lib/format.js';
+import { fmtTime, sceneLabel, actionParts } from '../lib/format.js';
 import { avatarEl } from './avatar.js';
 import { commandMenu } from './commandmenu.js';
 
@@ -86,16 +86,17 @@ function clock(v) {
 
 // bubble shows message m: the bot's on the left, the user's on the right,
 // with its time in the corner, its sender and full time on hover, and its
-// channel only when it is not the panel. It holds no buttons: its actions are
-// in the message menu (see chatPane), which the keyboard opens on the bubble
-// once it has the focus. It is out of the Tab order until chatPane makes it
-// the Tab stop.
+// channel only when it is not the panel; an action in full-width brackets,
+// such as （笑）, is muted (see actionParts). It holds no buttons: its
+// actions are in the message menu (see chatPane), which the keyboard opens on
+// the bubble once it has the focus. It is out of the Tab order until chatPane
+// makes it the Tab stop.
 function bubble(m) {
   const when = fmtTime(m.at);
   return h('li', { class: m.from_bot ? 'tg-msg in' : 'tg-msg out', dataset: { seq: String(m.seq) } },
     h('div', { class: 'tg-bubble', tabindex: '-1', 'aria-haspopup': 'menu' },
       m.channel && m.channel !== 'panel' ? h('div', null, h('span', { class: 'badge' }, m.channel)) : null,
-      h('span', { class: 'tg-text' }, m.text),
+      h('span', { class: 'tg-text' }, actionParts(m.text).map((p) => (p.action ? h('span', { class: 'tg-action' }, p.text) : p.text))),
       h('span', { class: 'tg-time', title: m.sender_name ? `${m.sender_name} · ${when}` : when }, clock(m.at))));
 }
 
@@ -231,7 +232,8 @@ export function chatBar({ key, bot, title, status, items, onBack, onDelete, sign
 // seen until signal fires or the chat is gone (404), which stops the polling
 // and the sending. Messages are bubbles grouped by sender, with a date pill
 // where the day changes; those that arrive after the opening ones float in,
-// and 正在输入 shows under the name while the bot is busy. With the 建议回复
+// and 正在输入 shows under the name while the bot is busy, otherwise, while
+// the chat is in person, the scene, such as 面对面 · 食堂. With the 建议回复
 // switch on, once the bot's turn is done it offers reply suggestions under
 // the newest message, which send themselves when clicked. hint, when given,
 // is shown above the messages. bot ({id, name, avatar}) is who the chat is
@@ -253,13 +255,20 @@ export function chatBar({ key, bot, title, status, items, onBack, onDelete, sign
 export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete, onMessages, reload = () => go(href('im', key)) }) {
   const log = h('ul', { class: 'tg-log' }, hint ? h('li', { class: 'tg-note' }, hint) : null);
   // typing is 正在输入 with three blinking dots, always in the status line,
-  // which keeps its height, and shown by showTyping, which fades it.
+  // which keeps its height, and shown by showTyping, which fades it. sceneEl,
+  // stacked under it, names the scene GET chat gives while the chat is in
+  // person and the bot is not typing, which takes precedence (see showScene).
   const typing = h('span', { class: 'tg-typing', 'aria-hidden': 'true' }, '正在输入',
     h('span', { class: 'tg-typing-dot' }), h('span', { class: 'tg-typing-dot' }), h('span', { class: 'tg-typing-dot' }));
-  const status = h('span', { class: 'tg-bar-status' }, typing);
+  const sceneEl = h('span', { class: 'tg-scene', hidden: true });
+  const status = h('span', { class: 'tg-bar-status' }, sceneEl, typing);
   const showTyping = (on) => {
     typing.classList.toggle('on', on);
     typing.setAttribute('aria-hidden', String(!on));
+  };
+  const showScene = (scene) => {
+    sceneEl.textContent = sceneLabel(scene);
+    sceneEl.hidden = !(scene && scene.enabled && scene.mode === 'in_person') || botTyping;
   };
   const pollError = h('div', { class: 'tg-status' });
   const sendError = h('div', { class: 'tg-status' });
@@ -704,6 +713,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
     clearTimeout(timer);
     clearSuggestions();
     showTyping(false);
+    showScene(null);
     input.disabled = true;
     send.disabled = true;
     refreshActions();
@@ -760,6 +770,7 @@ export async function chatPane({ key, signal, hint, bot, title, onBack, onDelete
         botTyping = !!res.typing;
         regenSeq = res.regenerate_seq || 0;
         showTyping(botTyping);
+        showScene(res.scene);
         refreshActions();
         mount(pollError);
         if (rows.length >= PAGE) next = 0;

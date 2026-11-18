@@ -50,3 +50,47 @@ func TestAutonomyTab_SceneSection(t *testing.T) {
 		t.Errorf("SCENE_PLACE_MAX = %s, want conloomapi.ScenePlaceMaxRunes %s", limit[1], want)
 	}
 }
+
+// The #/im chat header shows the scene under the bot's name while the chat is
+// in person, unless 正在输入 shows there; GET chat's scene updates it on every
+// poll.
+func TestChatPane_SceneLabel(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js := files["views/chat.js"]
+	for _, want := range []string{"res.scene", "sceneLabel(", "tg-scene", "'in_person'"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chat.js lacks %q", want)
+		}
+	}
+	toggle := regexp.MustCompile(`\.hidden = [^;\n]*botTyping[^;\n]*;`).FindString(js)
+	if toggle == "" || !strings.Contains(toggle, "'in_person'") {
+		t.Errorf("views/chat.js does not hide the scene label while the bot is typing or not in person (%q)", toggle)
+	}
+	if !regexp.MustCompile(`\.chat-app \.tg-scene\s*\{[^}]*color:\s*var\(--muted\)`).MatchString(files["style.css"]) {
+		t.Error("style.css does not mute .chat-app .tg-scene")
+	}
+}
+
+// On the #/im page, a short action in full-width brackets in a message is
+// muted; the classic page shows messages as they are.
+func TestChatPane_ActionBrackets(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	format := files["lib/format.js"]
+	for _, want := range []string{"/（[^（）\\n]*）/g", "export function actionParts"} {
+		if !strings.Contains(format, want) {
+			t.Errorf("lib/format.js lacks %q", want)
+		}
+	}
+	js := files["views/chat.js"]
+	for _, want := range []string{"actionParts(m.text)", "class: 'tg-action'", "h('span', { class: 'tg-text' }"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chat.js lacks %q", want)
+		}
+	}
+	if !regexp.MustCompile(`\.chat-app \.tg-action\s*\{[^}]*color:\s*var\(--muted\)`).MatchString(files["style.css"]) {
+		t.Error("style.css does not mute .chat-app .tg-action")
+	}
+	if strings.Contains(files["views/chatclassic.js"], "tg-action") {
+		t.Error("views/chatclassic.js uses tg-action")
+	}
+}

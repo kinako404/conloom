@@ -728,7 +728,9 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
 .chat-app .tg-bar-more:hover { background: var(--code-bg); color: var(--text); }
 .chat-app .tg-bar-name { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.35; }
 .chat-app .tg-bar-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-app .tg-bar-status { min-height: 1.35em; color: var(--accent); font-size: 13px; }
+.chat-app .tg-bar-status { min-height: 1.35em; color: var(--accent); font-size: 13px; display: grid; grid-template-columns: minmax(0, 1fr); }
+.chat-app .tg-bar-status > * { grid-area: 1 / 1; }
+.chat-app .tg-scene { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-app .tg-typing { opacity: 0; transition: opacity 150ms ease-out; }
 .chat-app .tg-typing.on { opacity: 1; }
 .chat-app .tg-typing-dot {
@@ -888,6 +890,8 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   background: radial-gradient(100% 100% at 100% 0, transparent 98%, var(--tg-out) 100%);
 }
 .chat-app .tg-text { white-space: pre-wrap; }
+.chat-app .tg-action { color: var(--muted); }
+.chat-app .tg-msg.out .tg-action { color: var(--tg-out-meta); }
 .chat-app .tg-time {
   float: right;
   margin: 9px -2px -4px 12px;

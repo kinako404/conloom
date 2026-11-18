@@ -181,7 +181,9 @@ func (s *Server) regenerateChatMessage(w http.ResponseWriter, r *http.Request, s
 // delivered nor expired. NextAfter is the cursor of the next poll and
 // RegenerateSeq the seq of the newest message when POST …/regenerate would
 // accept it now (see core.Orchestrator.RegenerableSeq), 0 otherwise and
-// always while the bot is answering.
+// always while the bot is answering. Scene is the private chat's scene as the
+// autonomy tab shows it (AutonomyService.Scene), null for a group or when
+// there is no autonomy service.
 func (s *Server) getChat(w http.ResponseWriter, r *http.Request, _ *Session) {
 	chat, ok := s.chatService(w, r)
 	if !ok {
@@ -229,12 +231,22 @@ func (s *Server) getChat(w http.ResponseWriter, r *http.Request, _ *Session) {
 			return
 		}
 	}
+	var scene *conloomapi.AutonomyScene
+	if s.d.Autonomy != nil && conv.Type == conloomapi.ConvPrivate {
+		sc, err := s.d.Autonomy.Scene(r.Context(), conv.Key)
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		scene = &sc
+	}
 	s.writeJSON(w, http.StatusOK, struct {
-		Messages      []messageView `json:"messages"`
-		Typing        bool          `json:"typing"`
-		NextAfter     int64         `json:"next_after"`
-		RegenerateSeq int64         `json:"regenerate_seq"`
-	}{out, typing, after, regen})
+		Messages      []messageView             `json:"messages"`
+		Typing        bool                      `json:"typing"`
+		NextAfter     int64                     `json:"next_after"`
+		RegenerateSeq int64                     `json:"regenerate_seq"`
+		Scene         *conloomapi.AutonomyScene `json:"scene"`
+	}{out, typing, after, regen, scene})
 }
 
 // postSuggestions answers {suggestions}: up to three lines the user might
