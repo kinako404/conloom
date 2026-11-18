@@ -95,6 +95,17 @@ export function pretty(v) {
   return JSON.stringify(v, null, 2);
 }
 
+// SCENE_PLACE_MAX is how many characters a scene's place may have
+// (conloomapi.ScenePlaceMaxRunes).
+export const SCENE_PLACE_MAX = 16;
+
+// sceneLabel words a chat's scene: '面对面 · 食堂', '面对面' without a place,
+// '线上'.
+export function sceneLabel(scene) {
+  if (scene.mode !== 'in_person') return '线上';
+  return scene.place ? `面对面 · ${scene.place}` : '面对面';
+}
+
 export function label(map, v) {
   return Object.prototype.hasOwnProperty.call(map, v) ? map[v] : (v || '—');
 }

@@ -1,7 +1,7 @@
 import { h, mount, errorBox, empty, table, kv } from '../lib/dom.js';
 import { get, put, del, convPath } from '../lib/api.js';
 import { href } from '../lib/router.js';
-import { fmtTime, label, PRIVATE_LEVEL } from '../lib/format.js';
+import { fmtTime, label, sceneLabel, PRIVATE_LEVEL, SCENE_PLACE_MAX } from '../lib/format.js';
 
 // TIMER_KIND are the kinds of a private chat's pending wake-ups.
 const TIMER_KIND = {
@@ -28,6 +28,43 @@ const EVENT_KIND = {
 
 // PANEL is the platform of conversations held in the panel (store.PlatformPanel).
 const PANEL = 'panel';
+
+// sceneSection shows whether the bot and the person chat online or are
+// together in person, and where, and switches it.
+function sceneSection(key, scene, write) {
+  const title = h('h2', null, '场景');
+  if (!scene.enabled) {
+    return h('section', { class: 'card' }, title, h('p', { class: 'hint' }, 'bot 没有启用 scene 技能，不区分线上和面对面。'));
+  }
+  const msg = h('div');
+  const path = convPath(key, 'autonomy', 'scene');
+  const online = h('button', {
+    type: 'button',
+    onclick: () => write(msg, online, () => put(path, { mode: 'online', place: '' }), '已切到线上'),
+  }, '切到线上');
+  const placeInput = h('input', { maxlength: SCENE_PLACE_MAX, placeholder: '地点（可选，最多 16 字）', 'aria-label': '面对面的地点' });
+  const inPerson = h('button', { type: 'submit' }, '切到面对面');
+  const form = h('form', {
+    class: 'toolbar',
+    onsubmit: (e) => {
+      e.preventDefault();
+      const place = placeInput.value.trim();
+      if ([...place].length > SCENE_PLACE_MAX) {
+        mount(msg, errorBox({ message: '地点最多 16 个字' }));
+        return undefined;
+      }
+      return write(msg, inPerson, () => put(path, { mode: 'in_person', place }), '已切到面对面');
+    },
+  }, placeInput, inPerson);
+  return h('section', { class: 'card' },
+    title,
+    kv([['现在', sceneLabel(scene)], ['开始', fmtTime(scene.since_at)]]),
+    scene.idle_online ? h('p', { class: 'hint warn' }, '超过 3 小时没说话，已回到线上') : null,
+    h('p', { class: 'hint' }, '模型用 set_scene 切换；面对面时对方超过 3 小时没说话，会自动回到线上。'),
+    h('div', { class: 'toolbar' }, online),
+    form,
+    msg);
+}
 
 function statusSection(key, status, write) {
   const title = h('h2', null, '当前状态');
@@ -225,7 +262,7 @@ function proactiveSection(key, conv, pro, priv) {
       h('a', { href: href('conversations', key, 'policy') }, '「策略」'), '里修改。'));
 }
 
-// autonomyTab shows a private chat's hidden state: its status, bars,
+// autonomyTab shows a private chat's hidden state: its scene, status, bars,
 // effects, their recent changes and how the bot starts the chat. write is
 // conversation.js's write, which reloads the tab after a change.
 export async function autonomyTab({ key, conv, signal, write }) {
@@ -235,6 +272,7 @@ export async function autonomyTab({ key, conv, signal, write }) {
   ]);
   const priv = ((((policy.current || {}).policy || {}).proactive || {}).private) || {};
   return [
+    sceneSection(key, state.scene || {}, write),
     statusSection(key, state.status, write),
     barsSection(key, state.bars || [], state.shadowed_bars || [], write),
     effectsSection(key, state.effects || [], write),
