@@ -78,8 +78,8 @@ type configBotSummary struct {
 const maxChatLastRunes = 60
 
 // chatGroup is a bot with its panel chats as the chat page lists them. Avatar
-// is the appearance image of the bot's private persona template, "" without
-// one.
+// is the avatar image of the bot's private persona template, else its
+// appearance image, "" without either (see botAvatar).
 type chatGroup struct {
 	ID     string      `json:"id"`
 	Name   string      `json:"name"`
@@ -444,17 +444,23 @@ func (s *Server) listChats(w http.ResponseWriter, r *http.Request, _ *Session) {
 	}{out})
 }
 
-// botAvatar is the appearance image of the persona template b's private chats
-// start from (the default one when b names none), or "" when the template has
-// none or is not in the catalog (the bot's problems note that). The catalog
-// is read from memory, so this cannot fail.
+// botAvatar is the avatar image of the persona template b's private chats
+// start from (the default one when b names none), else its appearance image,
+// or "" when the template has neither or is not in the catalog (the bot's
+// problems note that). The catalog is read from memory, so this cannot fail.
 func (s *Server) botAvatar(b config.BotConfig) string {
 	name := b.TemplateFor(conloomapi.ConvPrivate)
 	if name == "" {
 		name = "default"
 	}
 	doc, _ := s.d.Personas.Template(name)
-	return doc.AppearanceImage
+	return templateAvatar(doc)
+}
+
+// templateAvatar is the image the panel shows as doc's avatar: its avatar
+// image, else its appearance image, else "".
+func templateAvatar(doc conloomapi.PersonaDoc) string {
+	return cmp.Or(doc.AvatarImage, doc.AppearanceImage)
 }
 
 // chatTitle names the panel chat st after the panel user the bot talks with

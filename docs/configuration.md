@@ -170,6 +170,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `appearance` | ≤800 字 | 外貌描述，渲染为“外貌：”一段，位于“角色设定”之后、“说话方式”之前 |
 | `appearance_image` | 64 位小写十六进制 | 外观参考图的图片 ID（图片内容的 SHA-256），不是文件路径或网址。图片在面板上传，上传后由面板填入这个字段；图片 ID 不进系统提示。只有 `appearance_image_skip` 不为 `true`、而且这次回复路由到的模型在 `modalities` 里声明了 `image` 时，回复请求才附带这张图的缩小图（放在第一条 user 消息里） |
 | `appearance_image_skip` | 布尔，默认 `false` | 为 `true` 时回复不附带外观参考图，模型支持图片也不带 |
+| `avatar_image` | 64 位小写十六进制 | 头像的图片 ID，格式同 `appearance_image`。只用于显示：面板聊天页里用这个模板作私聊默认模板的 bot 显示这张图，没有时显示参考图。头像在面板的模板编辑页上传并裁成正方形；它不进系统提示，也从不发给模型 |
 | `speaking_style` | ≤1000 字 | 说话方式，渲染为“说话方式：”一段 |
 | `examples` | ≤8 组；每组 `user`、`reply` 非空且各 ≤200 字 | 示例对话，渲染为“群友：… / 你：…”，并注明只示范语气和分寸、不要照搬 |
 | `adult` | 布尔，默认 `false` | 成年人设。与 `minor` 同时为 `true` 时报错 |
@@ -180,9 +181,9 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `memory_rules` | ≤1000 字 | 记忆规则，只在开放模式下生效：替换记忆整理提示词的第 6 条；为空则省略这一条 |
 | `bars` | ≤4 条 | 私聊的隐藏状态条，见下面的“状态条” |
 
-`character_name`、`gender`、`description`、`appearance`、`speaking_style`、`examples`，`appearance_image`、`appearance_image_skip`，以及 `content_rules`、`adult_appearance`、`intimacy`、`memory_rules`、`bars`，都可以省略。字数按字符计（去掉首尾空白后），超出时面板、`PUT …/persona` 和旧配置的启动校验都会拒绝并指出字段；`appearance_image` 不为空又不是 64 位小写十六进制时、`gender` 不为空又不是 `female` 或 `male` 时同样拒绝。
+`character_name`、`gender`、`description`、`appearance`、`speaking_style`、`examples`，`appearance_image`、`appearance_image_skip`、`avatar_image`，以及 `content_rules`、`adult_appearance`、`intimacy`、`memory_rules`、`bars`，都可以省略。字数按字符计（去掉首尾空白后），超出时面板、`PUT …/persona` 和旧配置的启动校验都会拒绝并指出字段；`appearance_image` 或 `avatar_image` 不为空又不是 64 位小写十六进制时、`gender` 不为空又不是 `female` 或 `male` 时同样拒绝。
 
-模板引用的 `appearance_image` 在保存时必须是已上传的图片。从旧配置文件导入的模板原样保留图片 ID，不检查图片是否存在：图还没上传时新会话照样复制这个 ID，回复时读不到图就记一条警告、不带图照常回复；`/persona use` 和面板、API 里的套用模板会因为图片不存在而失败（接口返回 400）。先在面板里上传这张图（同一张图得到同一个 ID）。
+模板引用的 `appearance_image` 和 `avatar_image` 在保存时必须是已上传的图片。从旧配置文件导入的模板原样保留图片 ID，不检查图片是否存在：图还没上传时新会话照样复制这个 ID，回复时读不到图就记一条警告、不带图照常回复；`/persona use` 和面板、API 里的套用模板会因为图片不存在而失败（接口返回 400）。先在面板里上传这张图（同一张图得到同一个 ID）。
 
 ### 状态条
 

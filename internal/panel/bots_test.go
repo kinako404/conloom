@@ -963,6 +963,32 @@ func TestChatsAPI_LastMessageAndAvatar(t *testing.T) {
 	}
 }
 
+func TestChatsAPI_AvatarPrefersAvatarImage(t *testing.T) {
+	h := newBotsHarness(t)
+	look := decodeUpload(t, h.upload(pngData(t, testImage(64, 32, false)), "image/png"))
+	face := decodeUpload(t, h.upload(pngData(t, testImage(64, 64, false)), "image/png"))
+	both := lighthousePersona()
+	both.AppearanceImage, both.AvatarImage = look.ID, face.ID
+	decodeTemplate(t, h.putTemplate("both", both, ""), http.StatusCreated)
+	onlyAvatar := lighthousePersona()
+	onlyAvatar.AvatarImage = face.ID
+	decodeTemplate(t, h.putTemplate("only-avatar", onlyAvatar, ""), http.StatusCreated)
+	onlyLook := lighthousePersona()
+	onlyLook.AppearanceImage = look.ID
+	decodeTemplate(t, h.putTemplate("only-look", onlyLook, ""), http.StatusCreated)
+	withBoth, withAvatar, withLook := h.createBot("小红", "both"), h.createBot("小蓝", "only-avatar"), h.createBot("小绿", "only-look")
+
+	var resp chatsResp
+	h.getJSON("/panel/api/chats", &resp)
+	avatars := map[string]string{}
+	for _, b := range resp.Bots {
+		avatars[b.ID] = b.Avatar
+	}
+	if want := map[string]string{dataBot: "", withBoth.ID: face.ID, withAvatar.ID: face.ID, withLook.ID: look.ID}; !reflect.DeepEqual(avatars, want) {
+		t.Errorf("avatars = %v, want %v", avatars, want)
+	}
+}
+
 func TestUsage_DeletedBotName(t *testing.T) {
 	h := newBotsHarness(t)
 	gone := h.createBot("小红", "cat")
