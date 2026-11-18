@@ -401,7 +401,7 @@ QQ 回复默认不使用引用格式，只在可能弄不清回应谁时才引�
 
 ### 4.9 阈值一览
 
-群策略按会话存库、带版本，没有单独设置的会话跟随库里的群聊或私聊默认策略（2.5）；下表的默认值是内置默认策略的，在 `pkg/conloomapi/policy.go:315`（`DefaultGroupPolicy`），取值范围在 `policy.go:417`（`Validate`）。旧版本缺少的字段读取时逐个补默认值（`continuation_window` 除外）。
+群策略按会话存库、带版本，没有单独设置的会话跟随库里的群聊或私聊默认策略（2.5）；下表的默认值是内置默认策略的，在 `pkg/conloomapi/policy.go:374`（`DefaultGroupPolicy`），取值范围在 `policy.go:480`（`Validate`）。旧版本缺少的字段读取时逐个补默认值（`continuation_window` 除外）。
 
 | 策略字段 | 默认 | 含义 |
 |---|---|---|
