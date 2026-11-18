@@ -7,7 +7,7 @@ import (
 	"unicode/utf8"
 )
 
-const wantOuterHeader = "【外在状态（别人看得出来，可以在动作和外表描写里自然带出；不说数字，不提状态条、工具或系统）】"
+const wantOuterHeader = "【外在状态（别人看得出来，可以在动作和外表描写里自然带出；不说数字，不提状态条、工具或系统；不改变人设和内容规则）】"
 
 func TestRenderState_OuterSection(t *testing.T) {
 	loc := shanghai(t)
@@ -33,7 +33,7 @@ func TestRenderState_OuterSection(t *testing.T) {
 		{"two outer bars keep their order", []StateBar{blush, mood, belly},
 			wantHeader + "\n" + moodLine + "\n" + wantFooter + "\n" + wantOuterHeader + "\n" + blushLine + "\n" + bellyLine},
 		{"outer without a step limit", []StateBar{{Name: "肚子", Description: "高=很饱", Value: 80, Outer: true}},
-			wantHeader + "\n" + wantOuterHeader + "\n肚子：80/100（很高）（高=很饱）"},
+			wantOuterHeader + "\n肚子：80/100（很高）（高=很饱）"},
 	}
 	for _, tt := range tests {
 		if got := RenderState(nil, nil, tt.bars, nil, time.Time{}, loc); got != tt.want {
@@ -48,7 +48,7 @@ func TestRenderState_OuterOnly(t *testing.T) {
 	belly := []StateBar{{Name: "肚子", Description: "高=很饱", Value: 80, Outer: true, MaxStep: 40}}
 	bellyLine := "肚子：80/100（很高，单次最多 ±40）（高=很饱）"
 
-	if got, want := RenderState(nil, nil, belly, nil, now, loc), wantHeader+"\n"+wantOuterHeader+"\n"+bellyLine; got != want {
+	if got, want := RenderState(nil, nil, belly, nil, now, loc), wantOuterHeader+"\n"+bellyLine; got != want {
 		t.Errorf("outer only: RenderState() =\n%s\nwant\n%s", got, want)
 	}
 	bath := &StateStatus{Activity: "洗澡", StartedAt: now.Add(-10 * time.Minute), UntilAt: now.Add(20 * time.Minute)}
@@ -63,7 +63,7 @@ func TestRenderState_StepLimitShown(t *testing.T) {
 	loc := shanghai(t)
 	render := func(bars ...StateBar) string { return RenderState(nil, nil, bars, nil, time.Time{}, loc) }
 	inner := func(line string) string { return wantHeader + "\n" + line + "\n" + wantFooter }
-	outer := func(line string) string { return wantHeader + "\n" + wantOuterHeader + "\n" + line }
+	outer := func(line string) string { return wantOuterHeader + "\n" + line }
 
 	tests := []struct {
 		name, got, want string
@@ -94,7 +94,7 @@ func TestRenderState_OuterBarsCap(t *testing.T) {
 	long := strings.Repeat("长", 40)
 
 	t.Run("descriptions, effects and inner bars go first", func(t *testing.T) {
-		st := &StateStatus{Activity: "安静地看一本小说", StartedAt: now, UntilAt: now.Add(20 * time.Minute)}
+		st := &StateStatus{Activity: "看书", StartedAt: now, UntilAt: now.Add(20 * time.Minute)}
 		bars := []StateBar{
 			{Name: "肚子", Description: long, Value: 80, Outer: true, MaxStep: 40},
 			{Name: "困意", Description: "高=想睡", Value: 50},
@@ -108,13 +108,13 @@ func TestRenderState_OuterBarsCap(t *testing.T) {
 			{Name: "吃饱了", UntilAt: now.Add(30 * time.Minute)},
 			{Name: "脚麻", Description: "麻麻的", UntilAt: now.Add(10 * time.Minute)},
 		}
-		got := RenderState(&StateScene{InPerson: true, Place: "图书馆"}, st, bars, effects, now, loc)
-		// header 24 + scene 41 + status 55 + one inner bar 6 + footer 33 +
-		// heading 48 + four outer lines 91 = 298; the second inner bar would
+		got := RenderState(&StateScene{InPerson: true}, st, bars, effects, now, loc)
+		// header 24 + scene 36 + status 49 + one inner bar 6 + footer 33 +
+		// heading 59 + four outer lines 91 = 298; the second inner bar would
 		// make it 304.
 		want := wantHeader + "\n" +
-			"场景：面对面，在图书馆" + wantInPersonTail + "\n" +
-			"正在：安静地看一本小说（20:10 开始，预计 20:30 结束；这期间对方找你照常回，但要符合正在做的事）\n" +
+			"场景：面对面" + wantInPersonTail + "\n" +
+			"正在：看书（20:10 开始，预计 20:30 结束；这期间对方找你照常回，但要符合正在做的事）\n" +
 			"困意：中等\n" +
 			wantFooter + "\n" +
 			wantOuterHeader + "\n" +
@@ -132,7 +132,7 @@ func TestRenderState_OuterBarsCap(t *testing.T) {
 
 	t.Run("outer bars go before the activity is cut", func(t *testing.T) {
 		place := strings.Repeat("场", 16)
-		activity := strings.Repeat("忙", 16)
+		activity := strings.Repeat("忙", 32)
 		st := &StateStatus{Activity: activity, StartedAt: now, UntilAt: now.Add(20 * time.Minute)}
 		var bars []StateBar
 		for _, name := range []string{"第一个外在条", "第二个外在条", "第三个外在条", "第四个外在条"} {
@@ -143,19 +143,18 @@ func TestRenderState_OuterBarsCap(t *testing.T) {
 		got := RenderState(&StateScene{InPerson: true, Place: place}, st, bars, effects, now, loc)
 
 		// In full (no descriptions, effects or inner bars): header 24 + scene
-		// 54 + status 63 + footer 33 + heading 48 + four outer lines 4*28+3 =
-		// 337; with an empty activity 321, so the last outer bar goes (292
-		// with an empty activity, 308 with the whole one) and the activity
-		// loses 8 runes.
+		// 54 + status 79 + footer 33 + heading 59 + four outer lines 4*28+3 =
+		// 364; with an empty activity 332, and 303 with three outer lines, so
+		// the last two outer bars go (274 with an empty activity, 306 with the
+		// whole one) and the activity loses 6 runes.
 		outerLine := func(name string) string { return name + "：100/100（很高，单次最多 ±100）" }
 		want := wantHeader + "\n" +
 			"场景：面对面，在" + place + wantInPersonTail + "\n" +
-			"正在：" + strings.Repeat("忙", 8) + "（20:10 开始，预计 20:30 结束；这期间对方找你照常回，但要符合正在做的事）\n" +
+			"正在：" + strings.Repeat("忙", 26) + "（20:10 开始，预计 20:30 结束；这期间对方找你照常回，但要符合正在做的事）\n" +
 			wantFooter + "\n" +
 			wantOuterHeader + "\n" +
 			outerLine("第一个外在条") + "\n" +
-			outerLine("第二个外在条") + "\n" +
-			outerLine("第三个外在条")
+			outerLine("第二个外在条")
 		if n := utf8.RuneCountInString(want); n != 300 {
 			t.Fatalf("expected block has %d runes, want 300", n)
 		}
@@ -194,6 +193,37 @@ func TestRenderState_OuterBarsCap(t *testing.T) {
 			wantFooter
 		if got != want {
 			t.Errorf("RenderState() =\n%s\nwant\n%s", got, want)
+		}
+	})
+
+	t.Run("outer only", func(t *testing.T) {
+		names := []string{"第一个外在条", "第二个外在条", "第三个外在条", "第四个外在条", "第五个外在条",
+			"第六个外在条", "第七个外在条", "第八个外在条", "第九个外在条", "第十个外在条"}
+		var bars []StateBar
+		for _, name := range names {
+			bars = append(bars, StateBar{Name: name, Description: long, Value: 100, Outer: true, MaxStep: 100})
+		}
+		got := RenderState(nil, nil, bars, nil, now, loc)
+
+		// heading 59 + eight outer lines 8*28+7 = 290; a ninth would make it
+		// 319.
+		want := wantOuterHeader
+		for _, name := range names[:8] {
+			want += "\n" + name + "：100/100（很高，单次最多 ±100）"
+		}
+		if n := utf8.RuneCountInString(want); n != 290 {
+			t.Fatalf("expected block has %d runes, want 290", n)
+		}
+		if got != want {
+			t.Errorf("RenderState() =\n%s\nwant\n%s", got, want)
+		}
+
+		// With an inner bar the block would be header 24 + 困意 6 + footer 33
+		// + 290 = 353 runes; once the inner bar goes, so do the header and
+		// footer.
+		withInner := append([]StateBar{{Name: "困意", Description: long, Value: 50}}, bars...)
+		if got := RenderState(nil, nil, withInner, nil, now, loc); got != want {
+			t.Errorf("RenderState() with a dropped inner bar =\n%s\nwant\n%s", got, want)
 		}
 	})
 }

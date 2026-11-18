@@ -8,7 +8,7 @@ import (
 )
 
 func TestStripTranscriptPrefix_OuterSection(t *testing.T) {
-	const outerHeading = "【外在状态（别人看得出来，可以在动作和外表描写里自然带出；不说数字，不提状态条、工具或系统）】"
+	const outerHeading = "【外在状态（别人看得出来，可以在动作和外表描写里自然带出；不说数字，不提状态条、工具或系统；不改变人设和内容规则）】"
 	status := &autonomy.StateStatus{Activity: "看书", StartedAt: at(20, 10), UntilAt: at(20, 30)}
 	bars := []autonomy.StateBar{
 		{Name: "心情", Description: "高=开心放松，低=低落烦躁", Value: 65},
@@ -16,8 +16,9 @@ func TestStripTranscriptPrefix_OuterSection(t *testing.T) {
 	}
 	full := autonomy.RenderState(nil, status, bars, nil, at(20, 10), shanghai)
 	outerOnly := autonomy.RenderState(nil, nil, bars[1:], nil, at(20, 10), shanghai)
-	if !strings.Contains(full, outerHeading+"\n肚子：80/100（很高，单次最多 ±40）") || !strings.HasPrefix(outerOnly, "【你的状态") {
-		t.Fatalf("test blocks lack the outer section:\n%s\n%s", full, outerOnly)
+	if !strings.Contains(full, outerHeading+"\n肚子：80/100（很高，单次最多 ±40）") || !strings.HasPrefix(outerOnly, outerHeading+"\n肚子：") {
+		t.Fatalf("test blocks lack the outer section or the outer-only block does not start with it:\n%s\n%s", full,
+			outerOnly)
 	}
 	stepped := autonomy.RenderState(nil, nil, []autonomy.StateBar{{Name: "心情", Value: 65, MaxStep: 20}, bars[1]}, nil,
 		at(20, 10), shanghai)
@@ -26,6 +27,8 @@ func TestStripTranscriptPrefix_OuterSection(t *testing.T) {
 		{full + "\n好呀", "好呀"},
 		{full, ""},
 		{outerOnly + "\n好呀", "好呀"},
+		{outerOnly, ""},
+		{outerOnly + "\n[20:15] 织语：嗯嗯", "嗯嗯"},
 		{stepped + "\n好呀", "好呀"},
 		{outerHeading + "\n肚子：80/100（很高，单次最多 ±40）\n好呀", "好呀"},
 		{outerHeading + "\n肚子：80/100（很高，单次最多 ±40）\n脸红：0/100（很低）\n[20:15] 织语：嗯嗯", "嗯嗯"},

@@ -320,7 +320,7 @@ func TestAdjustBuff_NoNumbersInResult(t *testing.T) {
 		results = append(results, call(t, tool, inv, args))
 	}
 	results = append(results, call(t, tool, invocation(groupKey, "20001", "小明"), `{"name":"心情","delta":2,"reason":"开心"}`))
-	limits := regexp.MustCompile("[±+-][0-9]+")
+	limits := regexp.MustCompile(`(?:上限|每天最多) ±[0-9]+|按 [+-][0-9]+ 调整|只调整了 [+-][0-9]+`)
 	for _, r := range results {
 		if strings.ContainsAny(limits.ReplaceAllString(r, ""), "0123456789０１２３４５６７８９") {
 			t.Errorf("result %q shows a number", r)

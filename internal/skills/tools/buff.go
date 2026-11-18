@@ -61,7 +61,7 @@ func (*adjustBuffTool) Spec() skills.Spec {
 	return skills.Spec{
 		Name: "adjust_buff",
 		Description: "调整你自己的一条状态条（比如心情、精力，或你自己加的）。聊天里发生了真正影响你的事时调用：" +
-			"小事调一点，大事调多一些，最多到这一条的单次上限（默认 ±10；你的状态里写了“单次最多”的按那个数）；不要每句都调。" +
+			"小事调一点，大事调多一些，最多到这一条的单次上限（默认 ±10；状态里写了“单次最多”的按那个数）；不要每句都调。" +
 			"外在状态可以在动作和外表描写里自然表现，其他的只影响语气；都不要向对方说出数字，也不要提状态条或工具。返回调整前后的大致档位。",
 		Parameters: json.RawMessage(`{"type":"object","properties":{` +
 			`"name":{"type":"string","description":"状态条的名字，要和你的状态里写的完全一致，例如“心情”"},` +

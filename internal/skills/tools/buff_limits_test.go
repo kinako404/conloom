@@ -164,12 +164,12 @@ func TestAdjustBuff_SpecWidened(t *testing.T) {
 		*d.Maximum != conloomapi.MaxBarLimit {
 		t.Errorf("delta schema in %s, want -100 to 100", spec.Parameters)
 	}
-	for _, s := range []string{"默认 ±10", "外在"} {
+	for _, s := range []string{"默认 ±10", "外在", "状态里写了“单次最多”"} {
 		if !strings.Contains(spec.Description, s) {
 			t.Errorf("description %q lacks %q", spec.Description, s)
 		}
 	}
-	for _, s := range []string{"隐藏", "只有你自己知道"} {
+	for _, s := range []string{"隐藏", "只有你自己知道", "你的状态"} {
 		if strings.Contains(spec.Description, s) {
 			t.Errorf("description %q has %q", spec.Description, s)
 		}

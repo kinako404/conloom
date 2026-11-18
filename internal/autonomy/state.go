@@ -40,8 +40,9 @@ type StateBar struct {
 }
 
 // outerHeader heads the outer bars, the states others can see, after the
-// footer of the inner part of the state block.
-const outerHeader = "【外在状态（别人看得出来，可以在动作和外表描写里自然带出；不说数字，不提状态条、工具或系统）】"
+// footer of the inner part of the state block, or first when the block has
+// no inner part.
+const outerHeader = "【外在状态（别人看得出来，可以在动作和外表描写里自然带出；不说数字，不提状态条、工具或系统；不改变人设和内容规则）】"
 
 // StateEffect is a passing condition of the bot that runs out at UntilAt.
 type StateEffect struct {
@@ -49,16 +50,19 @@ type StateEffect struct {
 	UntilAt           time.Time
 }
 
-// RenderState renders the hidden state block injected into private replies:
-// the scene line when scene is set, the status line when st is set, then a
-// line per inner bar showing its band, then one line with the effects still
-// running at now and the time each has left, with times in loc, then the
-// footer, then, when bars holds outer bars, outerHeader and a line per outer
-// bar showing its value and band (inner and outer bars each in the order of
-// bars; see barLine). The place, activity and descriptions are flattened to
-// one line without 【】 or control characters. It returns "" when there is
-// nothing to show. Over 300 runes it drops all descriptions, then trailing
-// effects, then trailing inner bars, then trailing outer bars while the block
+// RenderState renders the hidden state block injected into private replies.
+// Its inner part, written only when there is a scene, status, inner bar or
+// running effect, is the header, the scene line when scene is set, the status
+// line when st is set, then a line per inner bar showing its band, then one
+// line with the effects still running at now and the time each has left, with
+// times in loc, then the footer. When bars holds outer bars, outerHeader and a
+// line per outer bar showing its value and band follow, or open the block when
+// it has no inner part (inner and outer bars each in the order of bars; see
+// barLine). The place, activity and descriptions are flattened to one line
+// without 【】 or control characters. It returns "" when there is nothing to
+// show. Over 300 runes it drops all descriptions, then trailing effects, then
+// trailing inner bars (with no scene or status left, the block then starts
+// with outerHeader), then trailing outer bars while the block
 // would be over 300 runes even with the activity cut to nothing (the heading
 // goes with the last outer bar), then shortens the activity; the scene line
 // is always kept whole, and a bar line, its step limit included, is kept or
@@ -144,18 +148,21 @@ func sceneLine(inPerson bool, place string) string {
 	return "场景：面对面" + at + "（你们在同一个地方；可以偶尔用括号写一个简短的动作或神态）"
 }
 
-// renderState renders the block of RenderState: the scene line when scene is
-// not empty, then the status, inner bars and effects, then the footer when
-// any of those was written, then outerHeader and the outer bars when there
-// are any, with no trailing newline; the bars' and effects' descriptions only
-// when withDescriptions.
+// renderState renders the block of RenderState: when there is a scene,
+// status, inner bar or effect, the header, the scene line when scene is not
+// empty, then the status, inner bars and effects, then the footer; then
+// outerHeader and the outer bars when there are any, with no trailing
+// newline; the bars' and effects' descriptions only when withDescriptions.
 func renderState(scene string, st *StateStatus, inner, outer []StateBar, effects []StateEffect, withDescriptions bool,
 	now time.Time, loc *time.Location) string {
-	if scene == "" && st == nil && len(inner) == 0 && len(outer) == 0 && len(effects) == 0 {
+	hasInner := scene != "" || st != nil || len(inner) > 0 || len(effects) > 0
+	if !hasInner && len(outer) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(stateHeader + "\n")
+	if hasInner {
+		b.WriteString(stateHeader + "\n")
+	}
 	if scene != "" {
 		b.WriteString(scene + "\n")
 	}
@@ -182,7 +189,7 @@ func renderState(scene string, st *StateStatus, inner, outer []StateBar, effects
 	if len(effects) > 0 {
 		b.WriteString("\n")
 	}
-	if scene != "" || st != nil || len(inner) > 0 || len(effects) > 0 {
+	if hasInner {
 		b.WriteString(stateFooter)
 		if len(outer) > 0 {
 			b.WriteString("\n")
