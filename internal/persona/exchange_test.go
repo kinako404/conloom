@@ -839,6 +839,130 @@ func TestImport_AppearanceImageID(t *testing.T) {
 	}
 }
 
+func TestExchange_AvatarRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	src := newTestStore(t)
+	svc := newServiceWith(t, src, nil)
+	look, face := testPNG(t, 40, 20, 6), testPNG(t, 512, 512, 7)
+	for _, data := range [][]byte{look, face} {
+		p, err := imaging.Process(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := src.PutPersonaImage(ctx, store.PersonaImage{ID: p.ID, MIME: p.MIME, Width: p.Width, Height: p.Height,
+			Original: p.Original, ReplyJPEG: p.ReplyJPEG, ReplyWidth: p.ReplyWidth, ReplyHeight: p.ReplyHeight,
+			ReplyTokens: p.ReplyTokens, CreatedBy: "panel:admin"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lighthouse, onlyAvatar := tagged("灯塔"), tagged("头像")
+	lighthouse.AppearanceImage, lighthouse.AvatarImage = imageID(t, look), imageID(t, face)
+	onlyAvatar.AvatarImage = imageID(t, face)
+	for name, doc := range map[string]conloomapi.PersonaDoc{"lighthouse": lighthouse, "face": onlyAvatar} {
+		if err := svc.PutTemplate(ctx, name, doc, "panel:admin"); err != nil {
+			t.Fatalf("PutTemplate %s: %v", name, err)
+		}
+	}
+	f, err := svc.Export(ctx, []string{"lighthouse", "face"})
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	embed := func(data []byte) *ExchangeImage {
+		return &ExchangeImage{MIME: "image/png", Data: base64.StdEncoding.EncodeToString(data)}
+	}
+	want := ExchangeTemplates{
+		{Name: "lighthouse", Persona: lighthouse, AppearanceImage: embed(look), AvatarImage: embed(face)},
+		{Name: "face", Persona: onlyAvatar, AvatarImage: embed(face)},
+	}
+	if !reflect.DeepEqual(f.Templates, want) {
+		t.Fatalf("exported templates = %+v, want %+v", f.Templates, want)
+	}
+	raw, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"avatar_image":{"mime":"image/png","data":"`)) {
+		t.Errorf("exported file has no embedded avatar_image: %.300s", raw)
+	}
+	var back ExchangeFile
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	back.Templates[0].Persona.AvatarImage = fakeImageID("what the file says")
+	back.Templates[1].Persona.AvatarImage = ""
+
+	dst := newTestStore(t)
+	other := newServiceWith(t, dst, nil)
+	if _, err := other.Import(ctx, back, ConflictFail, "panel:other"); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	for name, w := range map[string]conloomapi.PersonaDoc{"lighthouse": lighthouse, "face": onlyAvatar} {
+		if got, _ := other.Template(name); !reflect.DeepEqual(got, w) {
+			t.Errorf("imported %s = %+v, want %+v", name, got, w)
+		}
+	}
+	img, err := dst.GetPersonaImage(ctx, imageID(t, face), true)
+	if err != nil || !bytes.Equal(img.Original, face) || img.CreatedBy != "panel:other" {
+		t.Errorf("imported avatar = %v by %q, original equal %v", err, img.CreatedBy, bytes.Equal(img.Original, face))
+	}
+	if got, want := other.ReferencedImages(), slices.Sorted(slices.Values([]string{imageID(t, look), imageID(t, face)})); !slices.Equal(got, want) {
+		t.Errorf("ReferencedImages after import = %v, want %v", got, want)
+	}
+}
+
+func TestExport_MissingAvatar(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	gone := tagged("迁移")
+	gone.AvatarImage = fakeImageID("avatar never uploaded")
+	putTemplateRow(t, st, "migrated", gone, time.Now())
+	svc := NewService(st)
+	var logs bytes.Buffer
+	svc.SetLogger(slog.New(slog.NewTextHandler(&logs, nil)))
+	loadTemplates(t, svc)
+
+	f, err := svc.Export(ctx, []string{"migrated"})
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	without := gone
+	without.AvatarImage = ""
+	if !reflect.DeepEqual(f.Templates, ExchangeTemplates{{Name: "migrated", Persona: without}}) {
+		t.Errorf("exported = %+v, want the persona without its missing avatar", f.Templates)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "avatar image") ||
+		!strings.Contains(logs.String(), gone.AvatarImage) {
+		t.Errorf("no warning about the missing avatar:\n%s", logs.String())
+	}
+}
+
+func TestImport_BadOrUnknownAvatar(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := newServiceWith(t, st, nil)
+	good := testPNG(t, 16, 16, 8)
+	bad := ExchangeTemplate{Name: "bad", Persona: tagged("坏"), AvatarImage: &ExchangeImage{MIME: "image/png", Data: "!!!"}}
+	_, err := svc.Import(ctx, exchangeFile(exchangeTemplate("cat", tagged("猫"), good), bad), ConflictFail, "panel:admin")
+	if !errors.Is(err, ErrInvalidTemplate) || !strings.Contains(err.Error(), `templates[1] "bad"`) ||
+		!strings.Contains(err.Error(), "avatar_image") {
+		t.Errorf("Import with a broken avatar err = %v, want ErrInvalidTemplate about the avatar of bad", err)
+	}
+	checkUnchanged(t, st, svc, []string{}, imageID(t, good))
+
+	unknown := tagged("己")
+	unknown.AvatarImage = fakeImageID("never uploaded")
+	if _, err := svc.Import(ctx, exchangeFile(exchangeTemplate("unknown", unknown, nil)), ConflictFail, "panel:admin"); !errors.Is(err, ErrInvalidTemplate) ||
+		!strings.Contains(err.Error(), "unknown avatar_image") {
+		t.Errorf("Import of a persona naming an avatar neither embedded nor stored err = %v, want ErrInvalidTemplate", err)
+	}
+	refers := tagged("庚")
+	refers.AvatarImage = imageID(t, good)
+	if _, err := svc.Import(ctx, exchangeFile(exchangeTemplate("refers", refers, nil), exchangeTemplate("cat", tagged("猫"), good)),
+		ConflictFail, "panel:admin"); err != nil {
+		t.Errorf("Import of an avatar embedded as another template's appearance image: %v", err)
+	}
+}
+
 // importHook is a store whose ImportPersonaTemplates fails with err when set
 // and otherwise stores, then calls after.
 type importHook struct {

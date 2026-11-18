@@ -16,7 +16,9 @@ import (
 // AppearanceImage, also optional, is the ID of an appearance reference
 // image; it never enters the system prompt. A reply
 // request carries the image only when AppearanceImageSkip is not set and the
-// model it is routed to declares image support. Adult, unless Minor is also set,
+// model it is routed to declares image support. AvatarImage, also optional,
+// is the ID of the image the panel shows as the bot's avatar; it is never
+// sent to a model. Adult, unless Minor is also set,
 // makes ContentOpen possible (see ModeFor); ContentRules, AdultAppearance and
 // MemoryRules only take effect in it. AdultAppearance enters the system
 // prompt right after the appearance, and a minor persona cannot have one (see
@@ -36,6 +38,7 @@ type PersonaDoc struct {
 	Appearance          string           `json:"appearance,omitempty" yaml:"appearance,omitempty"`
 	AppearanceImage     string           `json:"appearance_image,omitempty" yaml:"appearance_image,omitempty"`
 	AppearanceImageSkip bool             `json:"appearance_image_skip,omitempty" yaml:"appearance_image_skip,omitempty"`
+	AvatarImage         string           `json:"avatar_image,omitempty" yaml:"avatar_image,omitempty"`
 	SpeakingStyle       string           `json:"speaking_style,omitempty" yaml:"speaking_style,omitempty"`
 	Examples            []PersonaExample `json:"examples,omitempty" yaml:"examples,omitempty"`
 	Adult               bool             `json:"adult,omitempty" yaml:"adult,omitempty"`
@@ -340,6 +343,9 @@ func (p PersonaDoc) Validate() error {
 	maxRunes("appearance", p.Appearance, MaxAppearanceRunes)
 	if p.AppearanceImage != "" && !isImageID(p.AppearanceImage) {
 		fail("appearance_image must be an image ID of 64 lowercase hex characters")
+	}
+	if p.AvatarImage != "" && !isImageID(p.AvatarImage) {
+		fail("avatar_image must be an image ID of 64 lowercase hex characters")
 	}
 	maxRunes("speaking_style", p.SpeakingStyle, MaxSpeakingStyleRunes)
 	maxRunes("content_rules", p.ContentRules, MaxContentRulesRunes)

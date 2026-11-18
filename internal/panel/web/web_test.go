@@ -48,7 +48,7 @@ func TestAssets_PlannedFilesPresent(t *testing.T) {
 		"lib/api.js", "lib/router.js", "lib/dom.js", "lib/chart.js", "lib/format.js", "lib/sections.js",
 		"views/login.js", "views/overview.js", "views/usage.js", "views/conversations.js",
 		"views/conversation.js", "views/chat.js", "views/chats.js", "views/chatclassic.js", "views/chatsclassic.js", "views/avatar.js", "views/autonomy.js", "views/tasks.js", "views/audit.js", "views/config.js",
-		"views/personaform.js", "views/templates.js", "views/policyform.js", "views/settings.js",
+		"views/personaform.js", "views/avatarcrop.js", "views/templates.js", "views/policyform.js", "views/settings.js",
 	} {
 		if _, err := fs.Stat(FS, name); err != nil {
 			t.Errorf("%s: %v", name, err)
@@ -801,6 +801,128 @@ func TestPersonaForm_AdultAppearance(t *testing.T) {
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("views/personaform.js lacks %q", want)
+		}
+	}
+}
+
+// The templates page's persona form, and only it, has a 头像 section after
+// the appearance: the avatar as a circle or 未设置, 上传头像 taking the image
+// types the browser decodes, 从参考图选取 enabled only while there is a
+// reference image, whose original it crops, and 移除头像; the crop is saved
+// as avatar_image with the form.
+func TestPersonaForm_AvatarSection(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js := files["views/personaform.js"]
+	for _, want := range []string{
+		"import { cropAvatar, AVATAR_SIZE } from './avatarcrop.js';",
+		"const AVATAR_SOURCE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];",
+		"h('input', { type: 'file', accept: AVATAR_SOURCE_TYPES.join(','), hidden: true })",
+		"'上传头像'", "'从参考图选取'", "'移除头像'", "'未设置'",
+		"fromReference.disabled = busy || !reference();",
+		"crop(originalImageURL(id));",
+		"reader.readAsDataURL(f);",
+		"cropAvatar({ src, parent: el, maxBytes: MAX_IMAGE_MIB * 1024 * 1024, signal })",
+		"{ fields: { avatar_image: avatarId } }",
+		"avatar = withAvatar ? avatarEditor(base, appearance.image, signal) : null;",
+		"avatar ? [h('h3', null, '头像'), avatar.el] : null,",
+		"Object.assign(persona, look.fields, face.fields);",
+		"不发给模型",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/personaform.js lacks %q", want)
+		}
+	}
+	if !strings.Contains(files["views/templates.js"], "avatar: true,") {
+		t.Error("views/templates.js does not edit the avatar")
+	}
+	if strings.Contains(files["views/conversation.js"], "avatar: true") {
+		t.Error("views/conversation.js edits the avatar, which is the template's")
+	}
+	if !strings.Contains(files["views/avatar.js"], "?size=original&v=") {
+		t.Error("views/avatar.js has no address of an original image")
+	}
+	if !regexp.MustCompile(`\.persona-avatar\s*\{[^}]*border-radius:\s*50%;[^}]*object-fit:\s*cover;`).MatchString(files["style.css"]) {
+		t.Error("style.css: .persona-avatar is not a covered circle")
+	}
+}
+
+// The crop dialog fits the image in a stage that takes no touch gestures,
+// overlays a square selection with four corner handles moved and resized by
+// pointer events (mouse, pen and touch alike), at least 64 image pixels,
+// and by the arrow keys and + / -, previews it round, and on 确定 draws it on
+// a 512 × 512 canvas with high-quality smoothing, as a PNG or, over the
+// upload limit, a JPEG of quality 0.9, uploads it as a persona image and
+// closes; 取消 closes. Its listeners go when it closes.
+func TestAvatarCrop_Dialog(t *testing.T) {
+	files := assets(t, ".js", ".css")
+	js := files["views/avatarcrop.js"]
+	for _, want := range []string{
+		"export const AVATAR_SIZE = 512;", "const MIN_CROP = 64;", "const KEY_STEP = 8;",
+		"h('dialog', { class: 'card dialog wide crop-dialog' }",
+		"'确定'", "'取消'", "'裁剪头像'",
+		"const CORNERS = { nw: [-1, -1], ne: [1, -1], sw: [-1, 1], se: [1, 1] };",
+		"listen(frame, 'pointerdown',", "listen(frame, 'pointermove',", "listen(frame, 'pointerup', release);",
+		"listen(frame, 'pointercancel', release);", "frame.setPointerCapture(e.pointerId);",
+		"listen(box, 'keydown',", "ArrowLeft", "e.key === '+'", "e.key === '-'",
+		"ctx.imageSmoothingQuality = 'high';",
+		"await toBlob(canvas, 'image/png');", "await toBlob(flat, 'image/jpeg', 0.9);",
+		"result = await upload('persona-images', blob);",
+		"for (const off of offs) off();", "dialog.remove();",
+		"const sel = { x: (W - maxSize) / 2, y: (H - maxSize) / 2, size: maxSize };",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/avatarcrop.js lacks %q", want)
+		}
+	}
+	start := strings.Index(js, "export async function cropAvatar(")
+	if start < 0 {
+		t.Fatal("views/avatarcrop.js has no cropAvatar")
+	}
+	crop := js[start:]
+	for _, m := range regexp.MustCompile(`(\w+)\.addEventListener\(`).FindAllStringSubmatch(crop, -1) {
+		if m[1] != "el" {
+			t.Errorf("views/avatarcrop.js: cropAvatar's %s.addEventListener bypasses listen(), which removes it on close", m[1])
+		}
+	}
+	for _, want := range []string{
+		"if (signal && signal.aborted) throw aborted();",
+		"const img = await loadImage(src, signal);",
+		"listen(window, 'resize', layout);",
+		"listen(dialog, 'close', finish);",
+		"if (signal) listen(signal, 'abort', finish);",
+		"if (dialog.open) dialog.close();",
+		"img.removeAttribute('src');",
+		"Promise.resolve(uploading).then(done, done);",
+	} {
+		if !strings.Contains(crop, want) {
+			t.Errorf("views/avatarcrop.js: cropAvatar lacks %q", want)
+		}
+	}
+	if !strings.Contains(js, "if (signal) signal.removeEventListener('abort', onAbort);") {
+		t.Error("views/avatarcrop.js: loadImage keeps its abort listener once the image settled")
+	}
+	form := files["views/personaform.js"]
+	for _, want := range []string{
+		"avatar: withAvatar = false, signal }",
+		"avatarEditor(base, appearance.image, signal)",
+		"cropAvatar({ src, parent: el, maxBytes: MAX_IMAGE_MIB * 1024 * 1024, signal })",
+	} {
+		if !strings.Contains(form, want) {
+			t.Errorf("views/personaform.js does not pass the route's signal to the crop: lacks %q", want)
+		}
+	}
+	if !strings.Contains(files["views/templates.js"], "avatar: true,\n    signal: ctx.signal,") {
+		t.Error("views/templates.js does not pass ctx.signal to the persona form")
+	}
+	css := files["style.css"]
+	for _, c := range []struct{ name, re string }{
+		{"a stage without touch gestures", `\.crop-stage\s*\{[^}]*touch-action:\s*none;`},
+		{"a frame without touch gestures", `\.crop-frame\s*\{[^}]*touch-action:\s*none;`},
+		{"a shaded outside", `\.crop-box\s*\{[^}]*box-shadow:`},
+		{"a round preview", `\.crop-preview\s*\{[^}]*border-radius:\s*50%;`},
+	} {
+		if !regexp.MustCompile(c.re).MatchString(css) {
+			t.Errorf("style.css lacks %s (%s)", c.name, c.re)
 		}
 	}
 }

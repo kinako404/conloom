@@ -229,6 +229,14 @@ func TestPersona_AppearanceValidate(t *testing.T) {
 		{"image id with blanks", func(p *PersonaDoc) { p.AppearanceImage = " " + testImageID[1:] }, "appearance_image must be"},
 		{"image id blank", func(p *PersonaDoc) { p.AppearanceImage = " " }, "appearance_image must be"},
 		{"image id path", func(p *PersonaDoc) { p.AppearanceImage = "../" + testImageID[3:] }, "appearance_image must be"},
+		{"avatar id", func(p *PersonaDoc) { p.AvatarImage = testImageID }, ""},
+		{"avatar id and image id", func(p *PersonaDoc) { p.AvatarImage, p.AppearanceImage = testImageID, testImageID }, ""},
+		{"avatar id 63 chars", func(p *PersonaDoc) { p.AvatarImage = testImageID[1:] }, "avatar_image must be"},
+		{"avatar id 65 chars", func(p *PersonaDoc) { p.AvatarImage = testImageID + "0" }, "avatar_image must be"},
+		{"avatar id uppercase", func(p *PersonaDoc) { p.AvatarImage = strings.ToUpper(testImageID) }, "avatar_image must be"},
+		{"avatar id not hex", func(p *PersonaDoc) { p.AvatarImage = "g" + testImageID[1:] }, "avatar_image must be"},
+		{"avatar id blank", func(p *PersonaDoc) { p.AvatarImage = " " }, "avatar_image must be"},
+		{"avatar id path", func(p *PersonaDoc) { p.AvatarImage = "../" + testImageID[3:] }, "avatar_image must be"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -318,6 +326,38 @@ func TestPersona_AppearanceJSONAndYAML(t *testing.T) {
 	}
 	if doc.Appearance != "短发，常穿蓝色外套。\n" || doc.AppearanceImage != testImageID || !doc.AppearanceImageSkip {
 		t.Errorf("YAML appearance fields = %q, %q, %v", doc.Appearance, doc.AppearanceImage, doc.AppearanceImageSkip)
+	}
+}
+
+func TestPersona_AvatarImageJSONAndYAML(t *testing.T) {
+	b, err := json.Marshal(DefaultPersona())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "avatar") {
+		t.Errorf("persona without avatar encodes an avatar key: %s", b)
+	}
+	p := DefaultPersona()
+	p.AvatarImage = testImageID
+	if b, err = json.Marshal(p); err != nil {
+		t.Fatal(err)
+	}
+	if want := `"avatar_image":"` + testImageID + `"`; !strings.Contains(string(b), want) {
+		t.Errorf("JSON %s missing %s", b, want)
+	}
+	var back PersonaDoc
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(back, p) {
+		t.Errorf("JSON round trip = %+v, want %+v", back, p)
+	}
+	var doc PersonaDoc
+	if err := yaml.Unmarshal([]byte("persona_name: 测试人格\navatar_image: "+testImageID+"\n"), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.AvatarImage != testImageID {
+		t.Errorf("YAML avatar_image = %q, want %q", doc.AvatarImage, testImageID)
 	}
 }
 

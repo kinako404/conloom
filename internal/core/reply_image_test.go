@@ -240,6 +240,27 @@ func TestReplyImage_ToolRoundsFollowProfile(t *testing.T) {
 	}
 }
 
+func TestReplyImage_AvatarNeverSent(t *testing.T) {
+	request := func(avatar bool) map[string]any {
+		env := newTestOrchestrator(t, testOpts{configure: withImageModality("short_context")})
+		img := env.putTestImage(t)
+		if avatar {
+			p := conloomapi.DefaultPersona()
+			p.AvatarImage = img.ID
+			if _, err := env.o.personas.Update(context.Background(), testConvKey, "default", conloomapi.PersonaPut{Persona: &p}, "test"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		env.replyTo(t, false, "在吗")
+		return env.short.Requests()[0]
+	}
+	plain, req := request(false), request(true)
+	assertNoImage(t, "avatar only, image model", req)
+	if a, b := requestText(t, req), requestText(t, plain); a != b {
+		t.Errorf("request text with an avatar differs from one without:\n%s\nwant\n%s", a, b)
+	}
+}
+
 func TestReplyImage_SkipFlag(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{configure: withImageModality("short_context")})
 	img := env.putTestImage(t)

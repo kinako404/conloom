@@ -84,6 +84,7 @@ func newCatalog(stored map[string]store.PersonaTemplateRecord) *catalog {
 	for name, r := range stored {
 		c.docs[name] = r.Persona
 		images[r.Persona.AppearanceImage] = true
+		images[r.Persona.AvatarImage] = true
 	}
 	if _, ok := stored[defaultTemplate]; !ok {
 		c.docs[defaultTemplate] = conloomapi.DefaultPersona()
@@ -152,8 +153,8 @@ func NewService(st store.Store) *Service {
 	return s
 }
 
-// SetImageChecker replaces how persona writes check that an appearance image
-// was uploaded, by default the store's PersonaImageExists. Call it before the
+// SetImageChecker replaces how persona writes check that an appearance or
+// avatar image was uploaded, by default the store's PersonaImageExists. Call it before the
 // Service is shared.
 func (s *Service) SetImageChecker(f func(ctx context.Context, id string) (bool, error)) {
 	s.imageExists = f
@@ -223,8 +224,8 @@ func (s *Service) Templates() []TemplateInfo {
 	return slices.Clone(s.catalog.Load().infos)
 }
 
-// ReferencedImages returns the IDs of the appearance images the stored
-// persona templates name, sorted.
+// ReferencedImages returns the IDs of the appearance and avatar images the
+// stored persona templates name, sorted.
 func (s *Service) ReferencedImages() []string {
 	return slices.Clone(s.catalog.Load().images)
 }
@@ -236,8 +237,8 @@ func (s *Service) ReferencedImages() []string {
 // Update, get it; existing versions are kept. The name of a new template must
 // be 1 to 32 lowercase letters, digits, - or _, and none of
 // reservedTemplateNames; a stored template keeps the name it has. An invalid
-// name, a doc that fails Validate and an appearance image that was not
-// uploaded are ErrInvalidTemplate.
+// name, a doc that fails Validate and an appearance or avatar image that was
+// not uploaded are ErrInvalidTemplate.
 func (s *Service) PutTemplate(ctx context.Context, name string, doc conloomapi.PersonaDoc, actor string) error {
 	if err := checkTemplateDoc(doc); err != nil {
 		return err
@@ -356,23 +357,29 @@ func validTemplateName(name string) bool {
 	return true
 }
 
-// checkImage returns invalid, wrapped, when p names an appearance image that
-// was not uploaded, and an error of its own when the check fails.
+// checkImage returns invalid, wrapped, when p names an appearance image or an
+// avatar image that was not uploaded, and an error of its own when the check
+// fails.
 func (s *Service) checkImage(ctx context.Context, p conloomapi.PersonaDoc, invalid error) error {
-	if p.AppearanceImage == "" {
-		return nil
-	}
-	ok, err := s.imageUploaded(ctx, p.AppearanceImage)
-	switch {
-	case err != nil:
-		return fmt.Errorf("persona: check appearance image: %w", err)
-	case !ok:
-		return fmt.Errorf("%w: unknown appearance_image %q", invalid, p.AppearanceImage)
+	for _, ref := range []struct{ field, what, id string }{
+		{"appearance_image", "appearance image", p.AppearanceImage},
+		{"avatar_image", "avatar image", p.AvatarImage},
+	} {
+		if ref.id == "" {
+			continue
+		}
+		ok, err := s.imageUploaded(ctx, ref.id)
+		switch {
+		case err != nil:
+			return fmt.Errorf("persona: check %s: %w", ref.what, err)
+		case !ok:
+			return fmt.Errorf("%w: unknown %s %q", invalid, ref.field, ref.id)
+		}
 	}
 	return nil
 }
 
-// imageUploaded reports whether the appearance image id was uploaded (see
+// imageUploaded reports whether the image id was uploaded (see
 // SetImageChecker).
 func (s *Service) imageUploaded(ctx context.Context, id string) (bool, error) {
 	exists := s.imageExists

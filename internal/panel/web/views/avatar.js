@@ -8,6 +8,14 @@ export function imageURL(id) {
   return `api/persona-images/${v}?size=reply&v=${v}`;
 }
 
+// originalImageURL is the address of the persona image id as it was
+// uploaded, on this panel's origin, so a canvas it is drawn on stays
+// readable.
+export function originalImageURL(id) {
+  const v = encodeURIComponent(id);
+  return `api/persona-images/${v}?size=original&v=${v}`;
+}
+
 // COLORS is how many background colors style.css has for a bot without an
 // image, as .avatar-c0 to .avatar-c7.
 const COLORS = 8;

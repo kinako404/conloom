@@ -75,16 +75,17 @@ func (ts *ExchangeTemplates) UnmarshalJSON(data []byte) error {
 }
 
 // ExchangeTemplate is a persona template of an ExchangeFile. Persona keeps
-// the ID of its appearance image; AppearanceImage, when set, holds the image
-// itself.
+// the IDs of its appearance and avatar images; AppearanceImage and
+// AvatarImage, when set, hold the images themselves.
 type ExchangeTemplate struct {
 	Name            string                `json:"name"`
 	Persona         conloomapi.PersonaDoc `json:"persona"`
 	AppearanceImage *ExchangeImage        `json:"appearance_image,omitempty"`
+	AvatarImage     *ExchangeImage        `json:"avatar_image,omitempty"`
 }
 
-// ExchangeImage is an appearance image as it was uploaded: Data holds its
-// bytes in standard base64, MIME their type.
+// ExchangeImage is an appearance or avatar image as it was uploaded: Data
+// holds its bytes in standard base64, MIME their type.
 type ExchangeImage struct {
 	MIME string `json:"mime"`
 	Data string `json:"data"`
@@ -132,10 +133,10 @@ func (e *ImportConflictError) Unwrap() error { return ErrImportConflict }
 
 // Export returns the catalog's templates names as an exchange file, in that
 // order and each once; without names, all of them by name, the built-in
-// "default" included while none is stored. An appearance image is embedded
-// as it was uploaded. A template naming an image that does not exist, as one
-// migrated from an old config file may, is exported without it, its ID
-// cleared, and a warning logged. An unknown name is store.ErrNotFound.
+// "default" included while none is stored. Appearance and avatar images are
+// embedded as they were uploaded. A template naming an image that does not
+// exist, as one migrated from an old config file may, is exported without it,
+// its ID cleared, and a warning logged. An unknown name is store.ErrNotFound.
 func (s *Service) Export(ctx context.Context, names []string) (ExchangeFile, error) {
 	c := s.catalog.Load()
 	if len(names) == 0 {
@@ -168,19 +169,28 @@ func (s *Service) Export(ctx context.Context, names []string) (ExchangeFile, err
 // exports it.
 func (s *Service) exportTemplate(ctx context.Context, name string, doc conloomapi.PersonaDoc) (ExchangeTemplate, error) {
 	t := ExchangeTemplate{Name: name, Persona: doc}
-	if doc.AppearanceImage == "" {
-		return t, nil
-	}
-	img, err := s.st.GetPersonaImage(ctx, doc.AppearanceImage, true)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		s.log.Warn("persona template's appearance image does not exist; exporting the template without it",
-			"template", name, "image", doc.AppearanceImage)
-		t.Persona.AppearanceImage = ""
-	case err != nil:
-		return ExchangeTemplate{}, fmt.Errorf("persona: export template %q: appearance image: %w", name, err)
-	default:
-		t.AppearanceImage = &ExchangeImage{MIME: img.MIME, Data: base64.StdEncoding.EncodeToString(img.Original)}
+	for _, ref := range []struct {
+		what     string
+		id       *string
+		embedded **ExchangeImage
+	}{
+		{"appearance image", &t.Persona.AppearanceImage, &t.AppearanceImage},
+		{"avatar image", &t.Persona.AvatarImage, &t.AvatarImage},
+	} {
+		if *ref.id == "" {
+			continue
+		}
+		img, err := s.st.GetPersonaImage(ctx, *ref.id, true)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			s.log.Warn("persona template's "+ref.what+" does not exist; exporting the template without it",
+				"template", name, "image", *ref.id)
+			*ref.id = ""
+		case err != nil:
+			return ExchangeTemplate{}, fmt.Errorf("persona: export template %q: %s: %w", name, ref.what, err)
+		default:
+			*ref.embedded = &ExchangeImage{MIME: img.MIME, Data: base64.StdEncoding.EncodeToString(img.Original)}
+		}
 	}
 	return t, nil
 }
@@ -202,7 +212,7 @@ func (s *Service) exportTemplate(ctx context.Context, name string, doc conloomap
 // that fails Validate or ValidateContent, and one naming an image neither
 // embedded in the file nor uploaded. An embedded image is stored as uploaded,
 // and its ID, the sha256 of its bytes, replaces the persona's
-// appearance_image.
+// appearance_image or avatar_image.
 //
 // The images and templates are stored in one transaction and published
 // together; then the function set with SetOnImport is called.
@@ -245,7 +255,8 @@ func (s *Service) Import(ctx context.Context, f ExchangeFile, mode ConflictMode,
 }
 
 // importTemplate is a checked template of an import: its name in the file
-// and its persona, whose appearance_image names its embedded image.
+// and its persona, whose appearance_image and avatar_image name its embedded
+// images.
 type importTemplate struct {
 	name string
 	doc  conloomapi.PersonaDoc
@@ -258,23 +269,27 @@ const maxReportedProblems = 20
 // checkImport checks the templates of an import (see Import) and returns
 // them with their embedded images, each image once.
 func (s *Service) checkImport(ctx context.Context, templates []ExchangeTemplate) ([]importTemplate, []imaging.Processed, error) {
-	imageIDs := make([]string, len(templates))
-	imageErrs := make([]error, len(templates))
+	imageIDs := make([][]string, len(templates))
+	imageErrs := make([][]error, len(templates))
 	var images []imaging.Processed
 	embedded := map[string]bool{}
 	for i, t := range templates {
-		if t.AppearanceImage == nil {
-			continue
-		}
-		p, err := processImage(t.AppearanceImage.Data)
-		if err != nil {
-			imageErrs[i] = err
-			continue
-		}
-		imageIDs[i] = p.ID
-		if !embedded[p.ID] {
-			embedded[p.ID] = true
-			images = append(images, p)
+		refs := imageRefs(t, &conloomapi.PersonaDoc{})
+		imageIDs[i], imageErrs[i] = make([]string, len(refs)), make([]error, len(refs))
+		for j, ref := range refs {
+			if ref.embedded == nil {
+				continue
+			}
+			p, err := processImage(ref.embedded.Data)
+			if err != nil {
+				imageErrs[i][j] = err
+				continue
+			}
+			imageIDs[i][j] = p.ID
+			if !embedded[p.ID] {
+				embedded[p.ID] = true
+				images = append(images, p)
+			}
 		}
 	}
 
@@ -293,21 +308,31 @@ func (s *Service) checkImport(ctx context.Context, templates []ExchangeTemplate)
 			first[t.Name] = i
 		}
 		doc := t.Persona
-		if t.AppearanceImage != nil {
-			doc.AppearanceImage = imageIDs[i]
-			if imageErrs[i] != nil {
-				errs = append(errs, fmt.Errorf("appearance_image: %w", imageErrs[i]))
+		refs := imageRefs(t, &doc)
+		for j, ref := range refs {
+			if ref.embedded == nil {
+				continue
+			}
+			*ref.id = imageIDs[i][j]
+			if err := imageErrs[i][j]; err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", ref.field, err))
 			}
 		}
 		if err := errors.Join(doc.Validate(), conloomapi.ValidateContent(doc)); err != nil {
 			errs = append(errs, err)
-		} else if id := doc.AppearanceImage; id != "" && !embedded[id] {
-			ok, err := s.imageUploaded(ctx, id)
-			if err != nil {
-				return nil, nil, fmt.Errorf("persona: check appearance image: %w", err)
-			}
-			if !ok {
-				errs = append(errs, fmt.Errorf("unknown appearance_image %q", id))
+		} else {
+			for _, ref := range refs {
+				id := *ref.id
+				if id == "" || embedded[id] {
+					continue
+				}
+				ok, err := s.imageUploaded(ctx, id)
+				if err != nil {
+					return nil, nil, fmt.Errorf("persona: check %s: %w", ref.field, err)
+				}
+				if !ok {
+					errs = append(errs, fmt.Errorf("unknown %s %q", ref.field, id))
+				}
 			}
 		}
 		if len(errs) > 0 {
@@ -322,6 +347,22 @@ func (s *Service) checkImport(ctx context.Context, templates []ExchangeTemplate)
 		return nil, nil, fmt.Errorf("%w: %w", ErrInvalidTemplate, errors.Join(problems...))
 	}
 	return out, images, nil
+}
+
+// imageRef is an image a template of an import names: the persona field
+// holding its ID in doc and the image the file embeds for it, if any.
+type imageRef struct {
+	field    string
+	embedded *ExchangeImage
+	id       *string
+}
+
+// imageRefs returns the images t names, its persona being doc.
+func imageRefs(t ExchangeTemplate, doc *conloomapi.PersonaDoc) []imageRef {
+	return []imageRef{
+		{"appearance_image", t.AppearanceImage, &doc.AppearanceImage},
+		{"avatar_image", t.AvatarImage, &doc.AvatarImage},
+	}
 }
 
 // processImage checks data, an image in standard base64, with

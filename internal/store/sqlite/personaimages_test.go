@@ -224,6 +224,39 @@ func TestPersonaImages_PurgeKeepsReferenced(t *testing.T) {
 	purge([]string{}, 0)
 }
 
+func TestPersonaImages_PurgeKeepsAvatars(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	now := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	cutoff := now.Add(-7 * 24 * time.Hour)
+	old := cutoff.Add(-24 * time.Hour)
+	byTemplate, byVersion, unreferenced := fakeImage("template avatar", old), fakeImage("version avatar", old), fakeImage("unreferenced", old)
+	for _, img := range []store.PersonaImage{byTemplate, byVersion, unreferenced} {
+		putImage(t, db, img)
+	}
+	withAvatar := func(id string) conloomapi.PersonaDoc {
+		p := conloomapi.DefaultPersona()
+		p.AvatarImage = id
+		return p
+	}
+	putTemplate(t, db, store.PersonaTemplateRecord{Name: "teacher", Persona: withAvatar(byTemplate.ID), UpdatedBy: "panel:admin"})
+	if _, err := db.AppendPersonaVersion(ctx, store.PersonaVersion{ConversationKey: privKey("20001"), TemplateName: "default",
+		Persona: withAvatar(byVersion.ID), UpdatedBy: "panel:admin"}); err != nil {
+		t.Fatalf("AppendPersonaVersion: %v", err)
+	}
+	if n, err := db.PurgePersonaImages(ctx, cutoff, nil); err != nil || n != 1 {
+		t.Fatalf("PurgePersonaImages = %d, %v; want 1", n, err)
+	}
+	for name, c := range map[string]struct {
+		img  store.PersonaImage
+		kept bool
+	}{"by template": {byTemplate, true}, "by version": {byVersion, true}, "unreferenced": {unreferenced, false}} {
+		if got := imageExists(t, db, c.img.ID); got != c.kept {
+			t.Errorf("image %s kept = %v, want %v", name, got, c.kept)
+		}
+	}
+}
+
 func TestPersonaImages_PurgeSkipsMalformedPersonas(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)

@@ -390,9 +390,12 @@ func TestTemplatesAPI_NameRules(t *testing.T) {
 	intimate.Minor, intimate.Intimacy = true, &conloomapi.PersonaIntimacy{Mind: "想靠近"}
 	unknown := doc
 	unknown.AppearanceImage = strings.Repeat("ab", 32)
+	unknownAvatar := doc
+	unknownAvatar.AvatarImage = strings.Repeat("cd", 32)
 	for _, c := range []struct {
 		name, body, want string
 	}{
+		{"unknown avatar", mustJSON(t, map[string]any{"persona": unknownAvatar}), "unknown avatar_image"},
 		{"minor and adult", mustJSON(t, map[string]any{"persona": both}), "minor"},
 		{"minor with an intimacy side", mustJSON(t, map[string]any{"persona": intimate}),
 			"persona: invalid template: a minor persona cannot have an intimacy side"},

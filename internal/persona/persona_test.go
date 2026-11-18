@@ -364,6 +364,48 @@ func TestSystemPrompt_AppearanceImageNotRendered(t *testing.T) {
 	}
 }
 
+func TestRender_AvatarImageNotRendered(t *testing.T) {
+	ctx := context.Background()
+	privateKey := store.ConversationKey(testBot, "qq", conloomapi.ConvPrivate, "20001")
+	adult := testCharacter()
+	adult.Adult, adult.AdultAppearance, adult.ContentRules = true, "成年外观。", "规则。"
+	withImage := testCharacter()
+	withImage.AppearanceImage = testImageID
+	for _, base := range []conloomapi.PersonaDoc{conloomapi.DefaultPersona(), testCharacter(), adult, withImage} {
+		withAvatar := base
+		withAvatar.AvatarImage = strings.Repeat("cd", 32)
+		if err := Validate(withAvatar); err != nil {
+			t.Fatalf("Validate: %v", err)
+		}
+		if got, want := Render(withAvatar), Render(base); got != want {
+			t.Errorf("%s: Render with an avatar =\n%s\nwant\n%s", base.PersonaName, got, want)
+		}
+		for _, mode := range []conloomapi.ContentMode{conloomapi.ContentProtected, conloomapi.ContentOpen} {
+			if got, want := RenderFor(withAvatar, mode), RenderFor(base, mode); got != want {
+				t.Errorf("%s in %v: RenderFor with an avatar =\n%s\nwant\n%s", base.PersonaName, mode, got, want)
+			}
+		}
+		for _, key := range []string{testConvKey, privateKey} {
+			plain := newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": base})
+			avatared := newServiceWith(t, newTestStore(t), map[string]conloomapi.PersonaDoc{"t": withAvatar})
+			want, err := plain.SystemPrompt(ctx, key, "t", "织语")
+			if err != nil {
+				t.Fatalf("SystemPrompt without an avatar: %v", err)
+			}
+			got, err := avatared.SystemPrompt(ctx, key, "t", "织语")
+			if err != nil {
+				t.Fatalf("SystemPrompt with an avatar: %v", err)
+			}
+			if got != want {
+				t.Errorf("%s in %s: prompt with an avatar =\n%+v\nwant\n%+v", base.PersonaName, key, got, want)
+			}
+			if strings.Contains(got.Text, withAvatar.AvatarImage) {
+				t.Errorf("%s in %s: prompt mentions the avatar ID: %q", base.PersonaName, key, got.Text)
+			}
+		}
+	}
+}
+
 func TestRender_DeterministicAndVaries(t *testing.T) {
 	p := conloomapi.DefaultPersona()
 	a, b := Render(p), Render(p)
@@ -1716,11 +1758,14 @@ func TestCatalog_PutAndDelete(t *testing.T) {
 	warm.Style.Warmth = 2
 	unknownImage := cat
 	unknownImage.AppearanceImage = fakeImageID("never uploaded")
+	unknownAvatar := cat
+	unknownAvatar.AvatarImage = fakeImageID("avatar never uploaded")
 	for _, c := range []struct {
 		name, template string
 		doc            conloomapi.PersonaDoc
 		want           string
 	}{
+		{"unknown avatar", "cat", unknownAvatar, `unknown avatar_image "` + unknownAvatar.AvatarImage + `"`},
 		{"uppercase name", "Cat", cat, "name"},
 		{"33 characters", strings.Repeat("a", 33), cat, "name"},
 		{"empty name", "", cat, "name"},
@@ -1745,9 +1790,13 @@ func TestCatalog_PutAndDelete(t *testing.T) {
 
 	imaged := cat
 	imaged.AppearanceImage = putTestImage(t, st, "cat")
+	imaged.AvatarImage = putTestImage(t, st, "cat avatar")
 	longest := strings.Repeat("a", 32)
 	if err := svc.PutTemplate(ctx, longest, imaged, "panel:admin"); err != nil {
-		t.Fatalf("PutTemplate with a 32-character name and an uploaded image: %v", err)
+		t.Fatalf("PutTemplate with a 32-character name and uploaded images: %v", err)
+	}
+	if doc, _ := svc.Template(longest); doc.AvatarImage != imaged.AvatarImage {
+		t.Errorf("stored avatar_image = %q, want %q", doc.AvatarImage, imaged.AvatarImage)
 	}
 	svc.SetImageChecker(func(context.Context, string) (bool, error) { return false, errors.New("database is locked") })
 	if err := svc.PutTemplate(ctx, "cat", imaged, "panel:admin"); err == nil || errors.Is(err, ErrInvalid) ||
@@ -2007,6 +2056,37 @@ func TestCatalog_ReferencedImages(t *testing.T) {
 	}
 	if got := svc.ReferencedImages(); !slices.Equal(got, []string{uploaded}) {
 		t.Errorf("ReferencedImages after deleting = %v, want only the stored templates' %v", got, []string{uploaded})
+	}
+
+	avatar := putTestImage(t, st, "avatar")
+	avatared := withImage("头像", uploaded)
+	avatared.AvatarImage = avatar
+	if err := svc.PutTemplate(ctx, "avatared", avatared, "panel:admin"); err != nil {
+		t.Fatalf("PutTemplate with an avatar: %v", err)
+	}
+	want = []string{uploaded, avatar}
+	slices.Sort(want)
+	if got := svc.ReferencedImages(); !slices.Equal(got, want) {
+		t.Errorf("ReferencedImages with an avatar = %v, want %v", got, want)
+	}
+}
+
+func TestUpdate_UnknownAvatarInvalid(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	svc := newServiceWith(t, st, nil)
+	missing := fakeImageID("avatar never uploaded")
+	bad := conloomapi.DefaultPersona()
+	bad.AvatarImage = missing
+	_, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Persona: &bad}, "29999")
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `unknown avatar_image "`+missing+`"`) {
+		t.Errorf("Update with an unknown avatar err = %v, want ErrInvalid naming it", err)
+	}
+	good := conloomapi.DefaultPersona()
+	good.AvatarImage = putTestImage(t, st, "avatar")
+	if pv, err := svc.Update(ctx, testConvKey, "default", conloomapi.PersonaPut{Persona: &good}, "29999"); err != nil ||
+		pv.Persona.AvatarImage != good.AvatarImage {
+		t.Fatalf("Update with an uploaded avatar = %+v, %v", pv, err)
 	}
 }
 
