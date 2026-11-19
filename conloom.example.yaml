@@ -133,8 +133,10 @@ model_profiles:
 
 # 技能：内置技能 memory、time、status、scene、buff 打包在程序里。dir 可选，相对路径按本文件所在目录解析；
 # 目录里每个 <名字>/SKILL.md 与内置技能同名时替换它，否则作为新技能加入（格式见 docs/skills.md）。
+# state_step 默认 after_reply：回复只带查询类工具、关掉思考，改状态的工具在回复之后单独跑一步；inline 是旧行为（一个工具循环带全部工具）。
 # skills:
 #   dir: ./skills
+#   state_step: after_reply
 
 # 语义检索（可选）：OpenAI 兼容的向量服务，请求发往 <endpoint>/embeddings。整段省略时只用关键词检索。
 # 后台每分钟为记忆已生效的会话生成一批向量；改 model 后会全部重新生成。部署方式见 docs/deployment.md 的“向量服务”。

@@ -70,11 +70,21 @@ type StorageConfig struct {
 	DataDir string `yaml:"data_dir"`
 }
 
+// Values of SkillsConfig.StateStep.
+const (
+	StateStepAfterReply = "after_reply"
+	StateStepInline     = "inline"
+)
+
 // SkillsConfig locates the skill files that add to or replace the built-in
-// skills. An empty Dir uses only the built-in skills; a relative Dir is
-// resolved against the configuration file's directory.
+// skills and chooses when state tools run. An empty Dir uses only the built-in
+// skills; a relative Dir is resolved against the configuration file's
+// directory.
 type SkillsConfig struct {
 	Dir string `yaml:"dir"`
+	// StateStep is when state tools run: StateStepAfterReply (default; the reply offers only lookups with thinking
+	// off, the state tools run in a background step after it) or StateStepInline (one tool loop with all tools).
+	StateStep string `yaml:"state_step"`
 }
 
 // EmbeddingConfig locates an OpenAI-compatible embeddings endpoint: requests go
@@ -516,6 +526,9 @@ func Load(path string) (*Config, error) {
 	cfg.Storage.DataDir = resolveDir(dir, cfg.Storage.DataDir)
 	if cfg.Skills.Dir != "" {
 		cfg.Skills.Dir = resolveDir(dir, cfg.Skills.Dir)
+	}
+	if cfg.Skills.StateStep == "" {
+		cfg.Skills.StateStep = StateStepAfterReply
 	}
 	for _, stateDir := range []*string{&cfg.Adapters.NapCat.StateDir, &cfg.Adapters.Telegram.StateDir} {
 		if *stateDir == "" {
