@@ -9,6 +9,7 @@ const (
 	PurposeEmbedQuery = "embed_query"
 	PurposeVision     = "vision"
 	PurposeSuggest    = "suggest"
+	PurposeState      = "state" // a reply's state step
 )
 
 const (

@@ -168,6 +168,7 @@ export const PURPOSE = {
   embed_query: '向量查询',
   vision: '识图',
   suggest: '建议回复',
+  state: '状态更新',
 };
 
 export const OUTCOME = {
