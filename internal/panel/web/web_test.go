@@ -1028,12 +1028,15 @@ func TestAssets_PurposeLabelsMatchStore(t *testing.T) {
 		got = append(got, k[1])
 	}
 	want := []string{store.PurposeChat, store.PurposeMemory, store.PurposeEmbedIndex, store.PurposeEmbedQuery,
-		store.PurposeVision, store.PurposeSuggest}
+		store.PurposeVision, store.PurposeSuggest, store.PurposeState}
 	if !slices.Equal(got, want) {
 		t.Errorf("PURPOSE keys = %v, want the store's purposes %v", got, want)
 	}
 	if !strings.Contains(m[1], "suggest: '建议回复'") {
 		t.Errorf("PURPOSE does not label suggest 建议回复: %s", m[1])
+	}
+	if !strings.Contains(m[1], "state: '状态更新'") {
+		t.Errorf("PURPOSE does not label state 状态更新: %s", m[1])
 	}
 }
 
