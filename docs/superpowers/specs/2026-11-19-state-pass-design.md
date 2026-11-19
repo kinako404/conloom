@@ -113,3 +113,37 @@ Exact Go names and placement (a new `internal/core/statestep.go` is expected),
 the Chinese wording of the reply-step note and the state-step instruction, how
 the state step builds its context (reuse the reply's context builder), the
 time budget value, and how coalescing is tracked.
+
+## Builder-check decisions (controller's calls, binding)
+
+1. **Skill texts are not split.** The reply step keeps the full skill section
+   (behavioural guidance like bracketed actions in person or the tone during a
+   status must not be lost) and offers only the lookup tools; it appends one
+   short line saying that in this step only lookup tools are available and
+   state changes are handled separately after the reply — the model must just
+   reply in character and not mention it. The state step also gets the full
+   skill section plus its own instruction. No SKILL.md format change.
+2. **Trigger point: when the reply task completes successfully** (result and
+   actions written). The state step's context includes the reply text it just
+   wrote explicitly (it is not in stored history until delivered). If that
+   reply is later abandoned (`AbandonReplyOf`: the person wrote again before
+   any part was handed out), the task's pending or running state step is
+   cancelled; the superseding task's own state step covers those trigger
+   messages.
+3. **Never hold up the next reply of the same conversation:** when a new reply
+   task of a conversation starts while a state step for the same memory scope
+   and speaker is running, that state step is cancelled and its turns are
+   carried over to the state step that runs after the new reply (coalesced).
+   Across conversations, state steps use background admission priority; a
+   running state step can still occupy one model slot (accepted; bounded by
+   `statePassTimeout`).
+4. **Coalescing key: (memory scope, speaker).** A coalesced state step's
+   invocation carries the trigger message ids of every not-yet-covered turn in
+   order (so a `remember` request from an earlier turn is not lost) and the
+   newest task id; context covers those turns. Only one state step runs per
+   memory scope at a time (state is stored per scope; a bot's panel chats share
+   one). Different speakers in a group get separate state steps, run one after
+   another.
+5. For `set_scene`'s same-task errand rule and `set_status`'s TaskID: both are
+   called in the same state step with the same invocation TaskID, so the rule
+   still holds.
