@@ -2,6 +2,10 @@
 // remember, recall, get_affinity, now, set_status, set_scene, adjust_buff,
 // add_buff and remove_buff. Each acts only for the speaker and conversation of its
 // skills.Invocation, never for anyone named in its arguments.
+//
+// recall, get_affinity and now are lookups: a reply needs their results.
+// remember, set_status, set_scene, adjust_buff, add_buff and remove_buff
+// change stored state and declare it (skills.StateChanger).
 package tools
 
 import (

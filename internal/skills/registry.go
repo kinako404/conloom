@@ -79,7 +79,9 @@ func (r *Registry) Check(names []string) error {
 
 // Toolset is what the model may use in one conversation: the skill section
 // for the end of the system prompt and the tools it may call. The zero
-// Toolset offers nothing.
+// Toolset offers nothing. Lookups and StateTools split it into the tools
+// whose results a reply needs and those that change state (see
+// StateChanger); both halves keep the full section.
 type Toolset struct {
 	Section string
 	Tools   []Tool
@@ -87,6 +89,28 @@ type Toolset struct {
 
 // Empty reports whether the toolset offers no tools.
 func (t Toolset) Empty() bool { return len(t.Tools) == 0 }
+
+// Lookups returns t with only its lookup tools, in order; Section is kept, also when no tool is left.
+func (t Toolset) Lookups() Toolset {
+	return t.filter(func(tool Tool) bool { return !ChangesState(tool) })
+}
+
+// StateTools returns t with only its state tools, in order; Section is kept, also when no tool is left.
+func (t Toolset) StateTools() Toolset {
+	return t.filter(ChangesState)
+}
+
+// filter returns t with only the tools keep accepts, in order, and the same
+// Section.
+func (t Toolset) filter(keep func(Tool) bool) Toolset {
+	var tools []Tool
+	for _, tool := range t.Tools {
+		if keep(tool) {
+			tools = append(tools, tool)
+		}
+	}
+	return Toolset{Section: t.Section, Tools: tools}
+}
 
 // DefaultMaxResultRunes bounds the result of a tool that does not declare
 // its own limit.

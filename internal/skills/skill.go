@@ -1,5 +1,6 @@
 // Package skills lets the model call built-in tools, grouped into skills that a
-// bot enables in its configuration.
+// bot enables in its configuration. A tool is a lookup, whose result a reply
+// needs, or a state tool that changes stored state (see StateChanger).
 package skills
 
 import (
@@ -40,4 +41,14 @@ type Tool interface {
 	// handed back to the model. An error is reported to the model as a failed
 	// call and never reaches the user.
 	Call(ctx context.Context, inv Invocation, args json.RawMessage) (string, error)
+}
+
+// StateChanger is implemented by a tool that changes stored state (memory, status, scene, bars, effects) and whose
+// result the reply does not need. A tool that does not implement it is a lookup.
+type StateChanger interface{ ChangesState() bool }
+
+// ChangesState reports whether tool is a state tool (StateChanger returning true).
+func ChangesState(tool Tool) bool {
+	s, ok := tool.(StateChanger)
+	return ok && s.ChangesState()
 }

@@ -79,6 +79,8 @@ func NewSetStatus(st StatusStore, pol PolicySource, personas PersonaSource, rv R
 // MaxResultRunes declares that set_status answers with one sentence.
 func (*setStatusTool) MaxResultRunes() int { return shortResultRunes }
 
+func (*setStatusTool) ChangesState() bool { return true }
+
 func (*setStatusTool) Spec() skills.Spec {
 	return skills.Spec{
 		Name: "set_status",

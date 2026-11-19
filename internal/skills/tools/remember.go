@@ -236,6 +236,8 @@ func NewRemember(d RememberDeps) skills.Tool { return &rememberTool{d: d} }
 // MaxResultRunes declares that remember answers with one sentence.
 func (*rememberTool) MaxResultRunes() int { return shortResultRunes }
 
+func (*rememberTool) ChangesState() bool { return true }
+
 func (*rememberTool) Spec() skills.Spec {
 	return skills.Spec{
 		Name: "remember",

@@ -93,6 +93,8 @@ func NewAddBuff(st BuffStore, pol PolicySource, personas PersonaSource, rv Revie
 // MaxResultRunes declares that add_buff answers with one sentence.
 func (*addBuffTool) MaxResultRunes() int { return shortResultRunes }
 
+func (*addBuffTool) ChangesState() bool { return true }
+
 func (*addBuffTool) Spec() skills.Spec {
 	return skills.Spec{
 		Name: "add_buff",

@@ -57,6 +57,8 @@ func NewAdjustBuff(st BuffStore, personas PersonaSource) skills.Tool {
 // MaxResultRunes declares that adjust_buff answers with one sentence.
 func (*adjustBuffTool) MaxResultRunes() int { return shortResultRunes }
 
+func (*adjustBuffTool) ChangesState() bool { return true }
+
 func (*adjustBuffTool) Spec() skills.Spec {
 	return skills.Spec{
 		Name: "adjust_buff",

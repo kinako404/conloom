@@ -41,6 +41,8 @@ func NewRemoveBuff(st BuffStore, personas PersonaSource) skills.Tool {
 // MaxResultRunes declares that remove_buff answers with one sentence.
 func (*removeBuffTool) MaxResultRunes() int { return shortResultRunes }
 
+func (*removeBuffTool) ChangesState() bool { return true }
+
 func (*removeBuffTool) Spec() skills.Spec {
 	return skills.Spec{
 		Name:        "remove_buff",

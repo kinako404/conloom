@@ -43,6 +43,8 @@ func NewSetScene(st SceneStore, pol PolicySource, personas PersonaSource, rv Rev
 // MaxResultRunes declares that set_scene answers with one sentence.
 func (*setSceneTool) MaxResultRunes() int { return shortResultRunes }
 
+func (*setSceneTool) ChangesState() bool { return true }
+
 func (*setSceneTool) Spec() skills.Spec {
 	return skills.Spec{
 		Name: "set_scene",
