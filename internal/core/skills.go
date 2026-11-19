@@ -75,6 +75,8 @@ const (
 // counts) outlives a failed model call: a re-routed model continues from it,
 // so no call runs twice and the rounds stay bounded by maxToolRounds overall.
 // The time limit does not: a re-routed model gets its own (restartClock).
+// A state step (see stateCall) uses a skillRun too, over the turn's state
+// tools, whose deadline is the step's statePassTimeout for every model.
 type skillRun struct {
 	set    skills.Toolset
 	tools  []openai.Tool
@@ -97,7 +99,7 @@ type skillRun struct {
 	// off.
 	replyStep bool
 	// state holds the turn's state tools under the same skill section, for
-	// its state step; empty without one.
+	// its state step (outcome.stateTurn); empty without one.
 	state skills.Toolset
 }
 
@@ -228,6 +230,10 @@ var toolCallMarkers = []string{"<tool_call", "<function=", "<function_calls"}
 // reasonToolCallAsText is why an answer holding a toolCallMarkers entry is
 // rejected.
 const reasonToolCallAsText = "tool call written as text"
+
+// reasonToolCallsUnoffered is why an answer with tool calls to a request
+// offering no tools is rejected.
+const reasonToolCallsUnoffered = "tool calls without tools offered"
 
 // writesToolCall reports whether content holds a toolCallMarkers entry, in
 // any case.

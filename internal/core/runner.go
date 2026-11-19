@@ -71,12 +71,19 @@ type outcome struct {
 	maxParts int
 	// skillCalls counts the task's tool calls by tool.
 	skillCalls map[string]int
+	// stateTurn is the turn a state step judges once the reply is sent: set
+	// for an accepted reply whose run carries state tools (skillRun.state).
+	stateTurn *stateTurn
 }
 
 // run is the scheduler's Runner: it executes one reply task and stores its
 // result. A task owned by another party (e.g. cancelled while being
 // dispatched) is left to that party. A task interrupted by Close, and not
 // cancelled by a user, keeps its stored status for Recover.
+// While it runs the task holds the state steps of its memory scope and
+// speaker back (holdState), cancelling the running one; a successful reply
+// that stored actions hands its turn (outcome.stateTurn) to them when it
+// lets go.
 func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 	ow := o.claim(qt.TaskID, true)
 	if ow == nil {
@@ -107,6 +114,9 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 		_ = o.complete(dbctx, task, conloomapi.TaskFailed, task.Meta, conloomapi.CodeInternal, nil)
 		return
 	}
+	release := o.holdState(task)
+	var turn *stateTurn
+	defer func() { release(turn) }()
 	task.TriggerMessageIDs = qt.TriggerMessageIDs
 	ctx = usage.WithAttribution(ctx, usage.Attribution{BotInstanceID: task.BotInstanceID, ConversationKey: task.ConversationKey, TaskID: task.ID})
 
@@ -122,6 +132,9 @@ func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 	sent, err := o.finish(dbctx, task, &out)
 	if err != nil {
 		return
+	}
+	if sent && out.status == conloomapi.TaskSucceeded {
+		turn = out.stateTurn
 	}
 	o.updateSession(dbctx, task, out, sent)
 	o.noteInteraction(dbctx, task, out, sent)
@@ -347,10 +360,12 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	}
 	// The bars and the appearance image come from the persona version
 	// SystemPrompt rendered.
+	var doc conloomapi.PersonaDoc
 	if pv, err := o.personas.Current(ctx, task.ConversationKey, bot.TemplateFor(conv.Type)); err != nil {
 		o.log.Warn("load persona failed; replying without hidden state or appearance image",
 			"task_id", task.ID, "conversation", task.ConversationKey, "error", err)
 	} else {
+		doc = pv.Persona
 		if conv.Type == conloomapi.ConvPrivate {
 			in.State = o.stateBlock(ctx, task, bot, pv.Persona, scene)
 		}
@@ -447,6 +462,17 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	}
 	out.meta.ReviewResult = res.Verdict
 	out.text, out.maxParts = res.Text, pol.Reply.MaxParts
+	if run != nil && !run.state.Empty() {
+		req.Exclude = nil
+		at := task.CreatedAt
+		if len(triggers) > 0 {
+			at = triggers[0].CreatedAt
+		}
+		out.stateTurn = &stateTurn{
+			task: task, bot: bot, doc: doc, tools: run.state, inv: run.inv, in: in, req: req,
+			reply: strings.Join(splitParts(out.text, out.maxParts), "\n"), wake: out.wake != nil, at: at,
+		}
+	}
 	return out
 }
 
@@ -662,8 +688,8 @@ func partsDirective(maxParts int) string {
 // (thinkingOff), not only on the final one, also when it falls back to a
 // reply without skills. Offering no tools (no lookups) it is a single request
 // with the skill section and no tool round reserved; its answer is taken like
-// a reply without skills, except that a tool call written as text is not an
-// answer (ErrEmptyOutput).
+// a reply without skills, except that a tool call, written as text or not, is
+// not an answer (ErrEmptyOutput).
 // A profile whose modalities lack "image" gets every request without the
 // appearance image and its label, though the estimates still count them.
 func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router.Decision, in contextbuilder.Input, run *skillRun) (openai.ChatResponse, error) {
@@ -698,10 +724,18 @@ func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router
 	}
 	req := openai.ChatRequest{Messages: msgs, MaxTokens: d.MaxOutputTokens, ExtraBody: extra}
 	if run == nil {
-		resp, err := o.chat(ctx, task, d, req, built, built.EstimatedTokens, nil)
-		if err == nil && textOnly && writesToolCall(resp.Content) {
-			o.log.Warn("model output rejected", "task_id", task.ID, "role", p.Role, "reason", reasonToolCallAsText)
-			return openai.ChatResponse{}, fmt.Errorf("model %s: %w: %s", p.Role, openai.ErrEmptyOutput, reasonToolCallAsText)
+		resp, err := o.chat(ctx, task, d, req, built, built.EstimatedTokens, store.PurposeChat, nil)
+		reason := ""
+		switch {
+		case err != nil || !textOnly:
+		case writesToolCall(resp.Content):
+			reason = reasonToolCallAsText
+		case len(resp.ToolCalls) > 0:
+			reason = reasonToolCallsUnoffered
+		}
+		if reason != "" {
+			o.log.Warn("model output rejected", "task_id", task.ID, "role", p.Role, "reason", reason)
+			return openai.ChatResponse{}, fmt.Errorf("model %s: %w: %s", p.Role, openai.ErrEmptyOutput, reason)
 		}
 		return resp, err
 	}
@@ -720,7 +754,7 @@ func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router
 			send.ExtraBody = thinkingOff(p.Config.ExtraBody)
 			sendEstimate += toolsGoneTokens(in.TokenFactor)
 		}
-		resp, err := o.chat(ctx, task, d, send, built, sendEstimate, []any{"round", run.rounds, "final", final})
+		resp, err := o.chat(ctx, task, d, send, built, sendEstimate, store.PurposeChat, []any{"round", run.rounds, "final", final})
 		if err != nil {
 			return resp, err
 		}
@@ -748,10 +782,11 @@ func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router
 // chat waits for admission for a request estimated at estimate prompt tokens
 // and calls the model. Transient model errors (openai.IsTransient; not
 // admission errors, nor a request the service refuses) count against the
-// role's circuit breaker. Every model call, failed or not, is recorded (see
-// recordCall). logAttrs are added to the model call log.
+// role's circuit breaker. Every model call, failed or not, is recorded under
+// purpose (store.PurposeChat for a reply, store.PurposeState for a state
+// step; see recordCall). logAttrs are added to the model call log.
 func (o *Orchestrator) chat(ctx context.Context, task store.TaskRecord, d router.Decision, req openai.ChatRequest,
-	built contextbuilder.Output, estimate int, logAttrs []any) (openai.ChatResponse, error) {
+	built contextbuilder.Output, estimate int, purpose string, logAttrs []any) (openai.ChatResponse, error) {
 	p := d.Profile
 	role := string(p.Role)
 	lease, err := o.acquire(ctx, task, p, estimate+d.MaxOutputTokens+p.Config.Context.SafetyMarginTokens)
@@ -763,7 +798,7 @@ func (o *Orchestrator) chat(ctx context.Context, task store.TaskRecord, d router
 	start := time.Now()
 	resp, err := p.Client.Chat(ctx, req)
 	latency := time.Since(start)
-	o.recordCall(task, p, start, latency, estimate, resp, err)
+	o.recordCall(task, p, purpose, start, latency, estimate, resp, err)
 	if err != nil {
 		if ctx.Err() == nil && openai.IsTransient(err) {
 			o.router.ReportFailure(p.Role)
@@ -792,14 +827,14 @@ func (o *Orchestrator) chat(ctx context.Context, task store.TaskRecord, d router
 	return resp, nil
 }
 
-// recordCall records a call to p's model for task, made at start, that
-// took latency and was estimated at estimate prompt tokens. A failed call
-// names the configured model.
-func (o *Orchestrator) recordCall(task store.TaskRecord, p *router.Profile, start time.Time, latency time.Duration,
+// recordCall records a call to p's model for task with purpose, made at
+// start, that took latency and was estimated at estimate prompt tokens. A
+// failed call names the configured model.
+func (o *Orchestrator) recordCall(task store.TaskRecord, p *router.Profile, purpose string, start time.Time, latency time.Duration,
 	estimate int, resp openai.ChatResponse, err error) {
 	o.usage.Record(store.ModelCall{
 		At: start.UTC(), BotInstanceID: task.BotInstanceID, ConversationKey: task.ConversationKey, TaskID: task.ID,
-		Purpose: store.PurposeChat, Role: string(p.Role), Model: cmp.Or(resp.Model, p.Config.Model),
+		Purpose: purpose, Role: string(p.Role), Model: cmp.Or(resp.Model, p.Config.Model),
 		PromptTokens: resp.PromptTokens, CompletionTokens: resp.CompletionTokens, ReasoningTokens: resp.ReasoningTokens,
 		EstimatedTokens: estimate, LatencyMS: latency.Milliseconds(), Outcome: usage.Outcome(err), FinishReason: resp.FinishReason,
 	})

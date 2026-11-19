@@ -162,7 +162,9 @@ func (o *Orchestrator) CreatePanelChat(ctx context.Context, botID, panelUser, di
 
 // DeletePanelChat deletes the panel chat convKey: it cancels the chat's
 // queued and running tasks, waits up to panelDeleteWait for the running ones
-// to stop, drops its scheduler session, deletes what is stored under convKey
+// to stop, then cancels the chat's pending and running state steps and waits
+// up to panelDeleteWait for the running one to return, drops its scheduler
+// session, deletes what is stored under convKey
 // (see store.Store.DeleteConversation: its history and the semantic search
 // chunks made of it, and the status of the bot's shared memory scope if it
 // was set in this chat, with its timer; the rest of the shared memory stays)
@@ -198,6 +200,13 @@ func (o *Orchestrator) DeletePanelChat(ctx context.Context, convKey string) erro
 	// still running among them.
 	if err := o.awaitStopped(ctx, convKey, running); err != nil {
 		return err
+	}
+	// Only once the tasks stopped has every turn of the chat reached the
+	// state steps.
+	if done := o.cancelStateSteps(convKey, ""); done != nil {
+		if err := o.awaitStopped(ctx, convKey, []<-chan struct{}{done}); err != nil {
+			return err
+		}
 	}
 	o.sched.Forget(convKey)
 	if err := o.st.DeleteConversation(ctx, convKey); err != nil {

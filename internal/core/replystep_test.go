@@ -58,20 +58,10 @@ func thinking(req map[string]any) any {
 	return kw["enable_thinking"]
 }
 
-// replyRequests drops the state step requests (a last user message starting
-// with 【状态更新】) from reqs.
+// replyRequests drops the state step requests (see isStateRequest) from reqs.
 func replyRequests(t *testing.T, reqs []map[string]any) []map[string]any {
 	t.Helper()
-	return slices.DeleteFunc(slices.Clone(reqs), func(req map[string]any) bool {
-		msgs := requestMessages(t, req)
-		for i := len(msgs) - 1; i >= 0; i-- {
-			if msgs[i]["role"] == "user" {
-				c, _ := msgs[i]["content"].(string)
-				return strings.HasPrefix(c, "【状态更新】")
-			}
-		}
-		return false
-	})
+	return slices.DeleteFunc(slices.Clone(reqs), func(req map[string]any) bool { return isStateRequest(t, req) })
 }
 
 func systemText(t *testing.T, req map[string]any) string {
@@ -162,6 +152,37 @@ func TestReplyStep_NoLookupsIsOneRequest(t *testing.T) {
 	}
 	if mark.count() != 0 {
 		t.Errorf("mark called %d times by the reply", mark.count())
+	}
+}
+
+func TestReplyStep_NoLookupsToolCallsAreNotAnAnswer(t *testing.T) {
+	onlyMark := skills.Skill{Name: "mixed", Description: "d", Tools: []string{"mark"},
+		Conversations: []string{"private", "group"}, Body: mixedBody}
+	env, _, mark := stepEnv(t, testOpts{
+		shortTools: func(req map[string]any) fakeopenai.Reply {
+			if isStateRequest(t, req) {
+				return fakeopenai.Reply{Content: "好"}
+			}
+			return fakeopenai.Reply{Content: "稍等，我记一下。", ToolCalls: []fakeopenai.ToolCall{{ID: "c1", Name: "mark", Arguments: "{}"}}}
+		},
+		longTools: func(req map[string]any) fakeopenai.Reply {
+			if isStateRequest(t, req) {
+				return fakeopenai.Reply{Content: "好"}
+			}
+			return fakeopenai.Reply{Content: fakeReply}
+		},
+	}, config.StateStepAfterReply, onlyMark)
+	task := env.waitTask(t, env.submit(t, env.event(conloomapi.ConvPrivate, "20001", "20001", "我先去洗澡了")).TaskID)
+	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 || task.Actions[0].Content.Text != fakeReply ||
+		task.Meta.SelectedModelRole != "long_context" {
+		t.Fatalf("task = %+v, want the re-routed reply", task)
+	}
+	if !strings.Contains(env.logs.String(), reasonToolCallsUnoffered) {
+		t.Errorf("logs lack the reason")
+	}
+	waitStateIdle(t, env)
+	if mark.count() != 0 {
+		t.Errorf("mark called %d times", mark.count())
 	}
 }
 

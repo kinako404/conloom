@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/persona"
@@ -233,8 +234,19 @@ func (o *Orchestrator) memCmdRemember(ctx context.Context, task store.TaskRecord
 }
 
 // memCmdForget forgets the sender (see memory.Forget), counting an affinity
-// change when they had one.
+// change when they had one. The sender's pending and running state steps of
+// the conversation are cancelled first; a running one is waited for, up to
+// cancelWait, so no call of it lands after the forget.
 func (o *Orchestrator) memCmdForget(ctx context.Context, task store.TaskRecord, cp memCopy) (string, error) {
+	if done := o.cancelStateSteps(task.ConversationKey, task.ActorPlatformUserID); done != nil {
+		t := time.NewTimer(cancelWait)
+		select {
+		case <-done:
+		case <-t.C:
+			o.log.Warn("state step still stopping; forgetting anyway", "task_id", task.ID, "conversation", task.ConversationKey)
+		}
+		t.Stop()
+	}
 	m, err := o.memCmdMember(ctx, task)
 	if err != nil {
 		return "", err

@@ -164,6 +164,8 @@ type Orchestrator struct {
 	// suggestTimeout bounds generating them.
 	suggestions    *suggestCache
 	suggestTimeout time.Duration
+	// states runs the state steps after replies (see statestep.go).
+	states *stateSteps
 }
 
 // taskOwner is the one party in this process allowed to execute and complete
@@ -215,6 +217,7 @@ func New(d Deps) (*Orchestrator, error) {
 		describeTimeout: describeTimeout,
 		suggestions:     newSuggestCache(suggestCacheSize),
 		suggestTimeout:  suggestTimeout,
+		states:          newStateSteps(),
 
 		cleanupBatch: defaultCleanupBatch, cleanupMaxBatches: defaultCleanupMaxBatches,
 	}
@@ -319,8 +322,10 @@ func (o *Orchestrator) PolicyChanged(convKey string) {
 }
 
 // cancelActive silently cancels the conversation's queued and running tasks:
-// they end cancelled without any action.
+// they end cancelled without any action. Its pending and running state steps
+// are cancelled too.
 func (o *Orchestrator) cancelActive(ctx context.Context, convKey string) {
+	o.cancelStateSteps(convKey, "")
 	botID, _, _ := strings.Cut(convKey, ":")
 	active := o.sched.Active(convKey)
 	for _, t := range active {
@@ -337,7 +342,8 @@ func (o *Orchestrator) cancelActive(ctx context.Context, convKey string) {
 // timers, the scheduler and the wake-ups of reply parts not due yet, and ends
 // every session. Running tasks are cancelled but keep their stored status, so
 // Recover resumes them after a restart; tasks a user already cancelled are
-// still recorded as cancelled.
+// still recorded as cancelled. Running state steps are cancelled and waited
+// for, pending ones dropped, and no new one starts.
 func (o *Orchestrator) Close() {
 	o.closeOnce.Do(func() {
 		o.mu.Lock()
@@ -345,9 +351,11 @@ func (o *Orchestrator) Close() {
 		o.mu.Unlock()
 		o.closeLulls()
 		o.bgCancel()
+		o.states.close()
 		o.waitLulls()
 		o.bgWG.Wait()
 		o.sched.Close()
+		o.states.wg.Wait()
 		o.partWakes.stop()
 		o.clearSessions()
 		o.joinPlans.clear()
@@ -684,7 +692,8 @@ var errSuperseded = errors.New("core: task superseded")
 // cancelled, and audited as outbox.superseded. If part of that reply was
 // handed out, the task has no actions, it was cancelled, or another party is
 // finishing it, supersede stores nothing and returns ErrSupersedeRefused, so
-// a cancelled task's messages are never carried.
+// a cancelled task's messages are never carried. An abandoned reply's state
+// step turn is dropped (abandonStateTurn): the new task's covers its messages.
 func (o *Orchestrator) supersede(ctx context.Context, s *submission, trigger string, plan AdmitPlan) (conloomapi.EventAccepted, error) {
 	o.mu.Lock()
 	ow, owned := o.owners[plan.Supersedes]
@@ -749,6 +758,7 @@ func (o *Orchestrator) supersede(ctx context.Context, s *submission, trigger str
 	if err != nil {
 		return conloomapi.EventAccepted{}, err
 	}
+	o.abandonStateTurn(old.ID)
 	o.log.Info("reply abandoned", "conversation", s.convKey, "task_id", old.ID, "superseded_by", plan.NewTaskID, "cancelled", pending)
 	o.auditSuperseded(ctx, s, old.ID, plan.NewTaskID, pending)
 	return resp, nil
