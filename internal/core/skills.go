@@ -53,6 +53,9 @@ const (
 	copyToolFailed   = "调用失败。"
 	copyTooManyCalls = "本轮调用太多。"
 	copyToolsGone    = "（工具现在不能再用了，不要再提工具或调用，直接用你的口吻回复对方。）"
+	// copyReplyStepNote follows the skill section of a reply step (see
+	// skillRun.replyStep).
+	copyReplyStepNote = "（这一步只管回复对方：状态、场景、记忆这类变化会在你回复之后另外处理，现在不用调用相应的工具，回复里也不要提起这件事。）"
 
 	// unknownToolLabel names, in metrics and logs, a tool the model made up.
 	unknownToolLabel = "unknown"
@@ -87,6 +90,36 @@ type skillRun struct {
 	// until its first request.
 	deadline time.Time
 	counts   map[string]int
+
+	// replyStep marks the reply step of a turn whose state tools run in a
+	// state step afterwards: set offers only lookups (possibly none), the
+	// skill section gets copyReplyStepNote and every request turns thinking
+	// off.
+	replyStep bool
+	// state holds the turn's state tools under the same skill section, for
+	// its state step; empty without one.
+	state skills.Toolset
+}
+
+// newToolRun is the run offering set's tools for inv: tool definitions,
+// schema ("" without tools), result limit.
+func newToolRun(set skills.Toolset, inv skills.Invocation) *skillRun {
+	run := &skillRun{set: set, inv: inv, maxResult: set.MaxResultRunes(), counts: map[string]int{}}
+	for _, t := range set.Tools {
+		spec := t.Spec()
+		run.tools = append(run.tools, openai.Tool{Name: spec.Name, Description: spec.Description, Parameters: spec.Parameters})
+	}
+	if len(run.tools) > 0 {
+		schema, _ := json.Marshal(run.tools)
+		run.schema = string(schema)
+	}
+	return run
+}
+
+// stateStepAfterReply reports whether state tools run in a state step
+// (config skills.state_step not inline).
+func (o *Orchestrator) stateStepAfterReply() bool {
+	return o.cfg.Skills.StateStep != config.StateStepInline
 }
 
 // restartClock gives the next model call, a re-routed one, its own
@@ -104,6 +137,10 @@ func (r *skillRun) restartClock() {
 // statuses do not chain, nor set_scene, since a status return restores the
 // scene itself (restoreScene), nor memory tools, which would take old
 // messages for a request.
+// When the toolset has state tools and they run in a state step
+// (stateStepAfterReply), the run is a reply step (skillRun.replyStep): it
+// offers only the lookups, possibly none, and carries the state tools in
+// skillRun.state. Otherwise it offers the whole toolset.
 func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, conv store.ConversationRecord,
 	triggers []store.MessageRecord, out *outcome) *skillRun {
 	if o.skills == nil || len(bot.Skills) == 0 {
@@ -125,13 +162,6 @@ func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, 
 	if set.Empty() {
 		return nil
 	}
-	run := &skillRun{set: set, maxResult: set.MaxResultRunes(), counts: map[string]int{}}
-	for _, t := range set.Tools {
-		spec := t.Spec()
-		run.tools = append(run.tools, openai.Tool{Name: spec.Name, Description: spec.Description, Parameters: spec.Parameters})
-	}
-	schema, _ := json.Marshal(run.tools)
-	run.schema = string(schema)
 	// triggers are the stored trigger messages in seq order, i.e. as they happened.
 	ids := make([]string, len(triggers))
 	for i, m := range triggers {
@@ -144,7 +174,7 @@ func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, 
 	case out.wake != nil:
 		name = out.wake.name
 	}
-	run.inv = skills.Invocation{
+	inv := skills.Invocation{
 		TaskID:            task.ID,
 		BotInstanceID:     task.BotInstanceID,
 		ConversationKey:   task.ConversationKey,
@@ -155,14 +185,23 @@ func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, 
 		IsAdmin:           IsAdmin(bot, conv.Platform, task.ActorPlatformUserID),
 		Location:          o.loc,
 	}
-	return run
+	if state := set.StateTools(); o.stateStepAfterReply() && !state.Empty() {
+		run := newToolRun(set.Lookups(), inv)
+		run.replyStep, run.state = true, state
+		return run
+	}
+	return newToolRun(set, inv)
 }
 
 // withSkills returns in with run's skill section and tool definitions, or in
-// as it is when run is nil.
+// as it is when run is nil. A reply step's section is followed by
+// copyReplyStepNote on a line of its own.
 func withSkills(in contextbuilder.Input, run *skillRun) contextbuilder.Input {
 	if run != nil {
 		in.SystemPrompt += "\n\n" + run.set.Section
+		if run.replyStep {
+			in.SystemPrompt += "\n" + copyReplyStepNote
+		}
 		in.ToolSchema = run.schema
 	}
 	return in
@@ -186,6 +225,17 @@ func worstRound(outputTokens int, factor float64, maxResultRunes int) int {
 // them.
 var toolCallMarkers = []string{"<tool_call", "<function=", "<function_calls"}
 
+// reasonToolCallAsText is why an answer holding a toolCallMarkers entry is
+// rejected.
+const reasonToolCallAsText = "tool call written as text"
+
+// writesToolCall reports whether content holds a toolCallMarkers entry, in
+// any case.
+func writesToolCall(content string) bool {
+	content = strings.ToLower(content)
+	return slices.ContainsFunc(toolCallMarkers, func(m string) bool { return strings.Contains(content, m) })
+}
+
 // notAnAnswer returns why resp, to a request offering tools (final false) or
 // to the final request, must not be taken as the reply, or "": a tool call
 // written as text, a tool round cut off by the output limit before any call,
@@ -194,10 +244,9 @@ var toolCallMarkers = []string{"<tool_call", "<function=", "<function_calls"}
 // often the model's deliberation about the tools rather than a reply, or a
 // final answer left empty once an echoed copyToolsGone is stripped.
 func notAnAnswer(resp openai.ChatResponse, final bool) string {
-	content := strings.ToLower(resp.Content)
 	switch {
-	case slices.ContainsFunc(toolCallMarkers, func(m string) bool { return strings.Contains(content, m) }):
-		return "tool call written as text"
+	case writesToolCall(resp.Content):
+		return reasonToolCallAsText
 	case final && len(resp.ToolCalls) > 0:
 		return "tool calls in the final request"
 	case final && resp.FinishReason == "length":

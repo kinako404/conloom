@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kinako404/conloom/internal/adapter/mock"
+	"github.com/kinako404/conloom/internal/config"
 	"github.com/kinako404/conloom/internal/memory"
 	"github.com/kinako404/conloom/internal/store"
 	"github.com/kinako404/conloom/internal/testutil/fakeopenai"
@@ -75,6 +76,8 @@ func TestE2E_PrivateSkillsWithBuiltinTools(t *testing.T) {
 	awayFromMidnight(t)
 	fake := skillModel(t)
 	cfg := memoryTestConfig(t, fake.URL)
+	// The state tools are checked within the reply's own tool loop.
+	cfg.Skills.StateStep = config.StateStepInline
 	private := conloomapi.DefaultGroupPolicy()
 	private.Memory.Enabled = true
 	private.Memory.ConsolidateMin = 1000
@@ -161,6 +164,8 @@ func TestE2E_PrivateStatusAndBuffTools(t *testing.T) {
 		{"吃饱了", fakeopenai.ToolCall{ID: "c5", Name: "remove_buff", Arguments: `{"name":"饥饿"}`}, "太好了。"},
 	})
 	cfg := memoryTestConfig(t, fake.URL)
+	// The state tools are checked within the reply's own tool loop.
+	cfg.Skills.StateStep = config.StateStepInline
 	private := conloomapi.DefaultGroupPolicy()
 	private.Reply.PrivateWait = conloomapi.Duration{Duration: 100 * time.Millisecond}
 	cfg.DefaultPrivatePolicy = &private

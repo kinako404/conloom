@@ -658,14 +658,28 @@ func partsDirective(maxParts int) string {
 // answer; a tool call written as text, a tool round cut off by the output
 // limit, tool calls in the final request and a final answer cut off by the
 // output limit are not answers (ErrEmptyOutput).
+// A reply step (run.replyStep) turns thinking off on every request
+// (thinkingOff), not only on the final one, also when it falls back to a
+// reply without skills. Offering no tools (no lookups) it is a single request
+// with the skill section and no tool round reserved; its answer is taken like
+// a reply without skills, except that a tool call written as text is not an
+// answer (ErrEmptyOutput).
 // A profile whose modalities lack "image" gets every request without the
 // appearance image and its label, though the estimates still count them.
 func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router.Decision, in contextbuilder.Input, run *skillRun) (openai.ChatResponse, error) {
 	p := d.Profile
 	in.Budget = d.PromptBudget
 	in.TokenFactor = p.Config.TokenEstimateFactor
+	var extra map[string]any
+	if run != nil && run.replyStep {
+		extra = thinkingOff(p.Config.ExtraBody)
+	}
 	worst := 0
-	if run != nil {
+	textOnly := false
+	switch {
+	case run != nil && run.replyStep && len(run.tools) == 0:
+		in, run, textOnly = withSkills(in, run), nil, true
+	case run != nil:
 		worst = worstRound(d.MaxOutputTokens, in.TokenFactor, run.maxResult) + toolsGoneTokens(in.TokenFactor)
 		with := withSkills(in, run)
 		if room := d.MaxPromptTokens - worst; room-contextbuilder.BaseTokens(with) >= minToolHistoryTokens {
@@ -682,9 +696,14 @@ func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router
 	if !slices.Contains(p.Config.Modalities, "image") {
 		msgs = contextbuilder.WithoutImage(msgs)
 	}
-	req := openai.ChatRequest{Messages: msgs, MaxTokens: d.MaxOutputTokens}
+	req := openai.ChatRequest{Messages: msgs, MaxTokens: d.MaxOutputTokens, ExtraBody: extra}
 	if run == nil {
-		return o.chat(ctx, task, d, req, built, built.EstimatedTokens, nil)
+		resp, err := o.chat(ctx, task, d, req, built, built.EstimatedTokens, nil)
+		if err == nil && textOnly && writesToolCall(resp.Content) {
+			o.log.Warn("model output rejected", "task_id", task.ID, "role", p.Role, "reason", reasonToolCallAsText)
+			return openai.ChatResponse{}, fmt.Errorf("model %s: %w: %s", p.Role, openai.ErrEmptyOutput, reasonToolCallAsText)
+		}
+		return resp, err
 	}
 	if run.deadline.IsZero() {
 		run.deadline = o.now().Add(toolLoopTimeout)
