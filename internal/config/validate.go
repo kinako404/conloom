@@ -137,6 +137,9 @@ func (c *Config) ValidateServe() error {
 	p.observability(c.Observability)
 	p.retention("runtime.ops_retention", c.Runtime.OpsRetention.Duration, MinOpsRetention, MaxOpsRetention)
 	p.retention("runtime.audit_retention", c.Runtime.AuditRetention.Duration, MinAuditRetention, MaxAuditRetention)
+	if v := c.Skills.StateStep; v != "" && v != StateStepAfterReply && v != StateStepInline {
+		p.addf("skills.state_step", "must be %s or %s, got %q", StateStepAfterReply, StateStepInline, v)
+	}
 
 	if len(c.Bots) == 0 {
 		p.addf("bots", "at least one bot is required")
