@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -573,4 +574,41 @@ func TestStateDirective_Copy(t *testing.T) {
 	if got := stateDirective([]stateTurn{{reply: "好呀"}, {reply: "第一条\n第二条"}}); got != instruction+"\n\n你刚才的回复：\n「好呀」\n「第一条\n第二条」" {
 		t.Errorf("two turns: %q", got)
 	}
+}
+
+func TestStateStep_CoalescingKeepsNewestTurnsAndLogsDropped(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{})
+	taskOf := func(i int) store.TaskRecord {
+		return store.TaskRecord{ID: fmt.Sprintf("task_%d", i), BotInstanceID: testBot, ConversationKey: privateConvKey,
+			ActorPlatformUserID: privateUser}
+	}
+	busy := env.o.holdState(taskOf(0))
+	for i := 1; i <= stateMaxTurns; i++ {
+		env.o.holdState(taskOf(i))(&stateTurn{task: taskOf(i), reply: fmt.Sprint(i)})
+	}
+	if strings.Contains(env.logs.String(), "state turns dropped") {
+		t.Fatalf("logged dropped turns with %d turns:\n%s", stateMaxTurns, env.logs.String())
+	}
+	for i := stateMaxTurns + 1; i <= stateMaxTurns+2; i++ {
+		env.o.holdState(taskOf(i))(&stateTurn{task: taskOf(i), reply: fmt.Sprint(i)})
+	}
+	s := env.o.states
+	s.mu.Lock()
+	var replies []string
+	for _, e := range s.pending {
+		for _, turn := range e.turns {
+			replies = append(replies, turn.reply)
+		}
+	}
+	s.mu.Unlock()
+	if want := []string{"3", "4", "5", "6", "7", "8", "9", "10"}; !slices.Equal(replies, want) {
+		t.Errorf("pending replies = %v, want %v", replies, want)
+	}
+	logs := env.logs.String()
+	if strings.Count(logs, `msg="state turns dropped"`) != 2 || !strings.Contains(logs, "conversation="+privateConvKey+" dropped=1") {
+		t.Errorf("logs lack the two dropped turns:\n%s", logs)
+	}
+	env.o.cancelStateSteps(privateConvKey, "")
+	busy(nil)
+	waitStateIdle(t, env)
 }

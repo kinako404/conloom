@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -151,10 +152,12 @@ func (s *stateSteps) entryLocked(key stateKey, convKey string) *stateEntry {
 	return nil
 }
 
-// stopLocked cancels st; unless it began a tool round its turns other than
-// those of the task drop (if set) go back to the front of their pending
-// entry, which is created at the front of the queue if there is none.
-func (s *stateSteps) stopLocked(st *stateStep, drop string) {
+// stopStateLocked cancels st, o.states.mu held; unless it began a tool round
+// its turns other than those of the task drop (if set) go back to the front
+// of their pending entry, which is created at the front of the queue if there
+// is none.
+func (o *Orchestrator) stopStateLocked(st *stateStep, drop string) {
+	s := o.states
 	st.cancel()
 	if st.dropped {
 		return
@@ -168,18 +171,21 @@ func (s *stateSteps) stopLocked(st *stateStep, drop string) {
 		return
 	}
 	if e := s.entryLocked(st.entry.key, st.entry.convKey); e != nil {
-		e.turns = newestTurns(append(turns, e.turns...))
+		e.turns = o.newestTurns(e.convKey, append(turns, e.turns...))
 		return
 	}
 	s.pending = slices.Insert(s.pending, 0, &stateEntry{key: st.entry.key, convKey: st.entry.convKey, turns: turns})
 }
 
-// newestTurns keeps the newest stateMaxTurns of turns.
-func newestTurns(turns []stateTurn) []stateTurn {
-	if n := len(turns); n > stateMaxTurns {
-		return slices.Clone(turns[n-stateMaxTurns:])
+// newestTurns keeps the newest stateMaxTurns of turns, convKey's, logging
+// how many older ones it drops.
+func (o *Orchestrator) newestTurns(convKey string, turns []stateTurn) []stateTurn {
+	n := len(turns)
+	if n <= stateMaxTurns {
+		return turns
 	}
-	return turns
+	o.log.Info("state turns dropped", "conversation", convKey, "dropped", n-stateMaxTurns)
+	return slices.Clone(turns[n-stateMaxTurns:])
 }
 
 // holdState marks task's key busy and cancels its running step, whose turns
@@ -195,7 +201,7 @@ func (o *Orchestrator) holdState(task store.TaskRecord) (release func(turn *stat
 	s.holds[key]++
 	s.held[task.ID] = false
 	if st := s.running[key.scope]; st != nil && st.entry.key == key {
-		s.stopLocked(st, "")
+		o.stopStateLocked(st, "")
 	}
 	s.mu.Unlock()
 	var once sync.Once
@@ -209,7 +215,7 @@ func (o *Orchestrator) holdState(task store.TaskRecord) (release func(turn *stat
 			delete(s.held, task.ID)
 			if turn != nil && !abandoned && !s.closed {
 				if e := s.entryLocked(key, task.ConversationKey); e != nil {
-					e.turns = newestTurns(append(e.turns, *turn))
+					e.turns = o.newestTurns(task.ConversationKey, append(e.turns, *turn))
 				} else {
 					s.pending = append(s.pending, &stateEntry{key: key, convKey: task.ConversationKey, turns: []stateTurn{*turn}})
 				}
@@ -235,7 +241,7 @@ func (o *Orchestrator) abandonStateTurn(taskID string) {
 	}
 	for _, st := range s.running {
 		if covers(st.entry.turns) {
-			s.stopLocked(st, taskID)
+			o.stopStateLocked(st, taskID)
 		}
 	}
 	for _, e := range s.pending {
@@ -394,18 +400,15 @@ func (o *Orchestrator) stateForgotten(ctx context.Context, task store.TaskRecord
 // a tool round: none run once the speaker was forgotten since the step's
 // first turn or ctx ended. Otherwise the running step is marked as having
 // called, under the same lock a cancelling reply checks it, so its turns are
-// then never carried over to run again.
+// then never carried over to run again. The running step of task's scope is
+// the caller's: a step stays in running until its goroutine returned
+// (endStateStep).
 func (o *Orchestrator) beginStateRound(ctx context.Context, task store.TaskRecord) error {
 	s := o.states
-	scope := memory.ScopeKeyOf(task.ConversationKey)
 	s.mu.Lock()
-	st := s.running[scope]
+	st := s.running[memory.ScopeKeyOf(task.ConversationKey)]
 	s.mu.Unlock()
-	since := task.CreatedAt
-	if st != nil {
-		since = st.entry.turns[0].at
-	}
-	if err := o.stateForgotten(ctx, task, since); err != nil {
+	if err := o.stateForgotten(ctx, task, st.entry.turns[0].at); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -413,9 +416,7 @@ func (o *Orchestrator) beginStateRound(ctx context.Context, task store.TaskRecor
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if st != nil {
-		st.called.Store(true)
-	}
+	st.called.Store(true)
 	return nil
 }
 
@@ -464,7 +465,7 @@ func (o *Orchestrator) stateInput(ctx context.Context, turns []stateTurn) contex
 			}
 		}
 	}
-	slices.SortStableFunc(current, func(a, b store.MessageRecord) int { return int(a.Seq - b.Seq) })
+	slices.SortStableFunc(current, func(a, b store.MessageRecord) int { return cmp.Compare(a.Seq, b.Seq) })
 	in.Current = current
 	if len(current) > 0 {
 		first := current[0].Seq
