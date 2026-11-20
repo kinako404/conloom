@@ -152,40 +152,47 @@ func (s *stateSteps) entryLocked(key stateKey, convKey string) *stateEntry {
 	return nil
 }
 
-// stopStateLocked cancels st, o.states.mu held; unless it began a tool round
-// its turns other than those of the task drop (if set) go back to the front
-// of their pending entry, which is created at the front of the queue if there
-// is none.
-func (o *Orchestrator) stopStateLocked(st *stateStep, drop string) {
-	s := o.states
+// stopLocked cancels st; unless it began a tool round its turns other than
+// those of the task drop (if set) go back to the front of their pending
+// entry, which is created at the front of the queue if there is none.
+// dropped is how many turns that entry lost to stateMaxTurns.
+func (s *stateSteps) stopLocked(st *stateStep, drop string) (dropped int) {
 	st.cancel()
 	if st.dropped {
-		return
+		return 0
 	}
 	st.dropped = true
 	if st.called.Load() || s.closed {
-		return
+		return 0
 	}
 	turns := slices.DeleteFunc(slices.Clone(st.entry.turns), func(t stateTurn) bool { return t.task.ID == drop })
 	if len(turns) == 0 {
-		return
+		return 0
 	}
 	if e := s.entryLocked(st.entry.key, st.entry.convKey); e != nil {
-		e.turns = o.newestTurns(e.convKey, append(turns, e.turns...))
-		return
+		e.turns, dropped = newestTurns(append(turns, e.turns...))
+		return dropped
 	}
 	s.pending = slices.Insert(s.pending, 0, &stateEntry{key: st.entry.key, convKey: st.entry.convKey, turns: turns})
+	return 0
 }
 
-// newestTurns keeps the newest stateMaxTurns of turns, convKey's, logging
-// how many older ones it drops.
-func (o *Orchestrator) newestTurns(convKey string, turns []stateTurn) []stateTurn {
+// newestTurns keeps the newest stateMaxTurns of turns; dropped is how many
+// older ones it left out.
+func newestTurns(turns []stateTurn) (kept []stateTurn, dropped int) {
 	n := len(turns)
 	if n <= stateMaxTurns {
-		return turns
+		return turns, 0
 	}
-	o.log.Info("state turns dropped", "conversation", convKey, "dropped", n-stateMaxTurns)
-	return slices.Clone(turns[n-stateMaxTurns:])
+	return slices.Clone(turns[n-stateMaxTurns:]), n - stateMaxTurns
+}
+
+// logDroppedTurns logs that convKey's pending state turns lost dropped turns
+// to stateMaxTurns, if any.
+func (o *Orchestrator) logDroppedTurns(convKey string, dropped int) {
+	if dropped > 0 {
+		o.log.Info("state turns dropped", "conversation", convKey, "dropped", dropped)
+	}
 }
 
 // holdState marks task's key busy and cancels its running step, whose turns
@@ -200,10 +207,12 @@ func (o *Orchestrator) holdState(task store.TaskRecord) (release func(turn *stat
 	s.mu.Lock()
 	s.holds[key]++
 	s.held[task.ID] = false
+	dropped := 0
 	if st := s.running[key.scope]; st != nil && st.entry.key == key {
-		o.stopStateLocked(st, "")
+		dropped = s.stopLocked(st, "")
 	}
 	s.mu.Unlock()
+	o.logDroppedTurns(task.ConversationKey, dropped)
 	var once sync.Once
 	return func(turn *stateTurn) {
 		once.Do(func() {
@@ -213,14 +222,16 @@ func (o *Orchestrator) holdState(task store.TaskRecord) (release func(turn *stat
 			}
 			abandoned := s.held[task.ID]
 			delete(s.held, task.ID)
+			dropped := 0
 			if turn != nil && !abandoned && !s.closed {
 				if e := s.entryLocked(key, task.ConversationKey); e != nil {
-					e.turns = o.newestTurns(task.ConversationKey, append(e.turns, *turn))
+					e.turns, dropped = newestTurns(append(e.turns, *turn))
 				} else {
 					s.pending = append(s.pending, &stateEntry{key: key, convKey: task.ConversationKey, turns: []stateTurn{*turn}})
 				}
 			}
 			s.mu.Unlock()
+			o.logDroppedTurns(task.ConversationKey, dropped)
 			o.kickStateSteps()
 		})
 	}
@@ -232,22 +243,30 @@ func (o *Orchestrator) holdState(task store.TaskRecord) (release func(turn *stat
 func (o *Orchestrator) abandonStateTurn(taskID string) {
 	s := o.states
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if _, ok := s.held[taskID]; ok {
 		s.held[taskID] = true
 	}
 	covers := func(turns []stateTurn) bool {
 		return slices.ContainsFunc(turns, func(t stateTurn) bool { return t.task.ID == taskID })
 	}
+	type drop struct {
+		convKey string
+		n       int
+	}
+	var drops []drop
 	for _, st := range s.running {
 		if covers(st.entry.turns) {
-			o.stopStateLocked(st, taskID)
+			drops = append(drops, drop{st.entry.convKey, s.stopLocked(st, taskID)})
 		}
 	}
 	for _, e := range s.pending {
 		e.turns = slices.DeleteFunc(e.turns, func(t stateTurn) bool { return t.task.ID == taskID })
 	}
 	s.pending = slices.DeleteFunc(s.pending, func(e *stateEntry) bool { return len(e.turns) == 0 })
+	s.mu.Unlock()
+	for _, d := range drops {
+		o.logDroppedTurns(d.convKey, d.n)
+	}
 }
 
 // cancelStateSteps drops convKey's pending turns (only speaker's unless
@@ -308,9 +327,9 @@ func (o *Orchestrator) endStateStep(st *stateStep) {
 	s.wg.Done()
 }
 
-// runStateStep runs the state step st: it offers the newest turn's state
-// tools with the invocation of all its turns (stateInvocation) on the context
-// of stateInput, routed like that turn's reply, and re-routes once when the
+// runStateStep runs the state step st: it offers stateTools of its turns with
+// the invocation of all its turns (stateInvocation) on the context of
+// stateInput, routed like the newest turn's reply, and re-routes once when the
 // model fails (the progress is kept, so no call runs twice). It sends
 // nothing. It logs "state step" with its outcome.
 func (o *Orchestrator) runStateStep(st *stateStep) {
@@ -322,7 +341,7 @@ func (o *Orchestrator) runStateStep(st *stateStep) {
 		BotInstanceID: newest.task.BotInstanceID, ConversationKey: newest.task.ConversationKey, TaskID: newest.task.ID,
 	})
 	task := stateTask(newest.task)
-	run := newToolRun(newest.tools, stateInvocation(turns))
+	run := newToolRun(stateTools(turns), stateInvocation(turns))
 	role := ""
 	var err error
 	defer func() {
@@ -349,7 +368,7 @@ func (o *Orchestrator) runStateStep(st *stateStep) {
 		return
 	}
 	role = string(d.Profile.Role)
-	err = o.stateCall(ctx, task, d, in, run)
+	err = o.stateCall(ctx, st, task, d, in, run)
 	if err == nil || ctx.Err() != nil || errors.Is(err, errStateForgotten) || errors.Is(err, errStateNoRoom) {
 		return
 	}
@@ -360,7 +379,7 @@ func (o *Orchestrator) runStateStep(st *stateStep) {
 		return
 	}
 	role = string(d.Profile.Role)
-	err = o.stateCall(ctx, task, d, in, run)
+	err = o.stateCall(ctx, st, task, d, in, run)
 }
 
 // errStateUnrouted is a state step no profile could take.
@@ -396,18 +415,13 @@ func (o *Orchestrator) stateForgotten(ctx context.Context, task store.TaskRecord
 	return nil
 }
 
-// beginStateRound is checked before the state step of task runs the calls of
-// a tool round: none run once the speaker was forgotten since the step's
-// first turn or ctx ended. Otherwise the running step is marked as having
-// called, under the same lock a cancelling reply checks it, so its turns are
-// then never carried over to run again. The running step of task's scope is
-// the caller's: a step stays in running until its goroutine returned
-// (endStateStep).
-func (o *Orchestrator) beginStateRound(ctx context.Context, task store.TaskRecord) error {
+// beginStateRound is checked before the state step st of task runs the calls
+// of a tool round: none run once the speaker was forgotten since the step's
+// first turn or ctx ended. Otherwise st is marked as having called, under the
+// same lock a cancelling reply checks it, so its turns are then never carried
+// over to run again.
+func (o *Orchestrator) beginStateRound(ctx context.Context, st *stateStep, task store.TaskRecord) error {
 	s := o.states
-	s.mu.Lock()
-	st := s.running[memory.ScopeKeyOf(task.ConversationKey)]
-	s.mu.Unlock()
 	if err := o.stateForgotten(ctx, task, st.entry.turns[0].at); err != nil {
 		return err
 	}
@@ -418,6 +432,18 @@ func (o *Orchestrator) beginStateRound(ctx context.Context, task store.TaskRecor
 	}
 	st.called.Store(true)
 	return nil
+}
+
+// stateTools is the state tools of the newest turn that is not a wake turn,
+// or of the newest turn when all are: a wake turn's wakeTools never narrow
+// the tools of a reply it is coalesced with.
+func stateTools(turns []stateTurn) skills.Toolset {
+	for _, t := range slices.Backward(turns) {
+		if !t.wake {
+			return t.tools
+		}
+	}
+	return turns[len(turns)-1].tools
 }
 
 // stateInvocation is the newest turn's invocation whose TriggerMessageIDs are
@@ -486,7 +512,7 @@ func stateTask(t store.TaskRecord) store.TaskRecord {
 	return t
 }
 
-// stateCall runs the tool rounds of a state step on d, continuing from run's
+// stateCall runs the tool rounds of the state step st on d, continuing from run's
 // progress: there is no final request: it stops when lastRequest says so or
 // the model calls nothing, its text discarded. The calls run with
 // context.WithoutCancel(ctx) (each bounded by toolCallTimeout), so a round
@@ -496,7 +522,7 @@ func stateTask(t store.TaskRecord) store.TaskRecord {
 // the output limit is ErrEmptyOutput; no room for a tool round within the
 // profile's hard prompt limit is errStateNoRoom. Calls are recorded with
 // purpose state.
-func (o *Orchestrator) stateCall(ctx context.Context, task store.TaskRecord, d router.Decision, in contextbuilder.Input, run *skillRun) error {
+func (o *Orchestrator) stateCall(ctx context.Context, st *stateStep, task store.TaskRecord, d router.Decision, in contextbuilder.Input, run *skillRun) error {
 	p := d.Profile
 	in.Budget = d.PromptBudget
 	in.TokenFactor = p.Config.TokenEstimateFactor
@@ -529,7 +555,7 @@ func (o *Orchestrator) stateCall(ctx context.Context, task store.TaskRecord, d r
 		if len(resp.ToolCalls) == 0 {
 			return nil
 		}
-		if err := o.beginStateRound(ctx, task); err != nil {
+		if err := o.beginStateRound(ctx, st, task); err != nil {
 			return err
 		}
 		added := o.toolRound(context.WithoutCancel(ctx), task, run, resp)

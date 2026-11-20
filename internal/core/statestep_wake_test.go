@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -216,5 +217,88 @@ func TestStateDirective_WakeCopy(t *testing.T) {
 	}
 	if got := stateDirective([]stateTurn{{reply: "回来啦", wake: true}, {reply: "好呀"}}); got != copyStateStep+"\n\n你刚才的回复：\n「回来啦」\n「好呀」" {
 		t.Errorf("a wake turn and a reply: %q", got)
+	}
+}
+
+func TestStateStep_ReplyThenWakeKeepsReplyStateTools(t *testing.T) {
+	g, entered := newGate(), make(chan struct{})
+	var states atomic.Int32
+	env, clock, tools := wakeStepEnv(t, config.StateStepAfterReply, func(req map[string]any) fakeopenai.Reply {
+		switch {
+		case !isStateRequest(t, req):
+			if strings.Contains(lastUserText(t, req), "【当前消息】") {
+				return fakeopenai.Reply{Content: "洗好啦，好舒服。"}
+			}
+			return fakeopenai.Reply{Content: fakeReply}
+		case hasToolResult(req):
+			return fakeopenai.Reply{Content: "随便写点"}
+		}
+		if states.Add(1) == 1 {
+			close(entered)
+			g.wait()
+			return fakeopenai.Reply{Content: "随便写点"}
+		}
+		return fakeopenai.Reply{ToolCalls: []fakeopenai.ToolCall{{ID: "s1", Name: "set_status", Arguments: `{"clear":true}`}}}
+	})
+	t.Cleanup(g.open)
+	env.seedPrivateMessage(t, clock, "我去洗个澡")
+	until := clock.now().Add(20 * time.Minute)
+	timer := env.setWakeStatus(t, "洗澡", clock.now(), until)
+	clock.set(until.Add(-time.Minute))
+
+	reply := env.submit(t, env.event(conloomapi.ConvPrivate, privateUser, privateUser, "洗完了", withName("小明"), clock.stamp))
+	if task := env.waitTask(t, reply.TaskID); task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 {
+		t.Fatalf("reply task = %+v, want one reply", task)
+	}
+	rec, err := env.st.GetTask(context.Background(), testBot, reply.TaskID)
+	if err != nil || len(rec.TriggerMessageIDs) == 0 {
+		t.Fatalf("reply task = %+v, %v; want its triggers", rec, err)
+	}
+	waitClosed(t, entered, "the reply's state step in the model")
+	waitUntil(t, "the reply's runner", func() bool { return !env.o.sched.Busy(privateConvKey) })
+
+	clock.set(until)
+	wake := env.fireWake(t, timer)
+	if wake.Status != conloomapi.TaskSucceeded || len(wake.Actions) != 1 {
+		t.Fatalf("wake task = %+v, want a reply", wake)
+	}
+	waitStateIdle(t, env)
+	g.open()
+
+	firsts := firstRounds(stateRequests(t, env.short.Requests()))
+	if len(firsts) != 2 {
+		t.Fatalf("state steps = %d, want the cancelled reply's and the merged one", len(firsts))
+	}
+	merged := firsts[1]
+	if got, want := offeredTools(merged), []string{"adjust_buff", "add_buff", "remove_buff", "set_status", "set_scene"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("merged state step tools = %v, want the reply's %v", got, want)
+	}
+	last := lastUserText(t, merged)
+	if !strings.HasSuffix(last, copyStateStep+"\n\n"+stateRepliesHeading+"\n「洗好啦，好舒服。」\n「"+fakeReply+"」") {
+		t.Errorf("merged state step last user message = %q, want both replies under the reply copy", last)
+	}
+	invs := tools.setStatus.invocations()
+	if len(invs) != 1 || !reflect.DeepEqual(invs[0].TriggerMessageIDs, rec.TriggerMessageIDs) || invs[0].TaskID != wake.TaskID {
+		t.Errorf("set_status invocations = %+v, want the reply's triggers %v and the newest task %s", invs, rec.TriggerMessageIDs, wake.TaskID)
+	}
+}
+
+func TestStateTools_ReplyToolsWinOverWakeTools(t *testing.T) {
+	replyTools := skills.Toolset{Section: "reply"}
+	wakeTools := skills.Toolset{Section: "wake"}
+	reply, wake := stateTurn{tools: replyTools}, stateTurn{tools: wakeTools, wake: true}
+	for _, c := range []struct {
+		name  string
+		turns []stateTurn
+		want  string
+	}{
+		{"reply then wake", []stateTurn{reply, wake}, "reply"},
+		{"wake then reply", []stateTurn{wake, reply}, "reply"},
+		{"only wake turns", []stateTurn{wake, wake}, "wake"},
+		{"only a reply", []stateTurn{reply}, "reply"},
+	} {
+		if got := stateTools(c.turns).Section; got != c.want {
+			t.Errorf("%s: stateTools = %q, want %q", c.name, got, c.want)
+		}
 	}
 }
