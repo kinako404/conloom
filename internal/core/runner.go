@@ -81,9 +81,9 @@ type outcome struct {
 // dispatched) is left to that party. A task interrupted by Close, and not
 // cancelled by a user, keeps its stored status for Recover.
 // While it runs the task holds the state steps of its memory scope and
-// speaker back (holdState), cancelling the running one; a successful reply
-// that stored actions hands its turn (outcome.stateTurn) to them when it
-// lets go.
+// speaker back (holdState); one that may have a state turn also cancels the
+// running one (preemptState, in execute). A successful reply that stored
+// actions hands its turn (outcome.stateTurn) to them when it lets go.
 func (o *Orchestrator) run(ctx context.Context, qt QueuedTask) {
 	ow := o.claim(qt.TaskID, true)
 	if ow == nil {
@@ -274,6 +274,10 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	if !ok {
 		return fail(conloomapi.CodeInternal, CopyUnavailable, fmt.Errorf("unknown bot %q", task.BotInstanceID))
 	}
+	set := o.skillSet(bot, conv, &out)
+	if o.splitsState(set) {
+		o.preemptState(task)
+	}
 	pv, err := o.policies.Current(ctx, task.ConversationKey)
 	if err != nil {
 		return fail(conloomapi.CodeInternal, CopyUnavailable, err)
@@ -371,7 +375,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		}
 		in.Image = o.appearanceImage(ctx, task, pv.Persona)
 	}
-	run := o.newSkillRun(task, bot, conv, triggers, &out)
+	run := o.newSkillRun(task, bot, conv, set, triggers, &out)
 	if run != nil {
 		out.skillCalls = run.counts
 	}

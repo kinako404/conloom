@@ -48,6 +48,7 @@ const (
 	stateOutcomeNoRoom      = "no_room"
 	stateOutcomeUnavailable = "unavailable"
 	stateOutcomeFailed      = "failed"
+	stateOutcomeError       = "error"
 )
 
 var (
@@ -57,6 +58,9 @@ var (
 	// errStateNoRoom stops a state step whose profile has no room for a tool
 	// round.
 	errStateNoRoom = errors.New("core: no room for a tool round")
+	// errStateStore stops a state step that could not read the store: no
+	// other model would do better, so it is not re-routed.
+	errStateStore = errors.New("core: state step store read failed")
 )
 
 // stateTurn is a reply whose state changes a state step judges, snapshotted
@@ -115,14 +119,6 @@ type stateSteps struct {
 
 func newStateSteps() *stateSteps {
 	return &stateSteps{running: map[string]*stateStep{}, holds: map[stateKey]int{}, held: map[string]bool{}}
-}
-
-// idle reports whether no state step runs or is pending and no reply task
-// holds one back.
-func (s *stateSteps) idle() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.running) == 0 && len(s.pending) == 0 && len(s.holds) == 0
 }
 
 // close cancels the running steps, drops the pending ones and refuses new
@@ -195,24 +191,19 @@ func (o *Orchestrator) logDroppedTurns(convKey string, dropped int) {
 	}
 }
 
-// holdState marks task's key busy and cancels its running step, whose turns
-// go back to the front of their pending entry unless it already began a tool
-// round. release adds turn (nil: none) to its entry (merging, keeping the
-// newest stateMaxTurns), drops the hold and starts what may run; a turn whose
-// reply was abandoned meanwhile (abandonStateTurn) is not added. Only the
-// first call of release counts.
+// holdState marks task's key busy, so its pending entries wait; its running
+// step goes on (a reply that may have a state turn cancels it, see
+// preemptState). release adds turn (nil: none) to its entry (merging, keeping
+// the newest stateMaxTurns), drops the hold and starts what may run; a turn
+// whose reply was abandoned meanwhile (abandonStateTurn) is not added. Only
+// the first call of release counts.
 func (o *Orchestrator) holdState(task store.TaskRecord) (release func(turn *stateTurn)) {
 	s := o.states
 	key := stateKeyOf(task)
 	s.mu.Lock()
 	s.holds[key]++
 	s.held[task.ID] = false
-	dropped := 0
-	if st := s.running[key.scope]; st != nil && st.entry.key == key {
-		dropped = s.stopLocked(st, "")
-	}
 	s.mu.Unlock()
-	o.logDroppedTurns(task.ConversationKey, dropped)
 	var once sync.Once
 	return func(turn *stateTurn) {
 		once.Do(func() {
@@ -235,6 +226,22 @@ func (o *Orchestrator) holdState(task store.TaskRecord) (release func(turn *stat
 			o.kickStateSteps()
 		})
 	}
+}
+
+// preemptState cancels the running step of task's key, as a reply task that
+// holds it (holdState) and may have a state turn does: unless the step already
+// began a tool round, its turns go back to the front of their pending entry,
+// to be judged with the reply's turn.
+func (o *Orchestrator) preemptState(task store.TaskRecord) {
+	s := o.states
+	key := stateKeyOf(task)
+	s.mu.Lock()
+	dropped := 0
+	if st := s.running[key.scope]; st != nil && st.entry.key == key {
+		dropped = s.stopLocked(st, "")
+	}
+	s.mu.Unlock()
+	o.logDroppedTurns(task.ConversationKey, dropped)
 }
 
 // abandonStateTurn drops taskID's turn from pending; a running step covering
@@ -327,36 +334,49 @@ func (o *Orchestrator) endStateStep(st *stateStep) {
 	s.wg.Done()
 }
 
-// runStateStep runs the state step st: it offers stateTools of its turns with
-// the invocation of all its turns (stateInvocation) on the context of
-// stateInput, routed like the newest turn's reply, and re-routes once when the
-// model fails (the progress is kept, so no call runs twice). It sends
-// nothing. It logs "state step" with its outcome.
+// runStateStep runs the state step st over its turns not forgotten since
+// (stateUnforgotten): it offers stateTools of those turns with the invocation
+// of all of them (stateInvocation) on the context of stateInput, routed like
+// the newest one's reply, and re-routes once when the model fails (the
+// progress is kept, so no call runs twice); not when the store fails. It
+// sends nothing. It logs "state step" with its outcome, as a warning when
+// the store failed.
 func (o *Orchestrator) runStateStep(st *stateStep) {
 	defer o.endStateStep(st)
-	turns := st.entry.turns
-	newest := turns[len(turns)-1]
 	start := time.Now()
-	ctx := usage.WithAttribution(st.ctx, usage.Attribution{
-		BotInstanceID: newest.task.BotInstanceID, ConversationKey: newest.task.ConversationKey, TaskID: newest.task.ID,
-	})
-	task := stateTask(newest.task)
-	run := newToolRun(stateTools(turns), stateInvocation(turns))
+	turns := st.entry.turns
+	task := stateTask(turns[len(turns)-1].task)
+	var run *skillRun
 	role := ""
 	var err error
 	defer func() {
-		outcome := stateOutcome(ctx, err)
-		attrs := []any{"task_id", task.ID, "conversation", task.ConversationKey, "turns", len(turns), "role", role,
-			"rounds", run.rounds, "calls", skillCallSummary(run.counts), "duration_ms", time.Since(start).Milliseconds(),
-			"outcome", outcome}
-		if outcome == stateOutcomeFailed || outcome == stateOutcomeUnavailable {
-			attrs = append(attrs, "error", err)
+		outcome := stateOutcome(st.ctx, err)
+		rounds, calls := 0, ""
+		if run != nil {
+			rounds, calls = run.rounds, skillCallSummary(run.counts)
 		}
-		o.log.Info("state step", attrs...)
+		attrs := []any{"task_id", task.ID, "conversation", task.ConversationKey, "turns", len(turns), "role", role,
+			"rounds", rounds, "calls", calls, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome}
+		switch outcome {
+		case stateOutcomeError:
+			o.log.Warn("state step", append(attrs, "error", err)...)
+		case stateOutcomeFailed, stateOutcomeUnavailable:
+			o.log.Info("state step", append(attrs, "error", err)...)
+		default:
+			o.log.Info("state step", attrs...)
+		}
 	}()
-	if err = o.stateForgotten(ctx, task, turns[0].at); err != nil {
+	kept, err := o.stateUnforgotten(st)
+	if err != nil {
 		return
 	}
+	turns = kept
+	newest := turns[len(turns)-1]
+	task = stateTask(newest.task)
+	ctx := usage.WithAttribution(st.ctx, usage.Attribution{
+		BotInstanceID: task.BotInstanceID, ConversationKey: task.ConversationKey, TaskID: task.ID,
+	})
+	run = newToolRun(stateTools(turns), stateInvocation(turns))
 	run.deadline = o.now().Add(statePassTimeout)
 	in := o.stateInput(ctx, turns)
 	req := newest.req
@@ -369,7 +389,7 @@ func (o *Orchestrator) runStateStep(st *stateStep) {
 	}
 	role = string(d.Profile.Role)
 	err = o.stateCall(ctx, st, task, d, in, run)
-	if err == nil || ctx.Err() != nil || errors.Is(err, errStateForgotten) || errors.Is(err, errStateNoRoom) {
+	if err == nil || ctx.Err() != nil || errors.Is(err, errStateForgotten) || errors.Is(err, errStateNoRoom) || errors.Is(err, errStateStore) {
 		return
 	}
 	o.log.Warn("state step model call failed; re-routing", "task_id", task.ID, "role", d.Profile.Role, "error", err)
@@ -398,21 +418,43 @@ func stateOutcome(ctx context.Context, err error) string {
 		return stateOutcomeNoRoom
 	case errors.Is(err, errStateUnrouted):
 		return stateOutcomeUnavailable
+	case errors.Is(err, errStateStore):
+		return stateOutcomeError
 	}
 	return stateOutcomeFailed
 }
 
-// stateForgotten returns errStateForgotten when task's speaker was forgotten
-// in its memory scope after since, or the error reading that.
-func (o *Orchestrator) stateForgotten(ctx context.Context, task store.TaskRecord, since time.Time) error {
+// stateForgottenAt returns when task's speaker was last forgotten in its
+// memory scope, zero if never; an error reading it wraps errStateStore.
+func (o *Orchestrator) stateForgottenAt(ctx context.Context, task store.TaskRecord) (time.Time, error) {
 	rows, err := o.st.GetMemberMemories(ctx, memory.ScopeKeyOf(task.ConversationKey), []string{task.ActorPlatformUserID})
 	if err != nil {
-		return fmt.Errorf("load member memory: %w", err)
+		return time.Time{}, fmt.Errorf("%w: load member memory: %w", errStateStore, err)
 	}
-	if since.Before(rows[task.ActorPlatformUserID].ForgottenAt) {
-		return errStateForgotten
+	return rows[task.ActorPlatformUserID].ForgottenAt, nil
+}
+
+// stateUnforgotten drops from the state step st the turns from before their
+// speaker was last forgotten (by stateTurn.at), so a forget through the API
+// or the panel between its turns keeps the later ones, and returns the turns
+// left: errStateForgotten when none is, an errStateStore error when the
+// forget cannot be read.
+func (o *Orchestrator) stateUnforgotten(st *stateStep) ([]stateTurn, error) {
+	turns := st.entry.turns
+	forgotten, err := o.stateForgottenAt(st.ctx, turns[0].task)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	kept := slices.DeleteFunc(slices.Clone(turns), func(t stateTurn) bool { return t.at.Before(forgotten) })
+	if len(kept) == 0 {
+		return nil, errStateForgotten
+	}
+	if len(kept) < len(turns) {
+		o.states.mu.Lock()
+		st.entry.turns = kept
+		o.states.mu.Unlock()
+	}
+	return kept, nil
 }
 
 // beginStateRound is checked before the state step st of task runs the calls
@@ -422,8 +464,12 @@ func (o *Orchestrator) stateForgotten(ctx context.Context, task store.TaskRecord
 // over to run again.
 func (o *Orchestrator) beginStateRound(ctx context.Context, st *stateStep, task store.TaskRecord) error {
 	s := o.states
-	if err := o.stateForgotten(ctx, task, st.entry.turns[0].at); err != nil {
+	forgotten, err := o.stateForgottenAt(ctx, task)
+	if err != nil {
 		return err
+	}
+	if st.entry.turns[0].at.Before(forgotten) {
+		return errStateForgotten
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

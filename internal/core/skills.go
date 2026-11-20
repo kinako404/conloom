@@ -131,24 +131,17 @@ func (r *skillRun) restartClock() {
 	r.deadline = time.Time{}
 }
 
-// newSkillRun returns the skills of a private chat or a group message
-// addressed to the bot, or nil when the bot enables none for the
-// conversation's type or the task is a turn or a join. A message the bot
-// starts itself (a wake task) gets only the wakeTools of skillBuff, even if a
-// skill of skills.dir replacing it lists others: neither set_status, so
-// statuses do not chain, nor set_scene, since a status return restores the
-// scene itself (restoreScene), nor memory tools, which would take old
-// messages for a request.
-// When the toolset has state tools and they run in a state step
-// (stateStepAfterReply), the run is a reply step (skillRun.replyStep): it
-// offers only the lookups, possibly none, and carries the state tools in
-// skillRun.state. Otherwise it offers the whole toolset. So in that mode a
-// wake reply offers no tools (wakeTools are all state tools) and its state
-// step, run once the message is stored, offers only wakeTools.
-func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, conv store.ConversationRecord,
-	triggers []store.MessageRecord, out *outcome) *skillRun {
+// skillSet returns the skills of a private chat or a group message addressed
+// to the bot, empty when the bot enables none for the conversation's type or
+// the task is a turn or a join. A message the bot starts itself (a wake task)
+// gets only the wakeTools of skillBuff, even if a skill of skills.dir
+// replacing it lists others: neither set_status, so statuses do not chain,
+// nor set_scene, since a status return restores the scene itself
+// (restoreScene), nor memory tools, which would take old messages for a
+// request.
+func (o *Orchestrator) skillSet(bot config.BotConfig, conv store.ConversationRecord, out *outcome) skills.Toolset {
 	if o.skills == nil || len(bot.Skills) == 0 {
-		return nil
+		return skills.Toolset{}
 	}
 	names := bot.Skills
 	switch {
@@ -157,12 +150,30 @@ func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, 
 	case conv.Type == conloomapi.ConvPrivate && !out.proactive && !out.turn:
 	case conv.Type == conloomapi.ConvGroup && out.addressed:
 	default:
-		return nil
+		return skills.Toolset{}
 	}
 	set := o.skills.For(names, conv.Type)
 	if out.wake != nil {
 		set.Tools = slices.DeleteFunc(set.Tools, func(t skills.Tool) bool { return !slices.Contains(wakeTools, t.Spec().Name) })
 	}
+	return set
+}
+
+// splitsState reports whether a reply offered set runs its state tools in a
+// state step after it (stateStepAfterReply), so it may have a state turn.
+func (o *Orchestrator) splitsState(set skills.Toolset) bool {
+	return o.stateStepAfterReply() && !set.StateTools().Empty()
+}
+
+// newSkillRun returns the run of set (skillSet) for task, or nil when set is
+// empty. When set's state tools run in a state step (splitsState), the run
+// is a reply step (skillRun.replyStep): it offers only the lookups, possibly
+// none, and carries the state tools in skillRun.state. Otherwise it offers
+// the whole toolset. So in that mode a wake reply offers no tools (wakeTools
+// are all state tools) and its state step, run once the message is stored,
+// offers only wakeTools.
+func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, conv store.ConversationRecord,
+	set skills.Toolset, triggers []store.MessageRecord, out *outcome) *skillRun {
 	if set.Empty() {
 		return nil
 	}
@@ -189,9 +200,9 @@ func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, 
 		IsAdmin:           IsAdmin(bot, conv.Platform, task.ActorPlatformUserID),
 		Location:          o.loc,
 	}
-	if state := set.StateTools(); o.stateStepAfterReply() && !state.Empty() {
+	if o.splitsState(set) {
 		run := newToolRun(set.Lookups(), inv)
-		run.replyStep, run.state = true, state
+		run.replyStep, run.state = true, set.StateTools()
 		return run
 	}
 	return newToolRun(set, inv)

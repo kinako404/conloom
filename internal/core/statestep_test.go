@@ -52,6 +52,14 @@ func firstRounds(reqs []map[string]any) []map[string]any {
 	return slices.DeleteFunc(slices.Clone(reqs), hasToolResult)
 }
 
+// idle reports whether no state step runs or is pending and no reply task
+// holds one back.
+func (s *stateSteps) idle() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.running) == 0 && len(s.pending) == 0 && len(s.holds) == 0
+}
+
 // waitStateIdle waits until no state step runs or is pending and no reply
 // task holds one back.
 func waitStateIdle(t *testing.T, env *testEnv) {

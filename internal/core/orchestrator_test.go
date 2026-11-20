@@ -161,6 +161,8 @@ type hookStore struct {
 	failLog atomic.Bool
 	// failRecent makes RecentMessages fail.
 	failRecent atomic.Bool
+	// failMembers makes GetMemberMemories fail.
+	failMembers atomic.Bool
 	// lookups records the IDs of every GetMessages call.
 	lookups [][]string
 	// nameLookups records the actor IDs of every LatestDisplayNames call.
@@ -272,6 +274,13 @@ func (h *hookStore) RecentMessages(ctx context.Context, convKey string, limit in
 		return nil, errors.New("test: recent messages unavailable")
 	}
 	return h.Store.RecentMessages(ctx, convKey, limit)
+}
+
+func (h *hookStore) GetMemberMemories(ctx context.Context, scope string, userIDs []string) (map[string]store.MemberMemory, error) {
+	if h.failMembers.Load() {
+		return nil, errors.New("test: member memories unavailable")
+	}
+	return h.Store.GetMemberMemories(ctx, scope, userIDs)
 }
 
 func (h *hookStore) AppendProactiveLog(ctx context.Context, e store.ProactiveLogEntry) error {
