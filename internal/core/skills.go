@@ -142,7 +142,9 @@ func (r *skillRun) restartClock() {
 // When the toolset has state tools and they run in a state step
 // (stateStepAfterReply), the run is a reply step (skillRun.replyStep): it
 // offers only the lookups, possibly none, and carries the state tools in
-// skillRun.state. Otherwise it offers the whole toolset.
+// skillRun.state. Otherwise it offers the whole toolset. So in that mode a
+// wake reply offers no tools (wakeTools are all state tools) and its state
+// step, run once the message is stored, offers only wakeTools.
 func (o *Orchestrator) newSkillRun(task store.TaskRecord, bot config.BotConfig, conv store.ConversationRecord,
 	triggers []store.MessageRecord, out *outcome) *skillRun {
 	if o.skills == nil || len(bot.Skills) == 0 {

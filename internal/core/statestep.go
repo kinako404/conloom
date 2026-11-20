@@ -33,6 +33,10 @@ const (
 	// it judges (see stateDirective).
 	copyStateStep       = "【状态更新】这一步不是回复，不会发给对方。根据最近这一轮（上面的当前消息和你下面的回复）判断你的状态、场景或要记住的事有没有变化：有就调用相应的工具，没有就什么都不调用。不要写回复的文字，写了也不会发出去。"
 	stateRepliesHeading = "你刚才的回复："
+	// copyStateStepWake replaces copyStateStep when every turn is a wake turn,
+	// whose messages follow stateWakeHeading.
+	copyStateStepWake = "【状态更新】这一步不是回复，不会发给对方。你刚才主动给对方发了下面的消息，对方还没有回。判断你的状态有没有因此变化：有就调用相应的工具，没有就什么都不调用。不要写回复的文字，写了也不会发出去。"
+	stateWakeHeading  = "你刚才发的："
 )
 
 // Outcomes of a state step, logged as outcome.
@@ -432,9 +436,13 @@ func stateInvocation(turns []stateTurn) skills.Invocation {
 }
 
 // stateDirective is copyStateStep followed by the replies of turns, one
-// 「reply」 line each, in order.
+// 「reply」 line each, in order; copyStateStepWake and stateWakeHeading
+// instead when every turn is a wake turn.
 func stateDirective(turns []stateTurn) string {
 	lines := []string{copyStateStep, "", stateRepliesHeading}
+	if !slices.ContainsFunc(turns, func(t stateTurn) bool { return !t.wake }) {
+		lines = []string{copyStateStepWake, "", stateWakeHeading}
+	}
 	for _, t := range turns {
 		lines = append(lines, "「"+t.reply+"」")
 	}
