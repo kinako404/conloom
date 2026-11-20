@@ -123,7 +123,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `runtime.cpu_offloaded_kv_tokens`、`runtime.prefix_caching` | — | 可以写，目前不生效 |
 | `privacy.allow_sensitive_content` | false | 私聊（包括面板聊天）的回复和记忆整理只会路由到为 `true` 的模型，面板聊天的建议回复只在 `short_context` 为 `true` 时生成；`long_context` 为 `false` 时私聊不整理记忆（私聊默认策略开启了记忆时，启动日志有一条 warn，在设置页保存私聊默认策略时也会提示） |
 | `privacy.data_location` | — | 说明性标签（如 `remote` 表示数据会离开本机），代码不读取 |
-| `extra_body` | 空 | 原样合并进请求体，例如 `enable_thinking: false`；它可以覆盖 `model`、`messages` 等字段，请谨慎使用。面板聊天的建议回复用 `short_context` 时，以及带技能的回复的收尾请求（不再提供工具的那次，任一模型配置），只在那次请求里关闭思考：这里有 `chat_template_kwargs` 时把其中的 `enable_thinking` 改为 `false`，有顶层 `enable_thinking` 时也改为 `false`，见 [Web 管理面板：在面板里聊天](panel.md#在面板里聊天) 和 [技能](skills.md#一次回复里的工具调用) |
+| `extra_body` | 空 | 原样合并进请求体，例如 `enable_thinking: false`；它可以覆盖 `model`、`messages` 等字段，请谨慎使用。面板聊天的建议回复用 `short_context` 时，带技能的回复的收尾请求（不再提供工具的那次，任一模型配置），以及 `skills.state_step: after_reply` 时回复这一步的每次请求（这个回合的工具里有改状态的工具时；状态更新那一步照常按这里的配置），只在那几次请求里关闭思考：这里有 `chat_template_kwargs` 时把其中的 `enable_thinking` 改为 `false`，有顶层 `enable_thinking` 时也改为 `false`，见 [Web 管理面板：在面板里聊天](panel.md#在面板里聊天) 和 [技能](skills.md#一次回复里的工具调用) |
 | `token_estimate_factor` | 1.0 | token 估算系数，≥ 0，0 视为 1 |
 
 ## 人设模板
@@ -420,8 +420,9 @@ memory:
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `skills.dir` | 空 | 额外技能的目录，相对路径按配置文件所在目录解析。目录里每个 `<名字>/SKILL.md` 与内置技能同名时替换它，否则作为新技能加入。留空只用内置技能（`memory`、`time`、`status`、`scene`、`buff`） |
+| `skills.state_step` | `after_reply` | `after_reply`：回复只带查询类工具（`recall`、`get_affinity`、`now` 和 `skills.dir` 技能里没声明的工具）并关掉思考，改状态的工具（`remember`、`set_status`、`set_scene`、`adjust_buff`、`add_buff`、`remove_buff`）在回复存好之后单独跑一步（思考按模型配置）；`inline`：旧行为。其他值启动失败（退出码 78） |
 
-目录不存在、子目录里没有 `SKILL.md`、技能文件格式不对时，`serve` 启动失败，退出码 78。技能文件格式和启用方式见 [技能](skills.md)。
+目录不存在、子目录里没有 `SKILL.md`、技能文件格式不对时，`serve` 启动失败，退出码 78。技能文件格式和启用方式见 [技能](skills.md)；两种 `state_step` 的细节见 [技能：一次回复里的工具调用](skills.md#一次回复里的工具调用) 和 [技能：回复之后的状态更新](skills.md#回复之后的状态更新)。
 
 ## embedding
 

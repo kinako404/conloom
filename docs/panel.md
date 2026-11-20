@@ -292,8 +292,9 @@ panel:
   - `embed_index`：后台为语义检索生成向量；
   - `embed_query`：检索时把查询句转成向量；
   - `vision`：识图模型生成外观描述（标签"识图"），没有 bot 和会话；
-  - `suggest`：面板聊天的建议回复（标签"建议回复"），有 bot 和会话，没有任务。
-- **每行的内容**：时间、bot、会话、任务（记忆整理和后台生成向量没有任务时为空）、用途、角色（如 `short_context`，向量调用记 `embedding`）、模型名（上游返回的；失败拿不到时用配置里的）、提示 / 回复 / 思考 token（上游没返回就记 0）、发请求前估算的输入 token（只有 `chat` 和 `suggest` 有）、耗时、结果和上游的结束原因（`finish_reason`）。结果是 `ok`、`error`、`timeout`、`canceled` 之一，`ok` 以外的都算失败。
+  - `suggest`：面板聊天的建议回复（标签"建议回复"），有 bot 和会话，没有任务；
+  - `state`：回复之后的状态更新（标签"状态更新"，见 [技能：回复之后的状态更新](skills.md#回复之后的状态更新)），每轮请求一行，成功和失败都记，有 bot、会话和任务（它覆盖的最新一轮回复的任务）。
+- **每行的内容**：时间、bot、会话、任务（记忆整理和后台生成向量没有任务时为空）、用途、角色（如 `short_context`，向量调用记 `embedding`）、模型名（上游返回的；失败拿不到时用配置里的）、提示 / 回复 / 思考 token（上游没返回就记 0）、发请求前估算的输入 token（只有 `chat`、`suggest` 和 `state` 有）、耗时、结果和上游的结束原因（`finish_reason`）。结果是 `ok`、`error`、`timeout`、`canceled` 之一，`ok` 以外的都算失败。
 - **不拖慢回复**：记录先放进内存队列（4096 条），后台攒够 200 条或每 2 秒一次批量写库。队列满时丢弃并计入 `conloom_usage_dropped_total`，写库失败记 warn 日志并计入 `conloom_usage_write_errors_total`；退出时最多等 5 秒把剩下的写完，超时没写完的丢弃并记 warn 日志，不影响正常退出。原有的 `model call` 日志和 `conloom_model_*` 指标不变。
 - **保留**：`runtime.usage_retention`，默认 `9600h`（400 天），由每小时的清理任务分批删除，删除条数计入 `conloom_cleanup_deleted_total{table="model_calls"}`。
 - **统计规则**：
