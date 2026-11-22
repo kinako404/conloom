@@ -29,6 +29,15 @@ const MAX_LINES = 6;
 const MAX_IMAGES = 4;
 const MAX_IMAGE_MIB = 8;
 const IMAGE_TYPES = ['image/png', 'image/jpeg'];
+// UPLOAD_BUSY_MS is how long an image upload refused with 409 CHAT_BUSY (the
+// server is processing another image) waits before its one retry, and, when
+// that is refused too, before the next image is uploaded.
+const UPLOAD_BUSY_MS = 1500;
+// BAD_IMAGES is the message of the 400 INVALID_EVENT for a message whose
+// images the server no longer takes (core.ErrBadImages), and
+// BAD_IMAGES_NOTE what is shown instead.
+const BAD_IMAGES = 'a message carries at most 4 images, each uploaded to this chat and not sent yet';
+const BAD_IMAGES_NOTE = '图片已失效（可能已过期或已经发出），已从输入栏移除，请重新添加后再发送。';
 // LONG_PRESS_MS is how long a finger rests on a message to open its menu;
 // moving it more than LONG_PRESS_SLOP pixels meanwhile makes it a scroll.
 export const LONG_PRESS_MS = 450;
@@ -953,18 +962,41 @@ export async function chatPane({ key, signal, hint, bot, title, online, onBack, 
     a.el.remove();
     showWaiting();
   };
+  // wait resolves after ms, or at once when the page is left.
+  const wait = (ms) => new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    signal.addEventListener('abort', () => {
+      clearTimeout(t);
+      resolve();
+    }, { once: true });
+  });
+  const busy = (err) => err.status === 409 && err.code === 'CHAT_BUSY';
+  // uploadOnce uploads the file of the attached image a; refused because the
+  // server is busy with another image, it tries once more after
+  // UPLOAD_BUSY_MS. It returns null when a was taken off meanwhile.
+  const uploadOnce = async (a) => {
+    try {
+      return await upload(convPath(key, 'images'), a.file);
+    } catch (err) {
+      if (!busy(err)) throw err;
+    }
+    await wait(UPLOAD_BUSY_MS);
+    if (!attached.includes(a) || gone || signal.aborted) return null;
+    return upload(convPath(key, 'images'), a.file);
+  };
   // uploadNext uploads the first image attached not uploaded yet, unless one
   // is uploading, then the next; one that fails is taken off, its error
-  // shown. An image taken off while it uploads is left on the server, which
-  // drops it unsent after a day.
+  // shown, and after one the server was too busy for the next waits
+  // UPLOAD_BUSY_MS. An image taken off while it uploads is left on the
+  // server, which drops it unsent after a day.
   const uploadNext = async () => {
     const a = attached.find((x) => !x.id);
     if (uploading || !a || gone || signal.aborted) return;
     uploading = true;
     try {
-      const res = await upload(convPath(key, 'images'), a.file);
+      const res = await uploadOnce(a);
       if (signal.aborted || gone) return;
-      if (attached.includes(a)) {
+      if (res && attached.includes(a)) {
         a.id = res.id;
         showAttached(a);
         showWaiting();
@@ -974,6 +1006,7 @@ export async function chatPane({ key, signal, hint, bot, title, online, onBack, 
       unattach(a);
       if (err.status === 404) markGone();
       else mount(sendError, errorBox(err));
+      if (busy(err)) await wait(UPLOAD_BUSY_MS);
     } finally {
       uploading = false;
     }
@@ -1015,7 +1048,8 @@ export async function chatPane({ key, signal, hint, bot, title, online, onBack, 
   // for the message it answers are no longer shown. A text-only message is
   // sent as { text }. Images sent are taken off the box. Text that fails to
   // send is left in the box, a suggestion's too, unless the box has other
-  // text, and images that fail stay attached.
+  // text, and images that fail stay attached, unless the server no longer
+  // takes them (BAD_IMAGES): they are then taken off, to be added again.
   const submit = async (text, ids = []) => {
     if (ids.length) {
       if (send.disabled || gone || acting) return;
@@ -1036,6 +1070,10 @@ export async function chatPane({ key, signal, hint, bot, title, online, onBack, 
       if (isAbort(err)) return;
       if (err.status === 404) {
         markGone();
+      } else if (ids.length && err.status === 400 && err.code === 'INVALID_EVENT' && err.message === BAD_IMAGES) {
+        for (const a of attached.filter((x) => ids.includes(x.id))) unattach(a);
+        mount(sendError, errorBox({ message: BAD_IMAGES_NOTE }));
+        if (!input.value.trim()) input.value = text;
       } else {
         mount(sendError, errorBox(err));
         if (!input.value.trim()) input.value = text;

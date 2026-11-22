@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kinako404/conloom/internal/core"
 	"github.com/kinako404/conloom/internal/imaging"
 	"github.com/kinako404/conloom/pkg/conloomapi"
 )
@@ -47,6 +48,30 @@ func TestChatPane_ImageComposer(t *testing.T) {
 	// A text-only message is sent as before.
 	if !strings.Contains(js, "{ text }") {
 		t.Error("views/chat.js no longer sends a text-only message as { text }")
+	}
+}
+
+// An upload refused because the server is busy with another image is tried
+// once more after a pause, and the next upload waits too; a message whose
+// images the server no longer takes drops them and says to add them again.
+func TestChatPane_ImageRetries(t *testing.T) {
+	js := assets(t, ".js")["views/chat.js"]
+	want := "const BAD_IMAGES = '" + strings.TrimPrefix(core.ErrBadImages.Error(), "core: ") + "';"
+	if !strings.Contains(js, want) {
+		t.Errorf("views/chat.js lacks %q: it must match core.ErrBadImages", want)
+	}
+	for _, want := range []string{
+		"const UPLOAD_BUSY_MS = 1500;",
+		"err.status === 409 && err.code === 'CHAT_BUSY'",
+		"await wait(UPLOAD_BUSY_MS);\n    if (!attached.includes(a) || gone || signal.aborted) return null;\n    return upload(convPath(key, 'images'), a.file);",
+		"if (busy(err)) await wait(UPLOAD_BUSY_MS);",
+		"err.status === 400 && err.code === 'INVALID_EVENT' && err.message === BAD_IMAGES",
+		"mount(sendError, errorBox({ message: BAD_IMAGES_NOTE }));",
+		"'图片已失效（可能已过期或已经发出），已从输入栏移除，请重新添加后再发送。'",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("views/chat.js lacks %q", want)
+		}
 	}
 }
 

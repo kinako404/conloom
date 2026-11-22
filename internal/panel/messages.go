@@ -37,10 +37,14 @@ func newMessageView(m store.MessageRecord) messageView {
 	}
 }
 
-// messageImages are the IDs of m's image attachments that have one, in
-// order: the chat images it carries, served by GET …/images/{id}. Images
-// without an ID, as platform messages carry, are left out; nil without any.
+// messageImages are the IDs of the image attachments of m, a user message on
+// the panel platform, that have one, in order: the chat images it carries,
+// served by GET …/images/{id}. Images without an ID are left out; nil without
+// any, and for the bot's messages and other platforms' messages.
 func messageImages(m store.MessageRecord) []string {
+	if m.Platform != store.PlatformPanel || m.FromBot {
+		return nil
+	}
 	var ids []string
 	for _, a := range m.Attachments {
 		if a.Type == "image" && a.ID != "" {

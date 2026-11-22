@@ -94,6 +94,46 @@ func TestChat_PostMessageWithImages(t *testing.T) {
 	t.Errorf("audits = %+v, want the text-only one's detail exactly {\"message_id\":\"msg_panel_2\"}", events)
 }
 
+// An empty or null images list sends a text-only message, audited as one.
+func TestChat_PostMessageEmptyImages(t *testing.T) {
+	h, chat := newChatHarness(t)
+	private := h.seedConv(store.PlatformPanel, conloomapi.ConvPrivate, "panel_1")
+	path := convPath(private.Key, "messages")
+	for i, body := range []string{`{"text":"空列表","images":[]}`, `{"text":"空值","images":null}`} {
+		if w := h.write(http.MethodPost, path, body); w.Code != http.StatusAccepted {
+			t.Fatalf("%s: status %d, body %s", body, w.Code, w.Body)
+		}
+		text := []string{"空列表", "空值"}[i]
+		if submitted, _, _ := chat.calls(); len(submitted) != i+1 || submitted[i] != private.Key+"|"+testUser+"|"+text {
+			t.Errorf("%s: submitted = %q, want a text-only message", body, submitted)
+		}
+	}
+	for _, e := range h.audits("panel.message") {
+		if strings.Contains(e.Detail, "images") {
+			t.Errorf("audit detail %s, want no image count", e.Detail)
+		}
+	}
+}
+
+func TestMessageImages_OnlyPanelUserMessages(t *testing.T) {
+	images := []conloomapi.Attachment{{Type: "image", ID: "img_a"}, {Type: "image"}, {Type: "file", ID: "f_1"}, {Type: "image", ID: "img_b"}}
+	for _, c := range []struct {
+		name string
+		m    store.MessageRecord
+		want []string
+	}{
+		{"panel user", store.MessageRecord{Platform: store.PlatformPanel, Attachments: images}, []string{"img_a", "img_b"}},
+		{"panel bot", store.MessageRecord{Platform: store.PlatformPanel, FromBot: true, Attachments: images}, nil},
+		{"qq user", store.MessageRecord{Platform: "qq", Attachments: images}, nil},
+		{"telegram user", store.MessageRecord{Platform: "telegram", Channel: store.ChannelPanel, Attachments: images}, nil},
+		{"panel user without images", store.MessageRecord{Platform: store.PlatformPanel}, nil},
+	} {
+		if got := messageImages(c.m); !slices.Equal(got, c.want) || (c.want == nil) != (got == nil) {
+			t.Errorf("%s: messageImages = %#v, want %#v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestChat_PostMessageBadImages(t *testing.T) {
 	h, chat := newChatHarness(t)
 	private := h.seedConv(store.PlatformPanel, conloomapi.ConvPrivate, "panel_1")
