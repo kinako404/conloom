@@ -698,11 +698,18 @@ func partsDirective(maxParts int) string {
 // a reply without skills, except that a tool call, written as text or not, is
 // not an answer (ErrEmptyOutput).
 // A profile whose modalities lack "image" gets every request without the
-// appearance image and its label, though the estimates still count them.
+// appearance image and its label, though the estimates still count them, and
+// with the turn's chat images as text: their descriptions, written by the
+// vision profile and cached when needed, or the cannot-see placeholder and
+// note (see blindImages). A re-route builds again, so the text model it goes
+// to gets them too, and reuses the descriptions cached on the way.
 func (o *Orchestrator) call(ctx context.Context, task store.TaskRecord, d router.Decision, in contextbuilder.Input, run *skillRun) (openai.ChatResponse, error) {
 	p := d.Profile
 	in.Budget = d.PromptBudget
 	in.TokenFactor = p.Config.TokenEstimateFactor
+	if !slices.Contains(p.Config.Modalities, "image") {
+		in = o.blindImages(ctx, task, in)
+	}
 	var extra map[string]any
 	if run != nil && run.replyStep {
 		extra = thinkingOff(p.Config.ExtraBody)
