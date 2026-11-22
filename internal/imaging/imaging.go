@@ -1,7 +1,7 @@
 // Package imaging checks uploaded persona and chat images and makes the smaller
 // JPEG copies sent to models and shown in the panel, using only the standard
-// library. A JPEG's EXIF orientation is not applied: images are used as their
-// pixels are stored.
+// library. A JPEG's EXIF orientation is applied: images are used upright, as
+// they are shown.
 package imaging
 
 import (
@@ -52,7 +52,9 @@ type Processed struct {
 // PNG and JPEG are accepted, and data that does not decode is ErrUnsupported
 // too. The dimensions are checked before any pixel is decoded: data over
 // MaxBytes, an edge over MaxEdge or more than MaxPixels pixels is
-// ErrTooLarge. Transparent pixels are flattened onto white.
+// ErrTooLarge. Transparent pixels are flattened onto white, and a JPEG is
+// turned upright by its EXIF orientation (Width and Height are then the
+// upright size).
 func Process(data []byte) (Processed, error) {
 	img, mime, err := decode(data)
 	if err != nil {
@@ -88,8 +90,8 @@ type Chat struct {
 }
 
 // ProcessChat checks data as Process does (sniffed PNG/JPEG, limits,
-// flattened onto white), decodes it once and shrinks both copies from the
-// decoded pixels.
+// flattened onto white, EXIF orientation applied), decodes it once and
+// shrinks both copies from the upright pixels.
 func ProcessChat(data []byte) (Chat, error) {
 	img, _, err := decode(data)
 	if err != nil {
@@ -138,7 +140,7 @@ func ceilDiv(a, b int) int {
 }
 
 // decode checks data (see Process) and returns its pixels drawn over white,
-// and its sniffed MIME type.
+// a JPEG's turned upright by its EXIF orientation, and its sniffed MIME type.
 func decode(data []byte) (*image.RGBA, string, error) {
 	if len(data) > MaxBytes {
 		return nil, "", fmt.Errorf("%w: %d bytes", ErrTooLarge, len(data))
@@ -168,7 +170,11 @@ func decode(data []byte) (*image.RGBA, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: %v", ErrUnsupported, err)
 	}
-	return flatten(src), mime, nil
+	img := flatten(src)
+	if mime == "image/jpeg" {
+		img = orient(img, exifOrientation(data))
+	}
+	return img, mime, nil
 }
 
 // flatten draws src over a white background.
