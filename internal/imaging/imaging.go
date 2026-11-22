@@ -1,6 +1,7 @@
-// Package imaging checks uploaded persona images and makes the smaller JPEG
-// copies sent to models, using only the standard library. A JPEG's EXIF
-// orientation is not applied: images are used as their pixels are stored.
+// Package imaging checks uploaded persona and chat images and makes the smaller
+// JPEG copies sent to models and shown in the panel, using only the standard
+// library. A JPEG's EXIF orientation is not applied: images are used as their
+// pixels are stored.
 package imaging
 
 import (
@@ -25,6 +26,10 @@ const (
 	ReplyEdge   = 768
 	JPEGQuality = 85
 )
+
+// ViewEdge is the long edge of a chat image's view copy, shown when opened and
+// described by the vision model.
+const ViewEdge = 1536
 
 // tileEdge is the edge in pixels of the image tiles Tokens counts.
 const tileEdge = 28
@@ -70,6 +75,44 @@ func Process(data []byte) (Processed, error) {
 		ReplyWidth:  w,
 		ReplyHeight: h,
 		ReplyTokens: Tokens(w, h),
+	}, nil
+}
+
+// Chat is a checked chat image: a view copy (ViewEdge) and a reply copy
+// (ReplyEdge), both JPEG. The original is not kept.
+type Chat struct {
+	ViewJPEG                             []byte
+	ViewWidth, ViewHeight                int
+	ReplyJPEG                            []byte
+	ReplyWidth, ReplyHeight, ReplyTokens int
+}
+
+// ProcessChat checks data as Process does (sniffed PNG/JPEG, limits,
+// flattened onto white), decodes it once and shrinks both copies from the
+// decoded pixels.
+func ProcessChat(data []byte) (Chat, error) {
+	img, _, err := decode(data)
+	if err != nil {
+		return Chat{}, err
+	}
+	view, reply := shrink(img, ViewEdge), shrink(img, ReplyEdge)
+	viewJPEG, err := encodeJPEG(view)
+	if err != nil {
+		return Chat{}, err
+	}
+	replyJPEG, err := encodeJPEG(reply)
+	if err != nil {
+		return Chat{}, err
+	}
+	rw, rh := reply.Bounds().Dx(), reply.Bounds().Dy()
+	return Chat{
+		ViewJPEG:    viewJPEG,
+		ViewWidth:   view.Bounds().Dx(),
+		ViewHeight:  view.Bounds().Dy(),
+		ReplyJPEG:   replyJPEG,
+		ReplyWidth:  rw,
+		ReplyHeight: rh,
+		ReplyTokens: Tokens(rw, rh),
 	}, nil
 }
 
