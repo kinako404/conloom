@@ -149,6 +149,15 @@ export function actionParts(text) {
   return out;
 }
 
+// previewText is message m on one line of a chat list: its text, after
+// '[图片]' and a space when it carries images, or '[图片]' alone; no message
+// is ''.
+export function previewText(m) {
+  if (!m) return '';
+  if (!(m.images && m.images.length)) return m.text || '';
+  return m.text ? `[图片] ${m.text}` : '[图片]';
+}
+
 export function label(map, v) {
   return Object.prototype.hasOwnProperty.call(map, v) ? map[v] : (v || '—');
 }

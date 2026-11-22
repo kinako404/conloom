@@ -1,7 +1,7 @@
 import { h, s, mount, errorBox, loading, field, kv } from '../lib/dom.js';
 import { get, post, put, request, convPath, isAbort, currentUser, logout } from '../lib/api.js';
 import { go, href, withQuery } from '../lib/router.js';
-import { fmtTime, fmtClock } from '../lib/format.js';
+import { fmtTime, fmtClock, previewText } from '../lib/format.js';
 import { SECTIONS } from '../lib/sections.js';
 import { chatBar, chatPane, deleteChatConfirmed, listen, menuClosed, menuOpened } from './chat.js';
 import { avatarEl, onlineDot, withDot } from './avatar.js';
@@ -392,7 +392,7 @@ const PREVIEW_RUNES = 60;
 
 // lastOf is message m, as GET chat returns it, in the form of a chat's last
 // in GET chats: on one line and cut to PREVIEW_RUNES characters, with …
-// when cut.
+// when cut, and its images, when it has some.
 function lastOf(m) {
   const text = (m.text || '').split(/\s+/).filter(Boolean).join(' ');
   const runes = [...text];
@@ -402,6 +402,7 @@ function lastOf(m) {
     sender_id: m.sender_id || '',
     at: m.at,
     text: runes.length > PREVIEW_RUNES ? runes.slice(0, PREVIEW_RUNES).join('') + '…' : text,
+    images: m.images && m.images.length ? m.images : undefined,
   };
 }
 
@@ -782,13 +783,13 @@ function chatPage() {
       ((bot && bot.problems) || []).map((p) => h('p', { class: 'hint warn' }, p))) : null);
   };
 
-  // preview is the last message of chat c on one line, after 你： when you,
-  // the panel user signed in, sent it.
+  // preview is the last message of chat c on one line (see previewText),
+  // after 你： when you, the panel user signed in, sent it.
   const preview = (c) => {
     if (!c.last) return h('span', { class: 'tg-chat-preview muted' }, '还没有消息');
     const mine = !c.last.from_bot && c.last.sender_id === panelActorID(currentUser());
     return h('span', { class: 'tg-chat-preview' },
-      mine ? h('span', { class: 'tg-you' }, '你：') : null, c.last.text);
+      mine ? h('span', { class: 'tg-you' }, '你：') : null, previewText(c.last));
   };
 
   // chatRow is chat c of bot g, whose avatar wears the online dot while the
@@ -822,7 +823,7 @@ function chatPage() {
       for (const c of chats) rows.push({ g, c, several: chats.length > 1 });
     }
     const shown = rows.filter(({ g, c }) => !q ||
-      [g.name || g.id, c.title, c.last ? c.last.text : ''].some((t) => (t || '').toLowerCase().includes(q)));
+      [g.name || g.id, c.title, previewText(c.last)].some((t) => (t || '').toLowerCase().includes(q)));
     shown.sort((a, b) => recency(b.c) - recency(a.c));
     if (!fetched) {
       mount(list, h('li', { class: 'tg-list-empty muted' }, '加载中…'));
