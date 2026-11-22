@@ -101,9 +101,10 @@ type ChatImage struct {
 }
 
 // ChatImageLabel precedes the n-th (1-based) image the model sees among
-// CurrentImages, which the text shows as [图片n].
+// CurrentImages, which the text shows as [图片n]. It says the image is new, so
+// the model does not answer it as one from an earlier turn.
 func ChatImageLabel(n int) string {
-	return fmt.Sprintf("【对方发来的第 %d 张图片，即消息里的[图片%d]】", n, n)
+	return fmt.Sprintf("【对方这条新消息里的第 %d 张图片（即[图片%d]），不是之前聊过的图片】", n, n)
 }
 
 const (
@@ -116,6 +117,10 @@ const (
 	// imagesUnseenNote follows the current messages, before the directive,
 	// when one of their images renders as imageUnseenPlaceholder.
 	imagesUnseenNote = "（标着“看不到内容”的图片你没有收到，不知道里面是什么，不要假装看到了。）"
+	// imageOnlyNote follows the body of a current message without text that
+	// has a seen image, so a turn of only [图片1] does not read like an
+	// earlier one.
+	imageOnlyNote = "（对方这条只发了图片，没有文字）"
 )
 
 // AppearanceLabel starts the text of the message that carries the appearance
@@ -389,10 +394,11 @@ func (in Input) SpeakerNames() []string {
 }
 
 // renderHistory renders one history message; ok is false for a bot message
-// with nothing left after StripTranscriptPrefix with the speaker names.
+// with nothing left after StripTranscriptPrefix with the speaker names and
+// StripImageLabels.
 func renderHistory(rec store.MessageRecord, in Input, names []string, loc *time.Location) (role, content string, ok bool) {
 	if rec.FromBot {
-		rec.Text = StripTranscriptPrefix(rec.Text, in.BotName, names...)
+		rec.Text = StripImageLabels(StripTranscriptPrefix(rec.Text, in.BotName, names...))
 		if rec.Text == "" && len(rec.Attachments) == 0 {
 			return "", "", false
 		}
@@ -547,9 +553,10 @@ func cappedBody(rec store.MessageRecord, image func(conloomapi.Attachment) strin
 }
 
 // renderCurrent renders the current message block followed by the directive,
-// or only the directive when there is no current message. imagesUnseenNote
-// follows the current messages when one of their images renders as
-// imageUnseenPlaceholder.
+// or only the directive when there is no current message. A message without
+// text that has an image rendered as [图片n] ends with imageOnlyNote, and
+// imagesUnseenNote follows the current messages when one of their images
+// renders as imageUnseenPlaceholder.
 func renderCurrent(in Input) string {
 	if len(in.Current) == 0 {
 		return in.Directive
@@ -565,12 +572,22 @@ func renderCurrent(in Input) string {
 	}
 	unseen := false
 	for _, rec := range in.Current {
-		lines = append(lines, renderBody(rec, in.imageText))
+		body, seen := renderBody(rec, in.imageText), false
 		for _, a := range rec.Attachments {
-			if a.Type == "image" && in.imageText(a) == imageUnseenPlaceholder {
+			if a.Type != "image" {
+				continue
+			}
+			switch text := in.imageText(a); {
+			case text == imageUnseenPlaceholder:
 				unseen = true
+			case seenImageText.MatchString(text):
+				seen = true
 			}
 		}
+		if seen && rec.Text == "" {
+			body += imageOnlyNote
+		}
+		lines = append(lines, body)
 	}
 	if unseen {
 		lines = append(lines, imagesUnseenNote)

@@ -107,7 +107,7 @@ func TestBuild_ChatImagesOnCurrentMessage(t *testing.T) {
 	if got := BaseTokens(in) - plainBase; got < tokA+tokB {
 		t.Errorf("BaseTokens grew by %d, want at least %d", got, tokA+tokB)
 	}
-	if ChatImageLabel(2) != "【对方发来的第 2 张图片，即消息里的[图片2]】" {
+	if ChatImageLabel(2) != "【对方这条新消息里的第 2 张图片（即[图片2]），不是之前聊过的图片】" {
 		t.Errorf("ChatImageLabel(2) = %q", ChatImageLabel(2))
 	}
 	for extra := range 60 {
@@ -209,8 +209,59 @@ func TestBuild_ImageOnlyMessage(t *testing.T) {
 	in.Current = []store.MessageRecord{withImages(userMsg("小明", "", at(12, 5)), "img_a")}
 	in.CurrentImages = []ChatImage{{ID: "img_a", DataURL: chatURLA, Tokens: 300}}
 	last := lastMessage(Build(in))
-	if want := "【当前消息】发送者：小明\n[图片1]"; last.Content != want {
+	if want := "【当前消息】发送者：小明\n[图片1]（对方这条只发了图片，没有文字）"; last.Content != want {
 		t.Errorf("Content = %q, want %q", last.Content, want)
+	}
+	if imageOnlyNote != "（对方这条只发了图片，没有文字）" {
+		t.Errorf("imageOnlyNote = %q", imageOnlyNote)
+	}
+	for extra := range 60 {
+		in.Budget = BaseTokens(in) + extra
+		if o := Build(in); o.EstimatedTokens > in.Budget {
+			t.Fatalf("EstimatedTokens = %d exceeds Budget %d", o.EstimatedTokens, in.Budget)
+		}
+	}
+
+	in.CurrentImages = []ChatImage{{ID: "img_a", Description: "一杯咖啡"}}
+	if got := lastMessage(Build(in)).Content; strings.Contains(got, imageOnlyNote) {
+		t.Errorf("Content with only a described image = %q, want no imageOnlyNote", got)
+	}
+}
+
+func TestStripImageLabels(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"two labels", "左边[图片1]是猫，右边[图片2]是狗", "左边是猫，右边是狗"},
+		{"spaces around", "[图片1] 是猫 [图片2] 是狗", "是猫 是狗"},
+		{"own line", "[图片1]\n好可爱的猫", "好可爱的猫"},
+		{"blank lines", "第一张\n\n[图片2]\n\n第二张", "第一张\n\n第二张"},
+		{"echoed label", ChatImageLabel(1) + "\n这是一只猫", "这是一只猫"},
+		{"echoed old label", "【对方发来的第 2 张图片，即消息里的[图片2]】这是一只狗", "这是一只狗"},
+		{"seen placeholder", "还是那张" + imageSeenEarlierPlaceholder, "还是那张"},
+		{"image-only note", "[图片1]" + imageOnlyNote + "\n好看", "好看"},
+		{"only labels", "[图片1][图片2]", ""},
+	} {
+		if got := StripImageLabels(tc.in); got != tc.want {
+			t.Errorf("%s: StripImageLabels(%q) = %q, want %q", tc.name, tc.in, got, tc.want)
+		}
+	}
+	for _, keep := range []string{
+		"哈哈[笑]（摸摸头）",
+		"  [图片] 和 [图片：一只猫] 还有【重要】  ",
+		"第[1]张\n\n\n很好看",
+		"图片1 和 图片2",
+	} {
+		if got := StripImageLabels(keep); got != keep {
+			t.Errorf("StripImageLabels(%q) = %q, want it unchanged", keep, got)
+		}
+	}
+}
+
+func TestBuild_BotHistoryDropsImageLabels(t *testing.T) {
+	in := baseInput()
+	in.History = []store.MessageRecord{userMsg("小明", "看", at(12, 0)), botMsg("[图片1]是猫，[图片2]是狗", at(12, 1))}
+	out := Build(in)
+	if got := out.Messages[2].Content; got != "是猫，是狗" {
+		t.Errorf("bot history = %q, want the labels dropped", got)
 	}
 }
 
@@ -229,7 +280,7 @@ func TestBuild_ChatImagesMergedOrder(t *testing.T) {
 	}
 	in.ImageDescriptions = map[string]string{"img_a": "一只橘猫"}
 	last := lastMessage(Build(in))
-	if want := "【当前消息】发送者：小明\n[图片：一只橘猫][图片1]\n还有[图片2]\n[图片3][图片4]"; last.Content != want {
+	if want := "【当前消息】发送者：小明\n[图片：一只橘猫][图片1]" + imageOnlyNote + "\n还有[图片2]\n[图片3][图片4]" + imageOnlyNote; last.Content != want {
 		t.Errorf("Content = %q\nwant      %q", last.Content, want)
 	}
 	want := []openai.ChatPart{

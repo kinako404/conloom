@@ -40,7 +40,7 @@ const (
 const SkipMarker = "[[SKIP]]"
 
 // errEchoOnly is a model output made only of the prompt's transcript format
-// (see contextbuilder.StripTranscriptPrefix).
+// (see contextbuilder.StripTranscriptPrefix and StripImageLabels).
 var errEchoOnly = fmt.Errorf("%w: only the transcript format", openai.ErrEmptyOutput)
 
 // outcome is the result of executing a reply task. An empty text means no
@@ -403,7 +403,9 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	// The configured name stays a known speaker: replies stored before a
 	// character was set may have echoed it.
 	speakers := append(in.SpeakerNames(), bot.Name)
-	strip := func(s string) string { return contextbuilder.StripTranscriptPrefix(s, system.BotName, speakers...) }
+	strip := func(s string) string {
+		return contextbuilder.StripImageLabels(contextbuilder.StripTranscriptPrefix(s, system.BotName, speakers...))
+	}
 	call := func(d router.Decision) (openai.ChatResponse, error) {
 		resp, err := o.call(ctx, task, d, in, run)
 		if err == nil && direct && !isSkip(resp.Content) && strip(resp.Content) == "" {

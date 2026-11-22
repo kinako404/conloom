@@ -315,6 +315,25 @@ func TestChatImages_ReplySeesImages(t *testing.T) {
 	}
 }
 
+func TestChatImages_ReplyDropsImageLabels(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{
+		short: answer(contextbuilder.ChatImageLabel(1) + "\n[图片1]是猫[笑]，[图片2] 是狗（摸摸头）"),
+		configure: func(c *config.Config) {
+			withImageModality("short_context")(c)
+			allowAllPrivate(c)
+		},
+	})
+	key := env.createChat(t, testBot)
+	a, b := env.putChatImage(t, key, 60, 40), env.putChatImage(t, key, 60, 40)
+	task := env.waitTask(t, env.panelResponse(t, env.submitImages(t, key, "你看", a, b)).TaskID)
+	if task.Status != conloomapi.TaskSucceeded || len(task.Actions) != 1 {
+		t.Fatalf("task = %+v", task)
+	}
+	if got, want := task.Actions[0].Content.Text, "是猫[笑]，是狗（摸摸头）"; got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
 func TestChatImages_WithAppearanceInFirstMessage(t *testing.T) {
 	env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) {
 		withImageModality("short_context")(c)
@@ -418,8 +437,9 @@ func TestChatImages_MergedTurnKeepsNewestFour(t *testing.T) {
 	if len(texts) != 5 || !slices.Equal(texts[:4], wantLabels) {
 		t.Fatalf("text parts = %q, want 4 labels and the text", texts)
 	}
-	if body := texts[4]; !strings.Contains(body, "[图片][图片1][图片2]\n") || !strings.Contains(body, "[图片3][图片4]") {
-		t.Errorf("text = %q, want m1 as [图片][图片1][图片2] and m2 as [图片3][图片4]", body)
+	const only = "（对方这条只发了图片，没有文字）"
+	if body := texts[4]; !strings.Contains(body, "[图片][图片1][图片2]"+only+"\n") || !strings.Contains(body, "[图片3][图片4]"+only) {
+		t.Errorf("text = %q, want m1 as [图片][图片1][图片2] and m2 as [图片3][图片4], each marked image-only", body)
 	}
 }
 

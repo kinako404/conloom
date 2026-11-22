@@ -151,6 +151,56 @@ func StripTranscriptPrefix(text, botName string, knownNames ...string) string {
 	return s
 }
 
+var (
+	// seenImageText matches the whole text of a seen current image, [图片n].
+	seenImageText = regexp.MustCompile(`^\[图片\d+\]$`)
+	// imageLabelEchoes matches a run of prompt image markers a model echoed,
+	// with the blanks around it: a ChatImageLabel (in this or its earlier
+	// wording), [图片n], imageSeenEarlierPlaceholder, imageUnseenPlaceholder
+	// and imageOnlyNote.
+	imageLabelEchoes = regexp.MustCompile(`[ \t\x{3000}]*(?:` + strings.Join([]string{
+		`【对方[^【】\n]{0,20}第 ?\d{1,2} ?张图片[^【】\n]{0,40}】`,
+		`\[图片\d{1,2}\]`,
+		regexp.QuoteMeta(imageSeenEarlierPlaceholder),
+		regexp.QuoteMeta(imageUnseenPlaceholder),
+		regexp.QuoteMeta(imageOnlyNote),
+	}, "|") + `)+[ \t\x{3000}]*`)
+)
+
+// StripImageLabels removes the prompt's image markers that a model echoed
+// anywhere in its reply (see imageLabelEchoes). A marker between two blanks
+// leaves one space; other blanks next to it go. A line left blank is dropped,
+// with the blank lines that would then double up, and the result is trimmed.
+// Text without such a marker, including other bracketed text like [笑] or
+// [图片：…], is returned unchanged.
+func StripImageLabels(text string) string {
+	if !imageLabelEchoes.MatchString(text) {
+		return text
+	}
+	var out []string
+	dropped := false
+	for line := range strings.SplitSeq(text, "\n") {
+		if imageLabelEchoes.MatchString(line) {
+			line = imageLabelEchoes.ReplaceAllStringFunc(line, func(m string) string {
+				if strings.TrimLeft(m, " \t\u3000") != m && strings.TrimRight(m, " \t\u3000") != m {
+					return " "
+				}
+				return ""
+			})
+			if strings.TrimSpace(line) == "" {
+				dropped = true
+				continue
+			}
+			line = strings.TrimRight(line, " \t\u3000")
+		} else if dropped && strings.TrimSpace(line) == "" && (len(out) == 0 || strings.TrimSpace(out[len(out)-1]) == "") {
+			continue
+		}
+		dropped = false
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
 // cutKnownSpeaker removes a "[HH:MM] <name>：" prefix, or a bare
 // "[HH:MM] <name>" line ending in a newline or the end of s, optionally with
 // its reply and mention annotations, whose name is exactly one of names,
