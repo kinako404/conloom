@@ -103,13 +103,15 @@ type chatEntry struct {
 
 // chatLast is a chat's newest message as the chat page previews it: SenderID
 // is the sender's platform user ID, as messageView's; Text is on one line and
-// cut to maxChatLastRunes characters, with … when cut.
+// cut to maxChatLastRunes characters, with … when cut; Images are the IDs of
+// its chat images as messageView's, left out when it has none.
 type chatLast struct {
 	Seq      int64     `json:"seq"`
 	FromBot  bool      `json:"from_bot"`
 	SenderID string    `json:"sender_id"`
 	At       time.Time `json:"at"`
 	Text     string    `json:"text"`
+	Images   []string  `json:"images,omitempty"`
 }
 
 func newChatLast(m store.MessageRecord) *chatLast {
@@ -117,7 +119,8 @@ func newChatLast(m store.MessageRecord) *chatLast {
 	if runes := []rune(text); len(runes) > maxChatLastRunes {
 		text = string(runes[:maxChatLastRunes]) + "…"
 	}
-	return &chatLast{Seq: m.Seq, FromBot: m.FromBot, SenderID: m.PlatformUserID, At: m.OccurredAt.UTC(), Text: text}
+	return &chatLast{Seq: m.Seq, FromBot: m.FromBot, SenderID: m.PlatformUserID, At: m.OccurredAt.UTC(), Text: text,
+		Images: messageImages(m)}
 }
 
 // botRequest is the body that creates or updates a panel bot: its name, the

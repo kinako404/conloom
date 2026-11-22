@@ -30,7 +30,7 @@ type fakeChat struct {
 	submitErr  error
 	suppressed string
 	deleteErr  error
-	submitted  []string // convKey|panelUser|text
+	submitted  []string // convKey|panelUser|text, then |image IDs joined by "," when any
 	created    []string // botID|panelUser|displayName
 	deleted    []string
 	busy       map[string]bool
@@ -93,13 +93,17 @@ func (f *fakeChat) setSuggestions(items []string) {
 	f.suggestions = items
 }
 
-func (f *fakeChat) SubmitPanel(_ context.Context, convKey, panelUser, text string, _ ...string) (string, string, error) {
+func (f *fakeChat) SubmitPanel(_ context.Context, convKey, panelUser, text string, images ...string) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.submitErr != nil {
 		return "", "", f.submitErr
 	}
-	f.submitted = append(f.submitted, convKey+"|"+panelUser+"|"+text)
+	call := convKey + "|" + panelUser + "|" + text
+	if len(images) > 0 {
+		call += "|" + strings.Join(images, ",")
+	}
+	f.submitted = append(f.submitted, call)
 	return fmt.Sprintf("msg_panel_%d", len(f.submitted)), f.suppressed, nil
 }
 

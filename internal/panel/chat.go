@@ -80,11 +80,11 @@ func (s *Server) chatService(w http.ResponseWriter, r *http.Request) (ChatServic
 }
 
 // chatFail is fail for the chat service: a request it refuses for what was
-// asked (not a panel chat, not private, bad text, a message that cannot be
-// regenerated) is 400 with the reason; a paused chat is 409 PAUSED, a full
-// queue or a regenerate the scheduler would merge 409 CHAT_BUSY; a seq that is
-// not a message of the chat is 404 MESSAGE_NOT_FOUND, unlike a missing chat
-// (404 NOT_FOUND).
+// asked (not a panel chat, not private, bad text, images it cannot send, a
+// message that cannot be regenerated) is 400 with the reason; a paused chat
+// is 409 PAUSED, a full queue or a regenerate the scheduler would merge 409
+// CHAT_BUSY; a seq that is not a message of the chat is 404
+// MESSAGE_NOT_FOUND, unlike a missing chat (404 NOT_FOUND).
 func (s *Server) chatFail(w http.ResponseWriter, r *http.Request, err error) {
 	for _, c := range []struct {
 		err error
@@ -100,7 +100,7 @@ func (s *Server) chatFail(w http.ResponseWriter, r *http.Request, err error) {
 			return
 		}
 	}
-	for _, refused := range []error{core.ErrNotPrivate, core.ErrNotPanelChat, core.ErrBadText} {
+	for _, refused := range []error{core.ErrNotPrivate, core.ErrNotPanelChat, core.ErrBadText, core.ErrBadImages} {
 		if errors.Is(err, refused) {
 			s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
 				strings.TrimPrefix(refused.Error(), "core: "), err)
@@ -121,11 +121,15 @@ func (s *Server) chatFail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-// postChatMessage sends text to the bot in a panel chat as the session's
-// user, through the panel channel; the chat service refuses other
-// conversations. It answers the message ID and, when the message is stored
-// but will not be answered, suppressed_reason as in the API's 202 to POST
-// /events. The audit records the message ID, not the text.
+// postChatMessage sends {text, images} to the bot in a panel chat as the
+// session's user, through the panel channel; the chat service refuses other
+// conversations. Images are the IDs of up to 4 images uploaded to this chat
+// by POST …/images and not sent yet; with images the text may be empty, and
+// images the chat service refuses (core.ErrBadImages) are 400 with nothing
+// stored. It answers the message ID and, when the message is stored but will
+// not be answered, suppressed_reason as in the API's 202 to POST /events. The
+// audit records the message ID and how many images it carries, not the text
+// or the image IDs.
 func (s *Server) postChatMessage(w http.ResponseWriter, r *http.Request, sess *Session) {
 	chat, ok := s.chatService(w, r)
 	if !ok {
@@ -136,19 +140,21 @@ func (s *Server) postChatMessage(w http.ResponseWriter, r *http.Request, sess *S
 		return
 	}
 	var req struct {
-		Text string `json:"text"`
+		Text   string   `json:"text"`
+		Images []string `json:"images"`
 	}
 	if !s.decode(w, r, &req) {
 		return
 	}
-	id, suppressed, err := chat.SubmitPanel(r.Context(), conv.Key, sess.User, req.Text)
+	id, suppressed, err := chat.SubmitPanel(r.Context(), conv.Key, sess.User, req.Text, req.Images...)
 	if err != nil {
 		s.chatFail(w, r, err)
 		return
 	}
 	s.audit(r, sess, conv.BotInstanceID, "panel.message", conv.Key, struct {
 		MessageID string `json:"message_id"`
-	}{id})
+		Images    int    `json:"images,omitempty"`
+	}{id, len(req.Images)})
 	s.writeJSON(w, http.StatusAccepted, struct {
 		MessageID        string `json:"message_id"`
 		SuppressedReason string `json:"suppressed_reason,omitempty"`

@@ -15,6 +15,8 @@ import (
 
 // messageView is a stored message; SenderID is the sender's platform user ID
 // and Channel is "panel" for messages written in or delivered to the panel.
+// Images are the IDs of its chat images (see messageImages), left out when it
+// has none.
 type messageView struct {
 	Seq        int64     `json:"seq"`
 	ID         string    `json:"id"`
@@ -25,13 +27,27 @@ type messageView struct {
 	Text       string    `json:"text"`
 	ReplyTo    string    `json:"reply_to"`
 	Channel    string    `json:"channel"`
+	Images     []string  `json:"images,omitempty"`
 }
 
 func newMessageView(m store.MessageRecord) messageView {
 	return messageView{
 		Seq: m.Seq, ID: m.ID, At: m.OccurredAt.UTC(), SenderID: m.PlatformUserID, SenderName: m.DisplayName,
-		FromBot: m.FromBot, Text: m.Text, ReplyTo: m.ReplyTo, Channel: m.Channel,
+		FromBot: m.FromBot, Text: m.Text, ReplyTo: m.ReplyTo, Channel: m.Channel, Images: messageImages(m),
 	}
+}
+
+// messageImages are the IDs of m's image attachments that have one, in
+// order: the chat images it carries, served by GET …/images/{id}. Images
+// without an ID, as platform messages carry, are left out; nil without any.
+func messageImages(m store.MessageRecord) []string {
+	var ids []string
+	for _, a := range m.Attachments {
+		if a.Type == "image" && a.ID != "" {
+			ids = append(ids, a.ID)
+		}
+	}
+	return ids
 }
 
 // listMessages browses a conversation newest first by seq cursor, or, with a
