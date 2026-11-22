@@ -132,12 +132,17 @@ func upsertUser(ctx context.Context, tx *sql.Tx, u store.UserRecord) error {
 const messageCols = `seq, bot_instance_id, id, conversation_key, platform, platform_message_id, actor_id,
 	platform_user_id, display_name, text, reply_to, mentions, attachments, from_bot, occurred_at, created_at, channel`
 
+// insertMessage inserts m and claims the chat images it carries (see
+// claimChatImages).
 func insertMessage(ctx context.Context, tx *sql.Tx, m store.MessageRecord) error {
 	err := execInsertMessage(ctx, tx, m, "")
 	if isUniqueViolation(err) {
 		return fmt.Errorf("%w: %v", store.ErrDuplicateMessage, err)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return claimChatImages(ctx, tx, m)
 }
 
 // insertMessageIfAbsent inserts m unless it clashes with an existing message's

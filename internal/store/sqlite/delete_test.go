@@ -24,7 +24,7 @@ var keyedTables = []string{
 	"conversation_members", "proactive_log", "group_memory", "member_memory", "memory_revisions",
 	"memory_chunks", "memory_chunk_state", "memory_chunk_rebuild", "memory_chunk_forgets",
 	"conversation_status", "conversation_timers", "conversation_buffs", "conversation_buff_events",
-	"conversation_custom_bars", "conversation_effects", "conversation_scene",
+	"conversation_custom_bars", "conversation_effects", "conversation_scene", "chat_images",
 }
 
 type seededConversation struct {
@@ -175,6 +175,7 @@ func seedConversation(t *testing.T, db *DB, platform, convID, note string, users
 		SinceAt: now, TouchedAt: now}); err != nil {
 		t.Fatalf("SetScene: %v", err)
 	}
+	seedChatImage(t, db, key, "img_"+convID, now)
 	at := fmtTime(now)
 	for _, seed := range []struct {
 		stmt string

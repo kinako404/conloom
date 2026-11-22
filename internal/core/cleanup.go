@@ -14,6 +14,9 @@ const (
 	// personaImageGrace is how long an uploaded persona image is kept while
 	// no persona template or version references it.
 	personaImageGrace = 7 * 24 * time.Hour
+	// chatImageGrace is how long an image uploaded to a panel chat is kept
+	// while no stored message carries it.
+	chatImageGrace = 24 * time.Hour
 )
 
 // Table labels of conloom_cleanup_deleted_total.
@@ -28,6 +31,7 @@ const (
 	cleanupBuffEvents = "conversation_buff_events"
 	cleanupEffects    = "conversation_effects"
 	cleanupImages     = "persona_images"
+	cleanupChatImages = "chat_images"
 )
 
 // purgeExpiredEffects deletes the effects that have run out.
@@ -73,6 +77,22 @@ func (o *Orchestrator) purgePersonaImages() {
 	o.countCleanup(cleanupImages, n)
 	if n > 0 {
 		o.log.Info("purged unreferenced persona images", "count", n)
+	}
+}
+
+// purgeChatImages deletes the panel chat images uploaded more than
+// chatImageGrace ago that no stored message carries.
+func (o *Orchestrator) purgeChatImages() {
+	n, err := o.st.PurgeChatImages(o.bgCtx, o.now().Add(-chatImageGrace))
+	if err != nil {
+		if o.bgCtx.Err() == nil {
+			o.log.Error("purge unsent chat images failed", "error", err)
+		}
+		return
+	}
+	o.countCleanup(cleanupChatImages, n)
+	if n > 0 {
+		o.log.Info("purged unsent chat images", "count", n)
 	}
 }
 

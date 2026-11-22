@@ -180,6 +180,26 @@ type PersonaImage struct {
 	CreatedAt   time.Time
 }
 
+// ChatImage is an image uploaded to a panel chat (see imaging.ProcessChat). MessageID is "" until a stored message
+// carries it. Description is its cached vision description, "" when none.
+type ChatImage struct {
+	ID, ConversationKey, MessageID       string
+	ViewJPEG                             []byte
+	ViewWidth, ViewHeight                int
+	ReplyJPEG                            []byte
+	ReplyWidth, ReplyHeight, ReplyTokens int
+	Description, CreatedBy               string
+	CreatedAt                            time.Time
+}
+
+// ChatImageData selects the copies GetChatImages reads; 0 reads none.
+type ChatImageData uint8
+
+const (
+	ChatImageReply ChatImageData = 1 << iota
+	ChatImageView
+)
+
 // PersonaTemplateRecord is a stored persona template.
 type PersonaTemplateRecord struct {
 	Name      string
@@ -348,8 +368,8 @@ type MemberVersion struct {
 }
 
 // MessageDelete removes the messages of ConversationKey from FromSeq onward,
-// with their keyword index rows, the chunks that reach into the range, and the
-// timers anchored at or after FromSeq.
+// with their keyword index rows and chat images, the chunks that reach into
+// the range, and the timers anchored at or after FromSeq.
 type MessageDelete struct {
 	ConversationKey string
 	FromSeq         int64
@@ -369,7 +389,10 @@ type MessageDelete struct {
 // the same transaction, before the event and task are written; NewTask and
 // Message must then be of the same conversation, or nothing is written and
 // Ingest returns an error. Like everything else, the range is not deleted
-// when the event's idempotency key is stored already.
+// when the event's idempotency key is stored already. A Message on the panel
+// claims the chat images its image attachments name by ID (sets their
+// MessageID); if one is not an unsent image of its conversation, or is named
+// twice, nothing is written and Ingest returns an error.
 type Ingest struct {
 	Event           EventRecord
 	Conversation    *ConversationRecord

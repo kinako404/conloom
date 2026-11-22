@@ -199,6 +199,19 @@ type Store interface {
 	// A row whose persona is not valid JSON references no image. keep lists
 	// further images to keep.
 	PurgePersonaImages(ctx context.Context, createdBefore time.Time, keep []string) (int, error)
+	// PutChatImage stores img as given, its MessageID included; an image with
+	// its ID already stored is an error. Nil ViewJPEG or ReplyJPEG are stored
+	// as empty, a zero CreatedAt as now. Storing a panel message whose image
+	// attachments name image IDs claims those images (see Ingest).
+	PutChatImage(ctx context.Context, img ChatImage) error
+	// GetChatImages returns the images of convKey among ids by ID; unknown IDs and other chats' images are left out.
+	// Only the copies data selects are read; the others are nil.
+	GetChatImages(ctx context.Context, convKey string, ids []string, data ChatImageData) (map[string]ChatImage, error)
+	// SetChatImageDescription caches text for the image; ErrNotFound when convKey has no such image.
+	SetChatImageDescription(ctx context.Context, convKey, id, text string) error
+	// PurgeChatImages deletes the images no stored message carries that were uploaded before createdBefore.
+	// It returns how many it deleted.
+	PurgeChatImages(ctx context.Context, createdBefore time.Time) (int, error)
 	// ListPersonaTemplates returns the stored persona templates ordered by
 	// Name. A row it cannot read does not fail the list: it is left out of
 	// templates and reported in unreadable, also ordered by Name.
@@ -482,14 +495,14 @@ type Store interface {
 	PurgeExpiredEffects(ctx context.Context, now time.Time) (int, error)
 	// DeleteConversation deletes everything stored under convKey (messages and their
 	// keyword index rows, tasks, outbox actions, personas, policies, members, memory,
-	// chunks, proactive log, status, timers, bars, effects, scene, users only referenced by this
-	// conversation, events of it) except model_calls and audit_events, then the
+	// chunks, proactive log, status, timers, bars, effects, scene, chat images, sent or not, users
+	// only referenced by this conversation, events of it) except model_calls and audit_events, then the
 	// conversation row. For a panel chat it also deletes the status and the scene of its
 	// shared memory scope when they were set in the chat; the rest of the scope stays.
 	// ErrNotFound if absent.
 	DeleteConversation(ctx context.Context, convKey string) error
 	// DeleteMessagesFrom deletes the conversation's messages with seq >= fromSeq,
-	// their keyword index rows, its chunks that reach into the range (queuing the
+	// their keyword index rows, the chat images they carry, its chunks that reach into the range (queuing the
 	// ones that straddle it for rebuild), and its timers anchored at or after
 	// fromSeq. Deleting any message changes the conversation's forget stamp, so
 	// chunks cut before are not written (see ChunkWrite). It returns how many

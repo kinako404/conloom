@@ -131,8 +131,12 @@ type Mention struct {
 	Name string `json:"name,omitempty"`
 }
 
+// MaxPanelMessageImages is the most images a panel chat message carries.
+const MaxPanelMessageImages = 4
+
 type Attachment struct {
 	Type string `json:"type"`
+	ID   string `json:"id,omitempty"`
 	URL  string `json:"url,omitempty"`
 	Name string `json:"name,omitempty"`
 	MIME string `json:"mime,omitempty"`

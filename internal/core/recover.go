@@ -49,8 +49,9 @@ const (
 // It then starts background maintenance, which expires undelivered outbox
 // actions every 30s and, every hour until Close, purges old idempotency
 // records, proactive log entries older than 7 days, bar changes older than
-// 30 days, effects that have run out and persona images unreferenced 7 days
-// after their upload (see purgePersonaImages) and cleans up old finished
+// 30 days, effects that have run out, persona images unreferenced 7 days
+// after their upload (see purgePersonaImages) and panel chat images no message
+// carries 24 hours after their upload (see purgeChatImages), and cleans up old finished
 // tasks, outbox actions and audit events (see cleanup). Each job also runs
 // once when maintenance starts. A second
 // goroutine runs the keyword index backfill (backfillMessageIndex), a third
@@ -215,6 +216,7 @@ func (o *Orchestrator) maintain() {
 	o.purgeBuffEvents()
 	o.purgeExpiredEffects()
 	o.purgePersonaImages()
+	o.purgeChatImages()
 	o.cleanup()
 	for {
 		select {
@@ -228,6 +230,7 @@ func (o *Orchestrator) maintain() {
 			o.purgeBuffEvents()
 			o.purgeExpiredEffects()
 			o.purgePersonaImages()
+			o.purgeChatImages()
 			o.cleanup()
 		}
 	}

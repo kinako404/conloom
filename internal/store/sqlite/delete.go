@@ -20,7 +20,7 @@ var conversationTables = []string{
 	"conversation_members", "proactive_log", "group_memory", "member_memory", "memory_revisions",
 	"memory_chunks", "memory_chunk_state", "memory_chunk_rebuild", "memory_chunk_forgets",
 	"conversation_status", "conversation_timers", "conversation_buffs", "conversation_buff_events",
-	"conversation_custom_bars", "conversation_effects", "conversation_scene",
+	"conversation_custom_bars", "conversation_effects", "conversation_scene", "chat_images",
 }
 
 func (db *DB) DeleteConversation(ctx context.Context, convKey string) error {
@@ -70,11 +70,11 @@ func (db *DB) DeleteConversation(ctx context.Context, convKey string) error {
 }
 
 // DeleteMessagesFrom deletes the conversation's messages from fromSeq onward,
-// their keyword index rows, the chunks that reach into the range and the
-// timers anchored there. Straddling chunks are queued for rebuild from the
-// messages that remain. Deleting any message changes the conversation's
-// forget stamp, so chunks cut from the messages before they were deleted are
-// never stored (see WriteChunks).
+// their keyword index rows and chat images, the chunks that reach into the
+// range and the timers anchored there. Straddling chunks are queued for
+// rebuild from the messages that remain. Deleting any message changes the
+// conversation's forget stamp, so chunks cut from the messages before they
+// were deleted are never stored (see WriteChunks).
 func (db *DB) DeleteMessagesFrom(ctx context.Context, convKey string, fromSeq int64) (int, error) {
 	var n int
 	err := db.inTx(ctx, func(tx *sql.Tx) error {
@@ -111,6 +111,11 @@ func deleteMessagesFrom(ctx context.Context, tx *sql.Tx, del store.MessageDelete
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM conversation_timers
 		WHERE conversation_key = ? AND anchor_seq >= ?`, del.ConversationKey, del.FromSeq); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM chat_images WHERE conversation_key = ? AND message_id IN (
+		SELECT id FROM messages WHERE conversation_key = ? AND seq >= ?)`,
+		del.ConversationKey, del.ConversationKey, del.FromSeq); err != nil {
 		return 0, err
 	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE conversation_key = ? AND seq >= ?`,
