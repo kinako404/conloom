@@ -39,6 +39,24 @@ func (s *Server) tryImageSlot(w http.ResponseWriter, r *http.Request, slot chan 
 	}
 }
 
+// imageRejected writes the 400 for err when it is an imaging.ErrUnsupported
+// (not a PNG or JPEG, or not decodable) or imaging.ErrTooLarge (too large in
+// pixels) and reports whether it did.
+func (s *Server) imageRejected(w http.ResponseWriter, r *http.Request, err error) bool {
+	switch {
+	case errors.Is(err, imaging.ErrUnsupported):
+		s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
+			fmt.Sprintf("只支持 PNG 和 JPEG 图片（%s）", strings.TrimPrefix(err.Error(), imaging.ErrUnsupported.Error()+": ")), err)
+		return true
+	case errors.Is(err, imaging.ErrTooLarge):
+		s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
+			fmt.Sprintf("图片太大：宽和高都不能超过 %d 像素，总共不超过 %d 万像素（%s）", imaging.MaxEdge, imaging.MaxPixels/10000,
+				strings.TrimPrefix(err.Error(), imaging.ErrTooLarge.Error()+": ")), err)
+		return true
+	}
+	return false
+}
+
 // uploadImage stores the request body, the raw bytes of a PNG or JPEG image
 // (its type is sniffed, the Content-Type header is ignored), as a persona
 // image with its reply copy, and answers 201 with its ID, size and the reply
@@ -62,17 +80,10 @@ func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request, sess *Sessi
 	}
 	defer release()
 	p, err := imaging.Process(data)
-	switch {
-	case errors.Is(err, imaging.ErrUnsupported):
-		s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
-			fmt.Sprintf("只支持 PNG 和 JPEG 图片（%s）", strings.TrimPrefix(err.Error(), imaging.ErrUnsupported.Error()+": ")), err)
+	if s.imageRejected(w, r, err) {
 		return
-	case errors.Is(err, imaging.ErrTooLarge):
-		s.respondError(w, r, http.StatusBadRequest, conloomapi.CodeInvalidEvent,
-			fmt.Sprintf("图片太大：宽和高都不能超过 %d 像素，总共不超过 %d 万像素（%s）", imaging.MaxEdge, imaging.MaxPixels/10000,
-				strings.TrimPrefix(err.Error(), imaging.ErrTooLarge.Error()+": ")), err)
-		return
-	case err != nil:
+	}
+	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
