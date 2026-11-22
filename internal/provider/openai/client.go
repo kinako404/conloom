@@ -31,13 +31,21 @@ var ErrEmptyOutput = errors.New("openai: empty model output")
 // calls tools carries ToolCalls (its Content may be empty); a "tool" message
 // answers the call ToolCallID. Images are data URLs sent before Content as
 // image parts; without them the message is sent with plain text content.
+// Parts, when set, is sent as the content in order (image_url and text parts;
+// empty texts left out) instead of Content and Images, which the sender may
+// keep for estimates. Messages without Parts are sent as before.
 type ChatMessage struct {
 	Role       string
 	Content    string
 	Images     []string
+	Parts      []ChatPart
 	ToolCalls  []ToolCall
 	ToolCallID string
 }
+
+// ChatPart is one part of a message sent as ordered parts: an image data URL
+// (ImageURL) or else Text.
+type ChatPart struct{ Text, ImageURL string }
 
 // ChatRequest is a chat completion request. Tools, when set, are offered to
 // the model; ToolChoice (e.g. "none") is sent only together with Tools.

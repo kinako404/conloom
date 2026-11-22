@@ -91,8 +91,9 @@ type wireMessage struct {
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
-// wirePartsMessage is a ChatMessage with images on the wire: its content is
-// the image parts followed by a text part, left out when the text is empty.
+// wirePartsMessage is a ChatMessage with images or Parts on the wire: its
+// content is the Parts in order, or else the image parts followed by a text
+// part, left out when the text is empty.
 type wirePartsMessage struct {
 	Role       string     `json:"role"`
 	Content    []wirePart `json:"content"`
@@ -111,6 +112,18 @@ type wireImageURL struct {
 }
 
 func (m ChatMessage) MarshalJSON() ([]byte, error) {
+	if len(m.Parts) > 0 {
+		w := wirePartsMessage{Role: m.Role, Content: []wirePart{}, ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID}
+		for _, p := range m.Parts {
+			switch {
+			case p.ImageURL != "":
+				w.Content = append(w.Content, wirePart{Type: "image_url", ImageURL: &wireImageURL{URL: p.ImageURL}})
+			case p.Text != "":
+				w.Content = append(w.Content, wirePart{Type: "text", Text: p.Text})
+			}
+		}
+		return json.Marshal(w)
+	}
 	if len(m.Images) > 0 {
 		w := wirePartsMessage{Role: m.Role, ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID}
 		for _, url := range m.Images {
@@ -129,7 +142,8 @@ func (m ChatMessage) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON accepts content as a string, null, or an array of parts whose
-// images become Images and whose texts, concatenated, become Content.
+// images become Images and whose texts, concatenated, become Content; Parts is
+// never set, so the order of images and texts is not kept.
 func (m *ChatMessage) UnmarshalJSON(b []byte) error {
 	var w struct {
 		Role       string          `json:"role"`
