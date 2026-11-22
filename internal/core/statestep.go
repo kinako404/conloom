@@ -525,9 +525,10 @@ func stateDirective(turns []stateTurn) string {
 // stateInput is the newest turn's context: Current is all turns' Current
 // (each message once, by Seq); History its History before the first of those;
 // Directive stateDirective; no appearance image and no chat images, so the
-// step is text only (a chat image renders as [图片], or as its description
-// where one is known, see stateImageDescriptions); the state block of a
-// private chat read again (o.stateBlock with the turn's persona).
+// step is text only (a chat image renders as its description where one is
+// known, as seen earlier when a reply model took it, else as [图片]; see
+// stateImages); the state block of a private chat read again (o.stateBlock
+// with the turn's persona).
 func (o *Orchestrator) stateInput(ctx context.Context, turns []stateTurn) contextbuilder.Input {
 	newest := turns[len(turns)-1]
 	in := newest.in
@@ -547,7 +548,7 @@ func (o *Orchestrator) stateInput(ctx context.Context, turns []stateTurn) contex
 	}
 	in.Directive = stateDirective(turns)
 	in.Image = nil
-	in.ImageDescriptions = o.stateImageDescriptions(ctx, turns)
+	in.ImageDescriptions, in.SeenEarlier = o.stateImages(ctx, turns)
 	in.CurrentImages = nil
 	if convType(newest.task.ConversationKey) == conloomapi.ConvPrivate {
 		in.State = o.stateBlock(ctx, newest.task, newest.bot, newest.doc, o.readScene(ctx, newest.task, newest.bot))

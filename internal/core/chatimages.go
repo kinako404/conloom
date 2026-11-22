@@ -190,7 +190,9 @@ func (o *Orchestrator) blindImages(ctx context.Context, task store.TaskRecord, i
 // private chat, when the vision profile does not allow sensitive content
 // (logged at Info). All descriptions of one call share chatDescribeTimeout;
 // once it passed, or ctx ended, the images left are not sent to the vision
-// profile (one log line). Failures are logged and not cached.
+// profile (one log line). Right before its vision call each image is read
+// again: one removed since, or now carried by another message, is skipped
+// (logged at Info). Failures are logged and not cached.
 func (o *Orchestrator) describeChatImages(ctx context.Context, task store.TaskRecord, ids []string,
 	priority admission.Priority) map[string]string {
 	notDescribed := func(level slog.Level, ids []string, role, reason string, latency time.Duration, err error) {
@@ -240,6 +242,11 @@ func (o *Orchestrator) describeChatImages(ctx context.Context, task store.TaskRe
 			late = append(late, id)
 			continue
 		}
+		// A withdraw or a chat deletion may have removed it meanwhile.
+		if o.chatImageRemoved(dctx, task.ConversationKey, img) {
+			notDescribed(slog.LevelInfo, []string{id}, role, "image removed", 0, nil)
+			continue
+		}
 		start := time.Now()
 		text, err := o.visionCall(dctx, p, task, priority, "describe:"+id, chatDescribePrompt, img.ViewJPEG, img.ViewWidth, img.ViewHeight)
 		latency := time.Since(start)
@@ -267,6 +274,18 @@ func (o *Orchestrator) describeChatImages(ctx context.Context, task store.TaskRe
 		notDescribed(slog.LevelWarn, late, role, reason, 0, dctx.Err())
 	}
 	return out
+}
+
+// chatImageRemoved reports whether img, as read earlier, is no longer an
+// image of convKey or is now carried by another message. A read error is
+// not reported as removed.
+func (o *Orchestrator) chatImageRemoved(ctx context.Context, convKey string, img store.ChatImage) bool {
+	found, err := o.st.GetChatImages(ctx, convKey, []string{img.ID}, 0)
+	if err != nil {
+		return false
+	}
+	now, ok := found[img.ID]
+	return !ok || now.MessageID != img.MessageID
 }
 
 // markSeen records that the reply profile took in's seen chat images itself:
@@ -327,19 +346,22 @@ func chatDescription(s string) string {
 	return s
 }
 
-// stateImageDescriptions returns, for a state step over turns, the newest
-// turn's ImageDescriptions plus a description of every turn's seen chat image
-// that has one: known when the turn was built, else cached since (a reply on
-// a text-only profile writes them). A read failure is logged and leaves the
-// images without one.
-func (o *Orchestrator) stateImageDescriptions(ctx context.Context, turns []stateTurn) map[string]string {
+// stateImages returns, for a state step over turns, the newest turn's
+// ImageDescriptions plus a description of every turn's seen chat image that
+// has one: known when the turn was built, else cached since (a reply on a
+// text-only profile, or the background description after one on an
+// image-capable profile, writes them); and the newest turn's SeenEarlier plus
+// those of the turns' images without a description that a reply model took
+// itself (marked seen before the step is queued, see markSeen). A read
+// failure is logged and leaves the images as [图片].
+func (o *Orchestrator) stateImages(ctx context.Context, turns []stateTurn) (map[string]string, map[string]bool) {
 	newest := turns[len(turns)-1]
-	out := maps.Clone(newest.in.ImageDescriptions)
+	descriptions, seen := maps.Clone(newest.in.ImageDescriptions), maps.Clone(newest.in.SeenEarlier)
 	add := func(id, text string) {
-		if out == nil {
-			out = map[string]string{}
+		if descriptions == nil {
+			descriptions = map[string]string{}
 		}
-		out[id] = text
+		descriptions[id] = text
 	}
 	var missing []string
 	for _, t := range turns {
@@ -352,18 +374,24 @@ func (o *Orchestrator) stateImageDescriptions(ctx context.Context, turns []state
 		}
 	}
 	if len(missing) == 0 {
-		return out
+		return descriptions, seen
 	}
 	found, err := o.st.GetChatImages(ctx, newest.task.ConversationKey, missing, 0)
 	if err != nil {
 		o.log.Warn("load chat image descriptions failed", "task_id", newest.task.ID,
 			"conversation", newest.task.ConversationKey, "error", err)
-		return out
+		return descriptions, seen
 	}
 	for _, id := range missing {
-		if text := found[id].Description; text != "" {
-			add(id, text)
+		switch img := found[id]; {
+		case img.Description != "":
+			add(id, img.Description)
+		case img.Seen:
+			if seen == nil {
+				seen = map[string]bool{}
+			}
+			seen[id] = true
 		}
 	}
-	return out
+	return descriptions, seen
 }

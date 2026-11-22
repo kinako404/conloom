@@ -455,38 +455,55 @@ func TestChatImages_RegenerateKeepsImages(t *testing.T) {
 	}
 }
 
+// The state step is text only: the turn's image renders as seen earlier when
+// the reply model took it, else as [图片].
 func TestChatImages_StateStepTextOnly(t *testing.T) {
-	env, _, _ := stepEnv(t, testOpts{
-		configure:  withImageModality("short_context"),
-		shortTools: stateModel(t, textReply("好看")),
-	}, config.StateStepAfterReply)
-	key := env.createChat(t, testBot)
-	a := env.putChatImage(t, key, 300, 200)
-	env.waitTask(t, env.panelResponse(t, env.submitImages(t, key, "你看", a)).TaskID)
-	isState := func(req map[string]any) bool {
-		texts, _ := chatImageParts(t, req)
-		return strings.Contains(strings.Join(texts, "\n"), "【状态更新】")
-	}
-	waitUntil(t, "a state step request", func() bool { return slices.ContainsFunc(env.short.Requests(), isState) })
-	waitStateIdle(t, env)
-
-	var replies, states int
-	for _, req := range env.short.Requests() {
-		if isState(req) {
-			states++
-			assertNoImage(t, "state step", req)
-			if last := lastUserText(t, req); !strings.Contains(last, "你看[图片]") || strings.Contains(last, "[图片1]") {
-				t.Errorf("state step text = %q, want 你看[图片] and no [图片1]", last)
+	for _, seen := range []bool{true, false} {
+		t.Run(map[bool]string{true: "seen by the reply", false: "text-only reply"}[seen], func(t *testing.T) {
+			configure := func(*config.Config) {}
+			want := "你看" + seenEarlier
+			if seen {
+				configure = withImageModality("short_context")
+			} else {
+				want = "你看[图片]"
 			}
-			continue
-		}
-		replies++
-		if _, urls := chatImageParts(t, req); len(urls) != 1 {
-			t.Errorf("reply request carries %d images, want 1", len(urls))
-		}
-	}
-	if replies == 0 || states == 0 {
-		t.Fatalf("requests: %d replies, %d state steps; want both", replies, states)
+			env, _, _ := stepEnv(t, testOpts{
+				configure:  configure,
+				shortTools: stateModel(t, textReply("好看")),
+			}, config.StateStepAfterReply)
+			key := env.createChat(t, testBot)
+			a := env.putChatImage(t, key, 300, 200)
+			env.waitTask(t, env.panelResponse(t, env.submitImages(t, key, "你看", a)).TaskID)
+			isState := func(req map[string]any) bool {
+				texts, _ := chatImageParts(t, req)
+				return strings.Contains(strings.Join(texts, "\n"), "【状态更新】")
+			}
+			waitUntil(t, "a state step request", func() bool { return slices.ContainsFunc(env.short.Requests(), isState) })
+			waitStateIdle(t, env)
+
+			var replies, states int
+			for _, req := range env.short.Requests() {
+				if isState(req) {
+					states++
+					assertNoImage(t, "state step", req)
+					last := lastUserText(t, req)
+					if !strings.Contains(last, want) || strings.Contains(last, "[图片1]") {
+						t.Errorf("state step text = %q, want %s and no [图片1]", last, want)
+					}
+					if seen && strings.Contains(last, "你看[图片]") {
+						t.Errorf("state step text = %q shows the seen image as [图片]", last)
+					}
+					continue
+				}
+				replies++
+				if _, urls := chatImageParts(t, req); seen != (len(urls) == 1) {
+					t.Errorf("reply request carries %d images", len(urls))
+				}
+			}
+			if replies == 0 || states == 0 {
+				t.Fatalf("requests: %d replies, %d state steps; want both", replies, states)
+			}
+		})
 	}
 }
 

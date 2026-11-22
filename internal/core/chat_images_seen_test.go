@@ -4,6 +4,7 @@ import (
 	"context"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -233,4 +234,54 @@ func TestChatImages_BackgroundDescribePriority(t *testing.T) {
 	waitUntil(t, "the background description", func() bool {
 		return env.chatImageOf(t, key, a.ID).Description == catDescription
 	})
+}
+
+// A background description skips an image withdrawn, or whose chat was
+// deleted, while an earlier image of the turn was being described.
+func TestChatImages_BackgroundDescribeSkipsRemovedImages(t *testing.T) {
+	for _, remove := range []string{"withdraw", "delete chat"} {
+		t.Run(remove, func(t *testing.T) {
+			entered, release := make(chan struct{}), make(chan struct{})
+			var calls atomic.Int32
+			env := seeingEnv(t, func(map[string]any) (int, string) {
+				if calls.Add(1) == 1 {
+					close(entered)
+					<-release
+				}
+				return 200, catDescription
+			}, true)
+			ctx := context.Background()
+			key := env.createChat(t, testBot)
+			d := env.startPanelDeliverer(t)
+			first, b := env.putChatImage(t, key, 60, 40), env.putChatImage(t, key, 60, 40)
+			id := env.submitImages(t, key, "你看", first, b)
+			env.waitTask(t, env.panelResponse(t, id).TaskID)
+			env.waitPanelReply(t, d, key, env.panelMessage(t, id).Seq)
+			select {
+			case <-entered:
+			case <-time.After(waitLimit):
+				t.Fatal("no background vision request")
+			}
+			var err error
+			if remove == "withdraw" {
+				_, err = env.o.WithdrawPanel(ctx, key, env.panelMessage(t, id).Seq)
+			} else {
+				err = env.o.DeletePanelChat(ctx, key)
+			}
+			if err != nil {
+				t.Fatalf("%s: %v", remove, err)
+			}
+			close(release)
+			waitUntil(t, "the skipped image", func() bool {
+				return strings.Contains(env.logs.String(), `reason="image removed"`)
+			})
+			env.o.Close()
+			if n := env.vision.Calls(); n != 1 {
+				t.Errorf("vision calls = %d, want 1: the removed image is not described", n)
+			}
+			if logs := env.logs.String(); !regexp.MustCompile(`level=INFO msg="chat image not described".*reason="image removed" image=` + b.ID).MatchString(logs) {
+				t.Errorf("logs lack the Info skip of %s:\n%s", b.ID, logs)
+			}
+		})
+	}
 }
