@@ -12,6 +12,7 @@ CREATE TABLE chat_images (
     reply_height     INTEGER NOT NULL,
     reply_tokens     INTEGER NOT NULL,
     description      TEXT NOT NULL DEFAULT '',   -- cached vision description, '' when none
+    seen             INTEGER NOT NULL DEFAULT 0, -- 1 once a reply model took the image itself
     created_by       TEXT NOT NULL,
     created_at       TEXT NOT NULL
 );

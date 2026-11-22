@@ -12,16 +12,16 @@ import (
 
 // chatImageCols are the columns GetChatImages always reads.
 const chatImageCols = `id, conversation_key, message_id, view_width, view_height, reply_width, reply_height,
-	reply_tokens, description, created_by, created_at`
+	reply_tokens, description, seen, created_by, created_at`
 
 func (db *DB) PutChatImage(ctx context.Context, img store.ChatImage) error {
 	_, err := db.w.ExecContext(ctx, `INSERT INTO chat_images
 		(id, conversation_key, message_id, view_jpeg, view_width, view_height, reply_jpeg, reply_width, reply_height,
-			reply_tokens, description, created_by, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			reply_tokens, description, seen, created_by, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		img.ID, img.ConversationKey, img.MessageID, blob(img.ViewJPEG), img.ViewWidth, img.ViewHeight,
-		blob(img.ReplyJPEG), img.ReplyWidth, img.ReplyHeight, img.ReplyTokens, img.Description, img.CreatedBy,
-		fmtTime(nowIfZero(img.CreatedAt)))
+		blob(img.ReplyJPEG), img.ReplyWidth, img.ReplyHeight, img.ReplyTokens, img.Description, img.Seen,
+		img.CreatedBy, fmtTime(nowIfZero(img.CreatedAt)))
 	return err
 }
 
@@ -51,7 +51,7 @@ func (db *DB) GetChatImages(ctx context.Context, convKey string, ids []string, d
 		var img store.ChatImage
 		var created string
 		dest := []any{&img.ID, &img.ConversationKey, &img.MessageID, &img.ViewWidth, &img.ViewHeight, &img.ReplyWidth,
-			&img.ReplyHeight, &img.ReplyTokens, &img.Description, &img.CreatedBy, &created}
+			&img.ReplyHeight, &img.ReplyTokens, &img.Description, &img.Seen, &img.CreatedBy, &created}
 		if data&store.ChatImageReply != 0 {
 			dest = append(dest, &img.ReplyJPEG)
 		}
@@ -75,6 +75,19 @@ func (db *DB) SetChatImageDescription(ctx context.Context, convKey, id, text str
 	if err == nil && n == 0 {
 		return store.ErrNotFound
 	}
+	return err
+}
+
+func (db *DB) MarkChatImagesSeen(ctx context.Context, convKey string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	list, err := json.Marshal(ids)
+	if err != nil {
+		return err
+	}
+	_, err = db.w.ExecContext(ctx, `UPDATE chat_images SET seen = 1
+		WHERE conversation_key = ? AND seen = 0 AND id IN (SELECT value FROM json_each(?))`, convKey, string(list))
 	return err
 }
 

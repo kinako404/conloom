@@ -57,7 +57,7 @@ func TestBuild_NoChatImagesUnchanged(t *testing.T) {
 	in.Current = []store.MessageRecord{withImages(userMsg("小明", "还有", at(12, 5)), "")}
 	nilOut := Build(in)
 	nilBase := BaseTokens(in)
-	in.CurrentImages, in.ImageDescriptions = []ChatImage{}, map[string]string{}
+	in.CurrentImages, in.ImageDescriptions, in.SeenEarlier = []ChatImage{}, map[string]string{}, map[string]bool{}
 	emptyOut := Build(in)
 	if !reflect.DeepEqual(nilOut, emptyOut) || BaseTokens(in) != nilBase {
 		t.Errorf("empty CurrentImages/ImageDescriptions changed the output:\n%+v\n%+v", nilOut, emptyOut)
@@ -278,6 +278,27 @@ func TestBuild_HistoryImagesUseCachedDescriptions(t *testing.T) {
 		t.Errorf("history = %q, want %q", out.Messages[1].Content, want)
 	}
 	assertNoImages(t, out.Messages)
+}
+
+func TestBuild_ImagesSeenEarlier(t *testing.T) {
+	const seenEarlier = "[图片（你之前看过，细节以你当时的回复为准）]"
+	if imageSeenEarlierPlaceholder != seenEarlier {
+		t.Errorf("imageSeenEarlierPlaceholder = %q", imageSeenEarlierPlaceholder)
+	}
+	in := baseInput()
+	in.History = []store.MessageRecord{withImages(userMsg("小明", "看", at(12, 0)), "img_x", "img_y", "img_z"), botMsg("好看", at(12, 1))}
+	in.Current = []store.MessageRecord{withImages(userMsg("小明", "还有", at(12, 5)), "img_old", "img_a")}
+	in.CurrentImages = []ChatImage{{ID: "img_a", DataURL: chatURLA, Tokens: 10}}
+	in.ImageDescriptions = map[string]string{"img_x": "海边的日落"}
+	in.SeenEarlier = map[string]bool{"img_x": true, "img_y": true, "img_old": true, "img_a": true}
+	out := Build(in)
+	if want := "[12:00] 小明：看[图片：海边的日落]" + seenEarlier + "[图片]"; out.Messages[1].Content != want {
+		t.Errorf("history = %q, want %q", out.Messages[1].Content, want)
+	}
+	last := lastMessage(out)
+	if want := "还有" + seenEarlier + "[图片1]"; !strings.Contains(last.Content, want) || strings.Contains(last.Content, imagesUnseenNote) {
+		t.Errorf("current = %q, want it to contain %q and no unseen note", last.Content, want)
+	}
 }
 
 func TestWithoutImage_StripsEveryImage(t *testing.T) {

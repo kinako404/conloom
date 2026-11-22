@@ -208,7 +208,7 @@ func TestChatImages_NoVisionCannotSee(t *testing.T) {
 		t.Fatalf("short requests = %d, want 1", len(reqs))
 	}
 	assertCannotSee(t, "no vision", reqs[0])
-	if logs := env.logs.String(); !strings.Contains(logs, `msg="chat image not described"`) || !strings.Contains(logs, a.ID) {
+	if logs := env.logs.String(); !strings.Contains(logs, `level=INFO msg="chat image not described"`) || !strings.Contains(logs, a.ID) {
 		t.Errorf("logs lack the not-described record:\n%s", logs)
 	}
 }
@@ -232,6 +232,10 @@ func TestChatImages_VisionNotAllowedSensitive(t *testing.T) {
 	assertCannotSee(t, "vision not allowed", env.short.Requests()[0])
 	if got := env.chatImageOf(t, key, a.ID).Description; got != "" {
 		t.Errorf("cached description = %q, want none", got)
+	}
+	if logs := env.logs.String(); !strings.Contains(logs, `level=INFO msg="chat image not described"`) ||
+		!strings.Contains(logs, `reason="vision profile does not allow sensitive content"`) {
+		t.Errorf("logs lack the not-described record at Info:\n%s", logs)
 	}
 }
 

@@ -209,6 +209,9 @@ type Store interface {
 	GetChatImages(ctx context.Context, convKey string, ids []string, data ChatImageData) (map[string]ChatImage, error)
 	// SetChatImageDescription caches text for the image; ErrNotFound when convKey has no such image.
 	SetChatImageDescription(ctx context.Context, convKey, id, text string) error
+	// MarkChatImagesSeen sets Seen on the images of convKey among ids; unknown IDs and other chats' images are
+	// left alone.
+	MarkChatImagesSeen(ctx context.Context, convKey string, ids []string) error
 	// PurgeChatImages deletes the images no stored message carries that were uploaded before createdBefore.
 	// It returns how many it deleted.
 	PurgeChatImages(ctx context.Context, createdBefore time.Time) (int, error)

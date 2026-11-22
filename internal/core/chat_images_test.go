@@ -245,6 +245,35 @@ func TestSubmitPanel_ImagePurgedBeforeClaim(t *testing.T) {
 	}
 }
 
+// failAfterIngest stores what Ingest is given, then fails, as when the
+// commit's answer is lost.
+type failAfterIngest struct{ store.Store }
+
+var errLostAck = errors.New("test: ingest answer lost")
+
+func (s failAfterIngest) Ingest(ctx context.Context, in store.Ingest) (*store.EventRecord, error) {
+	if _, err := s.Store.Ingest(ctx, in); err != nil {
+		return nil, err
+	}
+	return nil, errLostAck
+}
+
+// A submit that fails after the store claimed its images for its own message
+// keeps its error: the images are not gone, they went with the message.
+func TestSubmitPanel_FailureAfterClaimNotBadImages(t *testing.T) {
+	env := newTestOrchestrator(t, testOpts{configure: allowAllPrivate})
+	key := env.createChat(t, testBot)
+	a := env.putChatImage(t, key, 20, 20)
+	env.o.st = failAfterIngest{env.o.st}
+	_, _, err := env.o.SubmitPanel(context.Background(), key, "admin", "你看", a.ID)
+	if !errors.Is(err, errLostAck) || errors.Is(err, ErrBadImages) {
+		t.Fatalf("err = %v, want the store's error, not ErrBadImages", err)
+	}
+	if got := env.chatImageOf(t, key, a.ID).MessageID; got == "" {
+		t.Fatal("the image is not claimed: the test store did not store the message")
+	}
+}
+
 func TestChatImages_ReplySeesImages(t *testing.T) {
 	turn := func(withImages bool) (map[string]any, int, []store.ChatImage) {
 		env := newTestOrchestrator(t, testOpts{configure: func(c *config.Config) {
@@ -329,8 +358,8 @@ func TestChatImages_HistoryNeverResent(t *testing.T) {
 	}
 	assertNoImage(t, "next turn", reqs[1])
 	text := requestText(t, reqs[1])
-	if !strings.Contains(text, "你看[图片][图片]") || strings.Contains(text, "[图片1]") {
-		t.Errorf("next turn text = %q, want the earlier message as 你看[图片][图片]", text)
+	if !strings.Contains(text, "你看"+seenEarlier+seenEarlier) || strings.Contains(text, "[图片1]") {
+		t.Errorf("next turn text = %q, want the earlier message as 你看 and two images seen earlier", text)
 	}
 }
 
@@ -353,7 +382,7 @@ func TestChatImages_HistoryUsesCachedDescription(t *testing.T) {
 	env.waitTask(t, env.panelResponse(t, env.submitPanel(t, key, "admin", "然后呢")).TaskID)
 	req := env.short.Requests()[1]
 	assertNoImage(t, "next turn", req)
-	if text := requestText(t, req); !strings.Contains(text, "你看[图片][图片：一只橘猫趴在窗台上]") {
+	if text := requestText(t, req); !strings.Contains(text, "你看"+seenEarlier+"[图片：一只橘猫趴在窗台上]") {
 		t.Errorf("next turn text = %q, want the described image in the history", text)
 	}
 }

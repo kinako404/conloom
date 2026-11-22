@@ -181,7 +181,8 @@ type PersonaImage struct {
 }
 
 // ChatImage is an image uploaded to a panel chat (see imaging.ProcessChat). MessageID is "" until a stored message
-// carries it. Description is its cached vision description, "" when none.
+// carries it. Description is its cached vision description, "" when none; Seen is set once a reply model took the
+// image itself (see MarkChatImagesSeen).
 type ChatImage struct {
 	ID, ConversationKey, MessageID       string
 	ViewJPEG                             []byte
@@ -189,6 +190,7 @@ type ChatImage struct {
 	ReplyJPEG                            []byte
 	ReplyWidth, ReplyHeight, ReplyTokens int
 	Description, CreatedBy               string
+	Seen                                 bool
 	CreatedAt                            time.Time
 }
 

@@ -71,7 +71,8 @@ func (o *Orchestrator) DescribeAppearance(ctx context.Context, imageID, actor st
 	}
 
 	start := time.Now()
-	text, err := o.visionCall(ctx, p, "describe:"+imageID, describePrompt, scaled, size.Width, size.Height)
+	text, err := o.visionCall(ctx, p, store.TaskRecord{}, admission.PriorityInteractive, "describe:"+imageID,
+		describePrompt, scaled, size.Width, size.Height)
 	latency := time.Since(start)
 	if err != nil {
 		o.log.Warn("describe appearance failed", "image", imageID, "actor", actor, "role", p.Role,
@@ -84,12 +85,13 @@ func (o *Orchestrator) DescribeAppearance(ctx context.Context, imageID, actor st
 }
 
 // visionCall sends prompt with the w×h JPEG img in a single user message to
-// the vision profile p, once a lease of it (admission.PriorityInteractive, ID
-// leaseID, lasting until ctx's deadline) is granted. The call is recorded
-// with purpose vision, failed or not, and a successful one is logged (model
-// call, without the image). It returns the model's final answer, trimmed,
-// without its reasoning.
-func (o *Orchestrator) visionCall(ctx context.Context, p *router.Profile, leaseID, prompt string, img []byte, w, h int) (string, error) {
+// the vision profile p, once a lease of it (priority, ID leaseID, lasting
+// until ctx's deadline) is granted. The call is recorded with purpose vision,
+// failed or not, under task's bot, conversation and ID (none for a zero
+// task), and a successful one is logged (model call, without the image). It
+// returns the model's final answer, trimmed, without its reasoning.
+func (o *Orchestrator) visionCall(ctx context.Context, p *router.Profile, task store.TaskRecord, priority admission.Priority,
+	leaseID, prompt string, img []byte, w, h int) (string, error) {
 	role, limits := string(p.Role), p.Config.Context
 	estimate := imaging.Tokens(w, h) + contextbuilder.Estimate(prompt, p.Config.TokenEstimateFactor)
 	ttl := o.describeTimeout
@@ -100,7 +102,7 @@ func (o *Orchestrator) visionCall(ctx context.Context, p *router.Profile, leaseI
 		ID:       leaseID,
 		Profile:  role,
 		Tokens:   estimate + limits.ReservedOutputTokens + limits.SafetyMarginTokens,
-		Priority: admission.PriorityInteractive,
+		Priority: priority,
 		TTL:      ttl + leaseSlack,
 	})
 	if err != nil {
@@ -119,7 +121,8 @@ func (o *Orchestrator) visionCall(ctx context.Context, p *router.Profile, leaseI
 	resp, err := p.Client.Chat(ctx, req)
 	latency := time.Since(start)
 	o.usage.Record(store.ModelCall{
-		At: start.UTC(), Purpose: store.PurposeVision, Role: role, Model: cmp.Or(resp.Model, p.Config.Model),
+		At: start.UTC(), BotInstanceID: task.BotInstanceID, ConversationKey: task.ConversationKey, TaskID: task.ID,
+		Purpose: store.PurposeVision, Role: role, Model: cmp.Or(resp.Model, p.Config.Model),
 		PromptTokens: resp.PromptTokens, CompletionTokens: resp.CompletionTokens, ReasoningTokens: resp.ReasoningTokens,
 		LatencyMS: latency.Milliseconds(), Outcome: usage.Outcome(err), FinishReason: resp.FinishReason,
 	})

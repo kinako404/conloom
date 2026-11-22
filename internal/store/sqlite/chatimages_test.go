@@ -135,6 +135,7 @@ func TestChatImages_PutGet(t *testing.T) {
 	a := testChatImage(k1, "img_a", at)
 	b := testChatImage(k1, "img_b", at.Add(time.Minute))
 	b.ViewJPEG, b.ReplyJPEG, b.ReplyTokens = []byte{6, 7}, []byte{8}, 85
+	a.Seen = true
 	for _, img := range []store.ChatImage{a, b} {
 		if err := db.PutChatImage(ctx, img); err != nil {
 			t.Fatalf("PutChatImage %s: %v", img.ID, err)
@@ -185,6 +186,34 @@ func TestChatImages_PutGet(t *testing.T) {
 	check("both", getChatImages(t, db, k1, ids, store.ChatImageReply|store.ChatImageView), a, b)
 	check("other chat", getChatImages(t, db, k2, ids, store.ChatImageReply))
 	check("no ids", getChatImages(t, db, k1, nil, store.ChatImageReply))
+}
+
+func TestChatImages_MarkSeen(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	k1, k2 := chatImageKey("chat_1"), chatImageKey("chat_2")
+	now := time.Now()
+	seedChatImage(t, db, k1, "img_a", now)
+	seedChatImage(t, db, k1, "img_b", now)
+	seedChatImage(t, db, k2, "img_c", now)
+	if err := db.SetChatImageDescription(ctx, k1, "img_a", "一只橘猫"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := db.MarkChatImagesSeen(ctx, k1, []string{"img_a", "img_c", "img_x"}); err != nil {
+			t.Fatalf("MarkChatImagesSeen: %v", err)
+		}
+	}
+	if err := db.MarkChatImagesSeen(ctx, k1, nil); err != nil {
+		t.Fatalf("MarkChatImagesSeen without ids: %v", err)
+	}
+	got := getChatImages(t, db, k1, []string{"img_a", "img_b"}, 0)
+	if !got["img_a"].Seen || got["img_a"].Description != "一只橘猫" || got["img_b"].Seen {
+		t.Errorf("chat_1 images = %+v, want only img_a seen, its description kept", got)
+	}
+	if getChatImages(t, db, k2, []string{"img_c"}, 0)["img_c"].Seen {
+		t.Error("another chat's image was marked seen")
+	}
 }
 
 func TestChatImages_ClaimedByStoredMessage(t *testing.T) {

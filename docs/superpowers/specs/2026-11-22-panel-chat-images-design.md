@@ -120,6 +120,16 @@ chat page gets the attach UI (it should at least render images).
    as references to the attached images (e.g. `[图片1]`, matching the labels);
    older messages and text-only paths keep `[图片]`, or `[图片：<描述>]` where
    a cached description exists.
+   *Amended after the final review:* an image the reply model actually saw
+   must not later read as `[图片]` (it could then say it cannot see a picture
+   it just described). After a successful reply on an image-capable profile,
+   the turn's seen images are marked `seen` (column in migration 0023) and,
+   when they have no description, described in the background with the
+   vision profile (same describe path, privacy gate and 30 s bound,
+   background admission priority, cancelled on Close, never delaying the
+   reply). Later turns render a described image as `[图片：<描述>]`, a seen
+   one without a description as `[图片（你之前看过，细节以你当时的回复为准）]`,
+   and any other as `[图片]`.
 5. **Retention**: there is no message retention purge; chat images are deleted
    with their messages on withdraw, chat deletion and bot/scope deletion.
    Uploaded images never attached to a sent message are purged after 24 h.

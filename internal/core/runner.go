@@ -377,7 +377,7 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 	}
 	// The chat images of the turn's messages go with the final user message;
 	// like the appearance image they count in the route's BaseTokens.
-	in.CurrentImages, in.ImageDescriptions = o.turnImages(ctx, task, conv, history, current)
+	in.CurrentImages, in.ImageDescriptions, in.SeenEarlier = o.turnImages(ctx, task, conv, history, current)
 	run := o.newSkillRun(task, bot, conv, set, triggers, &out)
 	if run != nil {
 		out.skillCalls = run.counts
@@ -434,6 +434,12 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		return fail(conloomapi.CodeModelUnavailable, CopyUnavailable, err)
 	}
 	out.meta.SelectedModel = resp.Model
+	// The model took the turn's chat images itself: later turns show them as
+	// seen, and they get descriptions for the text-only paths meanwhile.
+	if slices.Contains(d.Profile.Config.Modalities, "image") {
+		o.markSeen(ctx, task, in)
+		o.describeSeenLater(task, in)
+	}
 
 	out.status = conloomapi.TaskSucceeded
 	if isSkip(resp.Content) {

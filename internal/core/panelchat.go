@@ -106,7 +106,7 @@ func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text
 	if err != nil {
 		// The cleanup loop purges unsent images without the panel lock: one
 		// purged since the check fails the store's claim.
-		if len(images) > 0 && errors.Is(o.unsentChatImages(ctx, convKey, images), ErrBadImages) {
+		if o.chatImagesTaken(ctx, convKey, images, ev.Message.ID) {
 			return "", "", ErrBadImages
 		}
 		return "", "", err

@@ -86,6 +86,10 @@ type Input struct {
 	// attachments not in CurrentImages; such an attachment renders as
 	// [图片：<description>] instead of [图片].
 	ImageDescriptions map[string]string
+	// SeenEarlier marks, by attachment ID, image attachments that a reply
+	// model took in an earlier turn; one not in CurrentImages and without a
+	// description renders as imageSeenEarlierPlaceholder instead of [图片].
+	SeenEarlier map[string]bool
 }
 
 // ChatImage is an image the person sent with Current: ID is its attachment ID. With a DataURL the model sees it
@@ -105,6 +109,10 @@ func ChatImageLabel(n int) string {
 const (
 	imagePlaceholder       = "[图片]"
 	imageUnseenPlaceholder = "[图片（看不到内容）]"
+	// imageSeenEarlierPlaceholder is an image the model saw in an earlier
+	// turn and has no description of: unlike [图片], it does not say the model
+	// cannot see it.
+	imageSeenEarlierPlaceholder = "[图片（你之前看过，细节以你当时的回复为准）]"
 	// imagesUnseenNote follows the current messages, before the directive,
 	// when one of their images renders as imageUnseenPlaceholder.
 	imagesUnseenNote = "（标着“看不到内容”的图片你没有收到，不知道里面是什么，不要假装看到了。）"
@@ -306,8 +314,9 @@ func (in Input) seenImages() []ChatImage {
 // imageText renders an image attachment in the reply's history and current
 // block. One in CurrentImages is [图片n] when it is the n-th seen image, else
 // [图片：<Description>] or, without a description, imageUnseenPlaceholder.
-// Any other is [图片：<ImageDescriptions[ID]>] when described, else [图片].
-// Descriptions are put on one line.
+// Any other is [图片：<ImageDescriptions[ID]>] when described, else
+// imageSeenEarlierPlaceholder when in SeenEarlier, else [图片]. Descriptions
+// are put on one line.
 func (in Input) imageText(a conloomapi.Attachment) string {
 	if a.ID == "" {
 		return imagePlaceholder
@@ -330,6 +339,9 @@ func (in Input) imageText(a conloomapi.Attachment) string {
 	}
 	if d := oneLine(in.ImageDescriptions[a.ID]); d != "" {
 		return "[图片：" + d + "]"
+	}
+	if in.SeenEarlier[a.ID] {
+		return imageSeenEarlierPlaceholder
 	}
 	return imagePlaceholder
 }
