@@ -1,6 +1,7 @@
 package contextbuilder
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -70,10 +71,44 @@ type Input struct {
 	ToolSchema string
 	// Image, when set, is the bot's appearance image. It goes on the first
 	// user message, whose text then starts with AppearanceLabel on a line of
-	// its own. It never changes the system prompt; its Tokens and the label
-	// count toward BaseTokens and EstimatedTokens.
+	// its own; when that is the final user message and it carries chat images,
+	// the label and image lead its Parts instead (see Build). It never changes
+	// the system prompt; its Tokens and the label count toward BaseTokens and
+	// EstimatedTokens.
 	Image *ImageRef
+	// CurrentImages are the images of Current in message and attachment
+	// order; the caller keeps at most four. The ones with a DataURL are seen:
+	// the n-th renders as [图片n] and goes on the final user message after
+	// ChatImageLabel(n). Their Tokens and labels count toward BaseTokens and
+	// EstimatedTokens.
+	CurrentImages []ChatImage
+	// ImageDescriptions are cached descriptions by attachment ID, for image
+	// attachments not in CurrentImages; such an attachment renders as
+	// [图片：<description>] instead of [图片].
+	ImageDescriptions map[string]string
 }
+
+// ChatImage is an image the person sent with Current: ID is its attachment ID. With a DataURL the model sees it
+// (Tokens is its estimate); without one, Description stands in for it, "" meaning the model cannot see it.
+type ChatImage struct {
+	ID, DataURL string
+	Tokens      int
+	Description string
+}
+
+// ChatImageLabel precedes the n-th (1-based) image the model sees among
+// CurrentImages, which the text shows as [图片n].
+func ChatImageLabel(n int) string {
+	return fmt.Sprintf("【对方发来的第 %d 张图片，即消息里的[图片%d]】", n, n)
+}
+
+const (
+	imagePlaceholder       = "[图片]"
+	imageUnseenPlaceholder = "[图片（看不到内容）]"
+	// imagesUnseenNote follows the current messages, before the directive,
+	// when one of their images renders as imageUnseenPlaceholder.
+	imagesUnseenNote = "（标着“看不到内容”的图片你没有收到，不知道里面是什么，不要假装看到了。）"
+)
 
 // AppearanceLabel starts the text of the message that carries the appearance
 // image, so the model takes the image as its own looks.
@@ -101,12 +136,16 @@ var defaultLocation = sync.OnceValue(func() *time.Location {
 
 // BaseTokens estimates the system prompt plus the current input (including
 // the reply target, mentions and directive), the memory block, the
-// relationship hint, the state block and the appearance image with its label,
-// which are always sent regardless of Budget.
+// relationship hint, the state block, the appearance image with its label and
+// the seen chat images with their labels, which are always sent regardless of
+// Budget.
 func BaseTokens(in Input) int {
 	n := Estimate(renderCurrent(in), in.TokenFactor) + MessageOverhead
 	if in.Image != nil {
 		n += in.Image.Tokens + Estimate(AppearanceLabel+"\n", in.TokenFactor)
+	}
+	for i, c := range in.seenImages() {
+		n += c.Tokens + Estimate(ChatImageLabel(i+1), in.TokenFactor)
 	}
 	if in.Memory != "" {
 		n += Estimate(in.Memory+"\n\n", in.TokenFactor)
@@ -136,6 +175,13 @@ func BaseTokens(in Input) int {
 // and who it mentions, and the annotations count toward its cost. Bot history has echoed transcript prefixes stripped; a bot message left
 // with nothing is skipped and counted as dropped. The appearance image, if
 // any, goes on the first user message (see Input.Image).
+//
+// With at least one seen chat image (see Input.CurrentImages), the final user
+// message keeps its full text in Content and also gets Parts, in order: the
+// AppearanceLabel and the appearance image when the appearance image goes on
+// this same message (it then has no Images and no AppearanceLabel line in
+// Content), ChatImageLabel(n) and the n-th seen image for each, and the text.
+// Without one, no message has Parts.
 func Build(in Input) Output {
 	loc := in.location()
 
@@ -209,11 +255,27 @@ func Build(in Input) Output {
 	out.Messages = append(out.Messages, openai.ChatMessage{Role: "user", Content: current})
 
 	out.EstimatedTokens = Estimate(in.ToolSchema, in.TokenFactor)
+	last := len(out.Messages) - 1
+	seen := in.seenImages()
+	var parts []openai.ChatPart
 	if in.Image != nil {
-		first := &out.Messages[slices.IndexFunc(out.Messages, func(m openai.ChatMessage) bool { return m.Role == "user" })]
-		first.Content = AppearanceLabel + "\n" + first.Content
-		first.Images = []string{in.Image.DataURL}
+		i := slices.IndexFunc(out.Messages, func(m openai.ChatMessage) bool { return m.Role == "user" })
+		if i == last && len(seen) > 0 {
+			parts = append(parts, openai.ChatPart{Text: AppearanceLabel}, openai.ChatPart{ImageURL: in.Image.DataURL})
+			out.EstimatedTokens += Estimate(AppearanceLabel+"\n", in.TokenFactor)
+		} else {
+			out.Messages[i].Content = AppearanceLabel + "\n" + out.Messages[i].Content
+			out.Messages[i].Images = []string{in.Image.DataURL}
+		}
 		out.EstimatedTokens += in.Image.Tokens
+	}
+	if len(seen) > 0 {
+		for i, c := range seen {
+			label := ChatImageLabel(i + 1)
+			parts = append(parts, openai.ChatPart{Text: label}, openai.ChatPart{ImageURL: c.DataURL})
+			out.EstimatedTokens += c.Tokens + Estimate(label, in.TokenFactor)
+		}
+		out.Messages[last].Parts = append(parts, openai.ChatPart{Text: out.Messages[last].Content})
 	}
 	for _, m := range out.Messages {
 		out.EstimatedTokens += Estimate(m.Content, in.TokenFactor) + MessageOverhead
@@ -229,6 +291,52 @@ func (in Input) location() *time.Location {
 	}
 	return defaultLocation()
 }
+
+// seenImages returns the CurrentImages the model sees: those with a DataURL.
+func (in Input) seenImages() []ChatImage {
+	var seen []ChatImage
+	for _, c := range in.CurrentImages {
+		if c.DataURL != "" {
+			seen = append(seen, c)
+		}
+	}
+	return seen
+}
+
+// imageText renders an image attachment in the reply's history and current
+// block. One in CurrentImages is [图片n] when it is the n-th seen image, else
+// [图片：<Description>] or, without a description, imageUnseenPlaceholder.
+// Any other is [图片：<ImageDescriptions[ID]>] when described, else [图片].
+// Descriptions are put on one line.
+func (in Input) imageText(a conloomapi.Attachment) string {
+	if a.ID == "" {
+		return imagePlaceholder
+	}
+	n := 0
+	for _, c := range in.CurrentImages {
+		if c.DataURL != "" {
+			n++
+		}
+		if c.ID != a.ID {
+			continue
+		}
+		if c.DataURL != "" {
+			return fmt.Sprintf("[图片%d]", n)
+		}
+		if d := oneLine(c.Description); d != "" {
+			return "[图片：" + d + "]"
+		}
+		return imageUnseenPlaceholder
+	}
+	if d := oneLine(in.ImageDescriptions[a.ID]); d != "" {
+		return "[图片：" + d + "]"
+	}
+	return imagePlaceholder
+}
+
+// plainImageText renders every image attachment as [图片], for the text-only
+// paths (Transcript, reply excerpts).
+func plainImageText(conloomapi.Attachment) string { return imagePlaceholder }
 
 // SpeakerNames returns the distinct display names of the members in History,
 // Current and ReplyTargets, the names of the members they mention, and
@@ -276,7 +384,7 @@ func renderHistory(rec store.MessageRecord, in Input, names []string, loc *time.
 		if rec.Text == "" && len(rec.Attachments) == 0 {
 			return "", "", false
 		}
-		return "assistant", renderBody(rec), true
+		return "assistant", renderBody(rec, in.imageText), true
 	}
 	annotation := ""
 	if rec.ReplyTo != "" {
@@ -287,7 +395,7 @@ func renderHistory(rec store.MessageRecord, in Input, names []string, loc *time.
 		}
 	}
 	annotation += mentionAnnotation(in, rec)
-	return "user", "[" + clock(rec, loc) + "] " + displayName(rec) + annotation + "：" + renderCappedBody(rec), true
+	return "user", "[" + clock(rec, loc) + "] " + displayName(rec) + annotation + "：" + cappedBody(rec, in.imageText), true
 }
 
 // mentionAnnotation is "（@了 你、小红）" naming, in order and once each, who
@@ -369,7 +477,7 @@ func replyExcerpt(rec store.MessageRecord, botName string, names []string, maxRu
 	if rec.FromBot {
 		rec.Text = StripTranscriptPrefix(rec.Text, botName, names...)
 	}
-	body := []rune(strings.Join(strings.Fields(renderBody(rec)), " "))
+	body := []rune(strings.Join(strings.Fields(renderBody(rec, plainImageText)), " "))
 	if len(body) > maxRunes {
 		return string(body[:maxRunes]) + "…"
 	}
@@ -404,11 +512,17 @@ func currentReplyTarget(in Input) (target store.MessageRecord, replies, known bo
 	return store.MessageRecord{}, false, false
 }
 
-// renderCappedBody is renderBody limited to HistoryMessageMaxRunes: only the
-// text is cut (marked with historyTruncatedMarker), and attachment placeholders
-// are always kept whole.
+// renderCappedBody is cappedBody with every image as [图片], for the
+// text-only paths.
 func renderCappedBody(rec store.MessageRecord) string {
-	placeholders := renderPlaceholders(rec)
+	return cappedBody(rec, plainImageText)
+}
+
+// cappedBody is renderBody limited to HistoryMessageMaxRunes: only the text is
+// cut (marked with historyTruncatedMarker), and attachment placeholders are
+// always kept whole.
+func cappedBody(rec store.MessageRecord, image func(conloomapi.Attachment) string) string {
+	placeholders := renderPlaceholders(rec, image)
 	limit := max(HistoryMessageMaxRunes-utf8.RuneCountInString(placeholders), 0)
 	n := 0
 	for i := range rec.Text {
@@ -417,11 +531,13 @@ func renderCappedBody(rec store.MessageRecord) string {
 		}
 		n++
 	}
-	return renderBody(rec)
+	return renderBody(rec, image)
 }
 
 // renderCurrent renders the current message block followed by the directive,
-// or only the directive when there is no current message.
+// or only the directive when there is no current message. imagesUnseenNote
+// follows the current messages when one of their images renders as
+// imageUnseenPlaceholder.
 func renderCurrent(in Input) string {
 	if len(in.Current) == 0 {
 		return in.Directive
@@ -435,8 +551,17 @@ func renderCurrent(in Input) string {
 	if a := mentionAnnotation(in, in.Current...); a != "" {
 		lines = append(lines, a)
 	}
+	unseen := false
 	for _, rec := range in.Current {
-		lines = append(lines, renderBody(rec))
+		lines = append(lines, renderBody(rec, in.imageText))
+		for _, a := range rec.Attachments {
+			if a.Type == "image" && in.imageText(a) == imageUnseenPlaceholder {
+				unseen = true
+			}
+		}
+	}
+	if unseen {
+		lines = append(lines, imagesUnseenNote)
 	}
 	if in.Directive != "" {
 		lines = append(lines, "", in.Directive)
@@ -444,8 +569,10 @@ func renderCurrent(in Input) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderBody(rec store.MessageRecord) string {
-	body := rec.Text + renderPlaceholders(rec)
+// renderBody is rec's text followed by its attachment placeholders (see
+// renderPlaceholders), or a note when both are empty.
+func renderBody(rec store.MessageRecord, image func(conloomapi.Attachment) string) string {
+	body := rec.Text + renderPlaceholders(rec, image)
 	if body != "" {
 		return body
 	}
@@ -455,11 +582,13 @@ func renderBody(rec store.MessageRecord) string {
 	return "（没有文字内容）"
 }
 
-func renderPlaceholders(rec store.MessageRecord) string {
+// renderPlaceholders renders rec's attachments in order: an image as image
+// renders it (Input.imageText or plainImageText), anything else as [文件].
+func renderPlaceholders(rec store.MessageRecord, image func(conloomapi.Attachment) string) string {
 	var b strings.Builder
 	for _, a := range rec.Attachments {
 		if a.Type == "image" {
-			b.WriteString("[图片]")
+			b.WriteString(image(a))
 		} else {
 			b.WriteString("[文件]")
 		}
@@ -476,16 +605,21 @@ func displayName(rec store.MessageRecord) string {
 	return genericMemberName
 }
 
-// WithoutImage returns msgs, as built by Build, without the appearance image
-// and its AppearanceLabel line, for a model that does not take images. msgs
+// WithoutImage returns msgs, as built by Build, with no image anywhere, for a
+// model that does not take images: every message has its Images and Parts
+// dropped, a message that carried Images (the appearance image) loses its
+// AppearanceLabel line, and a message with Parts keeps its Content. msgs
 // itself is left unchanged.
 func WithoutImage(msgs []openai.ChatMessage) []openai.ChatMessage {
-	i := slices.IndexFunc(msgs, func(m openai.ChatMessage) bool { return len(m.Images) > 0 })
-	if i < 0 {
+	if !slices.ContainsFunc(msgs, func(m openai.ChatMessage) bool { return len(m.Images) > 0 || len(m.Parts) > 0 }) {
 		return msgs
 	}
 	out := slices.Clone(msgs)
-	out[i].Images = nil
-	out[i].Content = strings.TrimPrefix(out[i].Content, AppearanceLabel+"\n")
+	for i := range out {
+		if len(out[i].Images) > 0 {
+			out[i].Content = strings.TrimPrefix(out[i].Content, AppearanceLabel+"\n")
+		}
+		out[i].Images, out[i].Parts = nil, nil
+	}
 	return out
 }
