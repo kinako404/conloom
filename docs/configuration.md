@@ -107,13 +107,13 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 
 按角色配置模型。只有 `short_context`（必需）和 `long_context`（可选）两个名字会被路由使用：短上下文模型装得下就用它，装不下且群策略允许时用长上下文模型。路由与熔断细节见 [架构 5.3 节](architecture.md#53-路由和熔断)。
 
-`vision`（可选）是识图模型，只用来根据外观参考图生成外观描述（面板里的"生成外观介绍"），回复永远不会路由到它。字段和其他配置相同，同样要通过下表的检查，另外 `modalities` 必须包含 `image`。它有自己的并发名额（`runtime.max_concurrency`），输出预留 `context.reserved_output_tokens` 作为请求的 `max_tokens`（推理模型的思考也算在内，要留足）；一次识图最多 40 秒，用量按用途 `vision` 记录。估算 token 用的系数取各配置的最大值时不算它。没有配置时，生成外观介绍会提示未配置识图模型。
+`vision`（可选）是识图模型，回复永远不会路由到它。它有两个用处：根据外观参考图生成外观描述（面板里的"生成外观介绍"，一次最多 40 秒）；面板聊天的回复路由到不支持图片的模型时，给对方发来的每张图片写一两句描述，代替图片放进回复的上下文（一次回复请求里的所有描述合起来最多 30 秒，描述存在数据库的 `chat_images.description` 里，同一张图只描述一次）。面板聊天是私聊，所以第二个用处要求 `vision` 的 `privacy.allow_sensitive_content: true`，否则不描述，回复模型只知道“这里有一张它看不到的图片”。字段和其他配置相同，同样要通过下表的检查，另外 `modalities` 必须包含 `image`。它有自己的并发名额（`runtime.max_concurrency`），输出预留 `context.reserved_output_tokens` 作为请求的 `max_tokens`（推理模型的思考也算在内，要留足）；用量按用途 `vision` 记录。估算 token 用的系数取各配置的最大值时不算它。没有配置时，生成外观介绍会提示未配置识图模型，聊天图片也没有描述。规则见 [架构 5.1 节](architecture.md#51-prompt-的组成顺序) 的“聊天图片”。
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `provider` | `openai_compatible` | 目前唯一支持的值 |
 | `endpoint`、`model`、`api_key` | `endpoint`、`model` 必填 | 接口地址（`http://` 或 `https://` 开头的完整 URL）、模型名、密钥 |
-| `modalities` | 空 | 模型支持的模态，如 `[text]`。含 `image` 时，发给这个模型的回复请求会附带人设的外观参考图（见 `appearance_image`）；不含时不带图 |
+| `modalities` | 空 | 模型支持的模态，如 `[text]`。写成 `[text, image]` 时，发给这个模型的回复请求会附带人设的外观参考图（见 `appearance_image`），以及面板聊天里对方这一轮发来的图片（最多 4 张，见 [Web 管理面板：在面板里聊天](panel.md#在面板里聊天)）；不含 `image` 时不带图，聊天图片改用 `vision` 的文字描述，没有描述时告诉模型它看不到这些图片 |
 | `context.native_window` / `configured_window` / `soft_input_budget` | 必填，均 > 0 | 必须满足 `soft_input_budget <= configured_window <= native_window`；软预算决定历史最多装多少 |
 | `context.reserved_output_tokens` / `safety_margin_tokens` | 0 | 输出预留（大于 0 时也作为请求的 `max_tokens`，推理 token 也算在内）和安全余量，均 ≥ 0，两者之和必须小于 `configured_window`，否则放不下任何提示词。记忆整理也用 `long_context` 的输出预留：摘要和笔记的默认上限（私聊 3000 / 1000 字，群聊 1500 / 300 字）建议 `long_context` 至少设 8192，否则整理容易被截断（`output_truncated`），每批的人数也会被压到 1 人 |
 | `runtime.max_concurrency` | 2 | 该模型的全局并发上限，≥ 1 |
@@ -121,7 +121,7 @@ ConLoom 只用一个 YAML 配置文件（加可选的 `.env`）。完整的带�
 | `runtime.max_retries` | 2 | 网络错误、429、5xx 的重试次数，0~5 |
 | `runtime.gpu_kv_cache_tokens` | 0 | 准入控制的 token 预算，0 表示不限；设了就必须 ≥ `configured_window`，否则路由放行的大请求会被准入拒绝 |
 | `runtime.cpu_offloaded_kv_tokens`、`runtime.prefix_caching` | — | 可以写，目前不生效 |
-| `privacy.allow_sensitive_content` | false | 私聊（包括面板聊天）的回复和记忆整理只会路由到为 `true` 的模型，面板聊天的建议回复只在 `short_context` 为 `true` 时生成；`long_context` 为 `false` 时私聊不整理记忆（私聊默认策略开启了记忆时，启动日志有一条 warn，在设置页保存私聊默认策略时也会提示） |
+| `privacy.allow_sensitive_content` | false | 私聊（包括面板聊天）的回复和记忆整理只会路由到为 `true` 的模型，面板聊天的建议回复只在 `short_context` 为 `true` 时生成，面板聊天的图片只在 `vision` 为 `true` 时才交给它描述；`long_context` 为 `false` 时私聊不整理记忆（私聊默认策略开启了记忆时，启动日志有一条 warn，在设置页保存私聊默认策略时也会提示） |
 | `privacy.data_location` | — | 说明性标签（如 `remote` 表示数据会离开本机），代码不读取 |
 | `extra_body` | 空 | 原样合并进请求体，例如 `enable_thinking: false`；它可以覆盖 `model`、`messages` 等字段，请谨慎使用。面板聊天的建议回复用 `short_context` 时，带技能的回复的收尾请求（不再提供工具的那次，任一模型配置），以及 `skills.state_step: after_reply` 时回复这一步的每次请求（这个回合的工具里有改状态的工具时；状态更新那一步照常按这里的配置），只在那几次请求里关闭思考：这里有 `chat_template_kwargs` 时把其中的 `enable_thinking` 改为 `false`，有顶层 `enable_thinking` 时也改为 `false`，见 [Web 管理面板：在面板里聊天](panel.md#在面板里聊天) 和 [技能](skills.md#一次回复里的工具调用) |
 | `token_estimate_factor` | 1.0 | token 估算系数，≥ 0，0 视为 1 |

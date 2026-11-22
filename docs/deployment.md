@@ -367,7 +367,7 @@ sudo journalctl -u conloom | grep 'panel listening'
 
 人设模板和会话人设可以带一张外观参考图，在面板里上传，用法见 [Web 管理面板：人设模板和外观参考图](panel.md#人设模板和外观参考图)。
 
-**识图模型（可选）**：面板的“生成外观介绍”要用 `model_profiles.vision`，没有配置时这个功能返回“未配置识图模型”，其他功能不受影响。推荐的写法（地址和密钥可以沿用长上下文模型的环境变量，模型名换成你的服务里支持图片输入的模型）：
+**识图模型（可选）**：面板的“生成外观介绍”要用 `model_profiles.vision`，没有配置时这个功能返回“未配置识图模型”，其他功能不受影响。面板聊天的回复路由到不支持图片的模型时，也用它给聊天里的图片写文字描述（要求 `allow_sensitive_content: true`，见 [配置参考：model_profiles](configuration.md#model_profiles)）；没有配置时回复模型只知道有一张看不到的图片。推荐的写法（地址和密钥可以沿用长上下文模型的环境变量，模型名换成你的服务里支持图片输入的模型）：
 
 ```yaml
 model_profiles:
@@ -391,14 +391,15 @@ model_profiles:
       allow_sensitive_content: true
 ```
 
-`vision` 只用来识图，回复永远不会路由到它。发给它的是长边不超过 1536 像素的 JPEG，最多约 3000 个 token；一次识图最多 40 秒。字段说明见 [配置参考：model_profiles](configuration.md#model_profiles)。
+`vision` 只用来识图，回复永远不会路由到它。发给它的是长边不超过 1536 像素的 JPEG，最多约 3000 个 token；生成外观介绍一次最多 40 秒，一次回复请求里描述聊天图片合起来最多 30 秒。字段说明见 [配置参考：model_profiles](configuration.md#model_profiles)。
 
-**回复时带图**：只有回复路由到的模型在 `modalities` 里声明了 `image`，回复请求才附带参考图的缩小图。确认回复模型确实接受图片（先在面板里用一个带图的人设试一次回复）之后，再把 `short_context`（以及需要的话 `long_context`）改成 `modalities: [text, image]`；模型不接受图片却声明了 `image` 时，带图的回复会失败。
+**回复时带图**：只有回复路由到的模型在 `modalities` 里声明了 `image`，回复请求才附带参考图的缩小图和面板聊天里这一轮发来的图片。确认回复模型确实接受图片（先在面板里用一个带图的人设试一次回复）之后，再把 `short_context`（以及需要的话 `long_context`）改成 `modalities: [text, image]`；模型不接受图片却声明了 `image` 时，带图的回复会失败。
 
 **资源**：
 
 - 图片存在 `conloom.db` 里：每张是原图（最多 8 MiB）加一份几十 KB 的缩小图。被任何人设模板或人设版本（包括历史版本）引用的图片一直保留，所以数据库会随着上传的图片变大，备份文件也一样（`conloom backup` 导出的快照包含图片）。没有被引用的图片上传满 7 天后由清理任务删除。
-- 解码一张接近上限（2500 万像素）的图要几百 MB 内存。面板同时只处理一个上传和一个识图请求，另一个请求同时到达时返回 409，稍后重试即可；服务器内存紧张时先把图缩小再上传。
+- 面板聊天里发的图片也存在 `conloom.db` 里（表 `chat_images`，每张是长边 1536 和 768 像素的两份 JPEG，不存原图），跟着消息一直保留，撤回消息或删除聊天时删掉；上传了没发出去的 24 小时后删掉。
+- 解码一张接近上限（2500 万像素）的图要几百 MB 内存。面板同时只处理一个上传（参考图和聊天图片共用）和一个识图请求，另一个请求同时到达时返回 409，稍后重试即可；服务器内存紧张时先把图缩小再上传。
 - 用 `panel.listen` 直接访问时，整个请求（包括图片）必须在 30 秒内传完；网络很慢时先把图缩小。
 
 ## 数据目录与权限
@@ -425,6 +426,7 @@ model_profiles:
   | 私聊状态条的变化记录 | `conversation_buff_events` | 30 天 |
   | 机器人在私聊里给自己加的效果 | `conversation_effects` | 到时间后删除 |
   | 人设外观参考图（原图和缩小图） | `persona_images` | 没有被任何人设模板或人设版本（包括历史版本）引用、上传满 7 天后删除 |
+  | 面板聊天里上传了、但没有发出去的图片 | `chat_images` | 上传满 24 小时后删除；发出去的图片跟着消息保留 |
   | 记忆修订历史 | `memory_revisions` | 30 天（由记忆层清理，不受 `ops_retention` 影响） |
   | 模型用量明细（每次模型调用一行） | `model_calls` | `runtime.usage_retention`（默认 400 天） |
   | Web 管理面板的登录会话 | `panel_sessions` | 超过 `panel.session_ttl` 或 `panel.idle_timeout` 后删除 |

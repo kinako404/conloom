@@ -150,7 +150,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		}, []string{"tool", "result"}),
 		CleanupDeleted: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "conloom_cleanup_deleted_total",
-			Help: "Rows deleted by retention cleanup, by table (tasks|outbox_actions|audit_events|events|proactive_log|model_calls|panel_sessions|conversation_buff_events|conversation_effects|persona_images).",
+			Help: "Rows deleted by retention cleanup, by table (tasks|outbox_actions|audit_events|events|proactive_log|model_calls|panel_sessions|conversation_buff_events|conversation_effects|persona_images|chat_images).",
 		}, []string{"table"}),
 		SearchSeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "conloom_search_seconds", Help: "Recall search duration by path (keyword|vector).",
