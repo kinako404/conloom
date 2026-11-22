@@ -95,3 +95,31 @@ Telegram/QQ stay as they are (they show `[图片]`).
 Table/column names, exact Chinese labels, the thumbnail size, how the vision
 description is cached, the composer layout details, and whether the classic
 chat page gets the attach UI (it should at least render images).
+
+## Builder-check decisions (controller's calls, binding)
+
+1. **Ordered message parts.** `ChatMessage` gains an optional ordered parts
+   representation (text and image parts interleaved) used only when a request
+   carries chat images; requests without chat images (text-only, and the
+   persona appearance image alone) stay byte-identical. When the appearance
+   image and the user's images are in the same user message, each image is
+   preceded by its own label: the existing `AppearanceLabel` for the
+   appearance image, and a chat-image label (e.g. `（对方发来的第 N 张图片）`)
+   for each user image, so the model cannot confuse the user's photo with its
+   own looks.
+2. **Model copy long edge 768** (`imaging.ReplyEdge`, ≈750 tokens per square
+   image, 4 images ≈3000 tokens) — not 1536. Image tokens count in the
+   estimate; if the request still doesn't fit the image-capable profile it
+   follows the normal route and the description fallback applies.
+3. **No original kept.** Store two copies per image: a view copy (JPEG, long
+   edge ≤1536) served by "click to open" and used for the vision description,
+   and the reply copy (≤768) sent to the model and used as the bubble
+   thumbnail (scaled by CSS). No separate thumbnail.
+4. **Placeholders.** The current turn's images must not render as `[图片]`
+   (core.md tells the model `[图片]` is an image it cannot see): render them
+   as references to the attached images (e.g. `[图片1]`, matching the labels);
+   older messages and text-only paths keep `[图片]`, or `[图片：<描述>]` where
+   a cached description exists.
+5. **Retention**: there is no message retention purge; chat images are deleted
+   with their messages on withdraw, chat deletion and bot/scope deletion.
+   Uploaded images never attached to a sent message are purged after 24 h.
