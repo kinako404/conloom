@@ -250,18 +250,23 @@ func (o *Orchestrator) sinceUserForgot(ctx context.Context, convKey string, rece
 
 // suggestTranscript writes msgs, oldest first, one line each: the speaker's
 // name (botName for the bot's messages, the sender's display name or 用户 for
-// the others), a full-width colon and the text with its white space runs as
-// single spaces, cut to suggestLineRunes characters. Messages without text are
-// left out.
+// the others), a full-width colon, the text with its white space runs as
+// single spaces, cut to suggestLineRunes characters, and [图片] for each image
+// attachment. Messages with neither text nor images are left out.
 func suggestTranscript(msgs []store.MessageRecord, botName string) string {
 	var lines []string
 	for _, m := range msgs {
 		text := strings.Join(strings.Fields(m.Text), " ")
-		if text == "" {
-			continue
-		}
 		if r := []rune(text); len(r) > suggestLineRunes {
 			text = string(r[:suggestLineRunes]) + "…"
+		}
+		for _, a := range m.Attachments {
+			if a.Type == "image" {
+				text += "[图片]"
+			}
+		}
+		if text == "" {
+			continue
 		}
 		name := botName
 		if !m.FromBot {

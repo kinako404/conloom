@@ -160,6 +160,9 @@ type Orchestrator struct {
 	panelBots *PanelBotService
 	// describeTimeout bounds DescribeAppearance.
 	describeTimeout time.Duration
+	// chatDescribeTimeout bounds all descriptions of chat images for one
+	// request (see blindImages).
+	chatDescribeTimeout time.Duration
 	// suggestions keeps the panel chats' reply suggestions (see Suggest), and
 	// suggestTimeout bounds generating them.
 	suggestions    *suggestCache
@@ -213,11 +216,12 @@ func New(d Deps) (*Orchestrator, error) {
 		rand:      newLockedRand(),
 		wakeEvery: wakePollInterval,
 
-		panelDeleteWait: cancelWait,
-		describeTimeout: describeTimeout,
-		suggestions:     newSuggestCache(suggestCacheSize),
-		suggestTimeout:  suggestTimeout,
-		states:          newStateSteps(),
+		panelDeleteWait:     cancelWait,
+		describeTimeout:     describeTimeout,
+		chatDescribeTimeout: chatDescribeTimeout,
+		suggestions:         newSuggestCache(suggestCacheSize),
+		suggestTimeout:      suggestTimeout,
+		states:              newStateSteps(),
 
 		cleanupBatch: defaultCleanupBatch, cleanupMaxBatches: defaultCleanupMaxBatches,
 	}
