@@ -1000,6 +1000,75 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
   transition: opacity 150ms ease-out, transform 150ms ease-out;
 }
 .chat-app .tg-send:active:not(:disabled) { transform: scale(.92); }
+/* 发送 waits while an image attached is uploading. */
+.chat-app .tg-send[aria-disabled="true"] { opacity: .5; cursor: default; }
+/* 📎 left of the box attaches images, which show in a row above it, each
+   with × in its corner; files dragged over the conversation outline it. */
+.chat-app .tg-attach {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+}
+.chat-app .tg-attach:hover:not(:disabled) { background: var(--tg-key-hover); color: var(--text); }
+.chat-app .tg-attachments {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  margin: 0;
+  padding: 8px var(--tg-side) 0;
+  list-style: none;
+  overflow-x: auto;
+}
+.chat-app .tg-attachments:empty { display: none; }
+.chat-app .tg-attachment {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  animation: tg-fade-in 150ms ease-out;
+}
+.chat-app .tg-attachment img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.chat-app .tg-attachment-wait { color: var(--muted); font-size: 12px; }
+.chat-app .tg-attachment-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, .6);
+  color: #ffffff;
+  font-size: 15px;
+  line-height: 22px;
+}
+.chat-app .tg-attachment-remove:hover { background: rgba(0, 0, 0, .8); }
+.chat-app .tg-conv.tg-drop::after {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  z-index: 10;
+  border: 2px dashed var(--accent);
+  border-radius: 12px;
+  background: rgba(47, 111, 219, .08);
+  pointer-events: none;
+}
+.chat-app .tg-msg-menu:focus { outline: none; }
 /* The command menu (views/commandmenu.js) rises from the box, over the
    newest messages, about eight rows high before it scrolls. */
 .chat-app .tg-compose { position: relative; }
@@ -1178,6 +1247,52 @@ body.chat-app main { max-width: none; margin: 0; padding: 0; }
 .chat-app .tg-profile-list details li > :first-child { color: var(--text); }
 .chat-app .tg-profile-icon { flex: none; width: 24px; color: var(--muted); font-size: 18px; text-align: center; }
 .chat-app .tg-profile-count { margin-left: auto; padding-left: 12px; color: var(--muted); white-space: nowrap; }
+
+/* A message's images (imageStrip in views/chat.js), the same on both chat
+   pages, each with its own classes: squares two to a row, or one alone in
+   its own shape, at most 240×240. An image holds its largest box until it
+   has loaded, so loading only shrinks it. A click opens the larger copy over
+   the page, at most 95% of it; on this page it fades in. */
+.chat-app .tg-images,
+.chat-classic .chat-images {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 160px));
+  gap: 4px;
+  margin: 2px 0 4px;
+}
+.chat-app .tg-images[data-count="1"],
+.chat-classic .chat-images[data-count="1"] { display: block; }
+.chat-app .tg-image,
+.chat-classic .chat-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 8px;
+  background: rgba(127, 127, 127, .15);
+  cursor: zoom-in;
+}
+.chat-app .tg-images[data-count="1"] .tg-image,
+.chat-classic .chat-images[data-count="1"] .chat-image { width: 240px; max-width: 100%; height: 240px; }
+.chat-app .tg-images[data-count="1"] .tg-image.loaded,
+.chat-classic .chat-images[data-count="1"] .chat-image.loaded { width: auto; height: auto; max-width: 240px; max-height: 240px; aspect-ratio: auto; }
+.chat-app .tg-viewer,
+.chat-classic .chat-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, .85);
+  cursor: zoom-out;
+}
+.chat-app .tg-viewer { animation: tg-fade-in 150ms ease-out; }
+.chat-app .tg-viewer:focus,
+.chat-classic .chat-viewer:focus { outline: none; }
+.chat-app .tg-viewer img,
+.chat-classic .chat-viewer img { display: block; max-width: 95vw; max-height: 95vh; object-fit: contain; border-radius: 4px; }
 
 /* The page's motion: what arrives eases in, from below for a message and the
    profile card, from its corner for a menu, from the side it comes from for a

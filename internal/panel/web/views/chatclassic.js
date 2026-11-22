@@ -7,20 +7,27 @@ import { get, post, del, convPath, isAbort } from '../lib/api.js';
 import { go, href } from '../lib/router.js';
 import { fmtTime } from '../lib/format.js';
 import {
+  imageStrip,
   POLL_MS, HISTORY, PAGE, TOUCH, GONE, MESSAGE_GONE, MESSAGE_GONE_NOTE, ACTION_BUSY, suggestionsOn, saveSuggestionsOn, suppressedNote,
 } from './chat.js';
 import { commandMenu } from './commandmenu.js';
 
-// bubble shows message m with 撤回 and, for the bot's, 重新生成 (hidden until
-// refreshActions shows it), which call actions.withdraw(m) and
-// actions.regenerate(m).
-function bubble(m, actions) {
+// IMAGES are the classes of a message's images on this page (see
+// imageStrip).
+const IMAGES = { root: 'chat-classic', strip: 'chat-images', image: 'chat-image', viewer: 'chat-viewer' };
+
+// bubble shows message m of the chat key, its images (see imageStrip; signal
+// closes their viewer) above its text, with 撤回 and, for the bot's,
+// 重新生成 (hidden until refreshActions shows it), which call
+// actions.withdraw(m) and actions.regenerate(m).
+function bubble(key, m, actions, signal) {
   return h('li', { class: m.from_bot ? 'bubble bot' : 'bubble user', dataset: { seq: String(m.seq) } },
     h('div', { class: 'meta' },
       h('strong', null, m.sender_name || m.sender_id),
       h('span', null, fmtTime(m.at)),
       m.channel === 'panel' ? h('span', { class: 'badge' }, '面板') : null),
-    h('div', { class: 'body' }, m.text),
+    imageStrip(key, m, signal, IMAGES),
+    m.text ? h('div', { class: 'body' }, m.text) : null,
     h('div', { class: 'chat-actions' },
       h('button', { type: 'button', class: 'chat-action danger', onclick: () => actions.withdraw(m) }, '撤回'),
       m.from_bot ? h('button', { type: 'button', class: 'chat-action', 'data-regenerate': '1', onclick: () => actions.regenerate(m) }, '重新生成') : null));
@@ -148,7 +155,7 @@ export async function chatPane({ key, signal, hint, reload = () => go(href('chat
     for (const m of rows) {
       if (m.seq <= after) continue;
       if (!added) clearSuggestions();
-      log.appendChild(bubble(m, actions));
+      log.appendChild(bubble(key, m, actions, signal));
       after = m.seq;
       last = m;
       added = true;

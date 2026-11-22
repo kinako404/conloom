@@ -1,5 +1,5 @@
 import { h, mount, errorBox } from '../lib/dom.js';
-import { get, post, del, convPath, isAbort } from '../lib/api.js';
+import { get, post, del, upload, convPath, chatImageURL, isAbort } from '../lib/api.js';
 import { go, href } from '../lib/router.js';
 import { fmtTime, sceneLabel, actionParts } from '../lib/format.js';
 import { avatarEl, onlineDot, withDot } from './avatar.js';
@@ -23,6 +23,12 @@ const SUGGEST_KEY = 'conloom.chat.suggestions';
 const SUGGEST_OFF = 'off';
 // MAX_LINES is how many lines the message box grows to before it scrolls.
 const MAX_LINES = 6;
+// MAX_IMAGES is the most images a message carries
+// (conloomapi.MaxPanelMessageImages), MAX_IMAGE_MIB imaging.MaxBytes in MiB,
+// the largest image upload, and IMAGE_TYPES the kinds of image taken.
+const MAX_IMAGES = 4;
+const MAX_IMAGE_MIB = 8;
+const IMAGE_TYPES = ['image/png', 'image/jpeg'];
 // LONG_PRESS_MS is how long a finger rests on a message to open its menu;
 // moving it more than LONG_PRESS_SLOP pixels meanwhile makes it a scroll.
 export const LONG_PRESS_MS = 450;
@@ -87,18 +93,73 @@ function clock(v) {
 
 // bubble shows message m: the bot's on the left, the user's on the right,
 // with its time in the corner, its sender and full time on hover, and its
-// channel only when it is not the panel; an action in full-width brackets,
-// such as （笑）, is muted (see actionParts). It holds no buttons: its
-// actions are in the message menu (see chatPane), which the keyboard opens on
-// the bubble once it has the focus. It is out of the Tab order until chatPane
-// makes it the Tab stop.
-function bubble(m) {
+// channel only when it is not the panel; its images, of the chat key, above
+// its text, if any (see imageStrip; signal closes their viewer); an action in
+// full-width brackets, such as （笑）, is muted (see actionParts). It holds no
+// buttons: its actions are in the message menu (see chatPane), which the
+// keyboard opens on the bubble once it has the focus. It is out of the Tab
+// order until chatPane makes it the Tab stop.
+function bubble(key, m, signal) {
   const when = fmtTime(m.at);
   return h('li', { class: m.from_bot ? 'tg-msg in' : 'tg-msg out', dataset: { seq: String(m.seq) } },
     h('div', { class: 'tg-bubble', tabindex: '-1', 'aria-haspopup': 'menu' },
       m.channel && m.channel !== 'panel' ? h('div', null, h('span', { class: 'badge' }, m.channel)) : null,
-      h('span', { class: 'tg-text' }, actionParts(m.text).map((p) => (p.action ? h('span', { class: 'tg-action' }, p.text) : p.text))),
+      imageStrip(key, m, signal),
+      m.text ? h('span', { class: 'tg-text' }, actionParts(m.text).map((p) => (p.action ? h('span', { class: 'tg-action' }, p.text) : p.text))) : null,
       h('span', { class: 'tg-time', title: m.sender_name ? `${m.sender_name} · ${when}` : when }, clock(m.at))));
+}
+
+// TG_IMAGES are the classes of a message's images on this page (see
+// imageStrip): root is the page's, whose styles the viewer takes.
+const TG_IMAGES = { root: 'chat-app', strip: 'tg-images', image: 'tg-image', viewer: 'tg-viewer' };
+
+// imageStrip shows the images of message m of the panel chat key, the reply
+// copy of each, null when it has none, with the classes of look, the page's
+// (TG_IMAGES here). A click on one opens its view copy (see openViewer);
+// signal closes that. An image keeps the most room it may take until it has
+// loaded, so that loading only shrinks it and messages scrolled to the
+// bottom stay there.
+export function imageStrip(key, m, signal, look = TG_IMAGES) {
+  const ids = m.images || [];
+  if (!ids.length) return null;
+  return h('div', { class: look.strip, dataset: { count: String(ids.length) } }, ids.map((id) => {
+    const img = h('img', {
+      class: look.image, src: chatImageURL(key, id, 'reply'), alt: '图片', loading: 'lazy', draggable: 'false',
+      onclick: () => openViewer(key, id, signal, look, img),
+    });
+    img.addEventListener('load', () => img.classList.add('loaded'), { once: true });
+    return img;
+  }));
+}
+
+// openViewer shows the view copy of the image id of the panel chat key over
+// the page, in the root of look holding opener, until a click or Escape
+// closes it, or signal fires; the focus then goes back to where it was.
+function openViewer(key, id, signal, look, opener) {
+  if (signal.aborted) return;
+  const done = new AbortController();
+  const back = document.activeElement;
+  const viewer = h('div', { class: look.viewer, role: 'dialog', 'aria-modal': 'true', 'aria-label': '查看图片', tabindex: '-1' },
+    h('img', { src: chatImageURL(key, id, 'view'), alt: '图片', draggable: 'false' }));
+  const close = () => {
+    if (done.signal.aborted) return;
+    done.abort();
+    viewer.remove();
+    if (!signal.aborted && back && back.isConnected && back !== document.body) back.focus({ preventScroll: true });
+  };
+  viewer.addEventListener('click', close);
+  listen(document, 'keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+    }
+  }, done.signal, true);
+  listen(signal, 'abort', close, done.signal);
+  (opener.closest(`.${look.root}`) || document.body).appendChild(viewer);
+  viewer.focus({ preventScroll: true });
 }
 
 // listen adds fn as a listener of type on target, in the capture phase when
@@ -259,6 +320,11 @@ export function chatBar({ key, bot, title, status, dot, items, onBack, onDelete,
 // given, gets the messages each time some are shown: the latest at first,
 // then each one new. Typing the command prefix in the box opens the command
 // menu (see commandMenu).
+// Up to MAX_IMAGES PNG or JPEG images go with a message: chosen by 📎,
+// pasted into the box or dropped on the conversation, they show above the
+// box, each with × to take it off, and upload one at a time (the server
+// handles one upload at a time); the message, which may then have no text,
+// goes once none is still uploading.
 // A right-click, a long press or the menu key on a message opens its menu,
 // where it can be copied (复制), withdrawn (撤回, with what follows it) and,
 // the one GET chat names in regenerate_seq, regenerated (重新生成); the last
@@ -295,6 +361,15 @@ export async function chatPane({ key, signal, hint, bot, title, online, onBack, 
     class: 'tg-input', rows: 1, placeholder: touch ? '输入消息' : '输入消息，回车发送，Shift+回车换行',
   });
   const send = h('button', { type: 'submit', class: 'tg-send', title: '发送', 'aria-label': '发送' }, '➤');
+  // attached are the images to go with the next message, each {file, id, el},
+  // id set once uploaded and el its item in strip, the row above the box.
+  const attached = [];
+  let uploading = false;
+  const strip = h('ul', { class: 'tg-attachments' });
+  const picker = h('input', { type: 'file', accept: 'image/png,image/jpeg', multiple: true, hidden: true });
+  const attach = h('button', {
+    type: 'button', class: 'tg-attach', title: '发送图片', 'aria-label': '发送图片', onclick: () => picker.click(),
+  }, '📎');
   let suggestOn = suggestionsOn();
   const suggestItem = h('button', { type: 'button', class: 'tg-bar-item', role: 'menuitem' });
   const showSwitch = () => {
@@ -342,7 +417,13 @@ export async function chatPane({ key, signal, hint, bot, title, online, onBack, 
   const copyItem = h('button', { type: 'button', class: 'tg-bar-item', role: 'menuitem', onclick: () => choose((m) => copyMessage(m)) }, '复制');
   const regenItem = h('button', { type: 'button', class: 'tg-bar-item', role: 'menuitem', onclick: () => choose((m) => actions.regenerate(m)) }, '重新生成');
   const withdrawItem = h('button', { type: 'button', class: 'tg-bar-item danger', role: 'menuitem', onclick: () => choose((m) => actions.withdraw(m)) }, '撤回');
-  const msgMenu = h('div', { class: 'tg-ctx-menu tg-msg-menu', role: 'menu' }, copyItem, regenItem, withdrawItem);
+  const msgMenu = h('div', { class: 'tg-ctx-menu tg-msg-menu', role: 'menu', tabindex: '-1' }, copyItem, regenItem, withdrawItem);
+  // focusMenu puts the focus on the first item of the menu that can run, or,
+  // with none, on the menu.
+  const focusMenu = () => {
+    const first = [copyItem, regenItem, withdrawItem].find((b) => !b.hidden && !b.disabled);
+    (first || msgMenu).focus({ preventScroll: true });
+  };
   let menuBubble = null;
   let menuMsg = null;
   let menuVia = '';
@@ -362,17 +443,19 @@ export async function chatPane({ key, signal, hint, bot, title, online, onBack, 
     b.tabIndex = 0;
   };
 
-  // refreshActions shows, in the open message menu, 重新生成 only on the
-  // message regenSeq names, and turns 重新生成 and 撤回 off while they cannot
-  // run; the focus on an item turned off moves to 复制.
+  // refreshActions shows, in the open message menu, 复制 only on a message
+  // with text and 重新生成 only on the message regenSeq names, and turns
+  // 重新生成 and 撤回 off while they cannot run; the focus on an item turned
+  // off moves to the first one left (see focusMenu).
   const refreshActions = () => {
     if (!menuBubble) return;
     const off = botTyping || gone || acting || send.disabled;
     const focused = msgMenu.contains(document.activeElement);
+    copyItem.hidden = !menuMsg.text;
     regenItem.hidden = !regenSeq || menuMsg.seq !== regenSeq;
     regenItem.disabled = off;
     withdrawItem.disabled = off;
-    if (focused && !msgMenu.contains(document.activeElement)) copyItem.focus({ preventScroll: true });
+    if (focused && !msgMenu.contains(document.activeElement)) focusMenu();
   };
   // placeMenu puts the menu's top left at x, y, its top right when fromRight,
   // or, when it does not fit under y, its bottom at above; it stays inside the
@@ -423,7 +506,7 @@ export async function chatPane({ key, signal, hint, bot, title, online, onBack, 
     document.body.appendChild(msgMenu);
     placeMenu(x, y, above, fromRight);
     menuOpened(closeMenu);
-    if (via !== 'touch') copyItem.focus({ preventScroll: true });
+    if (via !== 'touch') focusMenu();
   };
   // choose closes the menu, the focus back where it was (see closeMenu), and
   // runs run with its message.
@@ -520,8 +603,9 @@ export async function chatPane({ key, signal, hint, bot, title, online, onBack, 
   log.addEventListener('touchcancel', cancelPress);
   // A bubble focused becomes the Tab stop. On a focused bubble, ↑ and ↓ move
   // to the one before and after, Home and End to the first and the newest,
-  // and the menu key or Shift+F10 opens its menu under it, on the side of the
-  // bubble, with the focus on its first item.
+  // Return opens its first image, if any, and the menu key or Shift+F10
+  // opens its menu under it, on the side of the bubble, with the focus on its
+  // first item.
   log.addEventListener('focusin', (e) => {
     if (e.target.classList && e.target.classList.contains('tg-bubble')) {
       chosenStop = true;
@@ -537,6 +621,14 @@ export async function chatPane({ key, signal, hint, bot, title, online, onBack, 
       const to = { ArrowUp: all[i - 1], ArrowDown: all[i + 1], Home: all[0], End: all[all.length - 1] }[e.key];
       e.preventDefault();
       if (to) to.focus();
+      return;
+    }
+    if (e.key === 'Enter') {
+      const img = b.querySelector('.tg-image');
+      if (img) {
+        e.preventDefault();
+        img.click();
+      }
       return;
     }
     if (!(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;
@@ -674,7 +766,7 @@ export async function chatPane({ key, signal, hint, bot, title, online, onBack, 
       log.appendChild(h('li', { class: 'tg-day' }, h('span', null, dayLabel(m.at))));
       lastDay = day;
     }
-    const el = bubble(m);
+    const el = bubble(key, m, signal);
     messages.set(m.seq, m);
     if (lastEl && !newDay && last.from_bot === m.from_bot && last.sender_id === m.sender_id) {
       lastEl.classList.remove('tail');
@@ -734,15 +826,19 @@ export async function chatPane({ key, signal, hint, bot, title, online, onBack, 
     showScene(null);
     input.disabled = true;
     send.disabled = true;
+    attach.disabled = true;
+    attached.length = 0;
+    mount(strip);
     refreshActions();
     mount(sendError);
     mount(pollError, errorBox({ message: GONE }));
   };
   // wanted reports whether suggestions after the message seq would still be
   // shown: the switch is on, the bot's turn is done with seq its newest
-  // message, the user has not answered it yet and the box is empty.
+  // message, the user has not answered it yet and the box is empty, with no
+  // image attached.
   const wanted = (seq) => suggestOn && !gone && !signal.aborted && !botTyping &&
-    last !== null && last.from_bot && last.seq === seq && seq !== sentAfter && !input.value.trim();
+    last !== null && last.from_bot && last.seq === seq && seq !== sentAfter && !input.value.trim() && !attached.length;
   // suggest asks, once per message, for suggestions after the newest message
   // when they are wanted, and shows them, a full-width button each, unless
   // meanwhile they no longer are. A failure shows nothing.
@@ -831,19 +927,108 @@ export async function chatPane({ key, signal, hint, bot, title, online, onBack, 
     if (atBottom) log.scrollTop = log.scrollHeight;
   };
 
-  // submit sends text, typed or a suggestion, as the user; suggestions for
-  // the message it answers are no longer shown. Text that fails to send is
-  // left in the box, a suggestion's too, unless the box has other text.
-  const submit = async (text) => {
-    if (!text.trim() || send.disabled || gone || acting) return;
+  // showAttached shows the attached image a in its item: 上传中… until it is
+  // uploaded, then its reply copy, and × to take it off.
+  const showAttached = (a) => {
+    mount(a.el,
+      a.id ? h('img', { src: chatImageURL(key, a.id, 'reply'), alt: '图片', draggable: 'false' }) : h('span', { class: 'tg-attachment-wait' }, '上传中…'),
+      h('button', {
+        type: 'button', class: 'tg-attachment-remove', title: '移除图片', 'aria-label': '移除图片',
+        onclick: () => {
+          unattach(a);
+          input.focus();
+        },
+      }, '×'));
+  };
+  // waiting reports whether an image attached is not uploaded yet; the
+  // message waits for it, and 发送 says so.
+  const waiting = () => attached.some((a) => !a.id);
+  const showWaiting = () => {
+    if (waiting()) send.setAttribute('aria-disabled', 'true');
+    else send.removeAttribute('aria-disabled');
+  };
+  const unattach = (a) => {
+    const i = attached.indexOf(a);
+    if (i >= 0) attached.splice(i, 1);
+    a.el.remove();
+    showWaiting();
+  };
+  // uploadNext uploads the first image attached not uploaded yet, unless one
+  // is uploading, then the next; one that fails is taken off, its error
+  // shown. An image taken off while it uploads is left on the server, which
+  // drops it unsent after a day.
+  const uploadNext = async () => {
+    const a = attached.find((x) => !x.id);
+    if (uploading || !a || gone || signal.aborted) return;
+    uploading = true;
+    try {
+      const res = await upload(convPath(key, 'images'), a.file);
+      if (signal.aborted || gone) return;
+      if (attached.includes(a)) {
+        a.id = res.id;
+        showAttached(a);
+        showWaiting();
+      }
+    } catch (err) {
+      if (isAbort(err) || signal.aborted) return;
+      unattach(a);
+      if (err.status === 404) markGone();
+      else mount(sendError, errorBox(err));
+    } finally {
+      uploading = false;
+    }
+    uploadNext();
+  };
+  // attachFiles attaches files to the next message, refusing one that is
+  // not PNG or JPEG, one over MAX_IMAGE_MIB and any beyond MAX_IMAGES, and
+  // says why; messages scrolled to the bottom stay there.
+  const attachFiles = (files) => {
+    if (!files.length || gone || signal.aborted) return;
+    const atBottom = nearBottom();
+    let refused = '';
+    for (const file of files) {
+      if (attached.length >= MAX_IMAGES) refused = refused || '一条消息最多 4 张图片';
+      else if (!IMAGE_TYPES.includes(file.type)) refused = refused || '只支持 PNG 和 JPEG 图片';
+      else if (file.size > MAX_IMAGE_MIB * 1024 * 1024) refused = refused || `图片不能超过 ${MAX_IMAGE_MIB} MiB`;
+      else {
+        const a = { file, id: '', el: h('li', { class: 'tg-attachment' }) };
+        attached.push(a);
+        showAttached(a);
+        strip.appendChild(a.el);
+      }
+    }
+    mount(sendError, refused ? errorBox({ message: refused }) : null);
+    clearSuggestions();
+    showWaiting();
+    uploadNext();
+    if (atBottom) log.scrollTop = log.scrollHeight;
+  };
+  // sendBox sends the text in the box with the images attached, once none
+  // is still uploading.
+  const sendBox = () => {
+    if (waiting()) return;
+    submit(input.value, attached.map((a) => a.id));
+  };
+
+  // submit sends text, typed or a suggestion, as the user, with ids, the
+  // images attached, when given, which then may go without text; suggestions
+  // for the message it answers are no longer shown. A text-only message is
+  // sent as { text }. Images sent are taken off the box. Text that fails to
+  // send is left in the box, a suggestion's too, unless the box has other
+  // text, and images that fail stay attached.
+  const submit = async (text, ids = []) => {
+    if (ids.length) {
+      if (send.disabled || gone || acting) return;
+    } else if (!text.trim() || send.disabled || gone || acting) return;
     if (last !== null) sentAfter = last.seq;
     clearSuggestions();
     send.disabled = true;
     refreshActions();
     mount(sendError);
     try {
-      const res = await post(convPath(key, 'messages'), { text });
+      const res = await post(convPath(key, 'messages'), ids.length ? { text: text.trim() ? text : '', images: ids } : { text });
       if (input.value === text) input.value = '';
+      for (const a of attached.filter((x) => ids.includes(x.id))) unattach(a);
       if (res && res.suppressed_reason) mount(sendError, suppressedNote(res.suppressed_reason));
       stick = true;
       poll();
@@ -876,10 +1061,23 @@ export async function chatPane({ key, signal, hint, bot, title, online, onBack, 
       // commits it; that keydown has keyCode 229.
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
         e.preventDefault();
-        submit(input.value);
+        sendBox();
       }
     });
   }
+  // A paste that holds image files attaches them in place of anything else
+  // it holds; other pastes go into the box as usual.
+  input.addEventListener('paste', (e) => {
+    const items = [...((e.clipboardData && e.clipboardData.items) || [])];
+    const files = items.filter((it) => it.kind === 'file' && it.type.startsWith('image/')).map((it) => it.getAsFile()).filter(Boolean);
+    if (!files.length) return;
+    e.preventDefault();
+    attachFiles(files);
+  });
+  picker.addEventListener('change', () => {
+    attachFiles([...picker.files]);
+    picker.value = '';
+  });
   input.addEventListener('input', clearSuggestions);
   input.addEventListener('input', grow);
   listen(window, 'resize', grow, signal);
@@ -895,11 +1093,39 @@ export async function chatPane({ key, signal, hint, bot, title, online, onBack, 
     class: 'tg-compose',
     onsubmit: (e) => {
       e.preventDefault();
-      submit(input.value);
+      sendBox();
     },
   }, commands, input, send);
+  input.before(picker, attach);
 
-  const conv = h('section', { class: 'tg-conv' }, log, pollError, sendError, form);
+  const conv = h('section', { class: 'tg-conv' }, log, pollError, sendError, strip, form);
+  // Files dragged over the conversation mark it tg-drop and, dropped there,
+  // are attached; elsewhere on the page they cannot be dropped, which would
+  // open them in place of the panel.
+  const dragsFiles = (e) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+  conv.addEventListener('dragover', (e) => {
+    if (!dragsFiles(e) || gone) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    conv.classList.add('tg-drop');
+  });
+  conv.addEventListener('dragleave', (e) => {
+    if (!conv.contains(e.relatedTarget)) conv.classList.remove('tg-drop');
+  });
+  conv.addEventListener('drop', (e) => {
+    conv.classList.remove('tg-drop');
+    if (!dragsFiles(e)) return;
+    e.preventDefault();
+    attachFiles([...e.dataTransfer.files]);
+  });
+  listen(document, 'dragover', (e) => {
+    if (!dragsFiles(e) || e.defaultPrevented) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'none';
+  }, signal);
+  listen(document, 'drop', (e) => {
+    if (dragsFiles(e)) e.preventDefault();
+  }, signal);
 
   poll();
   requestAnimationFrame(() => {

@@ -64,6 +64,12 @@ export function convPath(key, ...rest) {
   return ['conversations', encodeURIComponent(key), ...rest].join('/');
 }
 
+// chatImageURL is the address of the image id of the panel chat key in size:
+// 'reply', the copy the reply model sees, or 'view', the larger one.
+export function chatImageURL(key, id, size) {
+  return BASE + convPath(key, 'images', encodeURIComponent(id)) + qs({ size });
+}
+
 // CSRF_REJECTED is the error code of a 403 for a missing or stale CSRF token.
 const CSRF_REJECTED = 'FORBIDDEN';
 
