@@ -93,7 +93,7 @@ func (f *fakeChat) setSuggestions(items []string) {
 	f.suggestions = items
 }
 
-func (f *fakeChat) SubmitPanel(_ context.Context, convKey, panelUser, text string) (string, string, error) {
+func (f *fakeChat) SubmitPanel(_ context.Context, convKey, panelUser, text string, _ ...string) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.submitErr != nil {

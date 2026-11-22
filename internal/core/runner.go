@@ -375,6 +375,9 @@ func (o *Orchestrator) execute(ctx context.Context, task store.TaskRecord, plan 
 		}
 		in.Image = o.appearanceImage(ctx, task, pv.Persona)
 	}
+	// The chat images of the turn's messages go with the final user message;
+	// like the appearance image they count in the route's BaseTokens.
+	in.CurrentImages, in.ImageDescriptions = o.turnImages(ctx, task, conv, history, current)
 	run := o.newSkillRun(task, bot, conv, set, triggers, &out)
 	if run != nil {
 		out.skillCalls = run.counts

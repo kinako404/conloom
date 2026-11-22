@@ -15,7 +15,7 @@ import (
 
 // ChatService lets panel users chat with a bot; *core.Orchestrator is one.
 type ChatService interface {
-	SubmitPanel(ctx context.Context, convKey, panelUser, text string) (messageID, suppressed string, err error)
+	SubmitPanel(ctx context.Context, convKey, panelUser, text string, images ...string) (messageID, suppressed string, err error)
 	CreatePanelChat(ctx context.Context, botID, panelUser, displayName string) (string, error)
 	DeletePanelChat(ctx context.Context, convKey string) error
 	WithdrawPanel(ctx context.Context, convKey string, seq int64) (deleted int, err error)

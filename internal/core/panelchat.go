@@ -28,18 +28,25 @@ const (
 	panelNameMax = 32
 )
 
-// SubmitPanel accepts text written in the panel by panelUser into the panel
-// chat convKey (store.PlatformPanel), like Submit accepts an event: the
-// message is stored on the panel channel and the bot's replies there are
+// SubmitPanel accepts text and images written in the panel by panelUser into
+// the panel chat convKey (store.PlatformPanel), like Submit accepts an event:
+// the message is stored on the panel channel and the bot's replies there are
 // delivered to the panel only (see replyChannel). It speaks as
 // panel_<panelUser>, under the display name the chat was created with, and
 // returns the new message's ID and, when the message is stored but will not
 // be answered, why (conloomapi.EventAccepted.SuppressedReason, such as
-// paused, rate_limited or queue_full). A conversation on another platform is
+// paused, rate_limited or queue_full). images are IDs of images uploaded to
+// convKey and not sent yet, at most conloomapi.MaxPanelMessageImages and
+// distinct, else ErrBadImages (checked under the chat's panel lock; nothing
+// is stored). They are stored in order as Attachment{Type: "image", ID: id,
+// MIME: "image/jpeg"}, and the store claims them with the message; one purged
+// before the claim is ErrBadImages too. Text of more than panelTextMax
+// characters is ErrBadText, and so is blank text without images; with images
+// it may be blank (stored as ""). A conversation on another platform is
 // ErrNotPanelChat; an unknown conversation, also one deleted meanwhile (see
 // DeletePanelChat), store.ErrNotFound; one whose bot is being deleted (see
 // PanelBotService.Delete) ErrBotDeleting.
-func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text string) (messageID, suppressed string, err error) {
+func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text string, images ...string) (messageID, suppressed string, err error) {
 	botID, _, _ := strings.Cut(convKey, ":")
 	if err := o.panelBots.notDeleting(botID); err != nil {
 		return "", "", err
@@ -60,8 +67,21 @@ func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text
 	if conv.Type != conloomapi.ConvPrivate {
 		return "", "", ErrNotPrivate
 	}
-	if strings.TrimSpace(text) == "" || utf8.RuneCountInString(text) > panelTextMax {
+	blank := strings.TrimSpace(text) == ""
+	if blank && len(images) == 0 || utf8.RuneCountInString(text) > panelTextMax {
 		return "", "", ErrBadText
+	}
+	if blank {
+		text = ""
+	}
+	attachments := []conloomapi.Attachment{}
+	if len(images) > 0 {
+		if err := o.unsentChatImages(ctx, convKey, images); err != nil {
+			return "", "", err
+		}
+		for _, id := range images {
+			attachments = append(attachments, conloomapi.Attachment{Type: "image", ID: id, MIME: "image/jpeg"})
+		}
 	}
 	if _, ok := o.bots.Bot(conv.BotInstanceID); !ok {
 		return "", "", fmt.Errorf("%w: unknown bot %q", store.ErrNotFound, conv.BotInstanceID)
@@ -76,7 +96,7 @@ func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text
 			DisplayName: o.panelDisplayName(ctx, conv, actorID, panelUser)},
 		Trigger: conloomapi.Trigger{Type: conloomapi.TriggerPrivate, RequestedResponse: true},
 		Message: conloomapi.Message{ID: "msg_" + pmid, PlatformMessageID: pmid, Text: text,
-			Mentions: []conloomapi.Mention{}, Attachments: []conloomapi.Attachment{}},
+			Mentions: []conloomapi.Mention{}, Attachments: attachments},
 	}
 	body, err := json.Marshal(ev)
 	if err != nil {
@@ -84,6 +104,11 @@ func (o *Orchestrator) SubmitPanel(ctx context.Context, convKey, panelUser, text
 	}
 	resp, _, err := o.submitOn(ctx, conv.BotInstanceID, pmid, body, ev, store.ChannelPanel)
 	if err != nil {
+		// The cleanup loop purges unsent images without the panel lock: one
+		// purged since the check fails the store's claim.
+		if len(images) > 0 && errors.Is(o.unsentChatImages(ctx, convKey, images), ErrBadImages) {
+			return "", "", ErrBadImages
+		}
 		return "", "", err
 	}
 	return ev.Message.ID, resp.SuppressedReason, nil

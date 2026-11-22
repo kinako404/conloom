@@ -14,6 +14,7 @@ var (
 	ErrNotPrivate   = errors.New("core: panel chat needs a private conversation")
 	ErrNotPanelChat = errors.New("core: not a panel chat")
 	ErrBadText      = errors.New("core: message text must be 1 to 2000 characters")
+	ErrBadImages    = errors.New("core: a message carries at most 4 images, each uploaded to this chat and not sent yet")
 )
 
 // ErrChatBusy refuses to delete a panel chat whose cancelled tasks did not
